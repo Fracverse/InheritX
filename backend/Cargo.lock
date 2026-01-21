@@ -1750,6 +1750,40 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "8e04e2fd2b8188ea827b32ef11de88377086d690286ab35747ef7f9bf3ccb590"
 
 [[package]]
+name = "inheritx-backend"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "axum",
+ "base64 0.21.7",
+ "bcrypt",
+ "chrono",
+ "config",
+ "deadpool-postgres",
+ "httpmock",
+ "jsonwebtoken",
+ "lazy_static",
+ "prometheus",
+ "regex",
+ "reqwest",
+ "ring",
+ "serde",
+ "serde_json",
+ "soroban-sdk",
+ "sqlx",
+ "thiserror 1.0.69",
+ "tokio",
+ "tokio-postgres",
+ "tokio-test",
+ "tokio-util",
+ "tower 0.4.13",
+ "tower-http",
+ "tracing",
+ "tracing-subscriber",
+ "uuid",
+]
+
+[[package]]
 name = "inout"
 version = "0.1.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2465,8 +2499,10 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "54b858f82211e84682fecd373f68e1ceae642d8d751a1ebd13f33de6257b3e20"
 dependencies = [
  "bytes",
+ "chrono",
  "fallible-iterator",
  "postgres-protocol",
+ "uuid",
 ]
 
 [[package]]
@@ -4889,39 +4925,6 @@ dependencies = [
  "quote",
  "syn 2.0.114",
  "synstructure",
-]
-
-[[package]]
-name = "inheritx-backend"
-version = "0.1.0"
-dependencies = [
- "anyhow",
- "axum",
- "base64 0.21.7",
- "bcrypt",
- "chrono",
- "config",
- "deadpool-postgres",
- "httpmock",
- "jsonwebtoken",
- "lazy_static",
- "prometheus",
- "regex",
- "reqwest",
- "ring",
- "serde",
- "serde_json",
- "soroban-sdk",
- "sqlx",
- "thiserror 1.0.69",
- "tokio",
- "tokio-test",
- "tokio-util",
- "tower 0.4.13",
- "tower-http",
- "tracing",
- "tracing-subscriber",
- "uuid",
 ]
 
 [[package]]
