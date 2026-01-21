@@ -100,8 +100,8 @@ export default function RootLayout({
         suppressHydrationWarning
       >
         <WalletProvider>
-          <Navbar />
-          <main className="pt-20">{children}</main>
+          {/* <Navbar /> */}
+          <main className="">{children}</main>
           <WalletModal />
         </WalletProvider>
       </body>

@@ -72,6 +72,7 @@ export const WalletProvider = ({ children }: { children: React.ReactNode }) => {
     { id: "albedo", name: "Albedo", icon: "/icons/albedo.png" },
     { id: "xbull", name: "xBull", icon: "/icons/xbull.png" },
     { id: "rabet", name: "Rabet", icon: "/icons/rabet.png" },
+    { id: "lobstr", name: "Lobstr", icon: "/icons/rabet.png" },
   ];
 
   const connectCustom = async (moduleId: string) => {

@@ -17,6 +17,7 @@ import {
   Menu,
   X,
 } from "lucide-react";
+import { ConnectButton } from "@/components/ConnectButton";
 
 // --- Reusable Components ---
 
@@ -179,21 +180,12 @@ export default function InheritXLanding() {
               >
                 Contact
               </a>
-              <button
-                className="flex justify-center items-center gap-4 text-[14px] border-[0.5px] border-[#33C5E03D] bg-[#161E22] px-4 py-3 rounded-lg text-slate-300 hover:border-cyan-400 transition-all w-full focus-visible:outline-offset-2 focus-visible:outline-2 focus-visible:outline-cyan-400 active:scale-95"
-                aria-label="Connect wallet"
-              >
-                Connect Wallet <ArrowDownRight size={16} aria-hidden={true} />
-              </button>
+              <ConnectButton />
             </div>
           )}
-
-          <button
-            className="hidden md:flex justify-center items-center gap-4 text-[14px] border-[0.5px] border-[#33C5E03D] bg-[#161E22] px-4 py-3 rounded-l-xl rounded-r-md text-slate-300 hover:border-cyan-400 transition-all cursor-pointer focus-visible:outline-offset-2 focus-visible:outline-2 focus-visible:outline-cyan-400 active:scale-95 relative z-10"
-            aria-label="Connect wallet"
-          >
-            Connect Wallet <ArrowDownRight size={16} aria-hidden={true} />
-          </button>
+          <div className="md:block hidden">
+            <ConnectButton />
+          </div>
         </nav>
       </header>
 
