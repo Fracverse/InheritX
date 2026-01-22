@@ -1,6 +1,7 @@
 "use client";
 
 import Image from "next/image";
+import Link from "next/link";
 import Footer from "../components/Footer";
 import Navbar from "../components/Navbar";
 import { Headset, ArrowUpRight } from "lucide-react";
@@ -67,9 +68,9 @@ export default function GuidelinesPage() {
                     <h2 className="text-xl  mb-10  font-bold text-white">
                       Data Collection and Usage
                     </h2>
-                    <div className="flex flex-col md:flex-row space-y-[30px] md:space-y-0 md:space-x-[100px]">
-                      <div>
-                        <h3 className="text-base  font-semibold text-[#92A5A8] mb-4  w-100  border-b border-[#1C252A] pb-2 ">
+                    <div className="flex flex-col md:flex-row space-y-[30px] md:space-y-0 md:gap-8">
+                      <div className="flex-1">
+                        <h3 className="text-base  font-semibold text-[#92A5A8] mb-4 border-b border-[#1C252A] pb-2 ">
                           PERSONAL INFORMATION
                         </h3>
                         <h2 className="flex items-start">
@@ -103,8 +104,8 @@ export default function GuidelinesPage() {
                       </div>
 
                       {/* Technical Data */}
-                      <div>
-                        <h3 className="text-base  font-semibold text-[#92A5A8] mb-4  w-100  border-b border-[#1C252A] pb-2 ">
+                      <div className="flex-1">
+                        <h3 className="text-base  font-semibold text-[#92A5A8] mb-4 border-b border-[#1C252A] pb-2 ">
                           TECHNICAL DATA
                         </h3>
                         <h2 className="flex items-start">
@@ -138,7 +139,7 @@ export default function GuidelinesPage() {
                       {/* usage data */}
                     </div>
                     <div>
-                      <h3 className="text-base  font-semibold text-[#92A5A8] mb-4 w-100 border-b border-[#1C252A] pb-2 ">
+                      <h3 className="text-base  font-semibold text-[#92A5A8] mb-4 border-b border-[#1C252A] pb-2 ">
                         Usage Data
                       </h3>
                       <ul className="space-y-2 text-slate-300">
@@ -167,10 +168,10 @@ export default function GuidelinesPage() {
                       Data Protection
                     </h2>
 
-                    <div className="flex flex-col md:flex-row space-y-[30px] md:space-y-0 md:space-x-[100px]">
+                    <div className="flex flex-col md:flex-row space-y-[30px] md:space-y-0 md:gap-8">
                       {/* Security Measures */}
-                      <div>
-                        <h3 className="text-base font-semibold text-[#92A5A8] mb-4 w-100 border-b border-[#1C252A] pb-2">
+                      <div className="flex-1">
+                        <h3 className="text-base font-semibold text-[#92A5A8] mb-4 border-b border-[#1C252A] pb-2">
                           SECURITY MEASURES
                         </h3>
 
@@ -203,17 +204,15 @@ export default function GuidelinesPage() {
                       </div>
 
                       {/* Storage and Retention */}
-                      <div>
-                        <h3 className="text-base font-semibold text-[#92A5A8] mb-4 w-100 border-b border-[#1C252A] pb-2">
+                      <div className="flex-1">
+                        <h3 className="text-base font-semibold text-[#92A5A8] mb-4 border-b border-[#1C252A] pb-2">
                           STORAGE AND RETENTION
                         </h3>
 
                         <ul className="space-y-2 text-slate-300">
                           <li className="flex items-start">
                             <span className="mr-2">›</span>
-                            <span>
-                              Encrypted Storage On Distributed Systems
-                            </span>
+                            <span>Encrypted Storage On Distributed System</span>
                           </li>
                           <li className="flex items-start">
                             <span className="mr-2">›</span>
@@ -243,10 +242,10 @@ export default function GuidelinesPage() {
                       Third-Party Sharing
                     </h2>
 
-                    <div className="flex flex-col md:flex-row space-y-[30px] md:space-y-0 md:space-x-[100px]">
+                    <div className="flex flex-col md:flex-row space-y-[30px] md:space-y-0 md:gap-8">
                       {/* Service Providers */}
-                      <div>
-                        <h3 className="text-base font-semibold text-[#92A5A8] mb-4 w-100 border-b border-[#1C252A] pb-2">
+                      <div className="flex-1">
+                        <h3 className="text-base font-semibold text-[#92A5A8] mb-4 border-b border-[#1C252A] pb-2">
                           SERVICE PROVIDERS
                         </h3>
                         <p className="text-slate-400 text-sm mb-3">
@@ -277,8 +276,8 @@ export default function GuidelinesPage() {
                       </div>
 
                       {/* Legal Requirements */}
-                      <div>
-                        <h3 className="text-base font-semibold text-[#92A5A8] mb-4 w-100 border-b border-[#1C252A] pb-2">
+                      <div className="flex-1">
+                        <h3 className="text-base font-semibold text-[#92A5A8] mb-4 border-b border-[#1C252A] pb-2">
                           LEGAL REQUIREMENTS
                         </h3>
                         <p className="text-slate-400 text-sm mb-3">
@@ -317,10 +316,10 @@ export default function GuidelinesPage() {
                       User Rights and Controls
                     </h2>
 
-                    <div className="flex flex-col md:flex-row space-y-[30px] md:space-y-0 md:space-x-[100px]">
+                    <div className="flex flex-col md:flex-row space-y-[30px] md:space-y-0 md:gap-8">
                       {/* Access Rights */}
-                      <div>
-                        <h3 className="text-base font-semibold text-[#92A5A8] mb-4 w-100 border-b border-[#1C252A] pb-2">
+                      <div className="flex-1">
+                        <h3 className="text-base font-semibold text-[#92A5A8] mb-4 border-b border-[#1C252A] pb-2">
                           ACCESS RIGHTS
                         </h3>
 
@@ -349,8 +348,8 @@ export default function GuidelinesPage() {
                       </div>
 
                       {/* Privacy Controls */}
-                      <div>
-                        <h3 className="text-base font-semibold text-[#92A5A8] mb-4 w-100 border-b border-[#1C252A] pb-2">
+                      <div className="flex-1">
+                        <h3 className="text-base font-semibold text-[#92A5A8] mb-4 border-b border-[#1C252A] pb-2">
                           PRIVACY CONTROLS
                         </h3>
 
@@ -381,8 +380,11 @@ export default function GuidelinesPage() {
                   </div>
                 </div>
 
-                <div className="flex justify-between border-b-2 border-[#1C252A] pt-2  ">
-                  <h2 className="text-2xl mb-5   font-bold text-[#FCFFFF]">
+                <Link
+                  href="/Guidelines/Code-of-ethics"
+                  className="flex justify-between border-b-2 border-[#1C252A] pt-2 hover:border-cyan-400/30 transition-colors cursor-pointer"
+                >
+                  <h2 className="text-2xl mb-5 font-bold text-[#FCFFFF]">
                     Code of Ethics
                   </h2>
                   <span>
@@ -393,10 +395,13 @@ export default function GuidelinesPage() {
                       width={30}
                     />
                   </span>
-                </div>
+                </Link>
 
-                <div className="flex justify-between border-b-2 border-[#1C252A] pt-2  ">
-                  <h2 className="text-2xl mb-5   font-bold text-[#FCFFFF]">
+                <Link
+                  href="/Guidelines/Terms-and-Conditions"
+                  className="flex justify-between border-b-2 border-[#1C252A] pt-2 hover:border-cyan-400/30 transition-colors cursor-pointer"
+                >
+                  <h2 className="text-2xl mb-5 font-bold text-[#FCFFFF]">
                     Terms and Conditions
                   </h2>
                   <span>
@@ -407,7 +412,7 @@ export default function GuidelinesPage() {
                       width={30}
                     />
                   </span>
-                </div>
+                </Link>
               </div>
 
               <button className="bg-[#33C5E0] hover:bg-[#2ab5cf] transition-colors px-6 py-3 rounded-b-2xl flex items-center gap-2 font-semibold text-black text-sm uppercase tracking-wide w-fit">
