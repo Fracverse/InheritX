@@ -6,7 +6,8 @@
     "dev": "next dev",
     "build": "next build",
     "start": "next start",
-    "lint": "eslint"
+    "lint": "eslint",
+    "test": "echo \"No tests configured yet\" && exit 0"
   },
   "dependencies": {
     "@creit.tech/stellar-wallets-kit": "^1.9.5",

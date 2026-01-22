@@ -2,6 +2,7 @@
 resolver = "2"
 members = [
   "example-contract",
+  "inheritance-contract",
 ]
 
 [workspace.dependencies]
