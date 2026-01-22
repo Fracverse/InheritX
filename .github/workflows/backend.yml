@@ -1,0 +1,52 @@
+name: Backend CI
+
+on:
+  push:
+    branches: ["main"]
+    paths:
+      - "backend/**"
+      - ".github/workflows/backend.yml"
+  pull_request:
+    paths:
+      - "backend/**"
+      - ".github/workflows/backend.yml"
+
+jobs:
+  backend:
+    name: Backend (Rust)
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:15
+        env:
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: password
+          POSTGRES_DB: inheritx
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd pg_isready
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+    env:
+      DATABASE_URL: postgres://postgres:password@localhost:5432/inheritx
+      RUST_LOG: info
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+      - name: Cache Cargo registry
+        uses: actions/cache@v3
+        with:
+          path: |
+            ~/.cargo/bin/
+            ~/.cargo/registry/index/
+            ~/.cargo/registry/cache/
+            ~/.cargo/git/db/
+            target/
+          key: ${{ runner.os }}-cargo-backend-${{ hashFiles('**/Cargo.lock') }}
+      - name: Run tests
+        run: cargo test --manifest-path backend/Cargo.toml
+      - name: Build
+        run: cargo build --verbose --manifest-path backend/Cargo.toml

@@ -1,0 +1,39 @@
+name: Contracts CI
+
+on:
+  push:
+    branches: ["main"]
+    paths:
+      - "contracts/**"
+      - ".github/workflows/contracts.yml"
+  pull_request:
+    paths:
+      - "contracts/**"
+      - ".github/workflows/contracts.yml"
+
+jobs:
+  contracts:
+    name: Contracts (Soroban)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: wasm32-unknown-unknown
+      - name: Cache Cargo registry
+        uses: actions/cache@v3
+        with:
+          path: |
+            ~/.cargo/bin/
+            ~/.cargo/registry/index/
+            ~/.cargo/registry/cache/
+            ~/.cargo/git/db/
+            target/
+          key: ${{ runner.os }}-cargo-contracts-${{ hashFiles('**/Cargo.lock') }}
+      - name: Install Soroban CLI
+        run: cargo install soroban-cli --features opt
+      - name: Build Contracts
+        run: cargo build --target wasm32-unknown-unknown --release --manifest-path contracts/Cargo.toml
+      - name: Run Tests
+        run: cargo test --manifest-path contracts/Cargo.toml
