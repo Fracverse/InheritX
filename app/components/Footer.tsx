@@ -66,7 +66,7 @@ export default function Footer() {
                 href="/faq"
                 className="hover:text-cyan-400 transition-colors focus-visible:outline-offset-2 focus-visible:outline-2 focus-visible:outline-cyan-400 rounded-sm px-1"
               >
-                FAQs
+                How to Use
               </Link>
               <Link
                 href="/#guidelines"

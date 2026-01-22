@@ -1,36 +1,118 @@
 "use client";
 
-import React from "react";
+import React, { useState } from "react";
 import Image from "next/image";
 import Navbar from "../components/Navbar";
 import Footer from "../components/Footer";
+import { ArrowUpRight } from "lucide-react";
 
-const faqs = [
+type Step = {
+  title: string;
+  description: string | React.ReactNode;
+};
+
+type TabContent = {
+  id: string;
+  label: string;
+  steps: Step[];
+};
+
+const content: TabContent[] = [
   {
-    question: "What is InheritX?",
-    answer: "InheritX is a platform that simplifies wealth inheritance and asset planning, ensuring your digital and physical assets are transferred securely to your loved ones according to your rules.",
+    id: "plan-types",
+    label: "Inheritance Plan Types",
+    steps: [
+      {
+        title: "Step 1: Go to Inheritance Plans",
+        description: "Navigate to the \"Inheritance Plans\" section on your dashboard.",
+      },
+      {
+        title: "Step 2: Select Plan Type",
+        description: (
+          <div>
+            <p>Choose the type of plan you want to create:</p>
+            <ul className="list-disc ml-5 mt-2 space-y-1">
+              <li>Single Beneficiary Plan — one person receives the assets.</li>
+              <li>Multiple Beneficiary Plan — split assets across several people with chosen percentages.</li>
+            </ul>
+          </div>
+        ),
+      },
+      {
+        title: "Step 3: Add Beneficiaries",
+        description: "Enter names, contact details, and wallet addresses for each beneficiary.",
+      },
+      {
+        title: "Step 4: Define Rules & Conditions",
+        description: "Set rules such as conditions for release (e.g., claim code or disbursment settings).",
+      },
+      {
+        title: "Step 5: Save & Activate",
+        description: "Review all details and confirm. Your inheritance plan is now active and will work based on the conditions you've set.",
+      },
+    ],
   },
   {
-    question: "How secure is my data?",
-    answer: "We use top-level encryption and secure protocols to ensure that your asset information and beneficiary details are protected and only accessible to authorized parties at the right time.",
+    id: "claims",
+    label: "Claims",
+    steps: [
+      {
+        title: "Step 1: Initiate a Claim",
+        description: "Go to the Claims section and click \"New Claim.\" Enter your details and select the inheritance plan you're claiming from.",
+      },
+      {
+        title: "Step 2: Provide Required Documents",
+        description: "Upload identity verification and any documents requested by the plan (e.g., death certificate, legal proof).",
+      },
+      {
+        title: "Step 3: Submit for Review",
+        description: "Double-check your entries and submit. The system logs your request and notifies the plan owner or guardians.",
+      },
+      {
+        title: "Step 4: Verification & Approval",
+        description: "The platform verifies your information. You'll receive updates on your claim status (Pending -> Under Review -> Approved/Rejected).",
+      },
+      {
+        title: "Step 5: Receive Assets",
+        description: "Once approved, assets are automatically transferred to the wallet or account specified in the inheritance plan.",
+      },
+    ],
   },
   {
-    question: "Can I change my beneficiaries?",
-    answer: "Yes, you can update your beneficiaries and the rules for asset distribution at any time through your dashboard.",
-  },
-  {
-    question: "What happens if I forget my password?",
-    answer: "We have secure recovery processes in place to help you regain access to your account while maintaining the highest security standards for your inheritance plan.",
-  },
-  {
-    question: "Are there any legal fees?",
-    answer: "InheritX aims to reduce the need for expensive legal jargon and delays. While we are not a law firm, we provide the tools to make your intent clear and the transfer process smooth.",
+    id: "kyc",
+    label: "KYC",
+    steps: [
+      {
+        title: "Step 1: Open KYC Section",
+        description: "Go to the \"KYC Verification\" (Know Your Customer) pop up from your dashboard.",
+      },
+      {
+        title: "Step 2: Fill Out Personal Information",
+        description: "Enter your full name, date of birth, contact details, and any other requested personal info.",
+      },
+      {
+        title: "Step 3: Upload Required Documents",
+        description: "Provide the necessary identification documents (e.g., ID card, passport, or driver's license).",
+      },
+      {
+        title: "Step 4: Submit for Verification",
+        description: "Review all entered information, confirm it's correct, and click \"Submit.\"",
+      },
+      {
+        title: "Step 5: Wait for Approval",
+        description: "Your KYC request will be reviewed. You'll be notified when it's approved, unlocking features that require verification.",
+      },
+    ],
   },
 ];
 
-export default function FAQPage() {
+export default function HowToUsePage() {
+  const [activeTab, setActiveTab] = useState(content[0].id);
+
+  const activeContent = content.find((tab) => tab.id === activeTab) || content[0];
+
   return (
-    <div className="relative min-h-screen bg-[#161E22] text-slate-300 selection:text-black overflow-x-hidden pt-12">
+    <div className="relative min-h-screen bg-[#161E22] text-slate-300 selection:text-black overflow-x-hidden">
       {/* Decorative tree-like background glow at top right */}
       <div className="absolute top-0 right-0 z-0 pointer-events-none w-1/2 md:w-1/3">
         <Image
@@ -47,41 +129,56 @@ export default function FAQPage() {
       <Navbar />
 
       <main className="max-w-4xl mx-auto px-6 py-20 relative z-10">
-        <div className="mb-16 animate-slide-up">
-          <h1 className="text-4xl md:text-6xl font-bold text-white mb-6">
-            Frequently Asked <span className="text-cyan-400">Questions</span>
+        <div className="mb-12 animate-slide-up">
+          <h1 className="text-4xl md:text-5xl font-bold text-white mb-4">
+            How To Use <span className="text-cyan-400">InheritX</span>
           </h1>
           <p className="text-lg text-[#92A5A8] max-w-2xl">
-            Everything you need to know about InheritX and how we help you
-            secure your legacy for the next generation.
+            Follow these steps to get the most out of your digital inheritance platform.
           </p>
         </div>
 
-        <div className="space-y-6">
-          {faqs.map((faq, index) => (
+        {/* Tabs */}
+        <div className="flex flex-wrap gap-2 mb-10 p-1 bg-[#1A2329] w-fit rounded-xl border border-[#2A3338] animate-fade-in">
+          {content.map((tab) => (
+            <button
+              key={tab.id}
+              onClick={() => setActiveTab(tab.id)}
+              className={`px-6 py-2.5 rounded-lg text-sm font-semibold transition-all duration-300 ${
+                activeTab === tab.id
+                  ? "bg-[#1C252A] text-cyan-400 shadow-lg border border-[#33C5E03D]"
+                  : "text-[#92A5A8] hover:text-white"
+              }`}
+            >
+              {tab.label}
+            </button>
+          ))}
+        </div>
+
+        {/* Steps Content */}
+        <div className="space-y-6 min-h-[500px]">
+          {activeContent.steps.map((step, index) => (
             <div
-              key={index}
-              className="bg-[#1C252A] p-8 border border-[#2A3338] rounded-2xl transition-all duration-300 hover:border-cyan-400/30 hover:shadow-[inset_0_2px_30px_rgba(51,197,224,0.05)] animate-slide-up"
-              style={{ animationDelay: `${index * 0.1}s` }}
+              key={`${activeTab}-${index}`}
+              className="bg-[#1C252A] p-8 border border-[#2A3338] rounded-2xl transition-all duration-300 hover:border-cyan-400/20 hover:shadow-[inset_0_2px_30px_rgba(51,197,224,0.03)] animate-slide-up"
+              style={{ animationDelay: `${index * 0.05}s` }}
             >
               <h3 className="text-xl font-bold text-white mb-3">
-                {faq.question}
+                {step.title}
               </h3>
-              <p className="text-[#92A5A8] leading-relaxed">
-                {faq.answer}
-              </p>
+              <div className="text-[#92A5A8] leading-relaxed">
+                {step.description}
+              </div>
             </div>
           ))}
         </div>
 
-        <div className="mt-20 text-center animate-fade-in" style={{ animationDelay: "0.6s" }}>
-          <p className="text-[#92A5A8] mb-6">Still have questions?</p>
-          <a
-            href="/#footer"
-            className="inline-flex items-center gap-2 px-8 py-3 rounded-lg bg-[#33C5E0] text-black font-semibold transition-all hover:bg-cyan-300 active:scale-95"
+        <div className="mt-16 animate-fade-in" style={{ animationDelay: "0.4s" }}>
+          <button
+            className="flex items-center gap-2 px-8 py-4 rounded-xl bg-[#33C5E0] text-black font-bold transition-all hover:bg-cyan-300 active:scale-95 shadow-[0_0_20px_rgba(51,197,224,0.3)]"
           >
-            Contact Support
-          </a>
+            LAUNCH APP <ArrowUpRight size={20} />
+          </button>
         </div>
       </main>
 
