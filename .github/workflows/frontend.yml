@@ -1,0 +1,155 @@
+name: Frontend CI/CD
+
+on:
+  push:
+    branches: [master, main, develop]
+    paths:
+      - "app/**"
+      - "components/**"
+      - "context/**"
+      - "public/**"
+      - "package.json"
+      - "package-lock.json"
+      - "tsconfig.json"
+      - "next.config.ts"
+      - ".github/workflows/frontend.yml"
+  pull_request:
+    branches: [master, main, develop]
+    paths:
+      - "app/**"
+      - "components/**"
+      - "context/**"
+      - "public/**"
+      - "package.json"
+      - "tsconfig.json"
+
+jobs:
+  code-quality:
+    name: Code Quality Checks
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20.x
+          cache: "npm"
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Run ESLint
+        run: npm run lint
+        continue-on-error: true
+
+      - name: TypeScript type check
+        run: npx tsc --noEmit
+
+  build-and-test:
+    name: Build and Test
+    needs: code-quality
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20.x
+          cache: "npm"
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Run tests
+        run: npm test
+
+      - name: Build Next.js application
+        run: npm run build
+        env:
+          NODE_ENV: production
+
+      - name: Upload build artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: frontend-build-${{ github.run_number }}
+          path: .next/
+          retention-days: 5
+
+  security-scan:
+    name: Security Scanning
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20.x
+          cache: "npm"
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Run npm audit
+        run: npm audit --audit-level=moderate
+        continue-on-error: true
+
+      - name: Security scan summary
+        if: always()
+        run: |
+          echo "## Security Scan Results" >> $GITHUB_STEP_SUMMARY
+          npm audit --audit-level=moderate || echo "⚠️ Vulnerabilities detected" >> $GITHUB_STEP_SUMMARY
+
+  deploy-staging:
+    name: Deploy to Staging
+    needs: [build-and-test, security-scan]
+    runs-on: ubuntu-latest
+    if: github.ref == 'refs/heads/master' || github.ref == 'refs/heads/main'
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20.x
+          cache: "npm"
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Build application
+        run: npm run build
+        env:
+          NODE_ENV: production
+
+      - name: Deploy to Vercel
+        env:
+          VERCEL_TOKEN: ${{ secrets.VERCEL_TOKEN }}
+          VERCEL_ORG_ID: ${{ secrets.VERCEL_ORG_ID }}
+          VERCEL_PROJECT_ID: ${{ secrets.VERCEL_PROJECT_ID }}
+        run: |
+          if [ -z "$VERCEL_TOKEN" ] || [ -z "$VERCEL_ORG_ID" ] || [ -z "$VERCEL_PROJECT_ID" ]; then
+            echo "⚠️ Vercel credentials not fully configured. Skipping deployment."
+            echo "## Deployment Skipped" >> $GITHUB_STEP_SUMMARY
+            echo "Missing one or more required secrets:" >> $GITHUB_STEP_SUMMARY
+            [ -z "$VERCEL_TOKEN" ] && echo "- VERCEL_TOKEN" >> $GITHUB_STEP_SUMMARY
+            [ -z "$VERCEL_ORG_ID" ] && echo "- VERCEL_ORG_ID" >> $GITHUB_STEP_SUMMARY
+            [ -z "$VERCEL_PROJECT_ID" ] && echo "- VERCEL_PROJECT_ID" >> $GITHUB_STEP_SUMMARY
+            exit 0
+          fi
+          npm install -g vercel
+          vercel deploy --prod --token "$VERCEL_TOKEN"
+          echo "## Deployment Successful" >> $GITHUB_STEP_SUMMARY
+          echo "- Environment: Staging" >> $GITHUB_STEP_SUMMARY
+          echo "- Branch: ${{ github.ref }}" >> $GITHUB_STEP_SUMMARY
+          echo "- Commit: ${{ github.sha }}" >> $GITHUB_STEP_SUMMARY

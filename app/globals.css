@@ -16,6 +16,10 @@
   --font-mono: var(--font-geist-mono);
 }
 
+button {
+  cursor: pointer;
+}
+
 /* Smooth animations for better performance */
 @keyframes fadeIn {
   from {

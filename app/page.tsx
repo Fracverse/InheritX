@@ -13,6 +13,7 @@ import {
   Sprout,
 } from "lucide-react";
 import Navbar from "./components/Navbar";
+import { ConnectButton } from "@/components/ConnectButton";
 import Footer from "./components/Footer";
 
 // --- Reusable Components ---

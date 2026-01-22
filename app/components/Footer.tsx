@@ -69,7 +69,8 @@ export default function Footer() {
                 How to Use
               </Link>
               <Link
-                href="/#guidelines"
+                href="/Guidelines"
+
                 className="hover:text-cyan-400 transition-colors focus-visible:outline-offset-2 focus-visible:outline-2 focus-visible:outline-cyan-400 rounded-sm px-1"
               >
                 Guidelines
@@ -161,3 +162,4 @@ export default function Footer() {
     </footer>
   );
 }
+

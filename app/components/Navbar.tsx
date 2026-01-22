@@ -23,7 +23,6 @@ export default function Navbar() {
   }, []);
 
   const closeMenu = () => setIsMobileMenuOpen(false);
-
   return (
     <header
       className={`sticky top-0 z-50 backdrop-blur-xs transition-all duration-300 ${
