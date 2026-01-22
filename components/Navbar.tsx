@@ -22,13 +22,13 @@ export function Navbar() {
             Home
           </Link>
           <Link
-            href="#"
+            href="/how-it-works"
             className="hover:text-[#33C5E0] transition-colors uppercase pb-1 border-b-2 border-transparent hover:border-[#33C5E0]"
           >
             How it works
           </Link>
           <Link
-            href="/faq"
+            href="/#"
             className="hover:text-[#33C5E0] transition-colors uppercase pb-1 border-b-2 border-transparent hover:border-[#33C5E0]"
           >
             FAQs

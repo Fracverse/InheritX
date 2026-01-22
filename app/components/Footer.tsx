@@ -60,7 +60,7 @@ const Footer = () => {
                 About
               </Link>
               <Link
-                href="/faq"
+                href="#"
                 className="hover:text-cyan-400 transition-colors focus-visible:outline-offset-2 focus-visible:outline-2 focus-visible:outline-cyan-400 rounded-sm px-1"
               >
                 FAQs
