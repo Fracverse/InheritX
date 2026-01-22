@@ -123,7 +123,7 @@ export default function InheritXLanding() {
                 How it Works
               </a>
               <a
-                href="#"
+                href="/faq"
                 className="hover:text-cyan-400 transition-colors focus-visible:outline-offset-2 focus-visible:outline-2 focus-visible:outline-cyan-400 rounded-sm px-1"
               >
                 FAQs
@@ -168,7 +168,7 @@ export default function InheritXLanding() {
                 How it Works
               </a>
               <a
-                href="#"
+                href="/faq"
                 onClick={closeMenu}
                 className="text-slate-300 hover:text-cyan-400 py-2 focus-visible:outline-offset-2 focus-visible:outline-2 focus-visible:outline-cyan-400 rounded-sm px-2 uppercase"
               >

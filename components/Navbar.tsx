@@ -28,7 +28,7 @@ export function Navbar() {
             How it works
           </Link>
           <Link
-            href="#"
+            href="/faq"
             className="hover:text-[#33C5E0] transition-colors uppercase pb-1 border-b-2 border-transparent hover:border-[#33C5E0]"
           >
             FAQs
