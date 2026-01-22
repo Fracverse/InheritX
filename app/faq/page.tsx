@@ -4,7 +4,7 @@ import React, { useState } from "react";
 import Image from "next/image";
 import Navbar from "../components/Navbar";
 import Footer from "../components/Footer";
-import { ArrowUpRight } from "lucide-react";
+import { ArrowUpRight, Headphones } from "lucide-react";
 
 type Step = {
   title: string;
@@ -127,8 +127,8 @@ export default function HowToUsePage() {
       </div>
 
       <Navbar />
-
-      <main className="max-w-4xl mx-auto px-6 py-20 relative z-10">
+    <div className="flex justify-between items-center">
+      <main className="max-w-4xl mx-16  py-20 relative z-10">
         <div className="mb-12 animate-slide-up">
           <h1 className="text-4xl md:text-5xl font-bold text-white mb-4">
             How To Use <span className="text-cyan-400">InheritX</span>
@@ -138,21 +138,29 @@ export default function HowToUsePage() {
           </p>
         </div>
 
-        {/* Tabs */}
-        <div className="flex flex-wrap gap-2 mb-10 p-1 bg-[#1A2329] w-fit rounded-xl border border-[#2A3338] animate-fade-in">
-          {content.map((tab) => (
-            <button
-              key={tab.id}
-              onClick={() => setActiveTab(tab.id)}
-              className={`px-6 py-2.5 rounded-lg text-sm font-semibold transition-all duration-300 ${
-                activeTab === tab.id
-                  ? "bg-[#1C252A] text-cyan-400 shadow-lg border border-[#33C5E03D]"
-                  : "text-[#92A5A8] hover:text-white"
-              }`}
-            >
-              {tab.label}
-            </button>
-          ))}
+        {/* Tab Section with Bottom Border */}
+        <div className="relative border-b border-[#2A3338] mb-12 flex items-center justify-between pb-0.5">
+          <div className="flex gap-2">
+            {content.map((tab) => (
+              <button
+                key={tab.id}
+                onClick={() => setActiveTab(tab.id)}
+                className={`relative px-6 py-3 text-sm font-semibold transition-all duration-300 ${
+                  activeTab === tab.id
+                    ? "bg-[#1C252A] text-cyan-400 rounded-t-xl border-x border-t border-[#2A3338] -mb-[1px] shadow-sm"
+                    : "text-[#92A5A8] hover:text-white"
+                }`}
+              >
+                {tab.label}
+                {/* Active Tab Overlap for the Border */}
+                {activeTab === tab.id && (
+                  <div className="absolute bottom-[-1px] left-0 right-0 h-[2px] bg-[#1C252A]" />
+                )}
+              </button>
+            ))}
+          </div>
+          
+
         </div>
 
         {/* Steps Content */}
@@ -160,7 +168,7 @@ export default function HowToUsePage() {
           {activeContent.steps.map((step, index) => (
             <div
               key={`${activeTab}-${index}`}
-              className="bg-[#1C252A] p-8 border border-[#2A3338] rounded-2xl transition-all duration-300 hover:border-cyan-400/20 hover:shadow-[inset_0_2px_30px_rgba(51,197,224,0.03)] animate-slide-up"
+              className="bg-[#1C252A] p-8 border border-[#2A3338] rounded-2xl transition-all duration-300 hover:border-cyan-400/10 hover:shadow-[inset_0_2px_30px_rgba(51,197,224,0.02)] animate-slide-up"
               style={{ animationDelay: `${index * 0.05}s` }}
             >
               <h3 className="text-xl font-bold text-white mb-3">
@@ -173,14 +181,23 @@ export default function HowToUsePage() {
           ))}
         </div>
 
-        <div className="mt-16 animate-fade-in" style={{ animationDelay: "0.4s" }}>
+        {/* Pill-shaped Launch App Button */}
+        <div className="mt-16 text-center animate-fade-in" style={{ animationDelay: "0.4s" }}>
           <button
-            className="flex items-center gap-2 px-8 py-4 rounded-xl bg-[#33C5E0] text-black font-bold transition-all hover:bg-cyan-300 active:scale-95 shadow-[0_0_20px_rgba(51,197,224,0.3)]"
+            className="group flex items-center gap-12 px-24 py-5 rounded-b-[40px] bg-[#33C5E0] text-black font-bold transition-all hover:bg-cyan-300 active:scale-95 shadow-[0_0_30px_rgba(51,197,224,0.4)]"
           >
-            LAUNCH APP <ArrowUpRight size={20} />
+            <span className="text-xl tracking-tight">LAUNCH APP</span>
+            <ArrowUpRight size={28} className="transition-transform group-hover:translate-x-1 group-hover:-translate-y-1" strokeWidth={2.5} />
           </button>
         </div>
       </main>
+      <div className="flex justify-end mr-16 h-16">
+          <button className="flex items-center gap-2 px-5 py-2.5 rounded-full bg-[#1C252A] text-[#92A5A8] text-sm font-medium hover:text-cyan-400 transition-colors border border-transparent hover:border-[#2A3338]">
+            <Headphones size={18} />
+            Contact Support
+          </button>
+      </div>
+</div>
 
       <Footer />
     </div>
