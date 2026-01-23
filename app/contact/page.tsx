@@ -35,7 +35,7 @@ export default function ContactPage() {
       />
       <Navbar />
       <div className="w-full max-w-3xl mx-auto px-6 md:px-8 py-20 md:py-32 relative z-10">
-      <div className="bg-[#182024] rounded-lg p-6 md:p-8">
+      <div className="bg-[#182024] rounded-2xl p-6 md:p-8">
       <div className="mb-12 text-left">
         <h1 className="text-white text-2xl md:text-3xl font-light mb-4">
           Contact Support
@@ -51,7 +51,7 @@ export default function ContactPage() {
         <div>
           <label
             htmlFor="fullName"
-            className="block text-white/70 text-sm font-light mb-3"
+            className="block text-white/ text-sm font-light mb-3"
           >
             Full Name
           </label>
@@ -110,12 +110,6 @@ export default function ContactPage() {
           />
         </div>
 
-        {/* Contact Support Link */}
-        <div className="flex items-center justify-end gap-2 text-white/60 text-sm font-light">
-          <Headphones className="w-4 h-4" />
-          <span>Contact Support</span>
-        </div>
-
         {/* Submit Button */}
         <div className="pt-4 flex justify-center">
           <button
@@ -130,6 +124,15 @@ export default function ContactPage() {
       </form>
       </div>
       </div>
+      
+      {/* Contact Support Link - Outside form, close to container */}
+      <div className="absolute right-4  md:right-[calc(50%-24rem-10rem)] top-[600px] md:top-[650px] z-10">
+        <div className="flex items-center gap-2 text-white/60 text-sm font-light">
+          <Headphones className="w-4 h-4" />
+          <span>Contact Support</span>
+        </div>
+      </div>
+      
       <Footer />
     </div>
   );
