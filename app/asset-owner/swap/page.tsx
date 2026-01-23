@@ -1,21 +1,61 @@
 "use client";
 
 import React, { useState } from "react";
-import { ChevronDown, Repeat, Clock, ArrowUpRight, Info } from "lucide-react";
-import Image from "next/image";
+import { ChevronDown, Repeat, Clock, Info, Search, X } from "lucide-react";
 import SwapRateSlippage from "../components/SwapRateSlippage";
 import RecentTransactions from "../components/RecentTransactions";
+import tokensData from "./tokens.json";
+
+interface Token {
+  id: string;
+  symbol: string;
+  name: string;
+  icon: string;
+}
 
 export default function SwapPage() {
-  const [swapFrom, setSwapFrom] = useState("ETH");
-  const [swapTo, setSwapTo] = useState("USDC");
+  const [tokens] = useState<Token[]>(tokensData);
+  const [swapFrom, setSwapFrom] = useState<Token>(tokens[0]); 
+  const [swapTo, setSwapTo] = useState<Token>(tokens[1]); 
   const [fromAmount, setFromAmount] = useState("");
   const [toAmount, setToAmount] = useState("");
 
+  const [isTokenSelectorOpen, setIsTokenSelectorOpen] = useState(false);
+  const [selectingFor, setSelectingFor] = useState<"from" | "to">("from");
+  const [searchQuery, setSearchQuery] = useState("");
+
   const handleSwapSelection = () => {
+    const temp = swapFrom;
     setSwapFrom(swapTo);
-    setSwapTo(swapFrom);
+    setSwapTo(temp);
   };
+
+  const openTokenSelector = (type: "from" | "to") => {
+    setSelectingFor(type);
+    setIsTokenSelectorOpen(true);
+    setSearchQuery("");
+  };
+
+  const selectToken = (token: Token) => {
+    if (selectingFor === "from") {
+      if (token.id === swapTo.id) {
+        setSwapTo(swapFrom);
+      }
+      setSwapFrom(token);
+    } else {
+      if (token.id === swapFrom.id) {
+        setSwapFrom(swapTo);
+      }
+      setSwapTo(token);
+    }
+    setIsTokenSelectorOpen(false);
+  };
+
+  const filteredTokens = tokens.filter(
+    (t) =>
+      t.symbol.toLowerCase().includes(searchQuery.toLowerCase()) ||
+      t.name.toLowerCase().includes(searchQuery.toLowerCase()),
+  );
 
   return (
     <div className="max-w-6xl mx-auto space-y-8 animate-fade-in">
@@ -43,7 +83,7 @@ export default function SwapPage() {
       <div className="grid grid-cols-1 lg:grid-cols-2 gap-8 items-start">
         <div className="space-y-6">
           <div className="relative space-y-4">
-           
+            {/* Swap From */}
             <div className="bg-[#182024] border border-[#2A3338] rounded-2xl p-6 transition-all hover:border-[#33C5E01A]">
               <div className="flex justify-between items-center mb-4">
                 <span className="text-sm font-medium text-[#92A5A8]">
@@ -58,12 +98,18 @@ export default function SwapPage() {
               </div>
 
               <div className="flex justify-between items-end">
-                <button className="flex items-center gap-2 bg-[#1C252A] border border-[#2A3338] px-4 py-2 rounded-full hover:border-[#33C5E0] transition-all group">
-                  <div className="w-6 h-6 rounded-full bg-white/10 flex items-center justify-center overflow-hidden">
-                    <span className="text-[10px] font-bold">{swapFrom[0]}</span>
+                <button
+                  onClick={() => openTokenSelector("from")}
+                  className="flex items-center gap-2 bg-[#1C252A] border border-[#2A3338] px-4 py-2 rounded-full hover:border-[#33C5E0] transition-all group"
+                >
+                  <div className="w-6 h-6 rounded-full bg-white/10 flex items-center justify-center overflow-hidden relative">
+                    <span className="text-[10px] font-bold z-0">
+                      {swapFrom.symbol[0]}
+                    </span>
+                    {/* Fallback to text if icon not found, though here we assume relative path works or Alt text handles it */}
                   </div>
                   <span className="font-bold text-[#FCFFFF] uppercase">
-                    {swapFrom}
+                    {swapFrom.symbol}
                   </span>
                   <ChevronDown
                     size={16}
@@ -74,7 +120,7 @@ export default function SwapPage() {
                 <div className="text-right">
                   <input
                     type="text"
-                    placeholder="$ 0.00"
+                    placeholder="0.00"
                     className="bg-transparent text-3xl font-bold text-[#FCFFFF] outline-none text-right w-full placeholder:text-[#2A3338]"
                     value={fromAmount}
                     onChange={(e) => setFromAmount(e.target.value)}
@@ -84,7 +130,7 @@ export default function SwapPage() {
               </div>
             </div>
 
-         
+            {/* Swap Arrow */}
             <div className="absolute left-1/2 -translate-x-1/2 -translate-y-1/2 z-10">
               <button
                 onClick={handleSwapSelection}
@@ -94,6 +140,7 @@ export default function SwapPage() {
               </button>
             </div>
 
+            {/* Swap To */}
             <div className="bg-[#182024] border border-[#2A3338] rounded-2xl p-6 transition-all hover:border-[#33C5E01A]">
               <div className="flex justify-between items-center mb-4">
                 <span className="text-sm font-medium text-[#92A5A8]">
@@ -103,12 +150,17 @@ export default function SwapPage() {
               </div>
 
               <div className="flex justify-between items-end">
-                <button className="flex items-center gap-2 bg-[#1C252A] border border-[#2A3338] px-4 py-2 rounded-full hover:border-[#33C5E0] transition-all group">
-                  <div className="w-6 h-6 rounded-full bg-white/10 flex items-center justify-center overflow-hidden">
-                    <span className="text-[10px] font-bold">{swapTo[0]}</span>
+                <button
+                  onClick={() => openTokenSelector("to")}
+                  className="flex items-center gap-2 bg-[#1C252A] border border-[#2A3338] px-4 py-2 rounded-full hover:border-[#33C5E0] transition-all group"
+                >
+                  <div className="w-6 h-6 rounded-full bg-white/10 flex items-center justify-center overflow-hidden relative">
+                    <span className="text-[10px] font-bold z-0">
+                      {swapTo.symbol[0]}
+                    </span>
                   </div>
                   <span className="font-bold text-[#FCFFFF] uppercase">
-                    {swapTo}
+                    {swapTo.symbol}
                   </span>
                   <ChevronDown
                     size={16}
@@ -119,7 +171,7 @@ export default function SwapPage() {
                 <div className="text-right">
                   <input
                     type="text"
-                    placeholder="$ 0.00"
+                    placeholder="0.00"
                     className="bg-transparent text-3xl font-bold text-[#FCFFFF] outline-none text-right w-full placeholder:text-[#2A3338]"
                     value={toAmount}
                     onChange={(e) => setToAmount(e.target.value)}
@@ -149,14 +201,82 @@ export default function SwapPage() {
           </button>
         </div>
 
- 
         <div className="lg:pt-0">
           <SwapRateSlippage />
         </div>
       </div>
 
-   
       <RecentTransactions />
+
+      {isTokenSelectorOpen && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/60 backdrop-blur-sm animate-fade-in">
+          <div className="bg-[#161E22] border border-[#2A3338] w-full max-w-md rounded-3xl overflow-hidden shadow-2xl animate-scale-up">
+            <div className="p-6 border-b border-[#2A3338] flex justify-between items-center">
+              <h2 className="text-xl font-bold text-[#FCFFFF]">Select Token</h2>
+              <button
+                onClick={() => setIsTokenSelectorOpen(false)}
+                className="p-2 hover:bg-[#1C252A] rounded-full text-[#92A5A8] hover:text-[#FCFFFF] transition-all"
+              >
+                <X size={20} />
+              </button>
+            </div>
+
+            <div className="p-4">
+              <div className="relative mb-6">
+                <Search
+                  className="absolute left-3 top-1/2 -translate-y-1/2 text-[#92A5A8]"
+                  size={18}
+                />
+                <input
+                  type="text"
+                  placeholder="Search by name or symbol"
+                  className="w-full bg-[#182024] border border-[#2A3338] rounded-xl py-3 pl-10 pr-4 text-[#FCFFFF] outline-none focus:border-[#33C5E0] transition-all"
+                  value={searchQuery}
+                  onChange={(e) => setSearchQuery(e.target.value)}
+                />
+              </div>
+
+              <div className="space-y-1 max-h-[400px] overflow-y-auto custom-scrollbar">
+                {filteredTokens.length > 0 ? (
+                  filteredTokens.map((token) => (
+                    <button
+                      key={token.id}
+                      onClick={() => selectToken(token)}
+                      className="w-full flex items-center justify-between p-4 rounded-2xl hover:bg-[#1C252A] transition-all group"
+                    >
+                      <div className="flex items-center gap-4">
+                        <div className="w-10 h-10 rounded-full bg-[#182024] border border-[#2A3338] flex items-center justify-center font-bold text-[#FCFFFF] group-hover:border-[#33C5E0]">
+                          {token.symbol[0]}
+                        </div>
+                        <div className="text-left">
+                          <div className="font-bold text-[#FCFFFF] group-hover:text-[#33C5E0] transition-colors">
+                            {token.symbol}
+                          </div>
+                          <div className="text-xs text-[#92A5A8]">
+                            {token.name}
+                          </div>
+                        </div>
+                      </div>
+                      <div className="text-right">
+                        <div className="text-sm font-medium text-[#FCFFFF]">
+                          0
+                        </div>
+                        <div className="text-[10px] text-[#92A5A8] uppercase tracking-wider">
+                          Balance
+                        </div>
+                      </div>
+                    </button>
+                  ))
+                ) : (
+                  <div className="py-10 text-center text-[#92A5A8]">
+                    No tokens found matching "{searchQuery}"
+                  </div>
+                )}
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 }
