@@ -2,6 +2,7 @@ import React, { useState, useEffect } from "react";
 import Image from "next/image";
 import { ArrowDownRight, Globe, Shield, Zap, Menu, X } from "lucide-react";
 import Link from "next/link";
+import { ConnectButton } from "@/components/ConnectButton";
 
 const Navbar = () => {
   const [isMobileMenuOpen, setIsMobileMenuOpen] = useState(false);
@@ -114,6 +115,7 @@ const Navbar = () => {
             >
               Contact
             </Link>
+
             <button
               className="flex justify-center items-center gap-4 text-[14px] border-[0.5px] border-[#33C5E03D] bg-[#161E22] px-4 py-3 rounded-lg text-slate-300 hover:border-cyan-400 transition-all w-full focus-visible:outline-offset-2 focus-visible:outline-2 focus-visible:outline-cyan-400 active:scale-95"
               aria-label="Connect wallet"
@@ -123,12 +125,7 @@ const Navbar = () => {
           </div>
         )}
 
-        <button
-          className="hidden md:flex justify-center items-center gap-4 text-[14px] border-[0.5px] border-[#33C5E03D] bg-[#161E22] px-4 py-3 rounded-l-xl rounded-r-md text-slate-300 hover:border-cyan-400 transition-all cursor-pointer focus-visible:outline-offset-2 focus-visible:outline-2 focus-visible:outline-cyan-400 active:scale-95 relative z-10"
-          aria-label="Connect wallet"
-        >
-          Connect Wallet <ArrowDownRight size={16} aria-hidden={true} />
-        </button>
+        <ConnectButton />
       </nav>
     </header>
   );

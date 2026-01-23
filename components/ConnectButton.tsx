@@ -4,6 +4,7 @@ import { useWallet } from "../context/WalletContext";
 import { motion, AnimatePresence } from "framer-motion";
 import { useState, useRef, useEffect } from "react";
 import { LogOut } from "lucide-react";
+import { useRouter } from "next/navigation";
 
 const ArrowDownIcon = () => (
   <svg
@@ -25,6 +26,7 @@ export function ConnectButton() {
   const { isConnected, address, openModal, disconnect } = useWallet();
   const [dropdownOpen, setDropdownOpen] = useState(false);
   const dropdownRef = useRef<HTMLDivElement>(null);
+  const router = useRouter();
 
   const formatAddress = (addr: string) => {
     if (!addr) return "";
@@ -33,6 +35,7 @@ export function ConnectButton() {
 
   const handleDisconnect = async () => {
     await disconnect();
+    router.push("/");
     setDropdownOpen(false);
   };
 
