@@ -126,12 +126,12 @@ export default function InheritXLanding() {
               >
                 FAQs
               </Link>
-              <a
-                href="#footer"
+              <Link
+                href="/contact"
                 className="hover:text-cyan-400 transition-colors focus-visible:outline-offset-2 focus-visible:outline-2 focus-visible:outline-cyan-400 rounded-sm px-1"
               >
                 Contact
-              </a>
+              </Link>
             </div>
           </div>
 
@@ -172,13 +172,13 @@ export default function InheritXLanding() {
               >
                 FAQs
               </Link>
-              <a
-                href="#footer"
+              <Link
+                href="/contact"
                 onClick={closeMenu}
                 className="text-slate-300 hover:text-cyan-400 py-2 focus-visible:outline-offset-2 focus-visible:outline-2 focus-visible:outline-cyan-400 rounded-sm px-2 uppercase"
               >
                 Contact
-              </a>
+              </Link>
               <ConnectButton />
             </div>
           )}
