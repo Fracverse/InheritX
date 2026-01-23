@@ -41,12 +41,12 @@ const AssetRateItem = ({
 
 const SwapRateSlippage = () => {
   const assets = [
-    { asset: "ETH", value: "1000 USDC", change: "0.24%", isUp: true, icon: "" },
-    { asset: "ETH", value: "1000 USDC", change: "0.24%", isUp: true, icon: "" },
+    { asset: "XLM", value: "0.12 USDC", change: "0.24%", isUp: true, icon: "" },
+    { asset: "USDC", value: "8.33 XLM", change: "0.15%", isUp: true, icon: "" },
     {
-      asset: "ETH",
-      value: "1000 USDC",
-      change: "0.24%",
+      asset: "AQUA",
+      value: "0.004 USDC",
+      change: "1.12%",
       isUp: false,
       icon: "",
     },
