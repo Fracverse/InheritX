@@ -22,8 +22,19 @@ export default function ContactPage() {
 
   return (
     <div className="relative min-h-screen bg-[#161E22] text-slate-300 selection:text-black overflow-x-hidden">
+      {/* Background image with reduced opacity */}
+      <div 
+        className="absolute inset-0 z-0 pointer-events-none"
+        style={{
+          backgroundImage: 'url(/tree.svg)',
+          backgroundPosition: 'top left',
+          backgroundRepeat: 'no-repeat',
+          backgroundSize: 'contain',
+          opacity: 0.5,
+        }}
+      />
       <Navbar />
-      <div className="w-full max-w-3xl mx-auto px-6 md:px-8 py-20 md:py-32">
+      <div className="w-full max-w-3xl mx-auto px-6 md:px-8 py-20 md:py-32 relative z-10">
       <div className="bg-[#182024] rounded-lg p-6 md:p-8">
       <div className="mb-12 text-left">
         <h1 className="text-white text-2xl md:text-3xl font-light mb-4">
