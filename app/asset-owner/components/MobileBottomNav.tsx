@@ -28,7 +28,7 @@ export default function MobileBottomNav() {
   const pathname = normalizePath(usePathname());
 
   return (
-    <div className="fixed bottom-0 left-0 right-0 z-50 bg-[#161E22] border-t border-[#1C252A] px-6 py-4 md:hidden">
+    <div className="fixed bottom-0 left-0 right-0 z-50 border-t border-[#1C252A] px-6 py-4 md:hidden">
       <nav className="flex justify-between items-center max-w-sm mx-auto w-full">
         {MOBILE_NAV_ITEMS.map(({ label, href, icon: Icon, exact }) => {
           const normalizedHref = normalizePath(href);
