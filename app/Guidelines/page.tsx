@@ -381,7 +381,7 @@ export default function GuidelinesPage() {
                 </div>
 
                 <Link
-                  href="/Guidelines/Code-of-ethics"
+                  href="/Guidelines/code-of-ethics"
                   className="flex justify-between border-b-2 border-[#1C252A] pt-2 hover:border-cyan-400/30 transition-colors cursor-pointer"
                 >
                   <h2 className="text-2xl mb-5 font-bold text-[#FCFFFF]">
@@ -398,7 +398,7 @@ export default function GuidelinesPage() {
                 </Link>
 
                 <Link
-                  href="/Guidelines/Terms-and-Conditions"
+                  href="/Guidelines/terms-and-conditions"
                   className="flex justify-between border-b-2 border-[#1C252A] pt-2 hover:border-cyan-400/30 transition-colors cursor-pointer"
                 >
                   <h2 className="text-2xl mb-5 font-bold text-[#FCFFFF]">
@@ -423,6 +423,7 @@ export default function GuidelinesPage() {
 
             {/* Right Column - Contact Support */}
             <div className="lg:col-span-1 relative left-[200px] top-[600px]">
+            
               <div className="flex items-center justify-center gap-2 bg-[#182024] px-4 py-2 rounded-xl w-fit">
                 <Headset className="w-5 h-5" />
                 <p className="text-sm">Contact Us</p>

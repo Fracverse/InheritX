@@ -50,19 +50,19 @@ const Navbar = () => {
               Home
             </Link>
             <Link
-              href="/#how-it-works"
+              href="/how-it-works"
               className="hover:text-cyan-400 transition-colors focus-visible:outline-offset-2 focus-visible:outline-2 focus-visible:outline-cyan-400 rounded-sm px-1"
             >
               How it Works
             </Link>
             <Link
-              href="#"
+              href="/faqs"
               className="hover:text-cyan-400 transition-colors focus-visible:outline-offset-2 focus-visible:outline-2 focus-visible:outline-cyan-400 rounded-sm px-1"
             >
               FAQs
             </Link>
             <Link
-              href="/#footer"
+              href="/contact"
               className="hover:text-cyan-400 transition-colors focus-visible:outline-offset-2 focus-visible:outline-2 focus-visible:outline-cyan-400 rounded-sm px-1"
             >
               Contact
@@ -94,21 +94,21 @@ const Navbar = () => {
               Home
             </Link>
             <Link
-              href="/#how-it-works"
+              href="/how-it-works"
               onClick={closeMenu}
               className="text-slate-300 hover:text-cyan-400 py-2 focus-visible:outline-offset-2 focus-visible:outline-2 focus-visible:outline-cyan-400 rounded-sm px-2 uppercase"
             >
               How it Works
             </Link>
             <Link
-              href="#"
+              href="/faqs"
               onClick={closeMenu}
               className="text-slate-300 hover:text-cyan-400 py-2 focus-visible:outline-offset-2 focus-visible:outline-2 focus-visible:outline-cyan-400 rounded-sm px-2 uppercase"
             >
               FAQs
             </Link>
             <Link
-              href="/#footer"
+              href="/contact"
               onClick={closeMenu}
               className="text-slate-300 hover:text-cyan-400 py-2 focus-visible:outline-offset-2 focus-visible:outline-2 focus-visible:outline-cyan-400 rounded-sm px-2 uppercase"
             >

@@ -1,6 +1,6 @@
 import Image from "next/image";
 import Link from "next/link";
-import { ArrowDownRight, Globe, Shield, Zap, Menu, X } from "lucide-react";
+import { Globe, Shield, Zap } from "lucide-react";
 
 const Footer = () => {
   return (
@@ -54,13 +54,13 @@ const Footer = () => {
                 Home
               </Link>
               <Link
-                href="/#about"
+                href="/about"
                 className="hover:text-cyan-400 transition-colors focus-visible:outline-offset-2 focus-visible:outline-2 focus-visible:outline-cyan-400 rounded-sm px-1"
               >
                 About
               </Link>
               <Link
-                href="#"
+                href="/faqs"
                 className="hover:text-cyan-400 transition-colors focus-visible:outline-offset-2 focus-visible:outline-2 focus-visible:outline-cyan-400 rounded-sm px-1"
               >
                 FAQs
@@ -71,12 +71,7 @@ const Footer = () => {
               >
                 Guidelines
               </Link>
-              <Link
-                href="#"
-                className="hover:text-cyan-400 transition-colors focus-visible:outline-offset-2 focus-visible:outline-2 focus-visible:outline-cyan-400 rounded-sm px-1"
-              >
-                Support
-              </Link>
+           
             </nav>
           </div>
 
@@ -84,7 +79,7 @@ const Footer = () => {
           <div className="text-cyan-400 font-bold text-4xl italic tracking-tighter">
             <Link
               href="/"
-              className="focus-visible:outline-offset-2 focus-visible:outline-2 focus-visible:outline-cyan-400 rounded-sm"
+              className="focus-visible:outline-offset-2 focus-visible:outline-2 focus-visible:outline-cyan-400 rounded-sm cursor-pointer"
             >
               <Image
                 src="/logo.svg"
@@ -135,19 +130,19 @@ const Footer = () => {
           <div>Copyright © InheritX 2026. All Rights Reserved.</div>
           <nav className="flex gap-6" aria-label="Legal and policy links">
             <Link
-              href="#"
+              href="/privacy-policy"
               className="hover:text-slate-400 transition-colors focus-visible:outline-offset-2 focus-visible:outline-2 focus-visible:outline-cyan-400 rounded-sm px-1"
             >
               Privacy Policy
             </Link>
             <Link
-              href="#"
+              href="/Guidelines/terms-and-conditions"
               className="hover:text-slate-400 transition-colors focus-visible:outline-offset-2 focus-visible:outline-2 focus-visible:outline-cyan-400 rounded-sm px-1"
             >
               Terms & Conditions
             </Link>
             <Link
-              href="#"
+              href="/Guidelines/code-of-ethics"
               className="hover:text-slate-400 transition-colors focus-visible:outline-offset-2 focus-visible:outline-2 focus-visible:outline-cyan-400 rounded-sm px-1"
             >
               Code of Ethics

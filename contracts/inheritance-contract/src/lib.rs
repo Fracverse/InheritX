@@ -1,7 +1,7 @@
 #![no_std]
 use soroban_sdk::{
-    contract, contracterror, contractimpl, contracttype, log, symbol_short, vec, Bytes, BytesN,
-    Env, String, Symbol, Vec,
+    contract, contracterror, contractimpl, contracttype, log, symbol_short, vec, Address, Bytes,
+    BytesN, Env, String, Symbol, Vec,
 };
 
 #[contracttype]
@@ -19,8 +19,8 @@ pub struct Beneficiary {
     pub hashed_full_name: BytesN<32>,
     pub hashed_email: BytesN<32>,
     pub hashed_claim_code: BytesN<32>,
-    pub hashed_bank_account: BytesN<32>,
-    pub allocation_percentage: u32,
+    pub bank_account: Bytes, // Plain text for fiat settlement (MVP trade-off)
+    pub allocation_bp: u32,   // Allocation in basis points (0-10000, where 10000 = 100%)
 }
 
 #[contracttype]
@@ -32,6 +32,8 @@ pub struct InheritancePlan {
     pub total_amount: u64,
     pub distribution_method: DistributionMethod,
     pub beneficiaries: Vec<Beneficiary>,
+    pub total_allocation_bp: u32, // Total allocation in basis points
+    pub owner: Address,            // Plan owner
     pub created_at: u64,
 }
 
@@ -46,6 +48,12 @@ pub enum InheritanceError {
     AllocationPercentageMismatch = 6,
     DescriptionTooLong = 7,
     InvalidBeneficiaryData = 8,
+    Unauthorized = 9,
+    PlanNotFound = 10,
+    InvalidBeneficiaryIndex = 11,
+    AllocationExceedsLimit = 12,
+    InvalidAllocation = 13,
+    InvalidClaimCodeRange = 14,
 }
 
 #[contracttype]
@@ -53,6 +61,23 @@ pub enum InheritanceError {
 pub enum DataKey {
     NextPlanId,
     Plan(u64),
+}
+
+// Events for beneficiary operations
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct BeneficiaryAddedEvent {
+    pub plan_id: u64,
+    pub hashed_email: BytesN<32>,
+    pub allocation_bp: u32,
+}
+
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct BeneficiaryRemovedEvent {
+    pub plan_id: u64,
+    pub index: u32,
+    pub allocation_bp: u32,
 }
 
 #[contract]
@@ -66,57 +91,66 @@ impl InheritanceContract {
 
     // Hash utility functions
     pub fn hash_string(env: &Env, input: String) -> BytesN<32> {
-        // In production, this should be replaced with proper string-to-bytes conversion
+        // Convert string to bytes for hashing
         let mut data = Bytes::new(&env);
-        data.push_back((input.len() % 256) as u8);
-        data.push_back((input.len() / 256) as u8);
-
-        // Add some entropy based on first few characters if available
-        if input.len() > 0 {
-            data.push_back((input.len() as u8).wrapping_add(1));
+        
+        // Simple conversion - in production, use proper string-to-bytes conversion
+        for i in 0..input.len() {
+            data.push_back((i % 256) as u8);
         }
-        if input.len() > 1 {
-            data.push_back((input.len() as u8).wrapping_add(2));
-        }
-
+        
         env.crypto().sha256(&data).into()
     }
 
-    pub fn hash_claim_code(env: &Env, claim_code: String) -> Result<BytesN<32>, InheritanceError> {
-        // Validate claim code format (exactly 6 digits)
-        if claim_code.len() != 6 {
-            return Err(InheritanceError::InvalidClaimCode);
+    pub fn hash_bytes(env: &Env, input: Bytes) -> BytesN<32> {
+        env.crypto().sha256(&input).into()
+    }
+
+    pub fn hash_claim_code(env: &Env, claim_code: u32) -> Result<BytesN<32>, InheritanceError> {
+        // Validate claim code is in range 0-999999 (6 digits)
+        if claim_code > 999999 {
+            return Err(InheritanceError::InvalidClaimCodeRange);
         }
 
-        // For now, just validate length since proper character validation requires string-to-bytes conversion
-        // In production, this should validate that all characters are digits 0-9
-        // TODO: Implement proper character validation when Soroban String API allows it
+        // Convert claim code to bytes for hashing (6 digits, padded with zeros)
+        let mut data = Bytes::new(&env);
+        
+        // Extract each digit and convert to ASCII byte
+        for i in 0..6 {
+            let digit = ((claim_code / 10u32.pow(5 - i)) % 10) as u8;
+            data.push_back(digit + b'0');
+        }
 
-        Ok(Self::hash_string(env, claim_code.clone()))
+        Ok(env.crypto().sha256(&data).into())
     }
 
     fn create_beneficiary(
         env: &Env,
         full_name: String,
         email: String,
-        claim_code: String,
-        bank_account: String,
-        allocation_percentage: u32,
+        claim_code: u32,
+        bank_account: Bytes,
+        allocation_bp: u32,
     ) -> Result<Beneficiary, InheritanceError> {
         // Validate inputs
         if full_name.is_empty() || email.is_empty() || bank_account.is_empty() {
             return Err(InheritanceError::InvalidBeneficiaryData);
         }
 
+        // Validate allocation is greater than 0
+        if allocation_bp == 0 {
+            return Err(InheritanceError::InvalidAllocation);
+        }
+
         // Validate claim code and get hash
-        let hashed_claim_code = Self::hash_claim_code(env, claim_code.clone())?;
+        let hashed_claim_code = Self::hash_claim_code(env, claim_code)?;
 
         Ok(Beneficiary {
             hashed_full_name: Self::hash_string(env, full_name),
             hashed_email: Self::hash_string(env, email),
             hashed_claim_code,
-            hashed_bank_account: Self::hash_string(env, bank_account),
-            allocation_percentage,
+            bank_account, // Store plain for fiat settlement
+            allocation_bp,
         })
     }
 
@@ -151,7 +185,7 @@ impl InheritanceContract {
     }
 
     pub fn validate_beneficiaries(
-        beneficiaries_data: Vec<(String, String, String, String, u32)>,
+        beneficiaries_data: Vec<(String, String, u32, Bytes, u32)>,
     ) -> Result<(), InheritanceError> {
         // Validate beneficiary count (max 10)
         if beneficiaries_data.len() > 10 {
@@ -162,9 +196,9 @@ impl InheritanceContract {
             return Err(InheritanceError::MissingRequiredField);
         }
 
-        // Validate allocation percentages total 100%
-        let total_allocation: u32 = beneficiaries_data.iter().map(|(_, _, _, _, pct)| pct).sum();
-        if total_allocation != 100 {
+        // Validate allocation basis points total to 10000 (100%)
+        let total_allocation: u32 = beneficiaries_data.iter().map(|(_, _, _, _, bp)| bp).sum();
+        if total_allocation != 10000 {
             return Err(InheritanceError::AllocationPercentageMismatch);
         }
 
@@ -195,15 +229,173 @@ impl InheritanceContract {
         env.storage().persistent().get(&key)
     }
 
+    /// Add a beneficiary to an existing inheritance plan
+    ///
+    /// # Arguments
+    /// * `env` - The environment
+    /// * `owner` - The plan owner (must authorize this call)
+    /// * `plan_id` - The ID of the plan to add beneficiary to
+    /// * `name` - Full name of the beneficiary
+    /// * `email` - Email address of the beneficiary (will be hashed)
+    /// * `claim_code` - 6-digit numeric claim code (0-999999, will be hashed)
+    /// * `allocation_bp` - Allocation in basis points (must be > 0)
+    /// * `bank_account` - USD bank account number (stored plain for fiat settlement)
+    ///
+    /// # Returns
+    /// Ok(()) on success
+    ///
+    /// # Errors
+    /// - Unauthorized: If caller is not the plan owner
+    /// - PlanNotFound: If plan_id doesn't exist
+    /// - TooManyBeneficiaries: If plan already has 10 beneficiaries
+    /// - AllocationExceedsLimit: If total allocation would exceed 10000 basis points
+    /// - InvalidBeneficiaryData: If any required field is empty
+    /// - InvalidAllocation: If allocation_bp is 0
+    /// - InvalidClaimCodeRange: If claim_code > 999999
+    pub fn add_beneficiary(
+        env: Env,
+        owner: Address,
+        plan_id: u64,
+        name: String,
+        email: String,
+        claim_code: u32,
+        allocation_bp: u32,
+        bank_account: Bytes,
+    ) -> Result<(), InheritanceError> {
+        // Require owner authorization
+        owner.require_auth();
+
+        // Get the plan
+        let mut plan = Self::get_plan(&env, plan_id).ok_or(InheritanceError::PlanNotFound)?;
+
+        // Verify caller is the plan owner
+        if plan.owner != owner {
+            return Err(InheritanceError::Unauthorized);
+        }
+
+        // Check beneficiary count limit (max 10)
+        if plan.beneficiaries.len() >= 10 {
+            return Err(InheritanceError::TooManyBeneficiaries);
+        }
+
+        // Validate allocation is greater than 0
+        if allocation_bp == 0 {
+            return Err(InheritanceError::InvalidAllocation);
+        }
+
+        // Check that total allocation won't exceed 10000 basis points (100%)
+        let new_total = plan.total_allocation_bp + allocation_bp;
+        if new_total > 10000 {
+            return Err(InheritanceError::AllocationExceedsLimit);
+        }
+
+        // Create the beneficiary (validates inputs and hashes sensitive data)
+        let beneficiary =
+            Self::create_beneficiary(&env, name, email.clone(), claim_code, bank_account, allocation_bp)?;
+
+        // Add beneficiary to plan
+        plan.beneficiaries.push_back(beneficiary.clone());
+        plan.total_allocation_bp = new_total;
+
+        // Store updated plan
+        Self::store_plan(&env, plan_id, &plan);
+
+        // Emit event
+        env.events().publish(
+            (symbol_short!("BENEFIC"), symbol_short!("ADD")),
+            BeneficiaryAddedEvent {
+                plan_id,
+                hashed_email: beneficiary.hashed_email,
+                allocation_bp,
+            },
+        );
+
+        log!(&env, "Beneficiary added to plan {}", plan_id);
+
+        Ok(())
+    }
+
+    /// Remove a beneficiary from an existing inheritance plan
+    ///
+    /// # Arguments
+    /// * `env` - The environment
+    /// * `owner` - The plan owner (must authorize this call)
+    /// * `plan_id` - The ID of the plan to remove beneficiary from
+    /// * `index` - The index of the beneficiary to remove (0-based)
+    ///
+    /// # Returns
+    /// Ok(()) on success
+    ///
+    /// # Errors
+    /// - Unauthorized: If caller is not the plan owner
+    /// - PlanNotFound: If plan_id doesn't exist
+    /// - InvalidBeneficiaryIndex: If index is out of bounds
+    pub fn remove_beneficiary(
+        env: Env,
+        owner: Address,
+        plan_id: u64,
+        index: u32,
+    ) -> Result<(), InheritanceError> {
+        // Require owner authorization
+        owner.require_auth();
+
+        // Get the plan
+        let mut plan = Self::get_plan(&env, plan_id).ok_or(InheritanceError::PlanNotFound)?;
+
+        // Verify caller is the plan owner
+        if plan.owner != owner {
+            return Err(InheritanceError::Unauthorized);
+        }
+
+        // Validate index
+        if index >= plan.beneficiaries.len() {
+            return Err(InheritanceError::InvalidBeneficiaryIndex);
+        }
+
+        // Get the beneficiary being removed (for event and allocation tracking)
+        let removed_beneficiary = plan.beneficiaries.get(index).unwrap();
+        let removed_allocation = removed_beneficiary.allocation_bp;
+
+        // Remove beneficiary efficiently (swap with last and pop)
+        let last_index = plan.beneficiaries.len() - 1;
+        if index != last_index {
+            // Swap with last element
+            let last_beneficiary = plan.beneficiaries.get(last_index).unwrap();
+            plan.beneficiaries.set(index, last_beneficiary);
+        }
+        plan.beneficiaries.pop_back();
+
+        // Update total allocation
+        plan.total_allocation_bp -= removed_allocation;
+
+        // Store updated plan
+        Self::store_plan(&env, plan_id, &plan);
+
+        // Emit event
+        env.events().publish(
+            (symbol_short!("BENEFIC"), symbol_short!("REMOVE")),
+            BeneficiaryRemovedEvent {
+                plan_id,
+                index,
+                allocation_bp: removed_allocation,
+            },
+        );
+
+        log!(&env, "Beneficiary removed from plan {}", plan_id);
+
+        Ok(())
+    }
+
     /// Create a new inheritance plan
     ///
     /// # Arguments
     /// * `env` - The environment
+    /// * `owner` - The plan owner
     /// * `plan_name` - Name of the inheritance plan (required)
     /// * `description` - Description of the plan (max 500 characters)
     /// * `total_amount` - Total amount in the plan (must be > 0)
     /// * `distribution_method` - How to distribute the inheritance
-    /// * `beneficiaries_data` - Vector of beneficiary data tuples: (full_name, email, claim_code, bank_account, allocation_percentage)
+    /// * `beneficiaries_data` - Vector of beneficiary data tuples: (full_name, email, claim_code, bank_account, allocation_bp)
     ///
     /// # Returns
     /// The plan ID of the created inheritance plan
@@ -211,13 +403,17 @@ impl InheritanceContract {
     /// # Errors
     /// Returns InheritanceError for various validation failures
     pub fn create_inheritance_plan(
-        env: &Env,
+        env: Env,
+        owner: Address,
         plan_name: String,
         description: String,
         total_amount: u64,
         distribution_method: DistributionMethod,
-        beneficiaries_data: Vec<(String, String, String, String, u32)>,
+        beneficiaries_data: Vec<(String, String, u32, Bytes, u32)>,
     ) -> Result<u64, InheritanceError> {
+        // Require owner authorization
+        owner.require_auth();
+
         // Validate plan inputs (asset type is hardcoded to USDC)
         let usdc_symbol = Symbol::new(&env, "USDC");
         Self::validate_plan_inputs(
@@ -232,15 +428,18 @@ impl InheritanceContract {
 
         // Create beneficiary objects with hashed data
         let mut beneficiaries = Vec::new(&env);
+        let mut total_allocation_bp = 0u32;
+        
         for beneficiary_data in beneficiaries_data.iter() {
             let beneficiary = Self::create_beneficiary(
                 &env,
                 beneficiary_data.0.clone(),
                 beneficiary_data.1.clone(),
-                beneficiary_data.2.clone(),
+                beneficiary_data.2,
                 beneficiary_data.3.clone(),
                 beneficiary_data.4,
             )?;
+            total_allocation_bp += beneficiary_data.4;
             beneficiaries.push_back(beneficiary);
         }
 
@@ -252,6 +451,8 @@ impl InheritanceContract {
             total_amount,
             distribution_method,
             beneficiaries,
+            total_allocation_bp,
+            owner: owner.clone(),
             created_at: env.ledger().timestamp(),
         };
 
