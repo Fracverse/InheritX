@@ -1,0 +1,105 @@
+name: Backend CI/CD
+
+on:
+  push:
+    branches: [master, main, develop]
+    paths:
+      - "backend/**"
+      - ".github/workflows/backend.yml"
+  pull_request:
+    branches: [master, main, develop]
+    paths:
+      - "backend/**"
+
+jobs:
+  build-and-test:
+    name: Build and Test
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: stable
+
+      - name: Cache Rust dependencies
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: backend
+
+      - name: Run cargo check
+        run: cd backend && cargo check
+
+      - name: Run Clippy (Rust linter)
+        run: cd backend && cargo clippy -- -D warnings
+
+      - name: Run tests
+        run: cd backend && cargo test --verbose
+
+      - name: Build release binary
+        run: cd backend && cargo build --release
+
+      - name: Upload build artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: backend-binary-${{ github.run_number }}
+          path: backend/target/release/
+          retention-days: 5
+
+      - name: Build summary
+        if: always()
+        run: |
+          echo "## Backend Build Summary" >> $GITHUB_STEP_SUMMARY
+          echo "- Rust toolchain: stable" >> $GITHUB_STEP_SUMMARY
+          echo "- Build completed: $(date)" >> $GITHUB_STEP_SUMMARY
+
+  security-audit:
+    name: Security Audit
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Install cargo-audit
+        run: cargo install cargo-audit --locked
+
+      - name: Run cargo audit
+        run: cd backend && cargo audit
+        continue-on-error: true
+
+      - name: Audit summary
+        if: always()
+        run: |
+          echo "## Security Audit Results" >> $GITHUB_STEP_SUMMARY
+          cd backend && cargo audit || echo "⚠️ Security vulnerabilities detected" >> $GITHUB_STEP_SUMMARY
+
+  deploy-staging:
+    name: Deploy to Staging
+    needs: [build-and-test, security-audit]
+    runs-on: ubuntu-latest
+    if: github.ref == 'refs/heads/master' || github.ref == 'refs/heads/main'
+    
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Build release binary
+        run: cd backend && cargo build --release
+
+      - name: Deploy placeholder
+        run: |
+          echo "## Backend Deployment" >> $GITHUB_STEP_SUMMARY
+          echo "⚠️ Deployment configuration pending" >> $GITHUB_STEP_SUMMARY
+          echo "Binary built and ready for deployment" >> $GITHUB_STEP_SUMMARY
+          echo "- Branch: ${{ github.ref }}" >> $GITHUB_STEP_SUMMARY
+          echo "- Commit: ${{ github.sha }}" >> $GITHUB_STEP_SUMMARY
