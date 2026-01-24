@@ -23,7 +23,7 @@ export default function EnableFingerprintModal({
         className="overflow-y-scroll w-full md:w-[812px] relative   overflow-hidden bg-[#161E22] border border-[#1C252A] flex justify-center  rounded-3xl max-h-[90vh]  no-scrollbar"
         onClick={(e) => e.stopPropagation()}
       >
-        <div className="bg-[#161E22] overflow-y-scroll w-full  rounded-3xl w-full no-scrollbar overflow-hidden animate-scale-up">
+        <div className="bg-[#161E22] overflow-y-scroll  rounded-3xl w-full no-scrollbar overflow-hidden animate-scale-up">
           {/* Header */}
           <div className="flex rounded-3xl  bg-[#161E22] absolute top-0 left-0 right-0 z-10 bg-gray-700s items-center gap-4 p-6 border-b border-[#1C252A]">
             <button
