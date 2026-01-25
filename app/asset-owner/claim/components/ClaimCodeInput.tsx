@@ -44,25 +44,27 @@ export default function ClaimCodeInput({ value, onChange }: ClaimCodeInputProps)
   };
 
   return (
-    <div className="flex gap-3 md:gap-4 justify-center flex-wrap">
+    <div className="flex gap-2 min-[380px]:gap-3 md:gap-4 justify-center flex-wrap">
       {value.map((code, index) => {
         const isFilled = code !== "";
         return (
           <input
             key={index}
             id={`claim-code-${index}`}
-            type="text"
-            inputMode="text"
+            type="password"
+            inputMode="numeric"
+            autoComplete="off"
+            data-lpignore="true"
             maxLength={1}
             value={code}
             onChange={(e) => handleChange(index, e.target.value)}
             onKeyDown={(e) => handleKeyDown(index, e)}
             onPaste={handlePaste}
-            className={`w-12 h-12 md:w-16 md:h-16 rounded-xl border-2 text-center text-lg md:text-2xl font-bold focus:outline-none transition-all ${
+            className={`w-10 h-10 min-[380px]:w-12 min-[380px]:h-12 md:w-16 md:h-16 rounded-xl border-2 text-center text-lg md:text-2xl font-bold focus:outline-none transition-all ${
               isFilled
                 ? "bg-[#33C5E014] border border-[#33C5E03D] text-[#FCFFFF] placeholder:text-[#FCFFFF]"
                 : "bg-[#161E22] border-[#161E22] shadow-[4px_4px_10px_0px_#131A1DE5_inset,-4px_-4px_8px_0px_#192227E5_inset,4px_-4px_8px_0px_#131A1D33_inset,-4px_4px_8px_0px_#131A1D33_inset]  text-[#FCFFFF] placeholder:text-[#5A6C6F]"
-            } placeholder:text-3xl md:placeholder:text-4xl`}
+            } placeholder:text-4xl md:placeholder:text-5xl`}
             placeholder="•"
           />
         );
