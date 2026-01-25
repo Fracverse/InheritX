@@ -2,7 +2,6 @@ import type { Metadata, Viewport } from "next";
 import { Outfit, Geist_Mono } from "next/font/google";
 import "./globals.css";
 import { WalletProvider } from "@/context/WalletContext";
-import { Navbar } from "@/components/Navbar";
 import { WalletModal } from "@/components/WalletModal";
 
 const outfit = Outfit({

@@ -29,7 +29,7 @@ export default function TwoFactorSuccessModal({
             </div>
           </div>
           {/* Footer */}
-          <div className="p-3 border-t max-w-[370px]  mx-auto border-[#1C252A]">
+          <div className="p-3 border-t max-w-92.5  mx-auto border-[#1C252A]">
             <button
               onClick={onContinue}
               className="w-full py-4 px-6 bg-[#33C5E0] text-[#161E22] font-semibold rounded-full  hover:bg-[#33C5E0]/90 transition-colors"
