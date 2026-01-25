@@ -124,6 +124,19 @@ button {
   animation-delay: 0.5s;
 }
 
+/* Hide scrollbar (all browsers) */
+/* Hide scrollbar - forcefully */
+.no-scrollbar {
+  -ms-overflow-style: none !important; /* IE & Edge */
+  scrollbar-width: none !important; /* Firefox */
+}
+
+.no-scrollbar::-webkit-scrollbar {
+  width: 0px !important;
+  height: 0px !important;
+  display: none !important;
+}
+
 /* Smooth transitions */
 * {
   transition-property: background-color, border-color, color, fill, stroke;
