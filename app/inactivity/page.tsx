@@ -18,18 +18,23 @@ const containerVariants = {
   visible: {
     opacity: 1,
     transition: {
-      staggerChildren: 0.1,
-      delayChildren: 0.2,
+      staggerChildren: 0.08,
+      delayChildren: 0.15,
     },
   },
 };
 
 const itemVariants = {
-  hidden: { opacity: 0, y: 20 },
+  hidden: { opacity: 0, y: 16 },
   visible: {
     opacity: 1,
     y: 0,
-    transition: { duration: 0.5 },
+    transition: { duration: 0.4 },
+  },
+  exit: {
+    opacity: 0,
+    y: -16,
+    transition: { duration: 0.2 },
   },
 };
 
@@ -63,6 +68,7 @@ export default function InactivityPage() {
 
   const [selectedSetting, setSelectedSetting] = useState<string | null>(null);
   const [customDays, setCustomDays] = useState<{ [key: string]: number }>({});
+  const [saveStatus, setSaveStatus] = useState<"idle" | "saving" | "saved">("idle");
 
   const toggleSetting = (id: string) => {
     setSettings(
@@ -81,6 +87,14 @@ export default function InactivityPage() {
     setCustomDays({ ...customDays, [id]: days });
   };
 
+  const handleSaveSettings = async () => {
+    setSaveStatus("saving");
+    // Simulate API call
+    await new Promise((resolve) => setTimeout(resolve, 1500));
+    setSaveStatus("saved");
+    setTimeout(() => setSaveStatus("idle"), 2000);
+  };
+
   const activeSetting = settings.find((s) => s.id === selectedSetting);
 
   return (
@@ -90,21 +104,26 @@ export default function InactivityPage() {
         initial={{ opacity: 0, y: -20 }}
         animate={{ opacity: 1, y: 0 }}
         transition={{ duration: 0.6 }}
-        className="max-w-7xl mx-auto px-6 pt-20 pb-12"
+        className="max-w-7xl mx-auto px-6 pt-16 pb-12 md:pt-20 md:pb-16"
       >
         <div className="flex items-center gap-3 mb-4">
-          <Clock className="w-8 h-8 text-blue-400" />
-          <h1 className="text-4xl md:text-5xl font-bold">Account Inactivity</h1>
+          <motion.div
+            animate={{ rotate: [0, 10, -10, 0] }}
+            transition={{ duration: 4, repeat: Infinity }}
+          >
+            <Clock className="w-8 h-8 text-blue-400" />
+          </motion.div>
+          <h1 className="text-3xl md:text-5xl font-bold">Account Inactivity</h1>
         </div>
-        <p className="text-lg text-slate-300 max-w-2xl">
+        <p className="text-base md:text-lg text-slate-300 max-w-2xl">
           Manage your account inactivity settings and ensure your assets are protected
           with automated proof-of-life checks and beneficiary notifications.
         </p>
       </motion.section>
 
       {/* Main Content */}
-      <section className="max-w-7xl mx-auto px-6 pb-20">
-        <div className="grid lg:grid-cols-3 gap-8">
+      <section className="max-w-7xl mx-auto px-6 pb-16 md:pb-20">
+        <div className="grid lg:grid-cols-3 gap-6 md:gap-8">
           {/* Settings List */}
           <motion.div
             variants={containerVariants}
@@ -118,17 +137,17 @@ export default function InactivityPage() {
                 key={setting.id}
                 variants={itemVariants}
                 onClick={() => setSelectedSetting(setting.id)}
-                className={`p-6 rounded-2xl border-2 cursor-pointer transition-all duration-300 ${
+                className={`p-5 md:p-6 rounded-2xl border-2 cursor-pointer transition-all duration-300 ${
                   selectedSetting === setting.id
                     ? "border-blue-500 bg-blue-500/10"
                     : "border-slate-800 bg-slate-900/50 hover:border-slate-700"
                 }`}
               >
-                <div className="flex items-start justify-between">
-                  <div className="flex items-start gap-4 flex-1">
-                    <div className="text-blue-400 mt-1">{setting.icon}</div>
-                    <div className="flex-1">
-                      <h3 className="text-lg font-semibold mb-2">{setting.title}</h3>
+                <div className="flex items-start justify-between gap-4">
+                  <div className="flex items-start gap-3 md:gap-4 flex-1 min-w-0">
+                    <div className="text-blue-400 mt-1 shrink-0">{setting.icon}</div>
+                    <div className="flex-1 min-w-0">
+                      <h3 className="text-base md:text-lg font-semibold mb-2">{setting.title}</h3>
                       <p className="text-slate-400 text-sm">{setting.description}</p>
                       {setting.days && (
                         <p className="text-slate-500 text-xs mt-3">
@@ -144,9 +163,10 @@ export default function InactivityPage() {
                       e.stopPropagation();
                       toggleSetting(setting.id);
                     }}
-                    className={`relative w-12 h-7 rounded-full transition-colors duration-300 ${
+                    className={`relative w-12 h-7 rounded-full transition-colors duration-300 shrink-0 ${
                       setting.enabled ? "bg-blue-500" : "bg-slate-700"
                     }`}
+                    aria-label={`Toggle ${setting.title}`}
                   >
                     <motion.div
                       animate={{ x: setting.enabled ? 20 : 2 }}
@@ -166,12 +186,12 @@ export default function InactivityPage() {
             transition={{ duration: 0.6, delay: 0.2 }}
             className="lg:col-span-1"
           >
-            <div className="sticky top-20 rounded-2xl border border-slate-800 bg-slate-900/50 p-6">
+            <div className="sticky top-20 rounded-2xl border border-slate-800 bg-slate-900/50 p-5 md:p-6">
               {activeSetting ? (
                 <>
                   <div className="flex items-center gap-3 mb-6">
                     <div className="text-blue-400">{activeSetting.icon}</div>
-                    <h3 className="text-xl font-semibold">{activeSetting.title}</h3>
+                    <h3 className="text-lg md:text-xl font-semibold">{activeSetting.title}</h3>
                   </div>
 
                   <div className="space-y-6">
@@ -217,6 +237,7 @@ export default function InactivityPage() {
                               updateDays(activeSetting.id, parseInt(e.target.value))
                             }
                             className="flex-1 h-2 bg-slate-700 rounded-lg appearance-none cursor-pointer accent-blue-500"
+                            aria-label="Check-in interval slider"
                           />
                           <span className="text-sm font-semibold text-blue-400 min-w-12">
                             {customDays[activeSetting.id] || activeSetting.days}d
@@ -257,10 +278,10 @@ export default function InactivityPage() {
         whileInView={{ opacity: 1, y: 0 }}
         transition={{ duration: 0.6 }}
         viewport={{ once: true }}
-        className="max-w-7xl mx-auto px-6 pb-20"
+        className="max-w-7xl mx-auto px-6 pb-16 md:pb-20"
       >
-        <div className="rounded-2xl border border-slate-800 bg-slate-900/50 p-8">
-          <h3 className="text-xl font-semibold mb-4 flex items-center gap-2">
+        <div className="rounded-2xl border border-slate-800 bg-slate-900/50 p-6 md:p-8">
+          <h3 className="text-lg md:text-xl font-semibold mb-4 flex items-center gap-2">
             <Shield className="w-6 h-6 text-blue-400" />
             How Inactivity Protection Works
           </h3>
@@ -296,7 +317,7 @@ export default function InactivityPage() {
                 <div className="inline-flex items-center justify-center w-12 h-12 rounded-full bg-blue-500/20 border border-blue-500/30 mb-4">
                   <span className="font-bold text-blue-400">{item.step}</span>
                 </div>
-                <h4 className="font-semibold mb-2">{item.title}</h4>
+                <h4 className="font-semibold mb-2 text-sm md:text-base">{item.title}</h4>
                 <p className="text-sm text-slate-400">{item.description}</p>
               </motion.div>
             ))}
@@ -310,20 +331,30 @@ export default function InactivityPage() {
         whileInView={{ opacity: 1, y: 0 }}
         transition={{ duration: 0.6 }}
         viewport={{ once: true }}
-        className="max-w-7xl mx-auto px-6 pb-20"
+        className="max-w-7xl mx-auto px-6 pb-16 md:pb-20"
       >
-        <div className="rounded-2xl bg-linear-to-r from-blue-600/20 to-purple-600/20 border border-blue-500/30 p-8 text-center">
-          <h3 className="text-2xl font-semibold mb-3">Ready to Protect Your Assets?</h3>
-          <p className="text-slate-300 mb-6 max-w-2xl mx-auto">
+        <div className="rounded-2xl bg-linear-to-r from-blue-600/20 to-purple-600/20 border border-blue-500/30 p-6 md:p-8 text-center">
+          <h3 className="text-xl md:text-2xl font-semibold mb-3">Ready to Protect Your Assets?</h3>
+          <p className="text-sm md:text-base text-slate-300 mb-6 max-w-2xl mx-auto">
             Configure your inactivity settings now to ensure your inheritance plan is
             secure and your beneficiaries are protected.
           </p>
           <motion.button
             whileHover={{ scale: 1.05 }}
             whileTap={{ scale: 0.95 }}
-            className="px-8 py-3 rounded-lg bg-blue-500 text-white font-semibold hover:bg-blue-600 transition-colors"
+            onClick={handleSaveSettings}
+            disabled={saveStatus === "saving"}
+            className={`px-6 md:px-8 py-3 rounded-lg font-semibold transition-all duration-300 ${
+              saveStatus === "saved"
+                ? "bg-green-500 text-white"
+                : saveStatus === "saving"
+                  ? "bg-blue-500/50 text-white cursor-not-allowed"
+                  : "bg-blue-500 text-white hover:bg-blue-600"
+            }`}
           >
-            Save Settings
+            {saveStatus === "saving" && "Saving..."}
+            {saveStatus === "saved" && "✓ Settings Saved"}
+            {saveStatus === "idle" && "Save Settings"}
           </motion.button>
         </div>
       </motion.section>
