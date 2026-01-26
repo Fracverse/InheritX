@@ -2,7 +2,7 @@
 
 use super::*;
 use soroban_sdk::{testutils::Address as _, vec, Address, Bytes, Env, String, Symbol, Vec};
-
+use soroban_sdk::InvokeError;
 // Helper function to create test address
 fn create_test_address(env: &Env, _seed: u64) -> Address {
     Address::generate(env)
@@ -627,7 +627,7 @@ fn test_claim_inheritance_invalid_claim_code() {
     assert!(result.is_err());
 
     // Check that the inner error is exactly InheritanceError::InvalidClaimCode
-    if let Err(soroban_sdk::contracterror::InvokeError::Contract(err)) = result {
+    if let Err(InvokeError::Contract(err)) = result {
         assert_eq!(err, InheritanceError::InvalidClaimCode);
     } else {
         panic!("Expected InvalidClaimCode error, got: {:?}", result);
