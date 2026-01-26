@@ -73,6 +73,7 @@ pub enum InheritanceError {
     AllocationExceedsLimit = 12,
     InvalidAllocation = 13,
     InvalidClaimCodeRange = 14,
+    ClaimNotAllowedYet = 15,
 }
 
 #[contracttype]
