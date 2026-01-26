@@ -587,3 +587,53 @@ fn test_claim_inheritance_success() {
     let amount_claimed = inner_result.unwrap();
     assert_eq!(amount_claimed, 1_000_000u64);
 }
+
+#[test]
+fn test_claim_inheritance_invalid_claim_code() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let contract_id = env.register_contract(None, InheritanceContract);
+    let client = InheritanceContractClient::new(&env, &contract_id);
+
+    let owner = create_test_address(&env, 1);
+
+    let beneficiaries_data = vec![
+        &env,
+        (
+            String::from_str(&env, "Alice"),
+            String::from_str(&env, "alice@example.com"),
+            123456u32,
+            create_test_bytes(&env, "1111111111111111"),
+            10000u32,
+        ),
+    ];
+
+    let plan_id = client.create_inheritance_plan(
+        &owner,
+        &String::from_str(&env, "Test Plan"),
+        &String::from_str(&env, "Test Description"),
+        &1000000u64,
+        &DistributionMethod::LumpSum,
+        &beneficiaries_data,
+    );
+
+    let invalid_claim_code = 999999u32;
+
+    let outer_result = client.try_claim_inheritance(
+        &plan_id,
+        &String::from_str(&env, "alice@example.com"),
+        &invalid_claim_code,
+    );
+
+    // Outer call should succeed (no InvokeError)
+    assert!(outer_result.is_ok());
+
+    let inner_result = outer_result.unwrap();
+
+    // Inner result should fail with InvalidClaimCode
+    assert!(inner_result.is_err());
+
+    if let Err(e) = inner_result {
+        assert_eq!(e, InheritanceError::InvalidClaimCode);
+    }
+}
