@@ -2,7 +2,7 @@
 
 use super::*;
 use soroban_sdk::{testutils::Address as _, vec, Address, Bytes, Env, String, Symbol, Vec};
-use soroban_sdk::InvokeError;
+
 // Helper function to create test address
 fn create_test_address(env: &Env, _seed: u64) -> Address {
     Address::generate(env)
@@ -621,15 +621,19 @@ fn test_claim_inheritance_invalid_claim_code() {
     let invalid_claim_code = 999999u32;
 
     // Call the contract
-    let result = client.try_claim_inheritance(&plan_id, &String::from_str(&env, "alice@example.com"), &invalid_claim_code);
+    let outer_result = client.try_claim_inheritance(
+        &plan_id,
+        &String::from_str(&env, "alice@example.com"),
+        &invalid_claim_code,
+    );
 
-    // Assert it fails
-    assert!(result.is_err());
+    // Outer result should be OK because contract call succeeded
+    assert!(outer_result.is_ok());
 
-    // Check that the inner error is exactly InheritanceError::InvalidClaimCode
-    if let Err(InvokeError::Contract(err)) = result {
-        assert_eq!(err, InheritanceError::InvalidClaimCode);
-    } else {
-        panic!("Expected InvalidClaimCode error, got: {:?}", result);
-    }
+    // Unwrap outer result to get inner result
+    let inner_result = outer_result.unwrap();
+
+    // Inner result should be Err(InheritanceError::InvalidClaimCode)
+    assert!(inner_result.is_err());
+    assert_eq!(inner_result.unwrap_err(), InheritanceError::InvalidClaimCode);
 }
