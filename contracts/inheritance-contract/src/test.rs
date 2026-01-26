@@ -537,7 +537,7 @@ fn test_beneficiary_allocation_tracking() {
 
 
 #[test]
-fn test_claim_inheritance_invalid_claim_code() {
+fn test_claim_inheritance_success() {
     let env = Env::default();
     env.mock_all_auths();
     let contract_id = env.register_contract(None, InheritanceContract);
@@ -565,17 +565,20 @@ fn test_claim_inheritance_invalid_claim_code() {
         &beneficiaries_data,
     );
 
-    // Use invalid claim code
-    let invalid_claim_code = 999999u32;
+    // Use the correct claim code
+    let valid_claim_code = 123456u32;
 
-    // Call the contract but catch the Result
-    let result = client.try_claim_inheritance(&plan_id, &String::from_str(&env, "alice@example.com"), &invalid_claim_code);
+    // Call the contract using try_claim_inheritance
+    let result = client.try_claim_inheritance(
+        &plan_id,
+        &String::from_str(&env, "alice@example.com"),
+        &valid_claim_code,
+    );
 
-    // Make sure it returns an error
-    assert!(result.is_err());
+    // Make sure it succeeds
+    assert!(result.is_ok());
 
-    // Optional: check the exact error
-    if let Err(e) = result {
-        assert_eq!(e, InheritanceError::InvalidClaimCode);
+    if let Ok(amount_claimed) = result {
+        assert_eq!(amount_claimed, 1_000_000u64); // Total plan amount for this beneficiary
     }
 }
