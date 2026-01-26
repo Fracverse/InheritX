@@ -635,5 +635,5 @@ fn test_claim_inheritance_invalid_claim_code() {
 
     // Inner result should be Err(InheritanceError::InvalidClaimCode)
     assert!(inner_result.is_err());
-    assert_eq!(inner_result.unwrap_err(), InheritanceError::InvalidClaimCode);
+    assert_eq!(inner_result.unwrap_err(), InheritanceError::InvalidClaimCode.into());
 }
