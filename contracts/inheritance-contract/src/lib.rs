@@ -498,68 +498,75 @@ impl InheritanceContract {
     /// - InvalidBeneficiaryData: If email or claim code is wrong
     /// - Unauthorized: If beneficiary is not part of plan
     /// - ClaimNotAllowedYet: If distribution schedule not reached
-    pub fn claim_inheritance(
-        env: Env,
-        plan_id: u64,
-        beneficiary_email: String,
-        claim_code: u32,
-    ) -> Result<u64, InheritanceError> {
-        // Fetch plan
-        let mut plan = Self::get_plan(&env, plan_id).ok_or(InheritanceError::PlanNotFound)?;
+pub fn claim_inheritance(
+    env: Env,
+    plan_id: u64,
+    beneficiary_email: String,
+    claim_code: u32,
+) -> Result<u64, InheritanceError> {
+    // Fetch plan
+    let mut plan = Self::get_plan(&env, plan_id).ok_or(InheritanceError::PlanNotFound)?;
 
-        // Hash email and claim code
-        let hashed_email = Self::hash_string(&env, beneficiary_email.clone());
-        let hashed_claim_code = Self::hash_claim_code(&env, claim_code)?;
+    // Hash email and claim code
+    let hashed_email = Self::hash_string(&env, beneficiary_email.clone());
+    let hashed_claim_code = Self::hash_claim_code(&env, claim_code)
+        .map_err(|_| InheritanceError::InvalidClaimCode)?;
 
-        // Find beneficiary in plan
-        let mut found_index: Option<u32> = None;
-        for i in 0..plan.beneficiaries.len() {
-            let b = plan.beneficiaries.get(i).unwrap();
-            if b.hashed_email == hashed_email && b.hashed_claim_code == hashed_claim_code {
-                found_index = Some(i);
-                break;
+    // Find beneficiary in plan
+    let mut found_index: Option<u32> = None;
+    for i in 0..plan.beneficiaries.len() {
+        let b = plan.beneficiaries.get(i).unwrap();
+        if b.hashed_email == hashed_email {
+            // Email matches, now check claim code
+            if b.hashed_claim_code != hashed_claim_code {
+                return Err(InheritanceError::InvalidClaimCode);
             }
+            found_index = Some(i);
+            break;
         }
-
-        let index = found_index.ok_or(InheritanceError::Unauthorized)?;
-        let beneficiary = plan.beneficiaries.get(index).unwrap();
-
-        // Check distribution schedule (simplified example)
-        let now = env.ledger().timestamp();
-        let claim_allowed = match plan.distribution_method {
-            DistributionMethod::LumpSum => true, // allowed immediately
-            DistributionMethod::Monthly => now >= plan.created_at + 30 * 24 * 3600,
-            DistributionMethod::Quarterly => now >= plan.created_at + 90 * 24 * 3600,
-            DistributionMethod::Yearly => now >= plan.created_at + 365 * 24 * 3600,
-        };
-
-        if !claim_allowed {
-            return Err(InheritanceError::Unauthorized); // or custom ClaimNotAllowedYet
-        }
-
-        // Calculate claim amount
-        let amount_claimed = plan.total_amount * (beneficiary.allocation_bp as u64) / 10_000;
-
-        // Optional: remove beneficiary or mark as claimed
-        plan.total_allocation_bp -= beneficiary.allocation_bp;
-        plan.beneficiaries.remove(index as u32);
-        Self::store_plan(&env, plan_id, &plan);
-
-        // Emit event
-        env.events().publish(
-            (symbol_short!("BENEFIC"), symbol_short!("CLAIM")),
-            InheritanceClaimedEvent {
-                plan_id,
-                hashed_email,
-                claimed_at: now,
-                amount_claimed,
-            },
-        );
-
-        log!(&env, "Beneficiary claimed {} from plan {}", amount_claimed, plan_id);
-
-        Ok(amount_claimed)
     }
+
+    // If no matching email found, unauthorized
+    let index = found_index.ok_or(InheritanceError::Unauthorized)?;
+    let beneficiary = plan.beneficiaries.get(index).unwrap();
+
+    // Check distribution schedule
+    let now = env.ledger().timestamp();
+    let claim_allowed = match plan.distribution_method {
+        DistributionMethod::LumpSum => true, // allowed immediately
+        DistributionMethod::Monthly => now >= plan.created_at + 30 * 24 * 3600,
+        DistributionMethod::Quarterly => now >= plan.created_at + 90 * 24 * 3600,
+        DistributionMethod::Yearly => now >= plan.created_at + 365 * 24 * 3600,
+    };
+
+    if !claim_allowed {
+        return Err(InheritanceError::ClaimNotAllowedYet);
+    }
+
+    // Calculate claim amount
+    let amount_claimed = plan.total_amount * (beneficiary.allocation_bp as u64) / 10_000;
+
+    // Update plan
+    plan.total_allocation_bp -= beneficiary.allocation_bp;
+    plan.beneficiaries.remove(index as u32);
+    Self::store_plan(&env, plan_id, &plan);
+
+    // Emit event
+    env.events().publish(
+        (symbol_short!("BENEFIC"), symbol_short!("CLAIM")),
+        InheritanceClaimedEvent {
+            plan_id,
+            hashed_email,
+            claimed_at: now,
+            amount_claimed,
+        },
+    );
+
+    log!(&env, "Beneficiary claimed {} from plan {}", amount_claimed, plan_id);
+
+    Ok(amount_claimed)
+}
+
 }
 
 mod test;
