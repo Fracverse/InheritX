@@ -2,7 +2,7 @@
 
 use super::*;
 use soroban_sdk::{
-    testutils::{Address as _, Events},
+    testutils::{Address as _,},
     vec, Address, Bytes, Env, String, Symbol, Vec,
 };
 
