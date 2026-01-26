@@ -1,10 +1,7 @@
 #![cfg(test)]
 
 use super::*;
-use soroban_sdk::{
-    testutils::{Address as _,},
-    vec, Address, Bytes, Env, String, Symbol, Vec,
-};
+use soroban_sdk::{testutils::Address as _, vec, Address, Bytes, Env, String, Symbol, Vec};
 
 // Helper function to create test address
 fn create_test_address(env: &Env, _seed: u64) -> Address {
