@@ -83,7 +83,8 @@ export default function RootLayout({
 
   return (
     <html lang="en" suppressHydrationWarning>
-
+      <body
+        className={`${outfit.variable} ${geistMono.variable} antialiased`}
         suppressHydrationWarning
       >
         <WalletProvider>
