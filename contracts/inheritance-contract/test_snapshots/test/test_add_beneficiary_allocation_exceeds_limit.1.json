@@ -489,19 +489,48 @@
                   "u64": 1
                 },
                 {
-                  "string": "Bob"
-                },
-                {
-                  "string": "bob@example.com"
-                },
-                {
-                  "u32": 222222
-                },
-                {
-                  "u32": 1000
-                },
-                {
-                  "bytes": "32323232323232323232323232323232"
+                  "map": [
+                    {
+                      "key": {
+                        "symbol": "allocation_bp"
+                      },
+                      "val": {
+                        "u32": 2000
+                      }
+                    },
+                    {
+                      "key": {
+                        "symbol": "bank_account"
+                      },
+                      "val": {
+                        "bytes": "33333333333333333333333333333333"
+                      }
+                    },
+                    {
+                      "key": {
+                        "symbol": "claim_code"
+                      },
+                      "val": {
+                        "u32": 333333
+                      }
+                    },
+                    {
+                      "key": {
+                        "symbol": "email"
+                      },
+                      "val": {
+                        "string": "charlie@example.com"
+                      }
+                    },
+                    {
+                      "key": {
+                        "symbol": "name"
+                      },
+                      "val": {
+                        "string": "Charlie"
+                      }
+                    }
+                  ]
                 }
               ]
             }
@@ -594,19 +623,48 @@
                       "u64": 1
                     },
                     {
-                      "string": "Bob"
-                    },
-                    {
-                      "string": "bob@example.com"
-                    },
-                    {
-                      "u32": 222222
-                    },
-                    {
-                      "u32": 1000
-                    },
-                    {
-                      "bytes": "32323232323232323232323232323232"
+                      "map": [
+                        {
+                          "key": {
+                            "symbol": "allocation_bp"
+                          },
+                          "val": {
+                            "u32": 2000
+                          }
+                        },
+                        {
+                          "key": {
+                            "symbol": "bank_account"
+                          },
+                          "val": {
+                            "bytes": "33333333333333333333333333333333"
+                          }
+                        },
+                        {
+                          "key": {
+                            "symbol": "claim_code"
+                          },
+                          "val": {
+                            "u32": 333333
+                          }
+                        },
+                        {
+                          "key": {
+                            "symbol": "email"
+                          },
+                          "val": {
+                            "string": "charlie@example.com"
+                          }
+                        },
+                        {
+                          "key": {
+                            "symbol": "name"
+                          },
+                          "val": {
+                            "string": "Charlie"
+                          }
+                        }
+                      ]
                     }
                   ]
                 }
