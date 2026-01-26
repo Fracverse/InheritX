@@ -15,6 +15,15 @@ pub enum DistributionMethod {
 
 #[contracttype]
 #[derive(Clone, Debug, Eq, PartialEq)]
+pub struct InheritanceClaimedEvent {
+    pub plan_id: u64,
+    pub hashed_email: BytesN<32>,
+    pub claimed_at: u64,
+    pub amount_claimed: u64,
+}
+
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
 pub struct Beneficiary {
     pub hashed_full_name: BytesN<32>,
     pub hashed_email: BytesN<32>,
