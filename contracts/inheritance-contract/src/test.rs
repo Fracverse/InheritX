@@ -591,20 +591,21 @@ fn test_claim_inheritance_success() {
 #[test]
 fn test_claim_inheritance_invalid_claim_code() {
     let env = Env::default();
-    env.mock_all_auths();
+    env.mock_all_auths(); // Mock authorization for testing
     let contract_id = env.register_contract(None, InheritanceContract);
     let client = InheritanceContractClient::new(&env, &contract_id);
 
     let owner = create_test_address(&env, 1);
 
+    // Create a plan with 1 beneficiary
     let beneficiaries_data = vec![
         &env,
         (
             String::from_str(&env, "Alice"),
             String::from_str(&env, "alice@example.com"),
-            123456u32,
+            123_456u32, // valid claim code
             create_test_bytes(&env, "1111111111111111"),
-            10000u32,
+            10_000u32, // 100% allocation
         ),
     ];
 
@@ -612,27 +613,29 @@ fn test_claim_inheritance_invalid_claim_code() {
         &owner,
         &String::from_str(&env, "Test Plan"),
         &String::from_str(&env, "Test Description"),
-        &1000000u64,
+        &1_000_000u64, // total plan amount
         &DistributionMethod::LumpSum,
         &beneficiaries_data,
     );
 
-    let invalid_claim_code = 999999u32;
+    // Use an invalid claim code (different from Alice's)
+    let invalid_claim_code = 111_111u32;
 
+    // Call the contract safely using try_claim_inheritance
     let outer_result = client.try_claim_inheritance(
         &plan_id,
         &String::from_str(&env, "alice@example.com"),
         &invalid_claim_code,
     );
 
-    // Outer call should succeed (no InvokeError)
+    // The outer_result should be Ok because the contract call itself does not panic
     assert!(outer_result.is_ok());
 
+    // The inner result should fail because the claim code is wrong
     let inner_result = outer_result.unwrap();
-
-    // Inner result should fail with InvalidClaimCode
     assert!(inner_result.is_err());
 
+    // Optional: check exact error type
     if let Err(e) = inner_result {
         assert_eq!(e, InheritanceError::InvalidClaimCode.into());
     }
