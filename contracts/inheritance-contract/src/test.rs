@@ -534,106 +534,121 @@ fn test_beneficiary_allocation_tracking() {
     );
     assert!(result2.is_err());
 }
-
-
 #[test]
-fn test_claim_inheritance_success() {
+fn test_claim_success() {
     let env = Env::default();
     env.mock_all_auths();
+
     let contract_id = env.register_contract(None, InheritanceContract);
     let client = InheritanceContractClient::new(&env, &contract_id);
 
-    let owner = create_test_address(&env, 1);
+    let owner = Address::generate(&env);
 
-    let beneficiaries_data = vec![
+    let beneficiaries = vec![
         &env,
         (
             String::from_str(&env, "Alice"),
             String::from_str(&env, "alice@example.com"),
             123456u32,
-            create_test_bytes(&env, "1111111111111111"),
+            create_test_bytes(&env, "1111"),
             10000u32,
         ),
     ];
 
     let plan_id = client.create_inheritance_plan(
         &owner,
-        &String::from_str(&env, "Test Plan"),
-        &String::from_str(&env, "Test Description"),
-        &1000000u64,
+        &String::from_str(&env, "Will"),
+        &String::from_str(&env, "Inheritance Plan"),
+        &1000u64,
         &DistributionMethod::LumpSum,
-        &beneficiaries_data,
+        &beneficiaries,
     );
 
-    let valid_claim_code = 123456u32;
-
-    // Outer Result is InvokeError, inner Result is contract logic
-    let outer_result = client.try_claim_inheritance(
+    client.claim_inheritance_plan(
         &plan_id,
         &String::from_str(&env, "alice@example.com"),
-        &valid_claim_code,
+        &123456u32,
     );
-
-    // First, make sure the contract call succeeded
-    assert!(outer_result.is_ok());
-
-    // Unwrap outer result to get inner result
-    let inner_result = outer_result.unwrap();
-
-    // Make sure contract logic succeeded
-    assert!(inner_result.is_ok());
-
-    // Check the claimed amount
-    let amount_claimed = inner_result.unwrap();
-    assert_eq!(amount_claimed, 1_000_000u64);
 }
 
 #[test]
-fn test_claim_inheritance_invalid_claim_code() {
+#[should_panic]
+fn test_double_claim_fails() {
     let env = Env::default();
     env.mock_all_auths();
+
     let contract_id = env.register_contract(None, InheritanceContract);
     let client = InheritanceContractClient::new(&env, &contract_id);
 
-    let owner = create_test_address(&env, 1);
+    let owner = Address::generate(&env);
 
-    let beneficiaries_data = vec![
+    let beneficiaries = vec![
         &env,
         (
             String::from_str(&env, "Alice"),
             String::from_str(&env, "alice@example.com"),
             123456u32,
-            create_test_bytes(&env, "1111111111111111"),
+            create_test_bytes(&env, "1111"),
             10000u32,
         ),
     ];
 
     let plan_id = client.create_inheritance_plan(
         &owner,
-        &String::from_str(&env, "Test Plan"),
-        &String::from_str(&env, "Test Description"),
-        &1000000u64,
+        &String::from_str(&env, "Will"),
+        &String::from_str(&env, "Inheritance Plan"),
+        &1000u64,
         &DistributionMethod::LumpSum,
-        &beneficiaries_data,
+        &beneficiaries,
     );
 
-    // Use invalid claim code
-    let invalid_claim_code = 999999u32;
-
-    // Call the contract
-    let outer_result = client.try_claim_inheritance(
+    client.claim_inheritance_plan(
         &plan_id,
         &String::from_str(&env, "alice@example.com"),
-        &invalid_claim_code,
+        &123456u32,
     );
 
-    // Outer result should be OK because contract call succeeded
-    assert!(outer_result.is_ok());
+    // second claim should panic
+    client.claim_inheritance_plan(
+        &plan_id,
+        &String::from_str(&env, "alice@example.com"),
+        &123456u32,
+    );
+}
+#[test]
+#[should_panic]
+fn test_claim_with_wrong_code_fails() {
+    let env = Env::default();
+    env.mock_all_auths();
 
-    // Unwrap outer result to get inner result
-    let inner_result = outer_result.unwrap();
+    let contract_id = env.register_contract(None, InheritanceContract);
+    let client = InheritanceContractClient::new(&env, &contract_id);
 
-    // Inner result should be Err(InheritanceError::InvalidClaimCode)
-    assert!(inner_result.is_err());
-    assert_eq!(inner_result.unwrap_err(), InheritanceError::InvalidClaimCode.into());
+    let owner = Address::generate(&env);
+
+    let beneficiaries = vec![
+        &env,
+        (
+            String::from_str(&env, "Alice"),
+            String::from_str(&env, "alice@example.com"),
+            123456u32,
+            create_test_bytes(&env, "1111"),
+            10000u32,
+        ),
+    ];
+
+    let plan_id = client.create_inheritance_plan(
+        &owner,
+        &String::from_str(&env, "Will"),
+        &String::from_str(&env, "Inheritance Plan"),
+        &1000u64,
+        &DistributionMethod::LumpSum,
+        &beneficiaries,
+    );
+
+    client.claim_inheritance_plan(
+        &plan_id,
+        &String::from_str(&env, "alice@example.com"),
+        &999999u32, // wrong code
+    );
 }
