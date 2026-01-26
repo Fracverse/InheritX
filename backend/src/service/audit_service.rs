@@ -1,14 +1,11 @@
-use crate::{
-    config::Config,
-    models::AuditLog,
-};
+use crate::{config::Config, models::AuditLog};
 use deadpool_postgres::Pool;
 use std::sync::Arc;
 
 #[derive(Clone)]
 pub struct AuditService {
-    db_pool: Arc<Pool>,
-    config: Config,
+    pub db_pool: Arc<Pool>,
+    pub config: Config,
 }
 
 impl AuditService {
@@ -21,7 +18,10 @@ impl AuditService {
         Ok(())
     }
 
-    pub async fn get_user_activity(&self, _user_id: &str) -> Result<Vec<AuditLog>, crate::api_error::ApiError> {
+    pub async fn get_user_activity(
+        &self,
+        _user_id: &str,
+    ) -> Result<Vec<AuditLog>, crate::api_error::ApiError> {
         Ok(vec![])
     }
 }

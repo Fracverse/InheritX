@@ -1,11 +1,54 @@
-use deadpool_postgres::{Config, Pool, Runtime};
+use deadpool_postgres::{
+    tokio_postgres::{self, NoTls},
+    Config, ManagerConfig, Pool, RecyclingMethod, Runtime,
+};
+
+use crate::ApiError;
 
 pub type DbPool = Pool;
 
-pub async fn create_pool(database_url: &str) -> Result<DbPool, Box<dyn std::error::Error>> {
+pub async fn create_pool(database_url: &str) -> Result<Pool, ApiError> {
+    // Parse the database URL
+    let config = database_url
+        .parse::<tokio_postgres::Config>()
+        .map_err(|_| ApiError::Internal)?;
+
+    // Create deadpool config
     let mut cfg = Config::new();
-    cfg.url = Some(database_url.to_string());
-    let pool = cfg.create_pool(Some(Runtime::Tokio1), ())?;
+
+    // Set connection parameters from parsed config
+    if let Some(user) = config.get_user() {
+        cfg.user = Some(user.to_string());
+    }
+    if let Some(password) = config.get_password() {
+        cfg.password = Some(String::from_utf8_lossy(password).to_string());
+    }
+    if let Some(dbname) = config.get_dbname() {
+        cfg.dbname = Some(dbname.to_string());
+    }
+    if let Some(hosts) = config.get_hosts().first() {
+        match hosts {
+            tokio_postgres::config::Host::Tcp(host) => {
+                cfg.host = Some(host.to_string());
+            }
+            #[cfg(unix)]
+            tokio_postgres::config::Host::Unix(path) => {
+                cfg.host = Some(path.to_string_lossy().to_string());
+            }
+        }
+    }
+    if let Some(port) = config.get_ports().first() {
+        cfg.port = Some(*port);
+    }
+
+    cfg.manager = Some(ManagerConfig {
+        recycling_method: RecyclingMethod::Fast,
+    });
+
+    let pool = cfg
+        .create_pool(Some(Runtime::Tokio1), NoTls)
+        .map_err(|_| ApiError::Internal)?;
+
     Ok(pool)
 }
 

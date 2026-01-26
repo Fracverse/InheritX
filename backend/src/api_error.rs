@@ -47,6 +47,8 @@ pub enum ApiError {
 
     #[error("Rate limit exceeded")]
     RateLimit,
+    #[error("internal error")]
+    Internal,
 }
 
 #[derive(Serialize)]
@@ -72,6 +74,7 @@ impl IntoResponse for ApiError {
             ApiError::Stellar(_) => (StatusCode::BAD_REQUEST, "STELLAR_ERROR"),
             ApiError::Compliance(_) => (StatusCode::FORBIDDEN, "COMPLIANCE_VIOLATION"),
             ApiError::RateLimit => (StatusCode::TOO_MANY_REQUESTS, "RATE_LIMIT_EXCEEDED"),
+            ApiError::Internal => (StatusCode::TOO_MANY_REQUESTS, "OINTERNAL_ERROR"),
         };
 
         let error_response = ErrorResponse {
