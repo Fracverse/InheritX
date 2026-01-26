@@ -560,12 +560,22 @@ fn test_claim_inheritance_invalid_claim_code() {
         &owner,
         &String::from_str(&env, "Test Plan"),
         &String::from_str(&env, "Test Description"),
-        &1_000_000u64,
+        &1000000u64,
         &DistributionMethod::LumpSum,
         &beneficiaries_data,
     );
 
-    // Attempt claim with wrong code
-    let result = client.claim_inheritance(&plan_id, &String::from_str(&env, "alice@example.com"), &999999u32);
-    assert_eq!(result, 0);
+    // Use invalid claim code
+    let invalid_claim_code = 999999u32;
+
+    // Call the contract but catch the Result
+    let result = client.try_claim_inheritance(&plan_id, &String::from_str(&env, "alice@example.com"), &invalid_claim_code);
+
+    // Make sure it returns an error
+    assert!(result.is_err());
+
+    // Optional: check the exact error
+    if let Err(e) = result {
+        assert_eq!(e, InheritanceError::InvalidClaimCode);
+    }
 }
