@@ -534,3 +534,151 @@ fn test_beneficiary_allocation_tracking() {
     );
     assert!(result2.is_err());
 }
+
+
+    #[test]
+    fn test_claim_inheritance_success_lump_sum() {
+        let env = Env::default();
+        env.mock_all_auths();
+        let contract_id = env.register_contract(None, InheritanceContract);
+        let client = InheritanceContractClient::new(&env, &contract_id);
+
+        let owner = create_test_address(&env, 1);
+        let beneficiary_email = String::from_str(&env, "alice@example.com");
+        let claim_code = 123456u32;
+
+        let beneficiaries_data = vec![
+            &env,
+            (
+                String::from_str(&env, "Alice"),
+                beneficiary_email.clone(),
+                claim_code,
+                create_test_bytes(&env, "1111111111111111"),
+                10000u32, // 100%
+            ),
+        ];
+
+        let plan_id = client.create_inheritance_plan(
+            &owner,
+            &String::from_str(&env, "Test Plan"),
+            &String::from_str(&env, "Test Description"),
+            &1_000_000u64,
+            &DistributionMethod::LumpSum,
+            &beneficiaries_data,
+        );
+
+        // Claim inheritance
+        let claimed_amount = client
+            .claim_inheritance(&plan_id, &beneficiary_email, &claim_code)
+            .unwrap();
+
+        assert_eq!(claimed_amount, 1_000_000);
+
+        // Plan should now have 0 beneficiaries
+        let plan = client.get_plan(&plan_id).unwrap();
+        assert_eq!(plan.beneficiaries.len(), 0);
+    }
+
+    #[test]
+    fn test_claim_inheritance_invalid_claim_code() {
+        let env = Env::default();
+        env.mock_all_auths();
+        let contract_id = env.register_contract(None, InheritanceContract);
+        let client = InheritanceContractClient::new(&env, &contract_id);
+
+        let owner = create_test_address(&env, 1);
+
+        let beneficiaries_data = vec![
+            &env,
+            (
+                String::from_str(&env, "Alice"),
+                String::from_str(&env, "alice@example.com"),
+                123456u32,
+                create_test_bytes(&env, "1111111111111111"),
+                10000u32,
+            ),
+        ];
+
+        let plan_id = client.create_inheritance_plan(
+            &owner,
+            &String::from_str(&env, "Test Plan"),
+            &String::from_str(&env, "Test Description"),
+            &1_000_000u64,
+            &DistributionMethod::LumpSum,
+            &beneficiaries_data,
+        );
+
+        // Attempt claim with wrong code
+        let result = client.claim_inheritance(&plan_id, &String::from_str(&env, "alice@example.com"), &999999u32);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_claim_inheritance_invalid_email() {
+        let env = Env::default();
+        env.mock_all_auths();
+        let contract_id = env.register_contract(None, InheritanceContract);
+        let client = InheritanceContractClient::new(&env, &contract_id);
+
+        let owner = create_test_address(&env, 1);
+
+        let beneficiaries_data = vec![
+            &env,
+            (
+                String::from_str(&env, "Alice"),
+                String::from_str(&env, "alice@example.com"),
+                123456u32,
+                create_test_bytes(&env, "1111111111111111"),
+                10000u32,
+            ),
+        ];
+
+        let plan_id = client.create_inheritance_plan(
+            &owner,
+            &String::from_str(&env, "Test Plan"),
+            &String::from_str(&env, "Test Description"),
+            &1_000_000u64,
+            &DistributionMethod::LumpSum,
+            &beneficiaries_data,
+        );
+
+        // Attempt claim with wrong email
+        let result = client.claim_inheritance(&plan_id, &String::from_str(&env, "bob@example.com"), &123456u32);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_claim_inheritance_not_yet_allowed() {
+        let env = Env::default();
+        env.mock_all_auths();
+        let contract_id = env.register_contract(None, InheritanceContract);
+        let client = InheritanceContractClient::new(&env, &contract_id);
+
+        let owner = create_test_address(&env, 1);
+        let beneficiary_email = String::from_str(&env, "alice@example.com");
+        let claim_code = 123456u32;
+
+        let beneficiaries_data = vec![
+            &env,
+            (
+                String::from_str(&env, "Alice"),
+                beneficiary_email.clone(),
+                claim_code,
+                create_test_bytes(&env, "1111111111111111"),
+                10000u32,
+            ),
+        ];
+
+        let plan_id = client.create_inheritance_plan(
+            &owner,
+            &String::from_str(&env, "Test Plan"),
+            &String::from_str(&env, "Test Description"),
+            &1_000_000u64,
+            &DistributionMethod::Monthly,
+            &beneficiaries_data,
+        );
+
+        // Claim immediately should fail (not yet allowed)
+        let result = client.claim_inheritance(&plan_id, &beneficiary_email, &claim_code);
+        assert!(result.is_err());
+    }
