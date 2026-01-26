@@ -510,44 +510,39 @@ pub fn claim_inheritance(
 
     // Hash email and claim code
     let hashed_email = Self::hash_string(&env, beneficiary_email.clone());
-    let hashed_claim_code = Self::hash_claim_code(&env, claim_code)
-        .map_err(|_| InheritanceError::InvalidClaimCode)?;
+    let hashed_claim_code = Self::hash_claim_code(&env, claim_code)?;
 
     // Find beneficiary in plan
     let mut found_index: Option<u32> = None;
     for i in 0..plan.beneficiaries.len() {
         let b = plan.beneficiaries.get(i).unwrap();
-        if b.hashed_email == hashed_email {
-            // Email matches, now check claim code
-            if b.hashed_claim_code != hashed_claim_code {
-                return Err(InheritanceError::InvalidClaimCode);
-            }
+        if b.hashed_email == hashed_email && b.hashed_claim_code == hashed_claim_code {
             found_index = Some(i);
             break;
         }
     }
 
-    // If no matching email found, unauthorized
-    let index = found_index.ok_or(InheritanceError::Unauthorized)?;
+    // Return InvalidClaimCode if no matching beneficiary found
+    let index = found_index.ok_or(InheritanceError::InvalidClaimCode)?;
     let beneficiary = plan.beneficiaries.get(index).unwrap();
 
     // Check distribution schedule
     let now = env.ledger().timestamp();
     let claim_allowed = match plan.distribution_method {
-        DistributionMethod::LumpSum => true, // allowed immediately
+        DistributionMethod::LumpSum => true,
         DistributionMethod::Monthly => now >= plan.created_at + 30 * 24 * 3600,
         DistributionMethod::Quarterly => now >= plan.created_at + 90 * 24 * 3600,
         DistributionMethod::Yearly => now >= plan.created_at + 365 * 24 * 3600,
     };
 
     if !claim_allowed {
-        return Err(InheritanceError::ClaimNotAllowedYet);
+        return Err(InheritanceError::Unauthorized); // or custom ClaimNotAllowedYet
     }
 
     // Calculate claim amount
     let amount_claimed = plan.total_amount * (beneficiary.allocation_bp as u64) / 10_000;
 
-    // Update plan
+    // Remove beneficiary or mark as claimed
     plan.total_allocation_bp -= beneficiary.allocation_bp;
     plan.beneficiaries.remove(index as u32);
     Self::store_plan(&env, plan_id, &plan);
@@ -567,6 +562,7 @@ pub fn claim_inheritance(
 
     Ok(amount_claimed)
 }
+
 
 }
 
