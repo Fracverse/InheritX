@@ -1,6 +1,7 @@
+use inheritx_backend::{create_app, db, telemetry, Config};
 use std::net::SocketAddr;
-use tracing::{info, Level};
-use zaps_backend::{app::create_app, config::Config, db, telemetry};
+use tracing::info;
+// use zaps_backend::{app::create_app, config::Config, db, telemetry};
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {

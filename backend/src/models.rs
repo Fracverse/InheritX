@@ -37,7 +37,7 @@ pub enum PaymentStatus {
 }
 
 impl PaymentStatus {
-    pub fn from_str(s: &str) -> Self {
+    pub fn from_string(s: &str) -> Self {
         match s {
             "completed" => PaymentStatus::Completed,
             "processing" => PaymentStatus::Processing,
@@ -47,14 +47,15 @@ impl PaymentStatus {
         }
     }
 
-    pub fn to_string(&self) -> String {
+    pub fn to_string_lossy(&self) -> String {
         match self {
             PaymentStatus::Pending => "pending",
             PaymentStatus::Processing => "processing",
             PaymentStatus::Completed => "completed",
             PaymentStatus::Failed => "failed",
             PaymentStatus::Refunded => "refunded",
-        }.to_string()
+        }
+        .to_string()
     }
 }
 
@@ -82,7 +83,7 @@ pub enum TransferStatus {
 }
 
 impl TransferStatus {
-    pub fn from_str(s: &str) -> Self {
+    pub fn from_string(s: &str) -> Self {
         match s {
             "processing" => TransferStatus::Processing,
             "completed" => TransferStatus::Completed,
@@ -91,13 +92,14 @@ impl TransferStatus {
         }
     }
 
-    pub fn to_string(&self) -> String {
+    pub fn to_string_lossy(&self) -> String {
         match self {
             TransferStatus::Pending => "pending",
             TransferStatus::Processing => "processing",
             TransferStatus::Completed => "completed",
             TransferStatus::Failed => "failed",
-        }.to_string()
+        }
+        .to_string()
     }
 }
 
@@ -124,7 +126,7 @@ pub enum WithdrawalStatus {
 }
 
 impl WithdrawalStatus {
-    pub fn from_str(s: &str) -> Self {
+    pub fn from_string(s: &str) -> Self {
         match s {
             "processing" => WithdrawalStatus::Processing,
             "completed" => WithdrawalStatus::Completed,
@@ -133,13 +135,14 @@ impl WithdrawalStatus {
         }
     }
 
-    pub fn to_string(&self) -> String {
+    pub fn to_string_lossy(&self) -> String {
         match self {
             WithdrawalStatus::Pending => "pending",
             WithdrawalStatus::Processing => "processing",
             WithdrawalStatus::Completed => "completed",
             WithdrawalStatus::Failed => "failed",
-        }.to_string()
+        }
+        .to_string()
     }
 }
 
@@ -187,7 +190,7 @@ pub enum BridgeTransactionStatus {
 }
 
 impl BridgeTransactionStatus {
-    pub fn from_str(s: &str) -> Self {
+    pub fn from_string(s: &str) -> Self {
         match s {
             "confirming" => BridgeTransactionStatus::Confirming,
             "completed" => BridgeTransactionStatus::Completed,
@@ -196,13 +199,14 @@ impl BridgeTransactionStatus {
         }
     }
 
-    pub fn to_string(&self) -> String {
+    pub fn to_string_lossy(&self) -> String {
         match self {
             BridgeTransactionStatus::Pending => "pending",
             BridgeTransactionStatus::Confirming => "confirming",
             BridgeTransactionStatus::Completed => "completed",
             BridgeTransactionStatus::Failed => "failed",
-        }.to_string()
+        }
+        .to_string()
     }
 }
 

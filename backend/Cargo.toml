@@ -55,13 +55,14 @@ thiserror = "1.0"
 
 # Utilities
 uuid = { version = "1.0", features = ["v4", "serde"] }
-chrono = { version = "0.4", features = ["serde", "postgres"] }
+chrono = { version = "0.4", features = ["serde"] }
 regex = "1.10"
 base64 = "0.21"
 
 # Metrics & monitoring
 prometheus = "0.13"
 lazy_static = "1.4"
+postgres-types = { version = "0.2.12", features = ["derive", "with-chrono-0_4", "with-uuid-1"] }
 
 # Testing
 [dev-dependencies]

@@ -122,19 +122,48 @@
                   "u64": 1
                 },
                 {
-                  "string": "Charlie"
-                },
-                {
-                  "string": "charlie@example.com"
-                },
-                {
-                  "u32": 333333
-                },
-                {
-                  "u32": 3000
-                },
-                {
-                  "bytes": "33333333333333333333333333333333"
+                  "map": [
+                    {
+                      "key": {
+                        "symbol": "allocation_bp"
+                      },
+                      "val": {
+                        "u32": 2000
+                      }
+                    },
+                    {
+                      "key": {
+                        "symbol": "bank_account"
+                      },
+                      "val": {
+                        "bytes": "33333333333333333333333333333333"
+                      }
+                    },
+                    {
+                      "key": {
+                        "symbol": "claim_code"
+                      },
+                      "val": {
+                        "u32": 333333
+                      }
+                    },
+                    {
+                      "key": {
+                        "symbol": "email"
+                      },
+                      "val": {
+                        "string": "charlie@example.com"
+                      }
+                    },
+                    {
+                      "key": {
+                        "symbol": "name"
+                      },
+                      "val": {
+                        "string": "Charlie"
+                      }
+                    }
+                  ]
                 }
               ]
             }
@@ -256,7 +285,7 @@
                                   "symbol": "allocation_bp"
                                 },
                                 "val": {
-                                  "u32": 3000
+                                  "u32": 2000
                                 }
                               },
                               {
@@ -345,7 +374,7 @@
                         "symbol": "total_allocation_bp"
                       },
                       "val": {
-                        "u32": 8000
+                        "u32": 7000
                       }
                     },
                     {
@@ -830,19 +859,48 @@
                   "u64": 1
                 },
                 {
-                  "string": "Charlie"
-                },
-                {
-                  "string": "charlie@example.com"
-                },
-                {
-                  "u32": 333333
-                },
-                {
-                  "u32": 3000
-                },
-                {
-                  "bytes": "33333333333333333333333333333333"
+                  "map": [
+                    {
+                      "key": {
+                        "symbol": "allocation_bp"
+                      },
+                      "val": {
+                        "u32": 2000
+                      }
+                    },
+                    {
+                      "key": {
+                        "symbol": "bank_account"
+                      },
+                      "val": {
+                        "bytes": "33333333333333333333333333333333"
+                      }
+                    },
+                    {
+                      "key": {
+                        "symbol": "claim_code"
+                      },
+                      "val": {
+                        "u32": 333333
+                      }
+                    },
+                    {
+                      "key": {
+                        "symbol": "email"
+                      },
+                      "val": {
+                        "string": "charlie@example.com"
+                      }
+                    },
+                    {
+                      "key": {
+                        "symbol": "name"
+                      },
+                      "val": {
+                        "string": "Charlie"
+                      }
+                    }
+                  ]
                 }
               ]
             }
@@ -873,7 +931,7 @@
                     "symbol": "allocation_bp"
                   },
                   "val": {
-                    "u32": 3000
+                    "u32": 2000
                   }
                 },
                 {

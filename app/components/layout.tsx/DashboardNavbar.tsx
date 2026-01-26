@@ -1,8 +1,22 @@
+"use client";
+
+import { ConnectButton } from "@/components/ConnectButton";
+import { useWallet } from "@/context/WalletContext";
+import useUpdateEffect from "@/hooks/useUpdateEffect";
 import { EllipsisVertical, Search, ShieldAlert } from "lucide-react";
 import Image from "next/image";
-import React from "react";
+import { useRouter } from "next/navigation";
 
 function DashboardNavbar() {
+  const { isConnected, address } = useWallet();
+  const router = useRouter();
+
+  useUpdateEffect(() => {
+    if (!isConnected && !address) {
+      router.push("/");
+    }
+  }, [isConnected, address, router]);
+
   return (
     <div className="py-4 px-4 md:px-12 flex items-center justify-between border-b-[1px] border-b-[#1C252A]">
       <Image
@@ -34,11 +48,10 @@ function DashboardNavbar() {
               <h6 className="text-[10px] text-[#33C5E0]">Action required</h6>
             </div>
           </div>
+
           <div className="flex gap-x-2">
-            <div className="p-4 rounded-l-full flex items-center gap-x-[6px] bg-[#1C252A] hidden md:flex">
-              <img src="/user-avatar.svg" alt="" />
-              <span className="leading-6 text-[#92A5A8]">0x123Htp....5678</span>
-            </div>
+            <ConnectButton targetUI="dashboard" />
+
             <button className="bg-[#1C252A] p-4 rounded-[8px]">
               <span className="-rotate-18o">
                 <EllipsisVertical />
