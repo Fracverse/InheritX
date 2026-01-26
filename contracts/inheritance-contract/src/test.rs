@@ -565,10 +565,9 @@ fn test_claim_inheritance_success() {
         &beneficiaries_data,
     );
 
-    // Use the correct claim code
     let valid_claim_code = 123456u32;
 
-    // Call the contract using try_claim_inheritance
+    // Use the Result returned by try_claim_inheritance directly
     let result = client.try_claim_inheritance(
         &plan_id,
         &String::from_str(&env, "alice@example.com"),
@@ -578,7 +577,52 @@ fn test_claim_inheritance_success() {
     // Make sure it succeeds
     assert!(result.is_ok());
 
-    if let Ok(amount_claimed) = result {
-        assert_eq!(amount_claimed, 1_000_000u64); // Total plan amount for this beneficiary
+    // Compare using result.unwrap() or match
+    assert_eq!(result.unwrap(), 1_000_000u64);
+}
+
+#[test]
+fn test_claim_inheritance_invalid_claim_code() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let contract_id = env.register_contract(None, InheritanceContract);
+    let client = InheritanceContractClient::new(&env, &contract_id);
+
+    let owner = create_test_address(&env, 1);
+
+    let beneficiaries_data = vec![
+        &env,
+        (
+            String::from_str(&env, "Alice"),
+            String::from_str(&env, "alice@example.com"),
+            123456u32,
+            create_test_bytes(&env, "1111111111111111"),
+            10000u32,
+        ),
+    ];
+
+    let plan_id = client.create_inheritance_plan(
+        &owner,
+        &String::from_str(&env, "Test Plan"),
+        &String::from_str(&env, "Test Description"),
+        &1000000u64,
+        &DistributionMethod::LumpSum,
+        &beneficiaries_data,
+    );
+
+    let invalid_claim_code = 999999u32;
+
+    let result = client.try_claim_inheritance(
+        &plan_id,
+        &String::from_str(&env, "alice@example.com"),
+        &invalid_claim_code,
+    );
+
+    // Make sure it returns an error
+    assert!(result.is_err());
+
+    // Check exact error
+    if let Err(e) = result {
+        assert_eq!(e, InheritanceError::InvalidClaimCode);
     }
 }
