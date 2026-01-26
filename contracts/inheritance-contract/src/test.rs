@@ -591,7 +591,7 @@ fn test_claim_inheritance_success() {
 #[test]
 fn test_claim_inheritance_invalid_claim_code() {
     let env = Env::default();
-    env.mock_all_auths(); // Mock authorization for testing
+    env.mock_all_auths();
     let contract_id = env.register_contract(None, InheritanceContract);
     let client = InheritanceContractClient::new(&env, &contract_id);
 
@@ -603,7 +603,7 @@ fn test_claim_inheritance_invalid_claim_code() {
         (
             String::from_str(&env, "Alice"),
             String::from_str(&env, "alice@example.com"),
-            123_456u32, // valid claim code
+            123_456u32, // correct claim code
             create_test_bytes(&env, "1111111111111111"),
             10_000u32, // 100% allocation
         ),
@@ -613,29 +613,27 @@ fn test_claim_inheritance_invalid_claim_code() {
         &owner,
         &String::from_str(&env, "Test Plan"),
         &String::from_str(&env, "Test Description"),
-        &1_000_000u64, // total plan amount
+        &1_000_000u64,
         &DistributionMethod::LumpSum,
         &beneficiaries_data,
     );
 
-    // Use an invalid claim code (different from Alice's)
+    // Use an invalid claim code
     let invalid_claim_code = 111_111u32;
 
-    // Call the contract safely using try_claim_inheritance
-    let outer_result = client.try_claim_inheritance(
+    // Call the contract
+    let result = client.try_claim_inheritance(
         &plan_id,
         &String::from_str(&env, "alice@example.com"),
         &invalid_claim_code,
     );
 
-    // The outer_result should be Ok because the contract call itself does not panic
-    assert!(outer_result.is_ok());
+    // The contract should NOT panic; it should return an Err
+    assert!(result.is_ok(), "Contract call panicked, check contract logic!");
 
-    // The inner result should fail because the claim code is wrong
-    let inner_result = outer_result.unwrap();
-    assert!(inner_result.is_err());
-
-    // Optional: check exact error type
+    // Extract inner result and verify error
+    let inner_result = result.unwrap();
+    assert!(inner_result.is_err(), "Invalid claim code should fail");
     if let Err(e) = inner_result {
         assert_eq!(e, InheritanceError::InvalidClaimCode.into());
     }
