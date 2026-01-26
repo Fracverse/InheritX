@@ -634,6 +634,6 @@ fn test_claim_inheritance_invalid_claim_code() {
     assert!(inner_result.is_err());
 
     if let Err(e) = inner_result {
-        assert_eq!(e, InheritanceError::InvalidClaimCode);
+        assert_eq!(e, InheritanceError::InvalidClaimCode.into());
     }
 }
