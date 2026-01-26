@@ -597,15 +597,14 @@ fn test_claim_inheritance_invalid_claim_code() {
 
     let owner = create_test_address(&env, 1);
 
-    // Create a plan with 1 beneficiary
     let beneficiaries_data = vec![
         &env,
         (
             String::from_str(&env, "Alice"),
             String::from_str(&env, "alice@example.com"),
-            123_456u32, // correct claim code
+            123456u32,
             create_test_bytes(&env, "1111111111111111"),
-            10_000u32, // 100% allocation
+            10000u32,
         ),
     ];
 
@@ -613,28 +612,24 @@ fn test_claim_inheritance_invalid_claim_code() {
         &owner,
         &String::from_str(&env, "Test Plan"),
         &String::from_str(&env, "Test Description"),
-        &1_000_000u64,
+        &1000000u64,
         &DistributionMethod::LumpSum,
         &beneficiaries_data,
     );
 
-    // Use an invalid claim code
-    let invalid_claim_code = 111_111u32;
+    // Use invalid claim code
+    let invalid_claim_code = 999999u32;
 
     // Call the contract
-    let result = client.try_claim_inheritance(
-        &plan_id,
-        &String::from_str(&env, "alice@example.com"),
-        &invalid_claim_code,
-    );
+    let result = client.try_claim_inheritance(&plan_id, &String::from_str(&env, "alice@example.com"), &invalid_claim_code);
 
-    // The contract should NOT panic; it should return an Err
-    assert!(result.is_ok(), "Contract call panicked, check contract logic!");
+    // Assert it fails
+    assert!(result.is_err());
 
-    // Extract inner result and verify error
-    let inner_result = result.unwrap();
-    assert!(inner_result.is_err(), "Invalid claim code should fail");
-    if let Err(e) = inner_result {
-        assert_eq!(e, InheritanceError::InvalidClaimCode.into());
+    // Check that the inner error is exactly InheritanceError::InvalidClaimCode
+    if let Err(soroban_sdk::contracterror::InvokeError::Contract(err)) = result {
+        assert_eq!(err, InheritanceError::InvalidClaimCode);
+    } else {
+        panic!("Expected InvalidClaimCode error, got: {:?}", result);
     }
 }
