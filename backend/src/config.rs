@@ -82,7 +82,8 @@ impl Config {
 
         // Add environment-specific config file
         if let Ok(env) = env::var("RUN_ENV") {
-            builder = builder.add_source(File::with_name(&format!("config/{}", env)).required(false));
+            builder =
+                builder.add_source(File::with_name(&format!("config/{}", env)).required(false));
         }
 
         let config = builder.build()?;
@@ -114,19 +115,19 @@ impl Default for Config {
                 polygon_rpc_url: "https://polygon-rpc.com".to_string(),
                 bsc_rpc_url: "https://bsc-dataseed.binance.org".to_string(),
                 supported_assets: vec!["USDC".to_string(), "USDT".to_string()],
-                min_bridge_amount: 1_000_000, // 1 USD in cents
+                min_bridge_amount: 1_000_000,   // 1 USD in cents
                 max_bridge_amount: 100_000_000, // 1000 USD in cents
             },
             compliance_config: ComplianceConfig {
                 sanctions_api_url: "https://api.sanctions.example.com".to_string(),
                 sanctions_api_key: "api-key".to_string(),
                 velocity_limits: VelocityLimits {
-                    daily_transaction_limit: 10_000_000, // 10,000 USD
+                    daily_transaction_limit: 10_000_000,    // 10,000 USD
                     monthly_transaction_limit: 100_000_000, // 100,000 USD
-                    max_transaction_amount: 5_000_000, // 5,000 USD
+                    max_transaction_amount: 5_000_000,      // 5,000 USD
                 },
                 risk_thresholds: RiskThresholds {
-                    high_risk_amount: 10_000_000, // 10,000 USD
+                    high_risk_amount: 10_000_000,  // 10,000 USD
                     medium_risk_amount: 1_000_000, // 1,000 USD
                     suspicious_patterns: vec![],
                 },

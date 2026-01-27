@@ -62,7 +62,10 @@ pub async fn register(
     }
 
     // Create user
-    services.identity.create_user(request.user_id.clone()).await?;
+    services
+        .identity
+        .create_user(request.user_id.clone())
+        .await?;
 
     // Generate JWT token
     let token = auth::generate_jwt(

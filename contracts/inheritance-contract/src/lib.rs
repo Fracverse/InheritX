@@ -20,7 +20,17 @@ pub struct Beneficiary {
     pub hashed_email: BytesN<32>,
     pub hashed_claim_code: BytesN<32>,
     pub bank_account: Bytes, // Plain text for fiat settlement (MVP trade-off)
-    pub allocation_bp: u32,   // Allocation in basis points (0-10000, where 10000 = 100%)
+    pub allocation_bp: u32,  // Allocation in basis points (0-10000, where 10000 = 100%)
+}
+
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct BeneficiaryInput {
+    pub name: String,
+    pub email: String,
+    pub claim_code: u32,
+    pub bank_account: Bytes,
+    pub allocation_bp: u32,
 }
 
 #[contracttype]
@@ -33,7 +43,7 @@ pub struct InheritancePlan {
     pub distribution_method: DistributionMethod,
     pub beneficiaries: Vec<Beneficiary>,
     pub total_allocation_bp: u32, // Total allocation in basis points
-    pub owner: Address,            // Plan owner
+    pub owner: Address,           // Plan owner
     pub created_at: u64,
 }
 
@@ -92,13 +102,13 @@ impl InheritanceContract {
     // Hash utility functions
     pub fn hash_string(env: &Env, input: String) -> BytesN<32> {
         // Convert string to bytes for hashing
-        let mut data = Bytes::new(&env);
-        
+        let mut data = Bytes::new(env);
+
         // Simple conversion - in production, use proper string-to-bytes conversion
         for i in 0..input.len() {
             data.push_back((i % 256) as u8);
         }
-        
+
         env.crypto().sha256(&data).into()
     }
 
@@ -113,8 +123,8 @@ impl InheritanceContract {
         }
 
         // Convert claim code to bytes for hashing (6 digits, padded with zeros)
-        let mut data = Bytes::new(&env);
-        
+        let mut data = Bytes::new(env);
+
         // Extract each digit and convert to ASCII byte
         for i in 0..6 {
             let digit = ((claim_code / 10u32.pow(5 - i)) % 10) as u8;
@@ -235,11 +245,7 @@ impl InheritanceContract {
     /// * `env` - The environment
     /// * `owner` - The plan owner (must authorize this call)
     /// * `plan_id` - The ID of the plan to add beneficiary to
-    /// * `name` - Full name of the beneficiary
-    /// * `email` - Email address of the beneficiary (will be hashed)
-    /// * `claim_code` - 6-digit numeric claim code (0-999999, will be hashed)
-    /// * `allocation_bp` - Allocation in basis points (must be > 0)
-    /// * `bank_account` - USD bank account number (stored plain for fiat settlement)
+    /// * `beneficiary_input` - Beneficiary data (name, email, claim_code, bank_account, allocation_bp)
     ///
     /// # Returns
     /// Ok(()) on success
@@ -256,11 +262,7 @@ impl InheritanceContract {
         env: Env,
         owner: Address,
         plan_id: u64,
-        name: String,
-        email: String,
-        claim_code: u32,
-        allocation_bp: u32,
-        bank_account: Bytes,
+        beneficiary_input: BeneficiaryInput,
     ) -> Result<(), InheritanceError> {
         // Require owner authorization
         owner.require_auth();
@@ -279,19 +281,25 @@ impl InheritanceContract {
         }
 
         // Validate allocation is greater than 0
-        if allocation_bp == 0 {
+        if beneficiary_input.allocation_bp == 0 {
             return Err(InheritanceError::InvalidAllocation);
         }
 
         // Check that total allocation won't exceed 10000 basis points (100%)
-        let new_total = plan.total_allocation_bp + allocation_bp;
+        let new_total = plan.total_allocation_bp + beneficiary_input.allocation_bp;
         if new_total > 10000 {
             return Err(InheritanceError::AllocationExceedsLimit);
         }
 
         // Create the beneficiary (validates inputs and hashes sensitive data)
-        let beneficiary =
-            Self::create_beneficiary(&env, name, email.clone(), claim_code, bank_account, allocation_bp)?;
+        let beneficiary = Self::create_beneficiary(
+            &env,
+            beneficiary_input.name,
+            beneficiary_input.email.clone(),
+            beneficiary_input.claim_code,
+            beneficiary_input.bank_account,
+            beneficiary_input.allocation_bp,
+        )?;
 
         // Add beneficiary to plan
         plan.beneficiaries.push_back(beneficiary.clone());
@@ -306,7 +314,7 @@ impl InheritanceContract {
             BeneficiaryAddedEvent {
                 plan_id,
                 hashed_email: beneficiary.hashed_email,
-                allocation_bp,
+                allocation_bp: beneficiary_input.allocation_bp,
             },
         );
 
@@ -429,7 +437,7 @@ impl InheritanceContract {
         // Create beneficiary objects with hashed data
         let mut beneficiaries = Vec::new(&env);
         let mut total_allocation_bp = 0u32;
-        
+
         for beneficiary_data in beneficiaries_data.iter() {
             let beneficiary = Self::create_beneficiary(
                 &env,

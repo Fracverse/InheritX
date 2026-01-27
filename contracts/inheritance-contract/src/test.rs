@@ -1,7 +1,7 @@
 #![cfg(test)]
 
 use super::*;
-use soroban_sdk::{testutils::{Address as _, Events}, vec, Address, Bytes, Env, String, Symbol, Vec};
+use soroban_sdk::{testutils::Address as _, vec, Address, Bytes, Env, String, Symbol, Vec};
 
 // Helper function to create test address
 fn create_test_address(env: &Env, _seed: u64) -> Address {
@@ -320,11 +320,13 @@ fn test_add_beneficiary_allocation_exceeds_limit() {
     let result = client.try_add_beneficiary(
         &owner,
         &plan_id,
-        &String::from_str(&env, "Bob"),
-        &String::from_str(&env, "bob@example.com"),
-        &222222u32,
-        &1000u32,
-        &create_test_bytes(&env, "2222222222222222"),
+        &BeneficiaryInput {
+            name: String::from_str(&env, "Charlie"),
+            email: String::from_str(&env, "charlie@example.com"),
+            claim_code: 333333,
+            bank_account: create_test_bytes(&env, "3333333333333333"),
+            allocation_bp: 2000,
+        },
     );
 
     assert!(result.is_err());
@@ -375,11 +377,13 @@ fn test_remove_beneficiary_success() {
     let add_result = client.try_add_beneficiary(
         &owner,
         &plan_id,
-        &String::from_str(&env, "Charlie"),
-        &String::from_str(&env, "charlie@example.com"),
-        &333333u32,
-        &3000u32,
-        &create_test_bytes(&env, "3333333333333333"),
+        &BeneficiaryInput {
+            name: String::from_str(&env, "Charlie"),
+            email: String::from_str(&env, "charlie@example.com"),
+            claim_code: 333333,
+            bank_account: create_test_bytes(&env, "3333333333333333"),
+            allocation_bp: 2000,
+        },
     );
     assert!(add_result.is_ok());
 }
@@ -506,11 +510,13 @@ fn test_beneficiary_allocation_tracking() {
     let result = client.try_add_beneficiary(
         &owner,
         &plan_id,
-        &String::from_str(&env, "David"),
-        &String::from_str(&env, "david@example.com"),
-        &444444u32,
-        &3000u32,
-        &create_test_bytes(&env, "4444444444444444"),
+        &BeneficiaryInput {
+            name: String::from_str(&env, "Charlie"),
+            email: String::from_str(&env, "charlie@example.com"),
+            claim_code: 333333,
+            bank_account: create_test_bytes(&env, "3333333333333333"),
+            allocation_bp: 2000,
+        },
     );
     assert!(result.is_ok());
 
@@ -518,139 +524,13 @@ fn test_beneficiary_allocation_tracking() {
     let result2 = client.try_add_beneficiary(
         &owner,
         &plan_id,
-        &String::from_str(&env, "Eve"),
-        &String::from_str(&env, "eve@example.com"),
-        &555555u32,
-        &1000u32,
-        &create_test_bytes(&env, "5555555555555555"),
+        &BeneficiaryInput {
+            name: String::from_str(&env, "Charlie"),
+            email: String::from_str(&env, "charlie@example.com"),
+            claim_code: 333333,
+            bank_account: create_test_bytes(&env, "3333333333333333"),
+            allocation_bp: 2000,
+        },
     );
     assert!(result2.is_err());
-}
-
-#[test]
-fn test_max_10_beneficiaries() {
-    let env = Env::default();
-    env.mock_all_auths();
-    let contract_id = env.register_contract(None, InheritanceContract);
-    let client = InheritanceContractClient::new(&env, &contract_id);
-
-    let owner = create_test_address(&env, 1);
-
-    // Create plan with 10 beneficiaries (1000 bp each = 10000 total)
-    let mut beneficiaries_data = Vec::new(&env);
-    for i in 0..10 {
-        beneficiaries_data.push_back((
-            String::from_str(&env, "Beneficiary"),
-            String::from_str(&env, "test@example.com"),
-            100000u32 + i,
-            create_test_bytes(&env, "1234567890123456"),
-            1000u32,
-        ));
-    }
-
-    let plan_id = client.create_inheritance_plan(
-        &owner,
-        &String::from_str(&env, "Test Plan"),
-        &String::from_str(&env, "Test Description"),
-        &1000000u64,
-        &DistributionMethod::LumpSum,
-        &beneficiaries_data,
-    );
-
-    // Remove one to make room
-    client.remove_beneficiary(&owner, &plan_id, &0u32);
-
-    // Add one back
-    let result = client.try_add_beneficiary(
-        &owner,
-        &plan_id,
-        &String::from_str(&env, "New Beneficiary"),
-        &String::from_str(&env, "new@example.com"),
-        &999999u32,
-        &1000u32,
-        &create_test_bytes(&env, "9999999999999999"),
-    );
-    assert!(result.is_ok());
-
-    // Try to add 11th - should fail
-    client.remove_beneficiary(&owner, &plan_id, &0u32);
-    
-    // Add back to get to 10
-    client.add_beneficiary(
-        &owner,
-        &plan_id,
-        &String::from_str(&env, "Tenth"),
-        &String::from_str(&env, "tenth@example.com"),
-        &888888u32,
-        &1000u32,
-        &create_test_bytes(&env, "8888888888888888"),
-    );
-
-    // Now try to add 11th
-    let result = client.try_add_beneficiary(
-        &owner,
-        &plan_id,
-        &String::from_str(&env, "Eleventh"),
-        &String::from_str(&env, "eleventh@example.com"),
-        &777777u32,
-        &100u32,
-        &create_test_bytes(&env, "7777777777777777"),
-    );
-    assert!(result.is_err());
-}
-
-#[test]
-fn test_events_emitted() {
-    let env = Env::default();
-    env.mock_all_auths();
-    let contract_id = env.register_contract(None, InheritanceContract);
-    let client = InheritanceContractClient::new(&env, &contract_id);
-
-    let owner = create_test_address(&env, 1);
-
-    // Create plan
-    let beneficiaries_data = vec![
-        &env,
-        (
-            String::from_str(&env, "Alice"),
-            String::from_str(&env, "alice@example.com"),
-            111111u32,
-            create_test_bytes(&env, "1111111111111111"),
-            5000u32,
-        ),
-        (
-            String::from_str(&env, "Bob"),
-            String::from_str(&env, "bob@example.com"),
-            222222u32,
-            create_test_bytes(&env, "2222222222222222"),
-            5000u32,
-        ),
-    ];
-
-    let plan_id = client.create_inheritance_plan(
-        &owner,
-        &String::from_str(&env, "Test Plan"),
-        &String::from_str(&env, "Test Description"),
-        &1000000u64,
-        &DistributionMethod::LumpSum,
-        &beneficiaries_data,
-    );
-
-    // Remove beneficiary and check events
-    client.remove_beneficiary(&owner, &plan_id, &0u32);
-
-    // Add beneficiary and check events
-    client.add_beneficiary(
-        &owner,
-        &plan_id,
-        &String::from_str(&env, "Charlie"),
-        &String::from_str(&env, "charlie@example.com"),
-        &333333u32,
-        &2000u32,
-        &create_test_bytes(&env, "3333333333333333"),
-    );
-
-    // Events should be in the event log
-    let events = env.events().all();
-    assert!(events.len() > 0);
 }

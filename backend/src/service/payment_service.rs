@@ -10,8 +10,8 @@ use uuid::Uuid;
 
 #[derive(Clone)]
 pub struct PaymentService {
-    db_pool: Arc<Pool>,
-    config: Config,
+    pub db_pool: Arc<Pool>,
+    pub config: Config,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -54,11 +54,11 @@ impl PaymentService {
         let client = self.db_pool.get().await?;
 
         // Validate merchant exists and is active
-        let merchant = self.get_merchant(&request.merchant_id).await?;
+        let _merchant = self.get_merchant(&request.merchant_id).await?;
 
         // Generate transaction hash (in production, this would be from Stellar)
         let tx_hash = format!("tx_{}", Uuid::new_v4().simple());
-        let payment_id = Uuid::new_v4().to_string();
+        let payment_id = Uuid::new_v4();
 
         let row = client
             .query_one(
@@ -95,8 +95,8 @@ impl PaymentService {
             receive_amount: row.get(6),
             status: PaymentStatus::Pending,
             memo: row.get(8),
-            created_at: row.get::<_, chrono::DateTime<chrono::Utc>>(9),
-            updated_at: row.get::<_, chrono::DateTime<chrono::Utc>>(10),
+            created_at: row.get(9),
+            updated_at: row.get(10),
         })
     }
 
@@ -123,10 +123,10 @@ impl PaymentService {
             send_asset: row.get(4),
             send_amount: row.get(5),
             receive_amount: row.get(6),
-            status: PaymentStatus::from_str(row.get(7)),
+            status: PaymentStatus::from_string(row.get(7)),
             memo: row.get(8),
-            created_at: row.get::<_, chrono::DateTime<chrono::Utc>>(9),
-            updated_at: row.get::<_, chrono::DateTime<chrono::Utc>>(10),
+            created_at: row.get(9),
+            updated_at: row.get(10),
         })
     }
 
@@ -142,14 +142,14 @@ impl PaymentService {
             client
                 .execute(
                     "UPDATE payments SET status = $1, tx_hash = $2, updated_at = NOW() WHERE id = $3",
-                    &[&status.to_string(), &hash, &payment_id],
+                    &[&status.to_string_lossy(), &hash, &payment_id],
                 )
                 .await?;
         } else {
             client
                 .execute(
                     "UPDATE payments SET status = $1, updated_at = NOW() WHERE id = $2",
-                    &[&status.to_string(), &payment_id],
+                    &[&status.to_string_lossy(), &payment_id],
                 )
                 .await?;
         }
@@ -157,7 +157,10 @@ impl PaymentService {
         Ok(())
     }
 
-    pub async fn generate_qr_payment(&self, payload: crate::http::payments::QrPaymentRequest) -> Result<String, ApiError> {
+    pub async fn generate_qr_payment(
+        &self,
+        payload: crate::http::payments::QrPaymentRequest,
+    ) -> Result<String, ApiError> {
         // Validate merchant exists
         self.get_merchant(&payload.merchant_id).await?;
 
@@ -174,13 +177,17 @@ impl PaymentService {
         Ok(qr_data)
     }
 
-    pub async fn validate_nfc_payment(&self, payload: crate::http::payments::NfcPaymentRequest) -> Result<bool, ApiError> {
+    pub async fn validate_nfc_payment(
+        &self,
+        payload: crate::http::payments::NfcPaymentRequest,
+    ) -> Result<bool, ApiError> {
         // Validate merchant exists
         self.get_merchant(&payload.merchant_id).await?;
 
         // Basic validation - in production, check expiry, signature, etc.
         let current_time = chrono::Utc::now().timestamp();
-        if payload.timestamp > current_time + 300 { // 5 minutes grace
+        if payload.timestamp > current_time + 300 {
+            // 5 minutes grace
             return Ok(false);
         }
 
@@ -204,8 +211,8 @@ impl PaymentService {
             vault_address: row.get(2),
             settlement_asset: row.get(3),
             active: row.get(4),
-            created_at: row.get::<_, chrono::DateTime<chrono::Utc>>(5),
-            updated_at: row.get::<_, chrono::DateTime<chrono::Utc>>(6),
+            created_at: row.get(5),
+            updated_at: row.get(6),
         })
     }
 }

@@ -1,6 +1,10 @@
-use axum::{extract::{Path, State}, Json};
+use axum::{
+    extract::{Path, State},
+    Json,
+};
 use serde::{Deserialize, Serialize};
 use std::sync::Arc;
+use uuid::Uuid;
 
 use crate::{api_error::ApiError, service::ServiceContainer};
 
@@ -30,7 +34,7 @@ pub async fn create_user(
     let user = services.identity.create_user(request.user_id).await?;
 
     Ok(Json(UserResponse {
-        id: user.id,
+        id: Uuid::parse_str(&user.id).unwrap(),
         user_id: user.user_id,
         stellar_address: user.stellar_address,
         created_at: user.created_at,
@@ -44,7 +48,7 @@ pub async fn get_user(
     let user = services.identity.get_user_by_id(&user_id).await?;
 
     Ok(Json(UserResponse {
-        id: user.id,
+        id: Uuid::parse_str(&user.id).unwrap(),
         user_id: user.user_id,
         stellar_address: user.stellar_address,
         created_at: user.created_at,

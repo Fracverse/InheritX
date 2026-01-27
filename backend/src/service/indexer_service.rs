@@ -4,8 +4,8 @@ use std::sync::Arc;
 
 #[derive(Clone)]
 pub struct IndexerService {
-    db_pool: Arc<Pool>,
-    config: Config,
+    pub db_pool: Arc<Pool>,
+    pub config: Config,
 }
 
 impl IndexerService {
@@ -18,7 +18,10 @@ impl IndexerService {
         Ok(())
     }
 
-    pub async fn index_transaction(&self, _tx_hash: &str) -> Result<(), crate::api_error::ApiError> {
+    pub async fn index_transaction(
+        &self,
+        _tx_hash: &str,
+    ) -> Result<(), crate::api_error::ApiError> {
         Ok(())
     }
 }
