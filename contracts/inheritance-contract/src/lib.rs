@@ -490,7 +490,7 @@ impl InheritanceContract {
         let elapsed = now - plan.created_at;
 
         match plan.distribution_method {
-            DistributionMethod::LumpSum => elapsed == 0,
+            DistributionMethod::LumpSum => true, // always claimable
             DistributionMethod::Monthly => elapsed >= 30 * 24 * 60 * 60,
             DistributionMethod::Quarterly => elapsed >= 90 * 24 * 60 * 60,
             DistributionMethod::Yearly => elapsed >= 365 * 24 * 60 * 60,
@@ -503,47 +503,52 @@ impl InheritanceContract {
         email: String,
         claim_code: u32,
     ) -> Result<(), InheritanceError> {
+        // Fetch the plan
         let plan = Self::get_plan(&env, plan_id).ok_or(InheritanceError::PlanNotFound)?;
 
-        // Check distribution timing
+        // Check if claim is allowed by distribution method
         if !Self::is_claim_time_valid(&env, &plan) {
             return Err(InheritanceError::ClaimNotAllowedYet);
         }
 
+        // Hash email and claim code
         let hashed_email = Self::hash_string(&env, email.clone());
         let hashed_claim_code = Self::hash_claim_code(&env, claim_code)?;
 
-        // Check if already claimed
-        if env
-            .storage()
-            .persistent()
-            .has(&DataKey::Claim(hashed_email.clone()))
-        {
+        // Build claim key including plan ID
+        // Build claim key including plan ID
+        let claim_key = {
+            let mut data = Bytes::new(&env);
+            data.extend_from_slice(&plan_id.to_be_bytes()); // plan ID as bytes
+            data.extend_from_slice(&hashed_email.to_array()); // convert BytesN<32> to [u8;32]
+            DataKey::Claim(env.crypto().sha256(&data).into())
+        };
+
+        // Check if already claimed for this plan
+        if env.storage().persistent().has(&claim_key) {
             return Err(InheritanceError::AlreadyClaimed);
         }
 
         // Find beneficiary
-        let mut index: Option<u32> = None;
+        let mut beneficiary_index: Option<u32> = None;
         for i in 0..plan.beneficiaries.len() {
             let b = plan.beneficiaries.get(i).unwrap();
             if b.hashed_email == hashed_email && b.hashed_claim_code == hashed_claim_code {
-                index = Some(i);
+                beneficiary_index = Some(i);
                 break;
             }
         }
 
-        let beneficiary_index = index.ok_or(InheritanceError::BeneficiaryNotFound)?;
+        let index = beneficiary_index.ok_or(InheritanceError::BeneficiaryNotFound)?;
 
-        // Record claim
+        // Record the claim
         let claim = ClaimRecord {
             plan_id,
-            beneficiary_index,
+            beneficiary_index: index,
             claimed_at: env.ledger().timestamp(),
         };
 
-        env.storage()
-            .persistent()
-            .set(&DataKey::Claim(hashed_email.clone()), &claim);
+        env.storage().persistent().set(&claim_key, &claim);
 
         // Emit claim event
         env.events().publish(
