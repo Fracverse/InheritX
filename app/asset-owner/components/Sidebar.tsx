@@ -40,7 +40,7 @@ export default function Sidebar() {
   return (
     <div className="pl-12">
       <nav
-        className="py-10 px-5 w-[250px] flex flex-col gap-y-4 rounded-t-[8px] rounded-b-[48px]
+        className="py-10 px-5 w-62.5 flex flex-col gap-y-4 rounded-t-lg rounded-b-[48px]
         shadow-[inset_4px_4px_10px_0px_#11171AE5,inset_-4px_-4px_8px_0px_#1B252AE5,inset_4px_-4px_8px_0px_#11171A33,inset_-4px_4px_8px_0px_#11171A33]"
       >
         {SIDEBAR_ITEMS.map(({ label, href, icon: Icon, exact }) => {
@@ -63,7 +63,7 @@ export default function Sidebar() {
             >
               <div
                 className={clsx(
-                  "h-8 w-[6px] rounded-full transition-all duration-200",
+                  "h-8 w-1.5 rounded-full transition-all duration-200",
                   isActive
                     ? "bg-[#1C252A]"
                     : "bg-transparent group-hover:bg-[#1C252A]/60",
@@ -72,7 +72,7 @@ export default function Sidebar() {
 
               <div
                 className={clsx(
-                  "flex-1 py-5 pl-[50px] rounded-l-[4px] rounded-r-[16px] flex items-center gap-x-3 transition-all duration-200",
+                  "flex-1 py-5 pl-12.5 rounded-l-sm rounded-r-2xl flex items-center gap-x-3 transition-all duration-200",
                   isActive ? "bg-[#1C252A]" : "group-hover:bg-[#1C252A]/60",
                 )}
               >

@@ -4,7 +4,6 @@ import React, { useState, useEffect } from "react";
 import Image from "next/image";
 import {
   ArrowUpRight,
-  ArrowDownRight,
   ShieldCheck,
   Settings,
   Zap,
@@ -12,12 +11,11 @@ import {
   TreePine,
   Leaf,
   Sprout,
-  Globe,
-  Shield,
   Menu,
   X,
 } from "lucide-react";
 import { ConnectButton } from "@/components/ConnectButton";
+import Link from "next/link";
 import Footer from "./components/Footer";
 
 // --- Reusable Components ---
@@ -117,23 +115,23 @@ export default function InheritXLanding() {
                 Home
               </a>
               <a
-                href="#how-it-works"
+                href="/how-it-works"
                 className="hover:text-cyan-400 transition-colors focus-visible:outline-offset-2 focus-visible:outline-2 focus-visible:outline-cyan-400 rounded-sm px-1"
               >
                 How it Works
               </a>
-              <a
-                href="#"
+              <Link
+                href="/faqs"
                 className="hover:text-cyan-400 transition-colors focus-visible:outline-offset-2 focus-visible:outline-2 focus-visible:outline-cyan-400 rounded-sm px-1"
               >
                 FAQs
-              </a>
-              <a
-                href="#footer"
+              </Link>
+              <Link
+                href="/contact"
                 className="hover:text-cyan-400 transition-colors focus-visible:outline-offset-2 focus-visible:outline-2 focus-visible:outline-cyan-400 rounded-sm px-1"
               >
                 Contact
-              </a>
+              </Link>
             </div>
           </div>
 
@@ -161,26 +159,26 @@ export default function InheritXLanding() {
                 Home
               </a>
               <a
-                href="#how-it-works"
+                href="/how-it-works"
                 onClick={closeMenu}
                 className="text-slate-300 hover:text-cyan-400 py-2 focus-visible:outline-offset-2 focus-visible:outline-2 focus-visible:outline-cyan-400 rounded-sm px-2 uppercase"
               >
                 How it Works
               </a>
-              <a
-                href="#"
+              <Link
+                href="/faqs"
                 onClick={closeMenu}
                 className="text-slate-300 hover:text-cyan-400 py-2 focus-visible:outline-offset-2 focus-visible:outline-2 focus-visible:outline-cyan-400 rounded-sm px-2 uppercase"
               >
                 FAQs
-              </a>
-              <a
-                href="#footer"
+              </Link>
+              <Link
+                href="/contact"
                 onClick={closeMenu}
                 className="text-slate-300 hover:text-cyan-400 py-2 focus-visible:outline-offset-2 focus-visible:outline-2 focus-visible:outline-cyan-400 rounded-sm px-2 uppercase"
               >
                 Contact
-              </a>
+              </Link>
               <ConnectButton />
             </div>
           )}
@@ -522,9 +520,7 @@ export default function InheritXLanding() {
       </section>
 
       {/* Footer */}
-    <Footer />
-
-    
+      <Footer />
     </div>
   );
 }
