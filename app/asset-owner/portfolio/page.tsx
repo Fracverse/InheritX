@@ -1,29 +1,28 @@
 import React from "react";
-import { ChevronDown, TrendingUp, TrendingDown } from "lucide-react";
+import { ChevronDown } from "lucide-react";
+import { ArrowTopRightOnSquareIcon } from "@heroicons/react/24/outline";
 
 function Portfolio() {
-
-
   const chartData = [
-    { month: 'Jan', value: 30 },
-    { month: 'Feb', value: 45 },
-    { month: 'Mar', value: 28 },
-    { month: 'Apr', value: 60 },
-    { month: 'May', value: 42 },
-    { month: 'Jun', value: 75 },
-    { month: 'Jul', value: 55 },
-    { month: 'Aug', value: 68 },
-    { month: 'Sep', value: 52 },
-    { month: 'Oct', value: 80 },
-    { month: 'Nov', value: 65 },
-    { month: 'Dec', value: 90 }
+    { month: "Jan", value: 30 },
+    { month: "Feb", value: 45 },
+    { month: "Mar", value: 28 },
+    { month: "Apr", value: 60 },
+    { month: "May", value: 42 },
+    { month: "Jun", value: 75 },
+    { month: "Jul", value: 55 },
+    { month: "Aug", value: 68 },
+    { month: "Sep", value: 52 },
+    { month: "Oct", value: 80 },
+    { month: "Nov", value: 65 },
+    { month: "Dec", value: 90 },
   ];
 
   const assets = [
-    { name: 'ETH', amount: '2.45', price: '$3,500', value: '$7,640' },
-    { name: 'ETH', amount: '2.45', price: '$3,500', value: '$7,640' },
-    { name: 'ETH', amount: '2.45', price: '$3,500', value: '$7,640' },
-    { name: 'ETH', amount: '2.45', price: '$3,500', value: '$7,640' }
+    { name: "ETH", amount: "2.45", price: "$3,500", value: "$7,640" },
+    { name: "ETH", amount: "2.45", price: "$3,500", value: "$7,640" },
+    { name: "ETH", amount: "2.45", price: "$3,500", value: "$7,640" },
+    { name: "ETH", amount: "2.45", price: "$3,500", value: "$7,640" },
   ];
 
   return (
@@ -31,7 +30,9 @@ function Portfolio() {
       {/* Header */}
       <div className="mb-8">
         <h1 className="text-2xl sm:text-3xl font-semibold mb-1">Portfolio</h1>
-        <p className="text-gray-400 text-sm sm:text-base">Click on the display of your wealth so far.</p>
+        <p className="text-gray-400 text-sm sm:text-base">
+          Click on the display of your wealth so far.
+        </p>
       </div>
 
       {/* Stats Grid */}
@@ -46,7 +47,9 @@ function Portfolio() {
               <div className="w-2 h-4 bg-green-300 rounded-sm mt-4"></div>
             </div>
           </div>
-          <div className="text-gray-400 text-sm mb-3">Total Portfolio Value</div>
+          <div className="text-gray-400 text-sm mb-3">
+            Total Portfolio Value
+          </div>
           <button className="border border-gray-700 rounded-full px-3 py-1.5 text-gray-400 text-sm hover:bg-gray-800 hover:text-gray-300 transition-all">
             See Asset Cycle Tree
           </button>
@@ -56,7 +59,9 @@ function Portfolio() {
         <div className="bg-gray-800/40 rounded-lg p-6 border border-gray-700/50 hover:border-gray-600 transition-colors">
           <div className="text-4xl font-bold mb-1">0</div>
           <div className="text-gray-400 text-sm mb-1">Opened Count</div>
-          <div className="text-gray-500 text-xs mb-3">Equals 15% of activity</div>
+          <div className="text-gray-500 text-xs mb-3">
+            Equals 15% of activity
+          </div>
           <button className="border border-gray-700 rounded-full px-3 py-1.5 text-gray-400 text-sm hover:bg-gray-800 hover:text-gray-300 transition-all">
             My Asset Count Pie
           </button>
@@ -91,9 +96,11 @@ function Portfolio() {
       </div>
 
       {/* Charts & Insights Section */}
-     <div className="mb-9">
+      <div className="mb-9">
         <div className="flex items-center justify-between mb-6">
-          <h2 className="text-xl sm:text-2xl font-semibold">CHART & INSIGHTS</h2>
+          <h2 className="text-xl sm:text-2xl font-semibold">
+            CHART & INSIGHTS
+          </h2>
           <button className="text-gray-400 hover:text-gray-300">
             <ChevronDown size={20} />
           </button>
@@ -104,8 +111,10 @@ function Portfolio() {
           <div className="lg:col-span-1 bg-gray-800/40 rounded-lg p-6 border border-gray-700/50">
             <div className="relative">
               {/* Y-axis label */}
-              <div className="absolute -top-2 left-0 text-cyan-400 text-xs">(Value)</div>
-              
+              <div className="absolute -top-2 left-0 text-cyan-400 text-xs">
+                (Value)
+              </div>
+
               {/* Y-axis values */}
               <div className="absolute left-0 top-6 flex flex-col justify-between h-52 text-gray-400 text-xs">
                 <div>100</div>
@@ -114,10 +123,14 @@ function Portfolio() {
                 <div>25</div>
                 <div>0</div>
               </div>
-              
+
               {/* Chart area */}
               <div className="ml-8 relative">
-                <svg className="w-full h-64" viewBox="0 0 800 260" preserveAspectRatio="xMidYMid meet">
+                <svg
+                  className="w-full h-64"
+                  viewBox="0 0 800 260"
+                  preserveAspectRatio="xMidYMid meet"
+                >
                   {/* Vertical grid lines */}
                   {[0, 1, 2, 3, 4, 5, 6, 7].map((i) => (
                     <line
@@ -131,7 +144,7 @@ function Portfolio() {
                       opacity="0.3"
                     />
                   ))}
-                  
+
                   {/* Horizontal grid lines */}
                   {[0, 1, 2, 3, 4].map((i) => (
                     <line
@@ -145,7 +158,7 @@ function Portfolio() {
                       opacity="0.3"
                     />
                   ))}
-                  
+
                   {/* Line path - matching the exact pattern from the image */}
                   <path
                     d="M 50 150 L 150 30 L 250 90 L 350 95 L 450 25 L 550 155 L 650 145 L 750 20"
@@ -153,17 +166,17 @@ function Portfolio() {
                     stroke="rgb(6, 182, 212)"
                     strokeWidth="2"
                   />
-                  
+
                   {/* Data points */}
                   {[
-                    {x: 50, y: 150},
-                    {x: 150, y: 30},
-                    {x: 250, y: 90},
-                    {x: 350, y: 95},
-                    {x: 450, y: 25},
-                    {x: 550, y: 155},
-                    {x: 650, y: 145},
-                    {x: 750, y: 20}
+                    { x: 50, y: 150 },
+                    { x: 150, y: 30 },
+                    { x: 250, y: 90 },
+                    { x: 350, y: 95 },
+                    { x: 450, y: 25 },
+                    { x: 550, y: 155 },
+                    { x: 650, y: 145 },
+                    { x: 750, y: 20 },
                   ].map((point, i) => (
                     <circle
                       key={i}
@@ -174,28 +187,32 @@ function Portfolio() {
                     />
                   ))}
                 </svg>
-                
+
                 {/* X-axis labels */}
                 <div className="flex justify-between px-6 text-xs text-gray-400 mt-2">
                   {[0, 1, 2, 3, 4, 5, 6, 7].map((num) => (
-                    <div key={num} className="w-12 text-center">{num}</div>
+                    <div key={num} className="w-12 text-center">
+                      {num}
+                    </div>
                   ))}
                 </div>
-                
+
                 {/* X-axis label */}
-                <div className="text-right text-cyan-400 text-xs mt-2 pr-6">(Days)</div>
+                <div className="text-right text-cyan-400 text-xs mt-2 pr-6">
+                  (Days)
+                </div>
               </div>
             </div>
 
             {/* Period buttons */}
             <div className="flex gap-2 mt-6 ml-8">
-              {['1H', '1D', '1W', '1M', '1Y'].map((period, index) => (
+              {["1H", "1D", "1W", "1M", "1Y"].map((period, index) => (
                 <button
                   key={period}
                   className={`px-4 py-1.5 rounded text-xs font-medium transition-colors ${
-                    index === 0 
-                      ? 'bg-cyan-500 text-white' 
-                      : 'bg-gray-700/50 text-gray-400 hover:bg-gray-700'
+                    index === 0
+                      ? "bg-cyan-500 text-white"
+                      : "bg-gray-700/50 text-gray-400 hover:bg-gray-700"
                   }`}
                 >
                   {period}
@@ -207,8 +224,12 @@ function Portfolio() {
           {/* Donut Chart */}
           <div className="bg-gray-800/40 rounded-lg p-6 border border-gray-700/50">
             <div className="mb-4">
-              <div className="text-sm text-gray-400 mb-1">Total asset pool value</div>
-              <div className="text-xs text-gray-500">Total of all asset Values</div>
+              <div className="text-sm text-gray-400 mb-1">
+                Total asset pool value
+              </div>
+              <div className="text-xs text-gray-500">
+                Total of all asset Values
+              </div>
             </div>
 
             <div className="flex items-center justify-center mb-6">
@@ -250,7 +271,7 @@ function Portfolio() {
                     transform="rotate(-90 90 90)"
                   />
                 </svg>
-                
+
                 {/* Center text */}
                 <div className="absolute inset-0 flex flex-col items-center justify-center">
                   <div className="text-gray-400 text-xs">80%</div>
@@ -270,7 +291,7 @@ function Portfolio() {
                   <span className="text-white">48%</span>
                 </div>
               </div>
-              
+
               <div>
                 <div className="flex items-center justify-between mb-1">
                   <div className="flex items-center gap-2">
@@ -280,7 +301,7 @@ function Portfolio() {
                   <span className="text-white">32%</span>
                 </div>
               </div>
-              
+
               <div>
                 <div className="flex items-center justify-between mb-1">
                   <div className="flex items-center gap-2">
@@ -298,10 +319,10 @@ function Portfolio() {
       {/* Asset Table */}
       <div className="mb-9">
         <h2 className="text-xl sm:text-2xl font-semibold mb-6">YOUR ASSETS</h2>
-        
+
         <div className="bg-gray-800/40 rounded-lg border border-gray-700/50 overflow-hidden">
           {/* Table Header */}
-          <div className="grid grid-cols-6 gap-4 p-4 px-6 border-b border-gray-700/50 text-xs text-gray-500 font-normal">
+          <div className="grid grid-cols-[1.2fr_1fr_1fr_1fr_1.8fr_0.3fr] gap-4 p-4 px-6 border-b border-gray-700/50 text-xs text-gray-500 font-normal uppercase">
             <div>Assets</div>
             <div className="text-center">Balance</div>
             <div className="text-center">Price ($ USD)</div>
@@ -309,33 +330,51 @@ function Portfolio() {
             <div className="text-center">Action</div>
             <div></div>
           </div>
-          
+
           {/* Table Rows */}
           {assets.map((asset, index) => (
-            <div key={index} className="grid grid-cols-6 gap-4 p-4 px-6 border-b border-gray-700/30 items-center">
+            <div
+              key={index}
+              className="grid grid-cols-[1.2fr_1fr_1fr_1fr_1.8fr_0.3fr] gap-4 p-4 px-6 border-b border-gray-700/30 items-center"
+            >
+              {/* Asset */}
               <div className="flex items-center gap-3">
-                <div className="w-6 h-6 rounded-full bg-gray-700 flex items-center justify-center">
+                <div className="w-7 h-7 rounded-full bg-gray-800 flex items-center justify-center">
                   <div className="w-4 h-4 rounded-full border-2 border-gray-400"></div>
                 </div>
-                <span className="text-sm font-medium">{asset.name}</span>
+                <span className="text-sm font-medium text-gray-200">
+                  {asset.name}
+                </span>
               </div>
-              <div className="text-center text-sm text-gray-300">{asset.amount}</div>
-              <div className="text-center text-sm text-gray-300">{asset.price}</div>
-              <div className="text-center text-sm text-gray-300">{asset.value}</div>
-              <div className="flex items-center justify-center gap-4">
-                <button className="bg-transparent border border-gray-600 hover:border-gray-500 text-gray-300 px-4 py-1.5 rounded-md text-xs font-medium transition-colors">
+
+              {/* Balance */}
+              <div className="text-center text-sm text-gray-300">
+                {asset.amount}
+              </div>
+
+              {/* Price */}
+              <div className="text-center text-sm text-gray-300">
+                {asset.price}
+              </div>
+
+              {/* Value */}
+              <div className="text-center text-sm text-gray-300">
+                {asset.value}
+              </div>
+
+              {/* Action Buttons */}
+              <div className="flex items-center justify-center gap-2.5">
+                <button className="px-5 py-1.5 rounded-full border border-gray-600 text-gray-300 text-xs font-medium transition-colors hover:border-gray-500 hover:bg-gray-800/50">
                   Swap
                 </button>
-                <button className="bg-cyan-500 hover:bg-cyan-600 text-white px-4 py-1.5 rounded-full text-xs font-medium transition-colors">
+                <button className="px-4 py-1.5 rounded-full bg-cyan-500 text-gray-900 text-xs font-semibold whitespace-nowrap transition-colors hover:bg-cyan-400">
                   ADD TO PLAN
                 </button>
               </div>
-              <div className="flex">
-                <button className="text-gray-400 hover:text-gray-300">
-                  <svg width="16" height="16" viewBox="0 0 16 16" fill="none" xmlns="http://www.w3.org/2000/svg">
-                    <path d="M8 12L12 8L8 4" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round"/>
-                  </svg>
-                </button>
+
+              {/* External Link Icon */}
+              <div className="flex justify-center">
+                <ArrowTopRightOnSquareIcon className="w-4 h-4 text-gray-400 cursor-pointer hover:text-gray-300 transition-colors" />
               </div>
             </div>
           ))}
