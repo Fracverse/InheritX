@@ -14,6 +14,7 @@ import {
     LogOut
 } from "lucide-react";
 import { motion } from "framer-motion";
+import { useAdminAuth } from "@/context/AdminAuthContext";
 
 const navItems = [
     { name: "Dashboard", icon: LayoutDashboard, href: "/admin", section: "ADMINISTRATION" },
@@ -25,14 +26,14 @@ const navItems = [
 
 const quickLinks = [
     { name: "Back to Dashboard", icon: ArrowLeft, href: "/dashboard", section: "QUICK LINKS" },
-    { name: "Sign Out", icon: LogOut, href: "/logout", section: "QUICK LINKS", danger: true },
 ];
 
 export function Sidebar() {
     const pathname = usePathname();
+    const { logout, admin } = useAdminAuth();
 
     return (
-        <aside className="w-64 border-r border-[#161E22] bg-[#060B0D] flex flex-col h-screen sticky top-0 hidden lg:flex">
+        <aside className="w-64 border-r border-[#161E22] bg-[#060B0D] flex-col h-screen sticky top-0 hidden lg:flex">
             <div className="p-6">
                 <div className="flex items-center gap-2 mb-10">
                     <div className="relative w-8 h-8">
@@ -62,8 +63,8 @@ export function Sidebar() {
                                         key={item.href}
                                         href={item.href}
                                         className={`flex items-center gap-3 px-3 py-2.5 rounded-lg transition-all duration-200 group ${isActive
-                                                ? "bg-[#161E22] text-[#33C5E0]"
-                                                : "text-[#8899A6] hover:bg-[#161E22] hover:text-white"
+                                            ? "bg-[#161E22] text-[#33C5E0]"
+                                            : "text-[#8899A6] hover:bg-[#161E22] hover:text-white"
                                             }`}
                                     >
                                         <item.icon size={18} className={isActive ? "text-[#33C5E0]" : "text-[#8899A6] group-hover:text-white"} />
@@ -83,15 +84,21 @@ export function Sidebar() {
                                 <Link
                                     key={item.href}
                                     href={item.href}
-                                    className={`flex items-center gap-3 px-3 py-2.5 rounded-lg transition-all duration-200 group ${item.danger
-                                            ? "text-[#FF4D4D] hover:bg-[#FF4D4D]/10"
-                                            : "text-[#8899A6] hover:bg-[#161E22] hover:text-white"
-                                        }`}
+                                    className={`flex items-center gap-3 px-3 py-2.5 rounded-lg transition-all duration-200 group text-[#8899A6] hover:bg-[#161E22] hover:text-white`}
                                 >
                                     <item.icon size={18} />
                                     <span className="text-sm font-medium">{item.name}</span>
                                 </Link>
                             ))}
+                            
+                            {/* Sign Out Button */}
+                            <button
+                                onClick={logout}
+                                className={`w-full flex items-center gap-3 px-3 py-2.5 rounded-lg transition-all duration-200 group text-[#FF4D4D] hover:bg-[#FF4D4D]/10`}
+                            >
+                                <LogOut size={18} />
+                                <span className="text-sm font-medium">Sign Out</span>
+                            </button>
                         </nav>
                     </div>
                 </div>

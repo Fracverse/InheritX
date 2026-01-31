@@ -2,6 +2,7 @@ import type { Metadata, Viewport } from "next";
 import { Outfit, Geist_Mono } from "next/font/google";
 import "./globals.css";
 import { WalletProvider } from "@/context/WalletContext";
+import { AdminAuthProvider } from "@/context/AdminAuthContext";
 import { WalletModal } from "@/components/WalletModal";
 
 const outfit = Outfit({
@@ -98,11 +99,13 @@ export default function RootLayout({
         className={`${outfit.variable} ${geistMono.variable} antialiased`}
         suppressHydrationWarning
       >
-        <WalletProvider>
-          {/* <Navbar /> */}
-          <main className="">{children}</main>
-          <WalletModal />
-        </WalletProvider>
+        <AdminAuthProvider>
+          <WalletProvider>
+            {/* <Navbar /> */}
+            <main className="">{children}</main>
+            <WalletModal />
+          </WalletProvider>
+        </AdminAuthProvider>
       </body>
     </html>
   );
