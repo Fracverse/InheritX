@@ -1,6 +1,5 @@
 import type { Metadata, Viewport } from "next";
 import { Outfit, Geist_Mono } from "next/font/google";
-import "./styles/globals.css";
 import { WalletProvider } from "@/context/WalletContext";
 import { AdminAuthProvider } from "@/context/AdminAuthContext";
 import { KYCProvider } from "@/context/KYCContext";
@@ -103,20 +102,13 @@ export default function RootLayout({
       >
         <AdminAuthProvider>
           <WalletProvider>
-            {/* <Navbar /> */}
-            <main className="">{children}</main>
-            <WalletModal />
+            <KYCProvider>
+              <main className="">{children}</main>
+              <WalletModal />
+              <KYCVerificationModal />
+            </KYCProvider>
           </WalletProvider>
         </AdminAuthProvider>
-        
-        <WalletProvider>
-          <KYCProvider>
-            {/* <Navbar /> */}
-            <main className="">{children}</main>
-            <WalletModal />
-            <KYCVerificationModal />
-          </KYCProvider>
-        </WalletProvider>
       </body>
     </html>
   );
