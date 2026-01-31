@@ -1,5 +1,6 @@
 import type { Metadata, Viewport } from "next";
 import { Outfit, Geist_Mono } from "next/font/google";
+import "./globals.css";
 import { WalletProvider } from "@/context/WalletContext";
 import { AdminAuthProvider } from "@/context/AdminAuthContext";
 import { KYCProvider } from "@/context/KYCContext";
