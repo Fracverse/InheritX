@@ -31,5 +31,5 @@
 // }
 
 fn main() {
-    println(main)
+    println!(main)
 }
