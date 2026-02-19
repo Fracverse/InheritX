@@ -922,8 +922,9 @@ fn test_kyc_approve_success() {
     let result = client.try_approve_kyc(&admin, &user);
     assert!(result.is_ok());
 
-    let stored: KycStatus =
-        env.as_contract(&contract_id, || env.storage().persistent().get(&DataKey::Kyc(user)).unwrap());
+    let stored: KycStatus = env.as_contract(&contract_id, || {
+        env.storage().persistent().get(&DataKey::Kyc(user)).unwrap()
+    });
     assert!(stored.submitted);
     assert!(stored.approved);
 }
