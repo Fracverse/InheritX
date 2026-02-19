@@ -1766,6 +1766,7 @@ dependencies = [
  "chrono",
  "config",
  "deadpool-postgres",
+ "dotenvy",
  "httpmock",
  "jsonwebtoken",
  "lazy_static",
