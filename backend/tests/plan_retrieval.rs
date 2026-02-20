@@ -21,18 +21,16 @@ async fn seed_test_data(pool: &PgPool) -> (Uuid, Uuid, Uuid, Uuid, Uuid, Uuid) {
     let user_1_claimed_plan = Uuid::new_v4();
     let user_2_pending_plan = Uuid::new_v4();
 
-    sqlx::query(
-        "INSERT INTO users (id, email, password_hash) VALUES ($1, $2, $3), ($4, $5, $6)",
-    )
-    .bind(user_1)
-    .bind(format!("plan-test-{}@example.com", user_1))
-    .bind("hash")
-    .bind(user_2)
-    .bind(format!("plan-test-{}@example.com", user_2))
-    .bind("hash")
-    .execute(pool)
-    .await
-    .expect("users should insert");
+    sqlx::query("INSERT INTO users (id, email, password_hash) VALUES ($1, $2, $3), ($4, $5, $6)")
+        .bind(user_1)
+        .bind(format!("plan-test-{}@example.com", user_1))
+        .bind("hash")
+        .bind(user_2)
+        .bind(format!("plan-test-{}@example.com", user_2))
+        .bind("hash")
+        .execute(pool)
+        .await
+        .expect("users should insert");
 
     sqlx::query("INSERT INTO admins (id, email, password_hash, role) VALUES ($1, $2, $3, $4)")
         .bind(admin_1)
@@ -149,11 +147,12 @@ async fn retrieves_plans_by_user_and_admin_scopes() {
         .expect("body should read");
     let user_pending_json: Value =
         serde_json::from_slice(&user_pending_body).expect("json should parse");
-    assert_eq!(user_pending_json.as_array().expect("array expected").len(), 1);
     assert_eq!(
-        user_pending_json
-            .as_array()
-            .expect("array expected")[0]["status"],
+        user_pending_json.as_array().expect("array expected").len(),
+        1
+    );
+    assert_eq!(
+        user_pending_json.as_array().expect("array expected")[0]["status"],
         "pending"
     );
 
@@ -218,7 +217,10 @@ async fn retrieves_plans_by_user_and_admin_scopes() {
         .expect("body should read");
     let admin_pending_json: Value =
         serde_json::from_slice(&admin_pending_body).expect("json should parse");
-    assert_eq!(admin_pending_json.as_array().expect("array expected").len(), 2);
+    assert_eq!(
+        admin_pending_json.as_array().expect("array expected").len(),
+        2
+    );
 
     cleanup_seed_data(&pool, user_1, user_2, admin_1).await;
 }
