@@ -863,6 +863,43 @@ impl InheritanceContract {
         deactivated_plans
     }
 
+    /// Retrieve all deactivated plans (Admin only)
+    pub fn get_all_deactivated_plans(
+        env: Env,
+        admin: Address,
+    ) -> Result<Vec<InheritancePlan>, InheritanceError> {
+        admin.require_auth();
+
+        // Verify admin
+        let stored_admin: Address = env
+            .storage()
+            .instance()
+            .get(&DataKey::Admin)
+            .ok_or(InheritanceError::Unauthorized)?;
+        if admin != stored_admin {
+            return Err(InheritanceError::Unauthorized);
+        }
+
+        let key = DataKey::DeactivatedPlans;
+        let deactivated_ids: Vec<u64> = env
+            .storage()
+            .persistent()
+            .get(&key)
+            .unwrap_or(Vec::new(&env));
+
+        let mut plans = Vec::new(&env);
+        for plan_id in deactivated_ids.iter() {
+            if let Some(plan) = Self::get_plan(&env, plan_id) {
+                // Double check it's inactive just in case
+                if !plan.is_active {
+                    plans.push_back(plan);
+                }
+            }
+        }
+
+        Ok(plans)
+    }
+
     // ───────────────────────────────────────────
     // Contract Upgrade Functions
     // ───────────────────────────────────────────
