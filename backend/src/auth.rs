@@ -1,12 +1,12 @@
+use crate::api_error::ApiError;
+use crate::app::AppState;
 use axum::{extract::State, Json};
+use bcrypt::verify;
+use chrono::{Duration, Utc};
+use jsonwebtoken::{encode, EncodingKey, Header};
 use serde::{Deserialize, Serialize};
 use sqlx::FromRow;
 use std::sync::Arc;
-use crate::api_error::ApiError;
-use crate::app::AppState;
-use jsonwebtoken::{encode, EncodingKey, Header};
-use chrono::{Utc, Duration};
-use bcrypt::verify;
 
 #[derive(Debug, Deserialize)]
 pub struct LoginRequest {
