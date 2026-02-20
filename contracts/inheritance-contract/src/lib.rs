@@ -88,6 +88,8 @@ pub enum DataKey {
     NextPlanId,
     Plan(u64),
     Claim(BytesN<32>),  // keyed by hashed_email
+    UserPlans(Address), // keyed by owner Address, value is Vec<u64>
+    DeactivatedPlans,   // value is Vec<u64> of all deactivated plan IDs
     Admin,
     Kyc(Address),
     Version,
