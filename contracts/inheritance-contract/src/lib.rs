@@ -80,8 +80,8 @@ pub enum InheritanceError {
     KycAlreadyApproved = 24,
     InsufficientBalance = 25,
     FeeTransferFailed = 26,
-    UpgradeFailed = 25,
-    MigrationNotRequired = 26,
+    UpgradeFailed = 27,
+    MigrationNotRequired = 28,
 }
 
 #[contracttype]
@@ -153,6 +153,19 @@ pub struct ContractUpgradedEvent {
     pub new_wasm_hash: BytesN<32>,
     pub admin: Address,
     pub upgraded_at: u64,
+}
+
+/// Parameters for creating an inheritance plan (groups args to satisfy Clippy).
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct CreateInheritancePlanParams {
+    pub owner: Address,
+    pub token: Address,
+    pub plan_name: String,
+    pub description: String,
+    pub total_amount: u64,
+    pub distribution_method: DistributionMethod,
+    pub beneficiaries_data: Vec<(String, String, u32, Bytes, u32)>,
 }
 
 #[contract]
@@ -513,14 +526,18 @@ impl InheritanceContract {
     /// - Other validation errors from validate_plan_inputs / validate_beneficiaries
     pub fn create_inheritance_plan(
         env: Env,
-        owner: Address,
-        token: Address,
-        plan_name: String,
-        description: String,
-        total_amount: u64,
-        distribution_method: DistributionMethod,
-        beneficiaries_data: Vec<(String, String, u32, Bytes, u32)>,
+        params: CreateInheritancePlanParams,
     ) -> Result<u64, InheritanceError> {
+        let CreateInheritancePlanParams {
+            owner,
+            token,
+            plan_name,
+            description,
+            total_amount,
+            distribution_method,
+            beneficiaries_data,
+        } = params;
+
         // Require owner authorization
         owner.require_auth();
 
