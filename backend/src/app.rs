@@ -1,17 +1,20 @@
 use axum::{
     extract::{Path, State},
-    routing::get,
+    routing::{get, post},
     Json, Router,
 };
 use serde_json::{json, Value};
 use sqlx::PgPool;
 use std::sync::Arc;
+use tower::ServiceBuilder;
+use tower_governor::{governor::GovernorConfigBuilder, GovernorLayer};
+use tower_http::trace::TraceLayer;
 use uuid::Uuid;
 
 use crate::api_error::ApiError;
 use crate::auth::{AuthenticatedAdmin, AuthenticatedUser};
 use crate::config::Config;
-use crate::service::PlanService;
+use crate::service::{KycRecord, KycService, KycStatus, PlanService};
 
 pub struct AppState {
     pub db: PgPool,
@@ -21,9 +24,26 @@ pub struct AppState {
 pub async fn create_app(db: PgPool, config: Config) -> Result<Router, ApiError> {
     let state = Arc::new(AppState { db, config });
 
+    // Rate limiting configuration
+    let governor_conf = Arc::new(
+        GovernorConfigBuilder::default()
+            .per_second(2)
+            .burst_size(5)
+            .finish()
+            .unwrap(),
+    );
+
     let app = Router::new()
         .route("/health", get(health_check))
         .route("/health/db", get(db_health_check))
+        .route("/admin/login", post(crate::auth::login_admin))
+        .layer(
+            ServiceBuilder::new()
+                .layer(TraceLayer::new_for_http())
+                .layer(GovernorLayer {
+                    config: governor_conf,
+                }),
+        )
         .route(
             "/api/plans/due-for-claim/:plan_id",
             get(get_due_for_claim_plan),
@@ -36,6 +56,9 @@ pub async fn create_app(db: PgPool, config: Config) -> Result<Router, ApiError> 
             "/api/admin/plans/due-for-claim",
             get(get_all_due_for_claim_plans_admin),
         )
+        .route("/api/admin/kyc/:user_id", get(get_kyc_status))
+        .route("/api/admin/kyc/approve", post(approve_kyc))
+        .route("/api/admin/kyc/reject", post(reject_kyc))
         .with_state(state);
 
     Ok(app)
@@ -97,4 +120,48 @@ async fn get_all_due_for_claim_plans_admin(
         "data": plans,
         "count": plans.len()
     })))
+}
+
+#[derive(serde::Deserialize)]
+pub struct KycUpdateRequest {
+    pub user_id: Uuid,
+}
+
+async fn get_kyc_status(
+    State(state): State<Arc<AppState>>,
+    AuthenticatedAdmin(_admin): AuthenticatedAdmin,
+    Path(user_id): Path<Uuid>,
+) -> Result<Json<KycRecord>, ApiError> {
+    let status = KycService::get_kyc_status(&state.db, user_id).await?;
+    Ok(Json(status))
+}
+
+async fn approve_kyc(
+    State(state): State<Arc<AppState>>,
+    AuthenticatedAdmin(admin): AuthenticatedAdmin,
+    Json(payload): Json<KycUpdateRequest>,
+) -> Result<Json<KycRecord>, ApiError> {
+    let status = KycService::update_kyc_status(
+        &state.db,
+        admin.admin_id,
+        payload.user_id,
+        KycStatus::Approved,
+    )
+    .await?;
+    Ok(Json(status))
+}
+
+async fn reject_kyc(
+    State(state): State<Arc<AppState>>,
+    AuthenticatedAdmin(admin): AuthenticatedAdmin,
+    Json(payload): Json<KycUpdateRequest>,
+) -> Result<Json<KycRecord>, ApiError> {
+    let status = KycService::update_kyc_status(
+        &state.db,
+        admin.admin_id,
+        payload.user_id,
+        KycStatus::Rejected,
+    )
+    .await?;
+    Ok(Json(status))
 }

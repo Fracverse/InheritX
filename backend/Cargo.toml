@@ -12,6 +12,8 @@ tokio-util = "0.7"
 axum = { version = "0.7", features = ["json", "multipart", "macros"] }
 tower = "0.4"
 tower-http = { version = "0.5", features = ["cors", "trace", "request-id", "util"] }
+tower_governor = "0.4.2"
+governor = "0.6.3"
 
 # Serialization
 serde = { version = "1.0", features = ["derive"] }
@@ -26,13 +28,13 @@ sqlx = { version = "0.7", features = [
     "json",
     "migrate"
 ] }
-deadpool-postgres = "0.10"
 rust_decimal = { version = "1.33", features = ["serde-with-str"] }
 
 # Authentication & Security
 jsonwebtoken = "9.0"
 bcrypt = "0.15"
 ring = "0.17"
+postgres-types = { version = "0.2", features = ["with-chrono-0_4", "with-uuid-1", "with-serde_json-1"] }
 
 # Stellar SDK - TODO: Use correct Stellar Rust SDK
 # Check: https://crates.io/crates/stellar-rust-sdk or similar
@@ -62,10 +64,6 @@ base64 = "0.21"
 dotenvy = "0.15"
 async-trait = "0.1"
 
-# Metrics & monitoring
-prometheus = "0.13"
-lazy_static = "1.4"
-postgres-types = { version = "0.2.12", features = ["derive", "with-chrono-0_4", "with-uuid-1"] }
 
 # Testing
 [dev-dependencies]

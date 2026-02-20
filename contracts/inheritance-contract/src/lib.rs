@@ -87,7 +87,9 @@ pub enum InheritanceError {
 pub enum DataKey {
     NextPlanId,
     Plan(u64),
-    Claim(BytesN<32>), // keyed by hashed_email
+    Claim(BytesN<32>),  // keyed by hashed_email
+    UserPlans(Address), // keyed by owner Address, value is Vec<u64>
+    DeactivatedPlans,   // value is Vec<u64> of all deactivated plan IDs
     Admin,
     Kyc(Address),
     Version,
@@ -314,6 +316,33 @@ impl InheritanceContract {
     fn get_plan(env: &Env, plan_id: u64) -> Option<InheritancePlan> {
         let key = DataKey::Plan(plan_id);
         env.storage().persistent().get(&key)
+    }
+
+    fn add_plan_to_user(env: &Env, owner: Address, plan_id: u64) {
+        let key = DataKey::UserPlans(owner.clone());
+        let mut plans: Vec<u64> = env
+            .storage()
+            .persistent()
+            .get(&key)
+            .unwrap_or(Vec::new(env));
+
+        plans.push_back(plan_id);
+        env.storage().persistent().set(&key, &plans);
+    }
+
+    fn add_plan_to_deactivated(env: &Env, plan_id: u64) {
+        let key = DataKey::DeactivatedPlans;
+        let mut plans: Vec<u64> = env
+            .storage()
+            .persistent()
+            .get(&key)
+            .unwrap_or(Vec::new(env));
+
+        // Avoid duplicates if called multiple times (though logic should prevent this)
+        if !plans.contains(plan_id) {
+            plans.push_back(plan_id);
+            env.storage().persistent().set(&key, &plans);
+        }
     }
 
     /// Get plan details
@@ -558,6 +587,9 @@ impl InheritanceContract {
         let plan_id = Self::increment_plan_id(&env);
         Self::store_plan(&env, plan_id, &plan);
 
+        // Add to user's plan list
+        Self::add_plan_to_user(&env, owner.clone(), plan_id);
+
         log!(&env, "Inheritance plan created with ID: {}", plan_id);
 
         Ok(plan_id)
@@ -761,6 +793,7 @@ impl InheritanceContract {
 
         // Store updated plan
         Self::store_plan(&env, plan_id, &plan);
+        Self::add_plan_to_deactivated(&env, plan_id);
 
         // Emit deactivation event
         env.events().publish(
@@ -776,6 +809,95 @@ impl InheritanceContract {
         log!(&env, "Inheritance plan {} deactivated by owner", plan_id);
 
         Ok(())
+    }
+
+    /// Retrieve a specific deactivated plan (User)
+    ///
+    /// # Arguments
+    /// * `env` - The environment
+    /// * `user` - The user requesting the plan (must be owner)
+    /// * `plan_id` - The ID of the plan
+    pub fn get_deactivated_plan(
+        env: Env,
+        user: Address,
+        plan_id: u64,
+    ) -> Result<InheritancePlan, InheritanceError> {
+        user.require_auth();
+
+        let plan = Self::get_plan(&env, plan_id).ok_or(InheritanceError::PlanNotFound)?;
+
+        // Check if plan belongs to user
+        if plan.owner != user {
+            return Err(InheritanceError::Unauthorized);
+        }
+
+        // Check if plan is deactivated
+        if plan.is_active {
+            return Err(InheritanceError::PlanNotActive);
+        }
+
+        Ok(plan)
+    }
+
+    /// Retrieve all deactivated plans for a user
+    pub fn get_user_deactivated_plans(env: Env, user: Address) -> Vec<InheritancePlan> {
+        user.require_auth();
+
+        let key = DataKey::UserPlans(user.clone());
+        let user_plan_ids: Vec<u64> = env
+            .storage()
+            .persistent()
+            .get(&key)
+            .unwrap_or(Vec::new(&env));
+
+        let mut deactivated_plans = Vec::new(&env);
+
+        for plan_id in user_plan_ids.iter() {
+            if let Some(plan) = Self::get_plan(&env, plan_id) {
+                if !plan.is_active {
+                    deactivated_plans.push_back(plan);
+                }
+            }
+        }
+
+        deactivated_plans
+    }
+
+    /// Retrieve all deactivated plans (Admin only)
+    pub fn get_all_deactivated_plans(
+        env: Env,
+        admin: Address,
+    ) -> Result<Vec<InheritancePlan>, InheritanceError> {
+        admin.require_auth();
+
+        // Verify admin
+        let stored_admin: Address = env
+            .storage()
+            .instance()
+            .get(&DataKey::Admin)
+            .ok_or(InheritanceError::Unauthorized)?;
+        if admin != stored_admin {
+            return Err(InheritanceError::Unauthorized);
+        }
+
+        let key = DataKey::DeactivatedPlans;
+        let deactivated_ids: Vec<u64> = env
+            .storage()
+            .persistent()
+            .get(&key)
+            .unwrap_or(Vec::new(&env));
+
+        let mut plans = Vec::new(&env);
+        for plan_id in deactivated_ids.iter() {
+            if let Some(plan) = Self::get_plan(&env, plan_id) {
+                // Double check it's inactive just in case
+                if !plan.is_active {
+                    plans.push_back(plan);
+                }
+            }
+        }
+
+        Ok(plans)
     }
 
     // ───────────────────────────────────────────

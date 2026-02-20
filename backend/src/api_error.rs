@@ -25,6 +25,12 @@ pub enum ApiError {
 
     #[error("Bad Request: {0}")]
     BadRequest(String),
+
+    #[error("Forbidden: {0}")]
+    Forbidden(String),
+
+    #[error("Too Many Requests")]
+    TooManyRequests(String),
 }
 
 impl IntoResponse for ApiError {
@@ -51,6 +57,8 @@ impl IntoResponse for ApiError {
             Self::Unauthorized => (StatusCode::UNAUTHORIZED, self.to_string()),
             Self::NotFound(_) => (StatusCode::NOT_FOUND, self.to_string()),
             Self::BadRequest(_) => (StatusCode::BAD_REQUEST, self.to_string()),
+            Self::Forbidden(_) => (StatusCode::FORBIDDEN, self.to_string()),
+            Self::TooManyRequests(_) => (StatusCode::TOO_MANY_REQUESTS, self.to_string()),
         };
 
         let body = Json(json!({

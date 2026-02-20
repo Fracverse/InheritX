@@ -2,6 +2,8 @@ use crate::api_error::ApiError;
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use sqlx::PgPool;
+use std::fmt;
+use std::str::FromStr;
 use uuid::Uuid;
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -295,5 +297,100 @@ impl PlanService {
         }
 
         Ok(due_plans)
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, sqlx::Type)]
+#[sqlx(type_name = "varchar")]
+pub enum KycStatus {
+    Pending,
+    Approved,
+    Rejected,
+}
+
+impl fmt::Display for KycStatus {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let s = match self {
+            KycStatus::Pending => "pending",
+            KycStatus::Approved => "approved",
+            KycStatus::Rejected => "rejected",
+        };
+        write!(f, "{}", s)
+    }
+}
+
+impl FromStr for KycStatus {
+    type Err = std::convert::Infallible;
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        Ok(match s {
+            "approved" => KycStatus::Approved,
+            "rejected" => KycStatus::Rejected,
+            _ => KycStatus::Pending,
+        })
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, sqlx::FromRow)]
+pub struct KycRecord {
+    pub user_id: Uuid,
+    pub status: String,
+    pub reviewed_by: Option<Uuid>,
+    pub reviewed_at: Option<DateTime<Utc>>,
+    pub created_at: DateTime<Utc>,
+}
+
+pub struct KycService;
+
+impl KycService {
+    pub async fn get_kyc_status(db: &PgPool, user_id: Uuid) -> Result<KycRecord, ApiError> {
+        let row = sqlx::query_as::<_, KycRecord>(
+            "SELECT user_id, status, reviewed_by, reviewed_at, created_at FROM kyc_status WHERE user_id = $1",
+        )
+        .bind(user_id)
+        .fetch_optional(db)
+        .await?;
+
+        match row {
+            Some(record) => Ok(record),
+            None => Ok(KycRecord {
+                user_id,
+                status: "pending".to_string(),
+                reviewed_by: None,
+                reviewed_at: None,
+                created_at: Utc::now(),
+            }),
+        }
+    }
+
+    pub async fn update_kyc_status(
+        db: &PgPool,
+        admin_id: Uuid,
+        user_id: Uuid,
+        status: KycStatus,
+    ) -> Result<KycRecord, ApiError> {
+        let status_str = status.to_string();
+        let now = Utc::now();
+
+        let record = sqlx::query_as::<_, KycRecord>(
+            r#"
+            INSERT INTO kyc_status (user_id, status, reviewed_by, reviewed_at, created_at)
+            VALUES ($1, $2, $3, $4, $5)
+            ON CONFLICT (user_id) DO UPDATE 
+            SET status = EXCLUDED.status, 
+                reviewed_by = EXCLUDED.reviewed_by, 
+                reviewed_at = EXCLUDED.reviewed_at
+            RETURNING user_id, status, reviewed_by, reviewed_at, created_at
+            "#,
+        )
+        .bind(user_id)
+        .bind(status_str)
+        .bind(admin_id)
+        .bind(now)
+        .bind(now)
+        .fetch_one(db)
+        .await?;
+
+        Ok(record)
     }
 }

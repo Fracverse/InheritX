@@ -1185,6 +1185,105 @@ fn test_plan_data_survives_across_versions() {
 }
 
 #[test]
+fn test_get_user_deactivated_plans() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let contract_id = env.register_contract(None, InheritanceContract);
+    let client = InheritanceContractClient::new(&env, &contract_id);
+
+    let owner = create_test_address(&env, 1);
+    let beneficiaries_data = vec![
+        &env,
+        (
+            String::from_str(&env, "Alice"),
+            String::from_str(&env, "alice@example.com"),
+            111111u32,
+            create_test_bytes(&env, "1111111111111111"),
+            10000u32,
+        ),
+    ];
+
+    // Create 2 plans
+    let plan1 = client.create_inheritance_plan(
+        &owner,
+        &String::from_str(&env, "Plan 1"),
+        &String::from_str(&env, "Desc 1"),
+        &1000000u64,
+        &DistributionMethod::LumpSum,
+        &beneficiaries_data,
+    );
+    let _plan2 = client.create_inheritance_plan(
+        &owner,
+        &String::from_str(&env, "Plan 2"),
+        &String::from_str(&env, "Desc 2"),
+        &1000000u64,
+        &DistributionMethod::LumpSum,
+        &beneficiaries_data,
+    );
+
+    // Deactivate plan 1
+    client.deactivate_inheritance_plan(&owner, &plan1);
+
+    // Get deactivated plans
+    let deactivated = client.get_user_deactivated_plans(&owner);
+    assert_eq!(deactivated.len(), 1);
+    assert_eq!(
+        deactivated.get(0).unwrap().plan_name,
+        String::from_str(&env, "Plan 1")
+    );
+}
+
+#[test]
+fn test_admin_retrieval() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let contract_id = env.register_contract(None, InheritanceContract);
+    let client = InheritanceContractClient::new(&env, &contract_id);
+
+    let admin = create_test_address(&env, 99);
+    client.initialize_admin(&admin);
+
+    let owner1 = create_test_address(&env, 1);
+    let owner2 = create_test_address(&env, 2);
+    let beneficiaries_data = vec![
+        &env,
+        (
+            String::from_str(&env, "Alice"),
+            String::from_str(&env, "alice@example.com"),
+            111111u32,
+            create_test_bytes(&env, "1111111111111111"),
+            10000u32,
+        ),
+    ];
+
+    // Owner 1 creates and deactivates
+    let plan1 = client.create_inheritance_plan(
+        &owner1,
+        &String::from_str(&env, "Plan 1"),
+        &String::from_str(&env, "Desc 1"),
+        &1000000u64,
+        &DistributionMethod::LumpSum,
+        &beneficiaries_data,
+    );
+    client.deactivate_inheritance_plan(&owner1, &plan1);
+
+    // Owner 2 creates and deactivates
+    let plan2 = client.create_inheritance_plan(
+        &owner2,
+        &String::from_str(&env, "Plan 2"),
+        &String::from_str(&env, "Desc 2"),
+        &1000u64,
+        &DistributionMethod::LumpSum,
+        &beneficiaries_data,
+    );
+    client.deactivate_inheritance_plan(&owner2, &plan2);
+
+    // Admin retrieves all
+    let all_deactivated = client.get_all_deactivated_plans(&admin);
+    assert_eq!(all_deactivated.len(), 2);
+}
+
+#[test]
 fn test_get_claimed_plan() {
     let env = Env::default();
     env.mock_all_auths();
