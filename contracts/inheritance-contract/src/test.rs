@@ -2,8 +2,8 @@
 
 use super::*;
 use soroban_sdk::{
-    contract, contractimpl, contracttype, testutils::Address as _, vec, Address, Bytes, Env, String,
-    Symbol, Vec,
+    contract, contractimpl, contracttype, testutils::Address as _, vec, Address, Bytes, Env,
+    String, Symbol, Vec,
 };
 
 // Helper function to create test address
@@ -43,7 +43,9 @@ impl MockToken {
         let key_to = MockTokenKey::Balance(to);
         let b_from = env.storage().persistent().get(&key_from).unwrap_or(0);
         let b_to = env.storage().persistent().get(&key_to).unwrap_or(0);
-        env.storage().persistent().set(&key_from, &(b_from - amount));
+        env.storage()
+            .persistent()
+            .set(&key_from, &(b_from - amount));
         env.storage().persistent().set(&key_to, &(b_to + amount));
     }
 
@@ -938,7 +940,10 @@ fn test_creation_fee_calculation_and_net_amount_stored() {
     let plan = client.get_plan_details(&plan_id).unwrap();
     let expected_fee = input_amount * 2 / 100;
     let expected_net = input_amount - expected_fee;
-    assert_eq!(plan.total_amount, expected_net, "Plan must store net amount (input minus 2% fee)");
+    assert_eq!(
+        plan.total_amount, expected_net,
+        "Plan must store net amount (input minus 2% fee)"
+    );
     assert_eq!(expected_net, 98_000u64);
 }
 
@@ -999,7 +1004,10 @@ fn test_insufficient_balance_returns_error() {
 
     assert!(result.is_err());
     let err = result.err().unwrap();
-    assert!(err.is_ok(), "contract should return InheritanceError, not InvokeError");
+    assert!(
+        err.is_ok(),
+        "contract should return InheritanceError, not InvokeError"
+    );
     assert_eq!(err.ok().unwrap(), InheritanceError::InsufficientBalance);
 }
 
@@ -1027,7 +1035,10 @@ fn test_create_plan_without_admin_fails() {
 
     assert!(result.is_err());
     let err = result.err().unwrap();
-    assert!(err.is_ok(), "contract should return InheritanceError, not InvokeError");
+    assert!(
+        err.is_ok(),
+        "contract should return InheritanceError, not InvokeError"
+    );
     assert_eq!(err.ok().unwrap(), InheritanceError::AdminNotSet);
 }
 
