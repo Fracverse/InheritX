@@ -24,16 +24,19 @@ The INHERITX backend provides the following services:
 ### Setup
 
 1. **Clone and navigate to backend:**
+
    ```bash
    cd backend
    ```
 
 2. **Install dependencies:**
+
    ```bash
    cargo build
    ```
 
 3. **Database setup:**
+
    ```bash
    # Create PostgreSQL database
    createdb inheritx
@@ -44,6 +47,7 @@ The INHERITX backend provides the following services:
    ```
 
 4. **Run migrations:**
+
    ```bash
    cargo run --bin migrate
    ```
@@ -55,6 +59,25 @@ The INHERITX backend provides the following services:
 
 The server will start on `http://localhost:3000`.
 
+## Inheritance Plan Retrieval API
+
+The backend now supports retrieval of inheritance plans for both authenticated users and administrators.
+
+### Auth headers
+
+- User endpoints require either:
+  - `x-user-id: <uuid>`
+  - or `Authorization: Bearer <uuid>` (UUID user id)
+- Admin endpoints require:
+  - `x-admin-id: <uuid>`
+
+### Endpoints
+
+- `GET /plans/:id` - Get one plan for the authenticated user.
+- `GET /plans` - Get all plans (active and inactive) for the authenticated user.
+- `GET /plans/pending` - Get all pending plans for the authenticated user.
+- `GET /admin/plans` - Get all plans across all users (admin only).
+- `GET /admin/plans/pending` - Get all pending plans across all users (admin only).
 
 ## Development
 

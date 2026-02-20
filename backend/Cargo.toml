@@ -69,3 +69,4 @@ postgres-types = { version = "0.2.12", features = ["derive", "with-chrono-0_4", 
 [dev-dependencies]
 tokio-test = "0.4"
 httpmock = "0.7"
+tower05 = { package = "tower", version = "0.5", features = ["util"] }
