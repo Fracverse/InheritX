@@ -21,8 +21,12 @@ impl CurrencyPreference {
             CurrencyPreference::Fiat => "FIAT",
         }
     }
+}
 
-    pub fn from_str(s: &str) -> Result<Self, ApiError> {
+impl FromStr for CurrencyPreference {
+    type Err = ApiError;
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
         match s {
             "USDC" | "usdc" => Ok(CurrencyPreference::Usdc),
             "FIAT" | "fiat" => Ok(CurrencyPreference::Fiat),
@@ -221,8 +225,8 @@ impl PlanService {
         .bind(user_id)
         .bind(&req.title)
         .bind(&req.description)
-        .bind(&req.fee.to_string())
-        .bind(&req.net_amount.to_string())
+        .bind(req.fee.to_string())
+        .bind(req.net_amount.to_string())
         .bind(&beneficiary_name)
         .bind(&bank_account_number)
         .bind(&bank_name)
@@ -720,6 +724,7 @@ impl KycService {
 mod tests {
     use super::{CurrencyPreference, PlanService};
     use crate::api_error::ApiError;
+    use std::str::FromStr;
 
     #[test]
     fn currency_preference_accepts_usdc() {
