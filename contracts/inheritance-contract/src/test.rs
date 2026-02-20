@@ -905,3 +905,78 @@ fn test_get_plan_details() {
     assert!(deactivated_plan.is_some());
     assert!(!deactivated_plan.unwrap().is_active);
 }
+
+#[test]
+fn test_kyc_approve_success() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let contract_id = env.register_contract(None, InheritanceContract);
+    let client = InheritanceContractClient::new(&env, &contract_id);
+
+    let admin = create_test_address(&env, 1);
+    let user = create_test_address(&env, 2);
+
+    client.initialize_admin(&admin);
+    client.submit_kyc(&user);
+
+    let result = client.try_approve_kyc(&admin, &user);
+    assert!(result.is_ok());
+
+    let stored: KycStatus = env.as_contract(&contract_id, || {
+        env.storage().persistent().get(&DataKey::Kyc(user)).unwrap()
+    });
+    assert!(stored.submitted);
+    assert!(stored.approved);
+}
+
+#[test]
+fn test_kyc_approve_non_admin_fails() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let contract_id = env.register_contract(None, InheritanceContract);
+    let client = InheritanceContractClient::new(&env, &contract_id);
+
+    let admin = create_test_address(&env, 1);
+    let non_admin = create_test_address(&env, 2);
+    let user = create_test_address(&env, 3);
+
+    client.initialize_admin(&admin);
+    client.submit_kyc(&user);
+
+    let result = client.try_approve_kyc(&non_admin, &user);
+    assert!(result.is_err());
+}
+
+#[test]
+fn test_kyc_approve_without_submission_fails() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let contract_id = env.register_contract(None, InheritanceContract);
+    let client = InheritanceContractClient::new(&env, &contract_id);
+
+    let admin = create_test_address(&env, 1);
+    let user = create_test_address(&env, 2);
+
+    client.initialize_admin(&admin);
+
+    let result = client.try_approve_kyc(&admin, &user);
+    assert!(result.is_err());
+}
+
+#[test]
+fn test_kyc_approve_already_approved_fails() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let contract_id = env.register_contract(None, InheritanceContract);
+    let client = InheritanceContractClient::new(&env, &contract_id);
+
+    let admin = create_test_address(&env, 1);
+    let user = create_test_address(&env, 2);
+
+    client.initialize_admin(&admin);
+    client.submit_kyc(&user);
+    client.approve_kyc(&admin, &user);
+
+    let result = client.try_approve_kyc(&admin, &user);
+    assert!(result.is_err());
+}

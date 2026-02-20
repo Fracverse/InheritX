@@ -70,6 +70,11 @@ pub enum InheritanceError {
     BeneficiaryNotFound = 17,
     PlanAlreadyDeactivated = 18,
     PlanNotActive = 19,
+    AdminNotSet = 20,
+    AdminAlreadyInitialized = 21,
+    NotAdmin = 22,
+    KycNotSubmitted = 23,
+    KycAlreadyApproved = 24,
 }
 
 #[contracttype]
@@ -78,6 +83,8 @@ pub enum DataKey {
     NextPlanId,
     Plan(u64),
     Claim(BytesN<32>), // keyed by hashed_email
+    Admin,
+    Kyc(Address),
 }
 
 #[contracttype]
@@ -86,6 +93,15 @@ pub struct ClaimRecord {
     pub plan_id: u64,
     pub beneficiary_index: u32,
     pub claimed_at: u64,
+}
+
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct KycStatus {
+    pub submitted: bool,
+    pub approved: bool,
+    pub submitted_at: u64,
+    pub approved_at: u64,
 }
 
 // Events for beneficiary operations
@@ -112,6 +128,13 @@ pub struct PlanDeactivatedEvent {
     pub owner: Address,
     pub total_amount: u64,
     pub deactivated_at: u64,
+}
+
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct KycApprovedEvent {
+    pub user: Address,
+    pub approved_at: u64,
 }
 
 #[contract]
@@ -156,6 +179,20 @@ impl InheritanceContract {
         }
 
         Ok(env.crypto().sha256(&data).into())
+    }
+
+    fn get_admin(env: &Env) -> Option<Address> {
+        let key = DataKey::Admin;
+        env.storage().instance().get(&key)
+    }
+
+    fn require_admin(env: &Env, admin: &Address) -> Result<(), InheritanceError> {
+        admin.require_auth();
+        let stored_admin = Self::get_admin(env).ok_or(InheritanceError::AdminNotSet)?;
+        if stored_admin != *admin {
+            return Err(InheritanceError::NotAdmin);
+        }
+        Ok(())
     }
 
     fn create_beneficiary(
@@ -591,6 +628,73 @@ impl InheritanceContract {
             "Inheritance claimed for plan {} by {}",
             plan_id,
             email
+        );
+
+        Ok(())
+    }
+
+    /// Initialize contract admin. Can only be called once.
+    pub fn initialize_admin(env: Env, admin: Address) -> Result<(), InheritanceError> {
+        if Self::get_admin(&env).is_some() {
+            return Err(InheritanceError::AdminAlreadyInitialized);
+        }
+        admin.require_auth();
+        env.storage().instance().set(&DataKey::Admin, &admin);
+        Ok(())
+    }
+
+    /// Record KYC submission on-chain (called after off-chain submission).
+    pub fn submit_kyc(env: Env, user: Address) -> Result<(), InheritanceError> {
+        user.require_auth();
+
+        let key = DataKey::Kyc(user.clone());
+        let mut status = env.storage().persistent().get(&key).unwrap_or(KycStatus {
+            submitted: false,
+            approved: false,
+            submitted_at: 0,
+            approved_at: 0,
+        });
+
+        if status.approved {
+            return Err(InheritanceError::KycAlreadyApproved);
+        }
+
+        status.submitted = true;
+        status.submitted_at = env.ledger().timestamp();
+        env.storage().persistent().set(&key, &status);
+
+        Ok(())
+    }
+
+    /// Approve a user's KYC after off-chain verification (admin-only).
+    pub fn approve_kyc(env: Env, admin: Address, user: Address) -> Result<(), InheritanceError> {
+        Self::require_admin(&env, &admin)?;
+
+        let key = DataKey::Kyc(user.clone());
+        let mut status: KycStatus = env
+            .storage()
+            .persistent()
+            .get(&key)
+            .ok_or(InheritanceError::KycNotSubmitted)?;
+
+        if !status.submitted {
+            return Err(InheritanceError::KycNotSubmitted);
+        }
+
+        if status.approved {
+            return Err(InheritanceError::KycAlreadyApproved);
+        }
+
+        status.approved = true;
+        status.approved_at = env.ledger().timestamp();
+        env.storage().persistent().set(&key, &status);
+
+        env.events().publish(
+            (symbol_short!("KYC"), symbol_short!("APPROV")),
+            KycApprovedEvent {
+                user,
+                approved_at: status.approved_at,
+            },
         );
 
         Ok(())
