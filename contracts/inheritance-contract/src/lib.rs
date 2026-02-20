@@ -88,11 +88,11 @@ pub enum InheritanceError {
 pub enum DataKey {
     NextPlanId,
     Plan(u64),
-    Claim(BytesN<32>),  // keyed by hashed_email
-    UserPlans(Address), // keyed by owner Address, value is Vec<u64>
+    Claim(BytesN<32>),         // keyed by hashed_email
+    UserPlans(Address),        // keyed by owner Address, value is Vec<u64>
     UserClaimedPlans(Address), // keyed by owner Address, value is Vec<u64>
-    DeactivatedPlans,   // value is Vec<u64> of all deactivated plan IDs
-    AllClaimedPlans,    // value is Vec<u64> of all claimed plan IDs
+    DeactivatedPlans,          // value is Vec<u64> of all deactivated plan IDs
+    AllClaimedPlans,           // value is Vec<u64> of all claimed plan IDs
     Admin,
     Kyc(Address),
     Version,
@@ -947,8 +947,12 @@ impl InheritanceContract {
         }
 
         let key = DataKey::UserClaimedPlans(user);
-        let user_plans: Vec<u64> = env.storage().persistent().get(&key).unwrap_or(Vec::new(&env));
-        
+        let user_plans: Vec<u64> = env
+            .storage()
+            .persistent()
+            .get(&key)
+            .unwrap_or(Vec::new(&env));
+
         if !user_plans.contains(plan_id) {
             return Err(InheritanceError::PlanNotClaimed);
         }
