@@ -1282,3 +1282,175 @@ fn test_admin_retrieval() {
     let all_deactivated = client.get_all_deactivated_plans(&admin);
     assert_eq!(all_deactivated.len(), 2);
 }
+
+#[test]
+fn test_get_claimed_plan() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let contract_id = env.register_contract(None, InheritanceContract);
+    let client = InheritanceContractClient::new(&env, &contract_id);
+
+    let owner = create_test_address(&env, 1);
+    let user = create_test_address(&env, 2);
+
+    let beneficiaries_data = vec![
+        &env,
+        (
+            String::from_str(&env, "Alice"),
+            String::from_str(&env, "alice@example.com"),
+            123456u32,
+            create_test_bytes(&env, "1234567890123456"),
+            10000u32,
+        ),
+    ];
+
+    let plan_id = client.create_inheritance_plan(
+        &owner,
+        &String::from_str(&env, "Test Plan"),
+        &String::from_str(&env, "Test"),
+        &1000000u64,
+        &DistributionMethod::LumpSum,
+        &beneficiaries_data,
+    );
+
+    client.claim_inheritance_plan(
+        &plan_id,
+        &String::from_str(&env, "alice@example.com"),
+        &123456u32,
+    );
+
+    let (plan, claim) = client.get_claimed_plan(
+        &user,
+        &plan_id,
+        &String::from_str(&env, "alice@example.com"),
+    );
+    assert_eq!(plan.plan_name, String::from_str(&env, "Test Plan"));
+    assert_eq!(claim.plan_id, plan_id);
+}
+
+#[test]
+fn test_get_all_claimed_plans_for_user() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let contract_id = env.register_contract(None, InheritanceContract);
+    let client = InheritanceContractClient::new(&env, &contract_id);
+
+    let owner = create_test_address(&env, 1);
+    let user = create_test_address(&env, 2);
+
+    let beneficiaries_data = vec![
+        &env,
+        (
+            String::from_str(&env, "Alice"),
+            String::from_str(&env, "alice@example.com"),
+            123456u32,
+            create_test_bytes(&env, "1234567890123456"),
+            10000u32,
+        ),
+    ];
+
+    let plan_id1 = client.create_inheritance_plan(
+        &owner,
+        &String::from_str(&env, "Plan 1"),
+        &String::from_str(&env, "First"),
+        &1000000u64,
+        &DistributionMethod::LumpSum,
+        &beneficiaries_data.clone(),
+    );
+
+    let plan_id2 = client.create_inheritance_plan(
+        &owner,
+        &String::from_str(&env, "Plan 2"),
+        &String::from_str(&env, "Second"),
+        &2000000u64,
+        &DistributionMethod::LumpSum,
+        &beneficiaries_data,
+    );
+
+    client.claim_inheritance_plan(
+        &plan_id1,
+        &String::from_str(&env, "alice@example.com"),
+        &123456u32,
+    );
+    client.claim_inheritance_plan(
+        &plan_id2,
+        &String::from_str(&env, "alice@example.com"),
+        &123456u32,
+    );
+
+    let claimed_plans =
+        client.get_all_claimed_plans_for_user(&user, &String::from_str(&env, "alice@example.com"));
+    assert_eq!(claimed_plans.len(), 2);
+}
+
+#[test]
+fn test_get_all_claimed_plans_admin() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let contract_id = env.register_contract(None, InheritanceContract);
+    let client = InheritanceContractClient::new(&env, &contract_id);
+
+    let admin = create_test_address(&env, 1);
+    let owner = create_test_address(&env, 2);
+    client.initialize_admin(&admin);
+
+    let beneficiaries_data = vec![
+        &env,
+        (
+            String::from_str(&env, "Alice"),
+            String::from_str(&env, "alice@example.com"),
+            123456u32,
+            create_test_bytes(&env, "1234567890123456"),
+            5000u32,
+        ),
+        (
+            String::from_str(&env, "Bob"),
+            String::from_str(&env, "bob@example.com"),
+            654321u32,
+            create_test_bytes(&env, "6543210987654321"),
+            5000u32,
+        ),
+    ];
+
+    let plan_id = client.create_inheritance_plan(
+        &owner,
+        &String::from_str(&env, "Multi Beneficiary Plan"),
+        &String::from_str(&env, "Test"),
+        &3000000u64,
+        &DistributionMethod::LumpSum,
+        &beneficiaries_data,
+    );
+
+    client.claim_inheritance_plan(
+        &plan_id,
+        &String::from_str(&env, "alice@example.com"),
+        &123456u32,
+    );
+    client.claim_inheritance_plan(
+        &plan_id,
+        &String::from_str(&env, "bob@example.com"),
+        &654321u32,
+    );
+
+    let all_claimed = client.get_all_claimed_plans_admin(&admin);
+    assert_eq!(all_claimed.len(), 1);
+    let (_, _, claims) = all_claimed.get(0).unwrap();
+    assert_eq!(claims.len(), 2);
+}
+
+#[test]
+fn test_get_claimed_plan_not_found() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let contract_id = env.register_contract(None, InheritanceContract);
+    let client = InheritanceContractClient::new(&env, &contract_id);
+
+    let user = create_test_address(&env, 1);
+
+    let result = client.try_get_claimed_plan(
+        &user,
+        &999u64,
+        &String::from_str(&env, "notfound@example.com"),
+    );
+    assert!(result.is_err());
+}
