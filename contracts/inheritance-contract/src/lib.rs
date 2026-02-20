@@ -811,6 +811,34 @@ impl InheritanceContract {
         Ok(())
     }
 
+    /// Retrieve a specific deactivated plan (User)
+    ///
+    /// # Arguments
+    /// * `env` - The environment
+    /// * `user` - The user requesting the plan (must be owner)
+    /// * `plan_id` - The ID of the plan
+    pub fn get_deactivated_plan(
+        env: Env,
+        user: Address,
+        plan_id: u64,
+    ) -> Result<InheritancePlan, InheritanceError> {
+        user.require_auth();
+
+        let plan = Self::get_plan(&env, plan_id).ok_or(InheritanceError::PlanNotFound)?;
+
+        // Check if plan belongs to user
+        if plan.owner != user {
+            return Err(InheritanceError::Unauthorized);
+        }
+
+        // Check if plan is deactivated
+        if plan.is_active {
+            return Err(InheritanceError::PlanNotActive);
+        }
+
+        Ok(plan)
+    }
+
     // ───────────────────────────────────────────
     // Contract Upgrade Functions
     // ───────────────────────────────────────────
