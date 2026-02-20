@@ -58,7 +58,7 @@ pub struct DueForClaimPlan {
     pub updated_at: DateTime<Utc>,
 }
 
-/// Plan details including beneficiary 
+/// Plan details including beneficiary
 #[derive(Debug, Serialize, Deserialize)]
 pub struct PlanWithBeneficiary {
     pub id: Uuid,
@@ -275,7 +275,7 @@ impl PlanService {
             .currency_preference
             .as_deref()
             .map(CurrencyPreference::from_str)
-            .transpose()? 
+            .transpose()?
             .ok_or_else(|| {
                 ApiError::BadRequest("Plan has no currency preference set".to_string())
             })?;
