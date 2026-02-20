@@ -14,7 +14,9 @@ use uuid::Uuid;
 use crate::api_error::ApiError;
 use crate::auth::{AuthenticatedAdmin, AuthenticatedUser};
 use crate::config::Config;
-use crate::service::{KycRecord, KycService, KycStatus, PlanService};
+use crate::service::{
+    ClaimPlanRequest, CreatePlanRequest, KycRecord, KycService, KycStatus, PlanService,
+};
 
 pub struct AppState {
     pub db: PgPool,
@@ -45,13 +47,16 @@ pub async fn create_app(db: PgPool, config: Config) -> Result<Router, ApiError> 
                 }),
         )
         .route(
-            "/api/plans/due-for-claim/:plan_id",
-            get(get_due_for_claim_plan),
-        )
-        .route(
             "/api/plans/due-for-claim",
             get(get_all_due_for_claim_plans_user),
         )
+        .route(
+            "/api/plans/due-for-claim/:plan_id",
+            get(get_due_for_claim_plan),
+        )
+        .route("/api/plans/:plan_id/claim", post(claim_plan))
+        .route("/api/plans/:plan_id", get(get_plan))
+        .route("/api/plans", post(create_plan))
         .route(
             "/api/admin/plans/due-for-claim",
             get(get_all_due_for_claim_plans_admin),
@@ -75,6 +80,47 @@ async fn db_health_check(
     Ok(Json(
         json!({ "status": "ok", "message": "Database is connected" }),
     ))
+}
+
+async fn create_plan(
+    State(state): State<Arc<AppState>>,
+    AuthenticatedUser(user): AuthenticatedUser,
+    Json(req): Json<CreatePlanRequest>,
+) -> Result<Json<Value>, ApiError> {
+    let plan = PlanService::create_plan(&state.db, user.user_id, &req).await?;
+    Ok(Json(json!({
+        "status": "success",
+        "data": plan
+    })))
+}
+
+async fn get_plan(
+    State(state): State<Arc<AppState>>,
+    Path(plan_id): Path<Uuid>,
+    AuthenticatedUser(user): AuthenticatedUser,
+) -> Result<Json<Value>, ApiError> {
+    let plan = PlanService::get_plan_by_id(&state.db, plan_id, user.user_id).await?;
+    match plan {
+        Some(p) => Ok(Json(json!({
+            "status": "success",
+            "data": p
+        }))),
+        None => Err(ApiError::NotFound(format!("Plan {} not found", plan_id))),
+    }
+}
+
+async fn claim_plan(
+    State(state): State<Arc<AppState>>,
+    Path(plan_id): Path<Uuid>,
+    AuthenticatedUser(user): AuthenticatedUser,
+    Json(req): Json<ClaimPlanRequest>,
+) -> Result<Json<Value>, ApiError> {
+    let plan = PlanService::claim_plan(&state.db, plan_id, user.user_id, &req).await?;
+    Ok(Json(json!({
+        "status": "success",
+        "message": "Claim recorded",
+        "data": plan
+    })))
 }
 
 async fn get_due_for_claim_plan(
