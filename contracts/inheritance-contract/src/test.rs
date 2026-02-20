@@ -1,7 +1,10 @@
 #![cfg(test)]
 
 use super::*;
-use soroban_sdk::{testutils::Address as _, vec, Address, Bytes, Env, String, Symbol, Vec};
+use soroban_sdk::{
+    contract, contractimpl, contracttype, testutils::Address as _, vec, Address, Bytes, Env, String,
+    Symbol, Vec,
+};
 
 // Helper function to create test address
 fn create_test_address(env: &Env, _seed: u64) -> Address {
@@ -15,6 +18,71 @@ fn create_test_bytes(env: &Env, data: &str) -> Bytes {
         bytes.push_back(*byte);
     }
     bytes
+}
+
+// --- Mock token for fee tests (implements balance + transfer compatible with TokenClient) ---
+#[contract]
+pub struct MockToken;
+
+#[contracttype]
+#[derive(Clone)]
+enum MockTokenKey {
+    Balance(Address),
+}
+
+#[contractimpl]
+impl MockToken {
+    pub fn balance(env: Env, id: Address) -> i128 {
+        let key = MockTokenKey::Balance(id);
+        env.storage().persistent().get(&key).unwrap_or(0)
+    }
+
+    pub fn transfer(env: Env, from: Address, to: Address, amount: i128) {
+        from.require_auth();
+        let key_from = MockTokenKey::Balance(from);
+        let key_to = MockTokenKey::Balance(to);
+        let b_from = env.storage().persistent().get(&key_from).unwrap_or(0);
+        let b_to = env.storage().persistent().get(&key_to).unwrap_or(0);
+        env.storage().persistent().set(&key_from, &(b_from - amount));
+        env.storage().persistent().set(&key_to, &(b_to + amount));
+    }
+
+    pub fn mint(env: Env, to: Address, amount: i128) {
+        let key = MockTokenKey::Balance(to);
+        let b = env.storage().persistent().get(&key).unwrap_or(0);
+        env.storage().persistent().set(&key, &(b + amount));
+    }
+}
+
+/// Setup: register inheritance contract and mock token, init admin, mint to owner.
+/// Returns (inheritance_client, token_address, admin, owner).
+fn setup_with_token_and_admin(env: &Env) -> (InheritanceContractClient, Address, Address, Address) {
+    env.mock_all_auths();
+    let contract_id = env.register_contract(None, InheritanceContract);
+    let token_id = env.register_contract(None, MockToken);
+    let admin = create_test_address(env, 100);
+    let owner = create_test_address(env, 1);
+
+    let client = InheritanceContractClient::new(env, &contract_id);
+    client.initialize_admin(&admin);
+
+    // Mint a large amount to owner so they can create plans
+    MockTokenClient::new(env, &token_id).mint(&owner, &10_000_000i128);
+
+    (client, token_id, admin, owner)
+}
+
+fn default_beneficiaries(env: &Env) -> Vec<(String, String, u32, Bytes, u32)> {
+    vec![
+        env,
+        (
+            String::from_str(env, "Alice"),
+            String::from_str(env, "alice@example.com"),
+            111111u32,
+            create_test_bytes(env, "1111111111111111"),
+            10000u32,
+        ),
+    ]
 }
 
 #[test]
@@ -240,13 +308,8 @@ fn test_create_beneficiary_invalid_data() {
 #[test]
 fn test_add_beneficiary_success() {
     let env = Env::default();
-    env.mock_all_auths(); // Mock all authorizations for testing
-    let contract_id = env.register_contract(None, InheritanceContract);
-    let client = InheritanceContractClient::new(&env, &contract_id);
+    let (client, token, _admin, owner) = setup_with_token_and_admin(&env);
 
-    let owner = create_test_address(&env, 1);
-
-    // Create a plan first with full allocation
     let beneficiaries_data_full = vec![
         &env,
         (
@@ -260,6 +323,7 @@ fn test_add_beneficiary_success() {
 
     let _plan_id = client.create_inheritance_plan(
         &owner,
+        &token,
         &String::from_str(&env, "Test Plan"),
         &String::from_str(&env, "Test Description"),
         &1000000u64,
@@ -289,13 +353,8 @@ fn test_add_beneficiary_max_limit() {
 #[test]
 fn test_add_beneficiary_allocation_exceeds_limit() {
     let env = Env::default();
-    env.mock_all_auths();
-    let contract_id = env.register_contract(None, InheritanceContract);
-    let client = InheritanceContractClient::new(&env, &contract_id);
+    let (client, token, _admin, owner) = setup_with_token_and_admin(&env);
 
-    let owner = create_test_address(&env, 1);
-
-    // Create plan with 10000 bp (100%)
     let beneficiaries_data = vec![
         &env,
         (
@@ -309,6 +368,7 @@ fn test_add_beneficiary_allocation_exceeds_limit() {
 
     let plan_id = client.create_inheritance_plan(
         &owner,
+        &token,
         &String::from_str(&env, "Test Plan"),
         &String::from_str(&env, "Test Description"),
         &1000000u64,
@@ -335,13 +395,8 @@ fn test_add_beneficiary_allocation_exceeds_limit() {
 #[test]
 fn test_remove_beneficiary_success() {
     let env = Env::default();
-    env.mock_all_auths();
-    let contract_id = env.register_contract(None, InheritanceContract);
-    let client = InheritanceContractClient::new(&env, &contract_id);
+    let (client, token, _admin, owner) = setup_with_token_and_admin(&env);
 
-    let owner = create_test_address(&env, 1);
-
-    // Create plan with 2 beneficiaries
     let beneficiaries_data = vec![
         &env,
         (
@@ -362,6 +417,7 @@ fn test_remove_beneficiary_success() {
 
     let plan_id = client.create_inheritance_plan(
         &owner,
+        &token,
         &String::from_str(&env, "Test Plan"),
         &String::from_str(&env, "Test Description"),
         &1000000u64,
@@ -391,13 +447,8 @@ fn test_remove_beneficiary_success() {
 #[test]
 fn test_remove_beneficiary_invalid_index() {
     let env = Env::default();
-    env.mock_all_auths();
-    let contract_id = env.register_contract(None, InheritanceContract);
-    let client = InheritanceContractClient::new(&env, &contract_id);
+    let (client, token, _admin, owner) = setup_with_token_and_admin(&env);
 
-    let owner = create_test_address(&env, 1);
-
-    // Create plan with 1 beneficiary
     let beneficiaries_data = vec![
         &env,
         (
@@ -411,6 +462,7 @@ fn test_remove_beneficiary_invalid_index() {
 
     let plan_id = client.create_inheritance_plan(
         &owner,
+        &token,
         &String::from_str(&env, "Test Plan"),
         &String::from_str(&env, "Test Description"),
         &1000000u64,
@@ -426,14 +478,9 @@ fn test_remove_beneficiary_invalid_index() {
 #[test]
 fn test_remove_beneficiary_unauthorized() {
     let env = Env::default();
-    env.mock_all_auths();
-    let contract_id = env.register_contract(None, InheritanceContract);
-    let client = InheritanceContractClient::new(&env, &contract_id);
-
-    let owner = create_test_address(&env, 1);
+    let (client, token, _admin, owner) = setup_with_token_and_admin(&env);
     let unauthorized = create_test_address(&env, 2);
 
-    // Create plan
     let beneficiaries_data = vec![
         &env,
         (
@@ -447,6 +494,7 @@ fn test_remove_beneficiary_unauthorized() {
 
     let plan_id = client.create_inheritance_plan(
         &owner,
+        &token,
         &String::from_str(&env, "Test Plan"),
         &String::from_str(&env, "Test Description"),
         &1000000u64,
@@ -462,13 +510,8 @@ fn test_remove_beneficiary_unauthorized() {
 #[test]
 fn test_beneficiary_allocation_tracking() {
     let env = Env::default();
-    env.mock_all_auths();
-    let contract_id = env.register_contract(None, InheritanceContract);
-    let client = InheritanceContractClient::new(&env, &contract_id);
+    let (client, token, _admin, owner) = setup_with_token_and_admin(&env);
 
-    let owner = create_test_address(&env, 1);
-
-    // Create plan with 3 beneficiaries totaling 10000 bp
     let beneficiaries_data = vec![
         &env,
         (
@@ -496,6 +539,7 @@ fn test_beneficiary_allocation_tracking() {
 
     let plan_id = client.create_inheritance_plan(
         &owner,
+        &token,
         &String::from_str(&env, "Test Plan"),
         &String::from_str(&env, "Test Description"),
         &1000000u64,
@@ -537,12 +581,7 @@ fn test_beneficiary_allocation_tracking() {
 #[test]
 fn test_claim_success() {
     let env = Env::default();
-    env.mock_all_auths();
-
-    let contract_id = env.register_contract(None, InheritanceContract);
-    let client = InheritanceContractClient::new(&env, &contract_id);
-
-    let owner = Address::generate(&env);
+    let (client, token, _admin, owner) = setup_with_token_and_admin(&env);
 
     let beneficiaries = vec![
         &env,
@@ -557,6 +596,7 @@ fn test_claim_success() {
 
     let plan_id = client.create_inheritance_plan(
         &owner,
+        &token,
         &String::from_str(&env, "Will"),
         &String::from_str(&env, "Inheritance Plan"),
         &1000u64,
@@ -575,12 +615,7 @@ fn test_claim_success() {
 #[should_panic]
 fn test_double_claim_fails() {
     let env = Env::default();
-    env.mock_all_auths();
-
-    let contract_id = env.register_contract(None, InheritanceContract);
-    let client = InheritanceContractClient::new(&env, &contract_id);
-
-    let owner = Address::generate(&env);
+    let (client, token, _admin, owner) = setup_with_token_and_admin(&env);
 
     let beneficiaries = vec![
         &env,
@@ -595,6 +630,7 @@ fn test_double_claim_fails() {
 
     let plan_id = client.create_inheritance_plan(
         &owner,
+        &token,
         &String::from_str(&env, "Will"),
         &String::from_str(&env, "Inheritance Plan"),
         &1000u64,
@@ -619,12 +655,7 @@ fn test_double_claim_fails() {
 #[should_panic]
 fn test_claim_with_wrong_code_fails() {
     let env = Env::default();
-    env.mock_all_auths();
-
-    let contract_id = env.register_contract(None, InheritanceContract);
-    let client = InheritanceContractClient::new(&env, &contract_id);
-
-    let owner = Address::generate(&env);
+    let (client, token, _admin, owner) = setup_with_token_and_admin(&env);
 
     let beneficiaries = vec![
         &env,
@@ -639,6 +670,7 @@ fn test_claim_with_wrong_code_fails() {
 
     let plan_id = client.create_inheritance_plan(
         &owner,
+        &token,
         &String::from_str(&env, "Will"),
         &String::from_str(&env, "Inheritance Plan"),
         &1000u64,
@@ -656,13 +688,8 @@ fn test_claim_with_wrong_code_fails() {
 #[test]
 fn test_deactivate_plan_success() {
     let env = Env::default();
-    env.mock_all_auths();
-    let contract_id = env.register_contract(None, InheritanceContract);
-    let client = InheritanceContractClient::new(&env, &contract_id);
+    let (client, token, _admin, owner) = setup_with_token_and_admin(&env);
 
-    let owner = create_test_address(&env, 1);
-
-    // Create a plan
     let beneficiaries_data = vec![
         &env,
         (
@@ -676,6 +703,7 @@ fn test_deactivate_plan_success() {
 
     let plan_id = client.create_inheritance_plan(
         &owner,
+        &token,
         &String::from_str(&env, "Test Plan"),
         &String::from_str(&env, "Test Description"),
         &1000000u64,
@@ -691,14 +719,9 @@ fn test_deactivate_plan_success() {
 #[test]
 fn test_deactivate_plan_unauthorized() {
     let env = Env::default();
-    env.mock_all_auths();
-    let contract_id = env.register_contract(None, InheritanceContract);
-    let client = InheritanceContractClient::new(&env, &contract_id);
-
-    let owner = create_test_address(&env, 1);
+    let (client, token, _admin, owner) = setup_with_token_and_admin(&env);
     let unauthorized = create_test_address(&env, 2);
 
-    // Create a plan
     let beneficiaries_data = vec![
         &env,
         (
@@ -712,6 +735,7 @@ fn test_deactivate_plan_unauthorized() {
 
     let plan_id = client.create_inheritance_plan(
         &owner,
+        &token,
         &String::from_str(&env, "Test Plan"),
         &String::from_str(&env, "Test Description"),
         &1000000u64,
@@ -741,13 +765,8 @@ fn test_deactivate_plan_not_found() {
 #[test]
 fn test_deactivate_plan_already_deactivated() {
     let env = Env::default();
-    env.mock_all_auths();
-    let contract_id = env.register_contract(None, InheritanceContract);
-    let client = InheritanceContractClient::new(&env, &contract_id);
+    let (client, token, _admin, owner) = setup_with_token_and_admin(&env);
 
-    let owner = create_test_address(&env, 1);
-
-    // Create a plan
     let beneficiaries_data = vec![
         &env,
         (
@@ -761,6 +780,7 @@ fn test_deactivate_plan_already_deactivated() {
 
     let plan_id = client.create_inheritance_plan(
         &owner,
+        &token,
         &String::from_str(&env, "Test Plan"),
         &String::from_str(&env, "Test Description"),
         &1000000u64,
@@ -780,13 +800,8 @@ fn test_deactivate_plan_already_deactivated() {
 #[should_panic]
 fn test_claim_deactivated_plan_fails() {
     let env = Env::default();
-    env.mock_all_auths();
-    let contract_id = env.register_contract(None, InheritanceContract);
-    let client = InheritanceContractClient::new(&env, &contract_id);
+    let (client, token, _admin, owner) = setup_with_token_and_admin(&env);
 
-    let owner = create_test_address(&env, 1);
-
-    // Create a plan
     let beneficiaries_data = vec![
         &env,
         (
@@ -800,6 +815,7 @@ fn test_claim_deactivated_plan_fails() {
 
     let plan_id = client.create_inheritance_plan(
         &owner,
+        &token,
         &String::from_str(&env, "Test Plan"),
         &String::from_str(&env, "Test Description"),
         &1000000u64,
@@ -821,13 +837,8 @@ fn test_claim_deactivated_plan_fails() {
 #[test]
 fn test_deactivate_plan_with_multiple_beneficiaries() {
     let env = Env::default();
-    env.mock_all_auths();
-    let contract_id = env.register_contract(None, InheritanceContract);
-    let client = InheritanceContractClient::new(&env, &contract_id);
+    let (client, token, _admin, owner) = setup_with_token_and_admin(&env);
 
-    let owner = create_test_address(&env, 1);
-
-    // Create a plan with multiple beneficiaries
     let beneficiaries_data = vec![
         &env,
         (
@@ -848,6 +859,7 @@ fn test_deactivate_plan_with_multiple_beneficiaries() {
 
     let plan_id = client.create_inheritance_plan(
         &owner,
+        &token,
         &String::from_str(&env, "Test Plan"),
         &String::from_str(&env, "Test Description"),
         &2000000u64,
@@ -863,13 +875,8 @@ fn test_deactivate_plan_with_multiple_beneficiaries() {
 #[test]
 fn test_get_plan_details() {
     let env = Env::default();
-    env.mock_all_auths();
-    let contract_id = env.register_contract(None, InheritanceContract);
-    let client = InheritanceContractClient::new(&env, &contract_id);
+    let (client, token, _admin, owner) = setup_with_token_and_admin(&env);
 
-    let owner = create_test_address(&env, 1);
-
-    // Create a plan
     let beneficiaries_data = vec![
         &env,
         (
@@ -883,6 +890,7 @@ fn test_get_plan_details() {
 
     let plan_id = client.create_inheritance_plan(
         &owner,
+        &token,
         &String::from_str(&env, "Test Plan"),
         &String::from_str(&env, "Test Description"),
         &1000000u64,
@@ -890,13 +898,13 @@ fn test_get_plan_details() {
         &beneficiaries_data,
     );
 
-    // Get plan details
+    // Get plan details — plan stores net amount (user input minus 2% fee): 1000000 * 0.98 = 980000
     let plan = client.get_plan_details(&plan_id);
     assert!(plan.is_some());
 
     let plan_data = plan.unwrap();
     assert!(plan_data.is_active);
-    assert_eq!(plan_data.total_amount, 1000000u64);
+    assert_eq!(plan_data.total_amount, 980000u64);
 
     // Deactivate and check again
     client.deactivate_inheritance_plan(&owner, &plan_id);
@@ -904,6 +912,144 @@ fn test_get_plan_details() {
     let deactivated_plan = client.get_plan_details(&plan_id);
     assert!(deactivated_plan.is_some());
     assert!(!deactivated_plan.unwrap().is_active);
+}
+
+// --- 2% creation fee: unit and integration tests ---
+
+#[test]
+fn test_creation_fee_calculation_and_net_amount_stored() {
+    let env = Env::default();
+    let (client, token, _admin, owner) = setup_with_token_and_admin(&env);
+
+    // User input 100_000; 2% fee = 2_000, net = 98_000
+    let input_amount = 100_000u64;
+    let beneficiaries_data = default_beneficiaries(&env);
+
+    let plan_id = client.create_inheritance_plan(
+        &owner,
+        &token,
+        &String::from_str(&env, "Fee Test Plan"),
+        &String::from_str(&env, "Description"),
+        &input_amount,
+        &DistributionMethod::LumpSum,
+        &beneficiaries_data,
+    );
+
+    let plan = client.get_plan_details(&plan_id).unwrap();
+    let expected_fee = input_amount * 2 / 100;
+    let expected_net = input_amount - expected_fee;
+    assert_eq!(plan.total_amount, expected_net, "Plan must store net amount (input minus 2% fee)");
+    assert_eq!(expected_net, 98_000u64);
+}
+
+#[test]
+fn test_fee_transfer_to_admin_wallet() {
+    let env = Env::default();
+    let (client, token, admin, owner) = setup_with_token_and_admin(&env);
+
+    let input_amount = 1000u64; // fee = 20
+    let beneficiaries_data = default_beneficiaries(&env);
+
+    let admin_balance_before = MockTokenClient::new(&env, &token).balance(&admin);
+
+    client.create_inheritance_plan(
+        &owner,
+        &token,
+        &String::from_str(&env, "Plan"),
+        &String::from_str(&env, "Desc"),
+        &input_amount,
+        &DistributionMethod::LumpSum,
+        &beneficiaries_data,
+    );
+
+    let admin_balance_after = MockTokenClient::new(&env, &token).balance(&admin);
+    let expected_fee = 20i128; // 2% of 1000
+    assert_eq!(
+        admin_balance_after - admin_balance_before,
+        expected_fee,
+        "Admin must receive 2% fee"
+    );
+}
+
+#[test]
+fn test_insufficient_balance_returns_error() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let contract_id = env.register_contract(None, InheritanceContract);
+    let token_id = env.register_contract(None, MockToken);
+    let admin = create_test_address(&env, 100);
+    let owner = create_test_address(&env, 1);
+
+    InheritanceContractClient::new(&env, &contract_id).initialize_admin(&admin);
+    // Mint only 100 to owner (less than 1000 needed)
+    MockTokenClient::new(&env, &token_id).mint(&owner, &100i128);
+
+    let client = InheritanceContractClient::new(&env, &contract_id);
+    let beneficiaries_data = default_beneficiaries(&env);
+
+    let result = client.try_create_inheritance_plan(
+        &owner,
+        &token_id,
+        &String::from_str(&env, "Plan"),
+        &String::from_str(&env, "Desc"),
+        &1000u64,
+        &DistributionMethod::LumpSum,
+        &beneficiaries_data,
+    );
+
+    assert!(result.is_err());
+    let err = result.err().unwrap();
+    assert!(err.is_ok(), "contract should return InheritanceError, not InvokeError");
+    assert_eq!(err.ok().unwrap(), InheritanceError::InsufficientBalance);
+}
+
+#[test]
+fn test_create_plan_without_admin_fails() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let contract_id = env.register_contract(None, InheritanceContract);
+    let token_id = env.register_contract(None, MockToken);
+    let owner = create_test_address(&env, 1);
+    MockTokenClient::new(&env, &token_id).mint(&owner, &10_000_000i128);
+
+    let client = InheritanceContractClient::new(&env, &contract_id);
+    // Do NOT call initialize_admin
+
+    let result = client.try_create_inheritance_plan(
+        &owner,
+        &token_id,
+        &String::from_str(&env, "Plan"),
+        &String::from_str(&env, "Desc"),
+        &1000u64,
+        &DistributionMethod::LumpSum,
+        &default_beneficiaries(&env),
+    );
+
+    assert!(result.is_err());
+    let err = result.err().unwrap();
+    assert!(err.is_ok(), "contract should return InheritanceError, not InvokeError");
+    assert_eq!(err.ok().unwrap(), InheritanceError::AdminNotSet);
+}
+
+#[test]
+fn test_successful_plan_creation_with_net_amount() {
+    let env = Env::default();
+    let (client, token, _admin, owner) = setup_with_token_and_admin(&env);
+
+    let input = 50_000u64;
+    let plan_id = client.create_inheritance_plan(
+        &owner,
+        &token,
+        &String::from_str(&env, "My Plan"),
+        &String::from_str(&env, "Desc"),
+        &input,
+        &DistributionMethod::LumpSum,
+        &default_beneficiaries(&env),
+    );
+
+    let plan = client.get_plan_details(&plan_id).unwrap();
+    assert_eq!(plan.total_amount, 49_000u64); // 50_000 - 2% = 49_000
+    assert!(plan.is_active);
 }
 
 #[test]
