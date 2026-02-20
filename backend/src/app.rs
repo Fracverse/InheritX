@@ -11,7 +11,7 @@ use uuid::Uuid;
 use crate::api_error::ApiError;
 use crate::auth::{AuthenticatedAdmin, AuthenticatedUser};
 use crate::config::Config;
-use crate::service::PlanService;
+use crate::service::{ClaimService, PlanService};
 
 pub struct AppState {
     pub db: PgPool,
@@ -36,6 +36,9 @@ pub async fn create_app(db: PgPool, config: Config) -> Result<Router, ApiError> 
             "/api/admin/plans/due-for-claim",
             get(get_all_due_for_claim_plans_admin),
         )
+        .route("/api/claims/:plan_id", get(get_claimed_plan))
+        .route("/api/claims", get(get_all_claimed_plans_user))
+        .route("/api/admin/claims", get(get_all_claimed_plans_admin))
         .with_state(state);
 
     Ok(app)
@@ -96,5 +99,50 @@ async fn get_all_due_for_claim_plans_admin(
         "status": "success",
         "data": plans,
         "count": plans.len()
+    })))
+}
+
+async fn get_claimed_plan(
+    State(state): State<Arc<AppState>>,
+    Path(plan_id): Path<Uuid>,
+    AuthenticatedUser(user): AuthenticatedUser,
+) -> Result<Json<Value>, ApiError> {
+    let claim = ClaimService::get_claimed_plan_by_id(&state.db, plan_id, user.user_id).await?;
+
+    match claim {
+        Some(claim) => Ok(Json(json!({
+            "status": "success",
+            "data": claim
+        }))),
+        None => Err(ApiError::NotFound(format!(
+            "Claimed plan {} not found",
+            plan_id
+        ))),
+    }
+}
+
+async fn get_all_claimed_plans_user(
+    State(state): State<Arc<AppState>>,
+    AuthenticatedUser(user): AuthenticatedUser,
+) -> Result<Json<Value>, ApiError> {
+    let claims = ClaimService::get_all_claimed_plans_for_user(&state.db, user.user_id).await?;
+
+    Ok(Json(json!({
+        "status": "success",
+        "data": claims,
+        "count": claims.len()
+    })))
+}
+
+async fn get_all_claimed_plans_admin(
+    State(state): State<Arc<AppState>>,
+    AuthenticatedAdmin(_admin): AuthenticatedAdmin,
+) -> Result<Json<Value>, ApiError> {
+    let claims = ClaimService::get_all_claimed_plans_admin(&state.db).await?;
+
+    Ok(Json(json!({
+        "status": "success",
+        "data": claims,
+        "count": claims.len()
     })))
 }

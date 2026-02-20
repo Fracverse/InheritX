@@ -21,6 +21,18 @@ pub struct DueForClaimPlan {
     pub updated_at: DateTime<Utc>,
 }
 
+#[derive(Debug, Serialize, Deserialize)]
+pub struct ClaimedPlan {
+    pub id: Uuid,
+    pub plan_id: Uuid,
+    pub user_id: Uuid,
+    pub title: String,
+    pub description: Option<String>,
+    pub claimed_amount: rust_decimal::Decimal,
+    pub transaction_hash: Option<String>,
+    pub claimed_at: DateTime<Utc>,
+}
+
 pub struct PlanService;
 
 impl PlanService {
@@ -295,5 +307,74 @@ impl PlanService {
         }
 
         Ok(due_plans)
+    }
+}
+
+pub struct ClaimService;
+
+impl ClaimService {
+    pub async fn get_claimed_plan_by_id(
+        db: &PgPool,
+        plan_id: Uuid,
+        user_id: Uuid,
+    ) -> Result<Option<ClaimedPlan>, ApiError> {
+        let claim = sqlx::query_as!(
+            ClaimedPlan,
+            r#"
+            SELECT c.id, c.plan_id, c.user_id, p.title, p.description,
+                   c.claimed_amount as "claimed_amount: rust_decimal::Decimal",
+                   c.transaction_hash, c.claimed_at
+            FROM claims c
+            JOIN plans p ON c.plan_id = p.id
+            WHERE c.plan_id = $1 AND c.user_id = $2
+            "#,
+            plan_id,
+            user_id
+        )
+        .fetch_optional(db)
+        .await?;
+
+        Ok(claim)
+    }
+
+    pub async fn get_all_claimed_plans_for_user(
+        db: &PgPool,
+        user_id: Uuid,
+    ) -> Result<Vec<ClaimedPlan>, ApiError> {
+        let claims = sqlx::query_as!(
+            ClaimedPlan,
+            r#"
+            SELECT c.id, c.plan_id, c.user_id, p.title, p.description,
+                   c.claimed_amount as "claimed_amount: rust_decimal::Decimal",
+                   c.transaction_hash, c.claimed_at
+            FROM claims c
+            JOIN plans p ON c.plan_id = p.id
+            WHERE c.user_id = $1
+            ORDER BY c.claimed_at DESC
+            "#,
+            user_id
+        )
+        .fetch_all(db)
+        .await?;
+
+        Ok(claims)
+    }
+
+    pub async fn get_all_claimed_plans_admin(db: &PgPool) -> Result<Vec<ClaimedPlan>, ApiError> {
+        let claims = sqlx::query_as!(
+            ClaimedPlan,
+            r#"
+            SELECT c.id, c.plan_id, c.user_id, p.title, p.description,
+                   c.claimed_amount as "claimed_amount: rust_decimal::Decimal",
+                   c.transaction_hash, c.claimed_at
+            FROM claims c
+            JOIN plans p ON c.plan_id = p.id
+            ORDER BY c.claimed_at DESC
+            "#
+        )
+        .fetch_all(db)
+        .await?;
+
+        Ok(claims)
     }
 }
