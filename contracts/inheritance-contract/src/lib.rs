@@ -966,7 +966,8 @@ impl InheritanceContract {
                         DataKey::Claim(env.crypto().sha256(&data).into())
                     };
 
-                    if let Some(claim) = env.storage().persistent().get::<_, ClaimRecord>(&claim_key)
+                    if let Some(claim) =
+                        env.storage().persistent().get::<_, ClaimRecord>(&claim_key)
                     {
                         claims_for_plan.push_back(claim);
                     }
