@@ -87,7 +87,7 @@ pub enum InheritanceError {
 pub enum DataKey {
     NextPlanId,
     Plan(u64),
-    Claim(BytesN<32>), // keyed by hashed_email
+    Claim(BytesN<32>),  // keyed by hashed_email
     Admin,
     Kyc(Address),
     Version,
