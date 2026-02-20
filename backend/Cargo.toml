@@ -59,6 +59,7 @@ chrono = { version = "0.4", features = ["serde"] }
 regex = "1.10"
 base64 = "0.21"
 dotenvy = "0.15"
+rand = "0.8"
 
 # Metrics & monitoring
 prometheus = "0.13"
