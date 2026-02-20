@@ -839,6 +839,30 @@ impl InheritanceContract {
         Ok(plan)
     }
 
+    /// Retrieve all deactivated plans for a user
+    pub fn get_user_deactivated_plans(env: Env, user: Address) -> Vec<InheritancePlan> {
+        user.require_auth();
+
+        let key = DataKey::UserPlans(user.clone());
+        let user_plan_ids: Vec<u64> = env
+            .storage()
+            .persistent()
+            .get(&key)
+            .unwrap_or(Vec::new(&env));
+
+        let mut deactivated_plans = Vec::new(&env);
+
+        for plan_id in user_plan_ids.iter() {
+            if let Some(plan) = Self::get_plan(&env, plan_id) {
+                if !plan.is_active {
+                    deactivated_plans.push_back(plan);
+                }
+            }
+        }
+
+        deactivated_plans
+    }
+
     // ───────────────────────────────────────────
     // Contract Upgrade Functions
     // ───────────────────────────────────────────
