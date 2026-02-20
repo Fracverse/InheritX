@@ -1095,7 +1095,7 @@ impl InheritanceContract {
                     }
                 }
 
-                if claims_for_plan.len() > 0 {
+                if !claims_for_plan.is_empty() {
                     all_claimed_plans.push_back((plan_id, plan, claims_for_plan));
                 }
             }
