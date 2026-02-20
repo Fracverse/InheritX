@@ -2,6 +2,8 @@ use crate::api_error::ApiError;
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use sqlx::PgPool;
+use std::fmt;
+use std::str::FromStr;
 use uuid::Uuid;
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -306,21 +308,26 @@ pub enum KycStatus {
     Rejected,
 }
 
-impl KycStatus {
-    pub fn from_str(s: &str) -> Self {
-        match s {
-            "approved" => KycStatus::Approved,
-            "rejected" => KycStatus::Rejected,
-            _ => KycStatus::Pending,
-        }
-    }
-
-    pub fn to_string(&self) -> String {
-        match self {
+impl fmt::Display for KycStatus {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let s = match self {
             KycStatus::Pending => "pending",
             KycStatus::Approved => "approved",
             KycStatus::Rejected => "rejected",
-        }.to_string()
+        };
+        write!(f, "{}", s)
+    }
+}
+
+impl FromStr for KycStatus {
+    type Err = std::convert::Infallible;
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        Ok(match s {
+            "approved" => KycStatus::Approved,
+            "rejected" => KycStatus::Rejected,
+            _ => KycStatus::Pending,
+        })
     }
 }
 

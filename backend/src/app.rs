@@ -41,7 +41,6 @@ pub async fn create_app(db: PgPool, config: Config) -> Result<Router, ApiError> 
         .route("/api/admin/kyc/reject", post(reject_kyc))
         .with_state(state);
 
-
     Ok(app)
 }
 
