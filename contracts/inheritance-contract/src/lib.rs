@@ -854,11 +854,7 @@ impl InheritanceContract {
     pub fn migrate(env: Env, admin: Address) -> Result<(), InheritanceError> {
         Self::require_admin(&env, &admin)?;
 
-        let stored_version: u32 = env
-            .storage()
-            .instance()
-            .get(&DataKey::Version)
-            .unwrap_or(0);
+        let stored_version: u32 = env.storage().instance().get(&DataKey::Version).unwrap_or(0);
 
         if stored_version >= CONTRACT_VERSION {
             // Already up-to-date — nothing to migrate

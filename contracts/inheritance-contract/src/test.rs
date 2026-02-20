@@ -1176,10 +1176,7 @@ fn test_plan_data_survives_across_versions() {
     assert!(!deact_plan.is_active);
 
     let kyc: KycStatus = env.as_contract(&contract_id, || {
-        env.storage()
-            .persistent()
-            .get(&DataKey::Kyc(user))
-            .unwrap()
+        env.storage().persistent().get(&DataKey::Kyc(user)).unwrap()
     });
     assert!(kyc.submitted);
     assert!(kyc.approved);
