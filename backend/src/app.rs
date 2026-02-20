@@ -44,6 +44,7 @@ pub async fn create_app(db: PgPool, config: Config) -> Result<Router, ApiError> 
                 .layer(GovernorLayer {
                     config: governor_conf,
                 }),
+            )
         .route(
             "/api/plans/due-for-claim/:plan_id",
             get(get_due_for_claim_plan),
