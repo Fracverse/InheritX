@@ -58,7 +58,9 @@ impl MockToken {
 
 /// Setup: register inheritance contract and mock token, init admin, mint to owner.
 /// Returns (inheritance_client, token_address, admin, owner).
-fn setup_with_token_and_admin(env: &Env) -> (InheritanceContractClient<'_>, Address, Address, Address) {
+fn setup_with_token_and_admin(
+    env: &Env,
+) -> (InheritanceContractClient<'_>, Address, Address, Address) {
     env.mock_all_auths();
     let contract_id = env.register_contract(None, InheritanceContract);
     let token_id = env.register_contract(None, MockToken);
