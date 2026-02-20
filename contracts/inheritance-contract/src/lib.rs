@@ -4,6 +4,9 @@ use soroban_sdk::{
     BytesN, Env, String, Symbol, Vec,
 };
 
+/// Current contract version - bump this on each upgrade
+const CONTRACT_VERSION: u32 = 1;
+
 #[contracttype]
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum DistributionMethod {
@@ -75,6 +78,8 @@ pub enum InheritanceError {
     NotAdmin = 22,
     KycNotSubmitted = 23,
     KycAlreadyApproved = 24,
+    UpgradeFailed = 25,
+    MigrationNotRequired = 26,
 }
 
 #[contracttype]
@@ -85,6 +90,7 @@ pub enum DataKey {
     Claim(BytesN<32>), // keyed by hashed_email
     Admin,
     Kyc(Address),
+    Version,
 }
 
 #[contracttype]
@@ -135,6 +141,16 @@ pub struct PlanDeactivatedEvent {
 pub struct KycApprovedEvent {
     pub user: Address,
     pub approved_at: u64,
+}
+
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct ContractUpgradedEvent {
+    pub old_version: u32,
+    pub new_version: u32,
+    pub new_wasm_hash: BytesN<32>,
+    pub admin: Address,
+    pub upgraded_at: u64,
 }
 
 #[contract]
@@ -758,6 +774,110 @@ impl InheritanceContract {
         );
 
         log!(&env, "Inheritance plan {} deactivated by owner", plan_id);
+
+        Ok(())
+    }
+
+    // ───────────────────────────────────────────
+    // Contract Upgrade Functions
+    // ───────────────────────────────────────────
+
+    /// Get the current contract version.
+    pub fn version(env: Env) -> u32 {
+        env.storage()
+            .instance()
+            .get(&DataKey::Version)
+            .unwrap_or(CONTRACT_VERSION)
+    }
+
+    /// Upgrade the contract to a new WASM binary.
+    ///
+    /// # Arguments
+    /// * `env` - The environment
+    /// * `admin` - The admin address (must be the initialized admin)
+    /// * `new_wasm_hash` - The hash of the new WASM binary to deploy
+    ///
+    /// # Errors
+    /// - `AdminNotSet` if admin has not been initialized
+    /// - `NotAdmin` if the caller is not the admin
+    pub fn upgrade(
+        env: Env,
+        admin: Address,
+        new_wasm_hash: BytesN<32>,
+    ) -> Result<(), InheritanceError> {
+        // Only the contract admin can trigger an upgrade
+        Self::require_admin(&env, &admin)?;
+
+        let old_version = Self::version(env.clone());
+        let new_version = old_version + 1;
+
+        // Store the new version before upgrading
+        env.storage()
+            .instance()
+            .set(&DataKey::Version, &new_version);
+
+        // Emit upgrade event for audit trail
+        env.events().publish(
+            (symbol_short!("CONTRACT"), symbol_short!("UPGRADE")),
+            ContractUpgradedEvent {
+                old_version,
+                new_version,
+                new_wasm_hash: new_wasm_hash.clone(),
+                admin: admin.clone(),
+                upgraded_at: env.ledger().timestamp(),
+            },
+        );
+
+        log!(
+            &env,
+            "Contract upgraded from v{} to v{} by admin",
+            old_version,
+            new_version
+        );
+
+        // Perform the atomic WASM upgrade — this replaces the contract code
+        // while preserving all storage (plans, claims, KYC, admin, etc.)
+        env.deployer().update_current_contract_wasm(new_wasm_hash);
+
+        Ok(())
+    }
+
+    /// Post-upgrade migration hook for data schema changes.
+    ///
+    /// Call this after deploying a new WASM if the new version requires
+    /// storage migrations. If no migration is needed the function is a no-op
+    /// so it is always safe to call.
+    ///
+    /// # Arguments
+    /// * `env` - The environment
+    /// * `admin` - The admin address (must be the initialized admin)
+    pub fn migrate(env: Env, admin: Address) -> Result<(), InheritanceError> {
+        Self::require_admin(&env, &admin)?;
+
+        let stored_version: u32 = env.storage().instance().get(&DataKey::Version).unwrap_or(0);
+
+        if stored_version >= CONTRACT_VERSION {
+            // Already up-to-date — nothing to migrate
+            return Err(InheritanceError::MigrationNotRequired);
+        }
+
+        // ── Version-specific migrations go here ──
+        // Example for a future migration:
+        // if stored_version < 2 {
+        //     // migrate from v1 → v2 schema changes
+        // }
+
+        // Update stored version to current
+        env.storage()
+            .instance()
+            .set(&DataKey::Version, &CONTRACT_VERSION);
+
+        log!(
+            &env,
+            "Contract migrated from v{} to v{}",
+            stored_version,
+            CONTRACT_VERSION
+        );
 
         Ok(())
     }
