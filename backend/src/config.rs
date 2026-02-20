@@ -5,6 +5,7 @@ use serde::Deserialize;
 pub struct Config {
     pub database_url: String,
     pub port: u16,
+    pub jwt_secret: String,
 }
 
 impl Config {
@@ -19,6 +20,13 @@ impl Config {
             .parse()
             .map_err(|_| ApiError::Internal(anyhow::anyhow!("PORT must be a valid number")))?;
 
-        Ok(Config { database_url, port })
+        let jwt_secret = std::env::var("JWT_SECRET")
+            .map_err(|_| ApiError::Internal(anyhow::anyhow!("JWT_SECRET must be set")))?;
+
+        Ok(Config {
+            database_url,
+            port,
+            jwt_secret,
+        })
     }
 }
