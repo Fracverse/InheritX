@@ -11,7 +11,7 @@ pub struct CreateUserRequest {
 
 #[derive(Debug, Serialize)]
 pub struct UserResponse {
-    pub id: uuid::Uuid,
+    pub id: String,
     pub user_id: String,
     pub stellar_address: String,
     pub created_at: chrono::DateTime<chrono::Utc>,

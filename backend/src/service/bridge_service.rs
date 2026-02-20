@@ -26,7 +26,7 @@ pub struct BridgeTransferRequest {
 
 #[derive(Debug, Serialize, Deserialize)]
 pub struct BridgeTransactionResponse {
-    pub id: Uuid,
+    pub id: String,
     pub from_chain: String,
     pub to_chain: String,
     pub asset: String,

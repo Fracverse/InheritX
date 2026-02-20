@@ -1,11 +1,11 @@
-use deadpool_postgres::{Config, Pool, Runtime};
+use deadpool_postgres::{Pool, Manager};
 
 pub type DbPool = Pool;
 
 pub async fn create_pool(database_url: &str) -> Result<DbPool, Box<dyn std::error::Error>> {
-    let mut cfg = Config::new();
-    cfg.url = Some(database_url.to_string());
-    let pool = cfg.create_pool(Some(Runtime::Tokio1), ())?;
+    let config = database_url.parse::<deadpool_postgres::tokio_postgres::Config>()?;
+    let manager = Manager::new(config, deadpool_postgres::tokio_postgres::NoTls);
+    let pool = Pool::builder(manager).build()?;
     Ok(pool)
 }
 
@@ -226,6 +226,30 @@ pub async fn run_migrations(pool: &DbPool) -> Result<(), Box<dyn std::error::Err
     client
         .execute(
             "CREATE INDEX IF NOT EXISTS idx_bridge_transactions_status ON bridge_transactions(status)",
+            &[],
+        )
+        .await?;
+
+    // Create kyc_status table
+    client
+        .execute(
+            r#"
+        CREATE TABLE IF NOT EXISTS kyc_status (
+            user_id VARCHAR(255) PRIMARY KEY,
+            status VARCHAR(50) NOT NULL DEFAULT 'pending',
+            reviewed_by VARCHAR(255),
+            reviewed_at TIMESTAMP WITH TIME ZONE,
+            created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
+            FOREIGN KEY (user_id) REFERENCES users(user_id)
+        )
+        "#,
+            &[],
+        )
+        .await?;
+
+    client
+        .execute(
+            "CREATE INDEX IF NOT EXISTS idx_kyc_status_status ON kyc_status(status)",
             &[],
         )
         .await?;

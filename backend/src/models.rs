@@ -220,3 +220,37 @@ pub struct BridgeTransaction {
     pub created_at: DateTime<Utc>,
     pub updated_at: DateTime<Utc>,
 }
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub enum KycStatus {
+    Pending,
+    Approved,
+    Rejected,
+}
+
+impl KycStatus {
+    pub fn from_str(s: &str) -> Self {
+        match s {
+            "approved" => KycStatus::Approved,
+            "rejected" => KycStatus::Rejected,
+            _ => KycStatus::Pending,
+        }
+    }
+
+    pub fn to_string(&self) -> String {
+        match self {
+            KycStatus::Pending => "pending",
+            KycStatus::Approved => "approved",
+            KycStatus::Rejected => "rejected",
+        }.to_string()
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct KycRecord {
+    pub user_id: String,
+    pub status: KycStatus,
+    pub reviewed_by: Option<String>,
+    pub reviewed_at: Option<DateTime<Utc>>,
+    pub created_at: DateTime<Utc>,
+}

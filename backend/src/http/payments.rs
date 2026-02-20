@@ -7,7 +7,7 @@ use crate::{api_error::ApiError, service::{ServiceContainer, payment_service::Cr
 
 #[derive(Debug, Serialize)]
 pub struct PaymentResponse {
-    pub id: Uuid,
+    pub id: String,
     pub tx_hash: Option<String>,
     pub from_address: String,
     pub merchant_id: String,
@@ -21,7 +21,7 @@ pub struct PaymentResponse {
 
 #[derive(Debug, Serialize)]
 pub struct PaymentStatusResponse {
-    pub id: Uuid,
+    pub id: String,
     pub status: String,
     pub updated_at: chrono::DateTime<chrono::Utc>,
 }
@@ -85,8 +85,10 @@ pub async fn create_payment(
 
 pub async fn get_payment(
     State(services): State<Arc<ServiceContainer>>,
-    Path(payment_id): Path<String>,
+    Path(payment_id_str): Path<String>,
 ) -> Result<Json<PaymentResponse>, ApiError> {
+    let payment_id = Uuid::parse_str(&payment_id_str)
+        .map_err(|_| ApiError::Validation("Invalid payment ID".to_string()))?;
     let payment = services.payment.get_payment(payment_id).await?;
 
     Ok(Json(PaymentResponse {
@@ -105,8 +107,10 @@ pub async fn get_payment(
 
 pub async fn get_payment_status(
     State(services): State<Arc<ServiceContainer>>,
-    Path(payment_id): Path<String>,
+    Path(payment_id_str): Path<String>,
 ) -> Result<Json<PaymentStatusResponse>, ApiError> {
+    let payment_id = Uuid::parse_str(&payment_id_str)
+        .map_err(|_| ApiError::Validation("Invalid payment ID".to_string()))?;
     let payment = services.payment.get_payment(payment_id).await?;
 
     Ok(Json(PaymentStatusResponse {

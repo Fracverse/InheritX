@@ -61,12 +61,14 @@ pub async fn create_app(
         .route("/withdrawals/:id", get(withdrawals::get_withdrawal))
         .route("/withdrawals/:id/status", get(withdrawals::get_withdrawal_status));
 
-    // Admin routes (protected)
     let admin_routes = Router::new()
         .route("/dashboard/stats", get(admin::get_dashboard_stats))
         .route("/transactions", get(admin::get_transactions))
         .route("/users/:user_id/activity", get(admin::get_user_activity))
         .route("/system/health", get(admin::get_system_health))
+        .route("/kyc/:user_id", get(admin::get_kyc_status))
+        .route("/kyc/approve", post(admin::approve_kyc))
+        .route("/kyc/reject", post(admin::reject_kyc))
         .layer(middleware::from_fn(auth_middleware::admin_only));
 
     // Protected routes (require authentication)
