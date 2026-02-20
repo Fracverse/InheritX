@@ -793,6 +793,7 @@ impl InheritanceContract {
 
         // Store updated plan
         Self::store_plan(&env, plan_id, &plan);
+        Self::add_plan_to_deactivated(&env, plan_id);
 
         // Emit deactivation event
         env.events().publish(
