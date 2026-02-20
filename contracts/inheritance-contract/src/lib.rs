@@ -881,6 +881,105 @@ impl InheritanceContract {
 
         Ok(())
     }
+
+    // ───────────────────────────────────────────
+    // Retrieve Claimed Inheritance Plans
+    // ───────────────────────────────────────────
+
+    /// Get a specific claimed plan for a user
+    pub fn get_claimed_plan(
+        env: Env,
+        user: Address,
+        plan_id: u64,
+        email: String,
+    ) -> Result<(InheritancePlan, ClaimRecord), InheritanceError> {
+        user.require_auth();
+
+        let hashed_email = Self::hash_string(&env, email);
+        let claim_key = {
+            let mut data = Bytes::new(&env);
+            data.extend_from_slice(&plan_id.to_be_bytes());
+            data.extend_from_slice(&hashed_email.to_array());
+            DataKey::Claim(env.crypto().sha256(&data).into())
+        };
+
+        let claim: ClaimRecord = env
+            .storage()
+            .persistent()
+            .get(&claim_key)
+            .ok_or(InheritanceError::BeneficiaryNotFound)?;
+
+        let plan = Self::get_plan(&env, plan_id).ok_or(InheritanceError::PlanNotFound)?;
+
+        Ok((plan, claim))
+    }
+
+    /// Get all claimed plans for a user
+    pub fn get_all_claimed_plans_for_user(
+        env: Env,
+        user: Address,
+        email: String,
+    ) -> Vec<(u64, InheritancePlan, ClaimRecord)> {
+        user.require_auth();
+
+        let mut claimed_plans = Vec::new(&env);
+        let hashed_email = Self::hash_string(&env, email);
+        let max_plan_id = Self::get_next_plan_id(&env);
+
+        for plan_id in 1..max_plan_id {
+            let claim_key = {
+                let mut data = Bytes::new(&env);
+                data.extend_from_slice(&plan_id.to_be_bytes());
+                data.extend_from_slice(&hashed_email.to_array());
+                DataKey::Claim(env.crypto().sha256(&data).into())
+            };
+
+            if let Some(claim) = env.storage().persistent().get::<_, ClaimRecord>(&claim_key) {
+                if let Some(plan) = Self::get_plan(&env, plan_id) {
+                    claimed_plans.push_back((plan_id, plan, claim));
+                }
+            }
+        }
+
+        claimed_plans
+    }
+
+    /// Get all claimed plans across all users (admin only)
+    pub fn get_all_claimed_plans_admin(
+        env: Env,
+        admin: Address,
+    ) -> Vec<(u64, InheritancePlan, Vec<ClaimRecord>)> {
+        Self::require_admin(&env, &admin).unwrap();
+
+        let mut all_claimed_plans = Vec::new(&env);
+        let max_plan_id = Self::get_next_plan_id(&env);
+
+        for plan_id in 1..max_plan_id {
+            if let Some(plan) = Self::get_plan(&env, plan_id) {
+                let mut claims_for_plan = Vec::new(&env);
+
+                for beneficiary in plan.beneficiaries.iter() {
+                    let claim_key = {
+                        let mut data = Bytes::new(&env);
+                        data.extend_from_slice(&plan_id.to_be_bytes());
+                        data.extend_from_slice(&beneficiary.hashed_email.to_array());
+                        DataKey::Claim(env.crypto().sha256(&data).into())
+                    };
+
+                    if let Some(claim) = env.storage().persistent().get::<_, ClaimRecord>(&claim_key)
+                    {
+                        claims_for_plan.push_back(claim);
+                    }
+                }
+
+                if claims_for_plan.len() > 0 {
+                    all_claimed_plans.push_back((plan_id, plan, claims_for_plan));
+                }
+            }
+        }
+
+        all_claimed_plans
+    }
 }
 
 mod test;
