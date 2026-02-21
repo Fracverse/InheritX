@@ -78,10 +78,10 @@ pub enum InheritanceError {
     NotAdmin = 22,
     KycNotSubmitted = 23,
     KycAlreadyApproved = 24,
-    InsufficientBalance = 25,
-    FeeTransferFailed = 26,
-    UpgradeFailed = 27,
-    MigrationNotRequired = 28,
+    UpgradeFailed = 25,
+    MigrationNotRequired = 26,
+    PlanNotClaimed = 27,
+    KycAlreadyRejected = 28,
 }
 
 #[contracttype]
@@ -112,8 +112,10 @@ pub struct ClaimRecord {
 pub struct KycStatus {
     pub submitted: bool,
     pub approved: bool,
+    pub rejected: bool,
     pub submitted_at: u64,
     pub approved_at: u64,
+    pub rejected_at: u64,
 }
 
 // Events for beneficiary operations
@@ -147,6 +149,13 @@ pub struct PlanDeactivatedEvent {
 pub struct KycApprovedEvent {
     pub user: Address,
     pub approved_at: u64,
+}
+
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct KycRejectedEvent {
+    pub user: Address,
+    pub rejected_at: u64,
 }
 
 #[contracttype]
@@ -823,8 +832,10 @@ impl InheritanceContract {
         let mut status = env.storage().persistent().get(&key).unwrap_or(KycStatus {
             submitted: false,
             approved: false,
+            rejected: false,
             submitted_at: 0,
             approved_at: 0,
+            rejected_at: 0,
         });
 
         if status.approved {
@@ -866,6 +877,50 @@ impl InheritanceContract {
             KycApprovedEvent {
                 user,
                 approved_at: status.approved_at,
+            },
+        );
+
+        Ok(())
+    }
+
+    /// Reject a user's KYC after off-chain review (admin-only).
+    ///
+    /// # Arguments
+    /// * `env` - The environment
+    /// * `admin` - The admin address (must be the initialized admin)
+    /// * `user` - The user address whose KYC is being rejected
+    ///
+    /// # Errors
+    /// - `AdminNotSet` / `NotAdmin` if caller is not the admin
+    /// - `KycNotSubmitted` if user has no submitted KYC data
+    /// - `KycAlreadyRejected` if the KYC was already rejected
+    pub fn reject_kyc(env: Env, admin: Address, user: Address) -> Result<(), InheritanceError> {
+        Self::require_admin(&env, &admin)?;
+
+        let key = DataKey::Kyc(user.clone());
+        let mut status: KycStatus = env
+            .storage()
+            .persistent()
+            .get(&key)
+            .ok_or(InheritanceError::KycNotSubmitted)?;
+
+        if !status.submitted {
+            return Err(InheritanceError::KycNotSubmitted);
+        }
+
+        if status.rejected {
+            return Err(InheritanceError::KycAlreadyRejected);
+        }
+
+        status.rejected = true;
+        status.rejected_at = env.ledger().timestamp();
+        env.storage().persistent().set(&key, &status);
+
+        env.events().publish(
+            (symbol_short!("KYC"), symbol_short!("REJECT")),
+            KycRejectedEvent {
+                user,
+                rejected_at: status.rejected_at,
             },
         );
 
