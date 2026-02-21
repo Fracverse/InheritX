@@ -1,6 +1,6 @@
 use axum::{
     extract::{Path, State},
-    routing::{get, post},
+    routing::{get, patch, post},
     Json, Router,
 };
 use serde_json::{json, Value};
@@ -14,6 +14,7 @@ use uuid::Uuid;
 use crate::api_error::ApiError;
 use crate::auth::{AuthenticatedAdmin, AuthenticatedUser};
 use crate::config::Config;
+use crate::notifications::{AuditLogService, NotificationService};
 use crate::service::{
     ClaimPlanRequest, CreatePlanRequest, KycRecord, KycService, KycStatus, PlanService,
 };
@@ -64,6 +65,11 @@ pub async fn create_app(db: PgPool, config: Config) -> Result<Router, ApiError> 
         .route("/api/admin/kyc/:user_id", get(get_kyc_status))
         .route("/api/admin/kyc/approve", post(approve_kyc))
         .route("/api/admin/kyc/reject", post(reject_kyc))
+        // ── Notifications ────────────────────────────────────────────────
+        .route("/api/notifications", get(list_notifications))
+        .route("/api/notifications/:id/read", patch(mark_notification_read))
+        // ── Admin Audit Logs ─────────────────────────────────────────────
+        .route("/api/admin/logs", get(list_audit_logs))
         .with_state(state);
 
     Ok(app)
@@ -210,4 +216,44 @@ async fn reject_kyc(
     )
     .await?;
     Ok(Json(status))
+}
+
+// ── Notification Handlers ─────────────────────────────────────────────────────
+
+async fn list_notifications(
+    State(state): State<Arc<AppState>>,
+    AuthenticatedUser(user): AuthenticatedUser,
+) -> Result<Json<Value>, ApiError> {
+    let notifications = NotificationService::list_for_user(&state.db, user.user_id).await?;
+    Ok(Json(json!({
+        "status": "success",
+        "data": notifications,
+        "count": notifications.len()
+    })))
+}
+
+async fn mark_notification_read(
+    State(state): State<Arc<AppState>>,
+    Path(notif_id): Path<Uuid>,
+    AuthenticatedUser(user): AuthenticatedUser,
+) -> Result<Json<Value>, ApiError> {
+    let notification = NotificationService::mark_read(&state.db, notif_id, user.user_id).await?;
+    Ok(Json(json!({
+        "status": "success",
+        "data": notification
+    })))
+}
+
+// ── Admin Audit Log Handler ───────────────────────────────────────────────────
+
+async fn list_audit_logs(
+    State(state): State<Arc<AppState>>,
+    AuthenticatedAdmin(_admin): AuthenticatedAdmin,
+) -> Result<Json<Value>, ApiError> {
+    let logs = AuditLogService::list_all(&state.db).await?;
+    Ok(Json(json!({
+        "status": "success",
+        "data": logs,
+        "count": logs.len()
+    })))
 }
