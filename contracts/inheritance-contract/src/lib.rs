@@ -80,7 +80,8 @@ pub enum InheritanceError {
     KycAlreadyApproved = 24,
     UpgradeFailed = 25,
     MigrationNotRequired = 26,
-    KycAlreadyRejected = 27,
+    PlanNotClaimed = 27,
+    KycAlreadyRejected = 28,
 }
 
 #[contracttype]
@@ -88,9 +89,11 @@ pub enum InheritanceError {
 pub enum DataKey {
     NextPlanId,
     Plan(u64),
-    Claim(BytesN<32>),  // keyed by hashed_email
-    UserPlans(Address), // keyed by owner Address, value is Vec<u64>
-    DeactivatedPlans,   // value is Vec<u64> of all deactivated plan IDs
+    Claim(BytesN<32>),         // keyed by hashed_email
+    UserPlans(Address),        // keyed by owner Address, value is Vec<u64>
+    UserClaimedPlans(Address), // keyed by owner Address, value is Vec<u64>
+    DeactivatedPlans,          // value is Vec<u64> of all deactivated plan IDs
+    AllClaimedPlans,           // value is Vec<u64> of all claimed plan IDs
     Admin,
     Kyc(Address),
     Version,
@@ -352,6 +355,32 @@ impl InheritanceContract {
         if !plans.contains(plan_id) {
             plans.push_back(plan_id);
             env.storage().persistent().set(&key, &plans);
+        }
+    }
+
+    fn add_plan_to_claimed(env: &Env, owner: Address, plan_id: u64) {
+        let key_user = DataKey::UserClaimedPlans(owner);
+        let mut user_plans: Vec<u64> = env
+            .storage()
+            .persistent()
+            .get(&key_user)
+            .unwrap_or(Vec::new(env));
+
+        if !user_plans.contains(plan_id) {
+            user_plans.push_back(plan_id);
+            env.storage().persistent().set(&key_user, &user_plans);
+        }
+
+        let key_all = DataKey::AllClaimedPlans;
+        let mut all_plans: Vec<u64> = env
+            .storage()
+            .persistent()
+            .get(&key_all)
+            .unwrap_or(Vec::new(env));
+
+        if !all_plans.contains(plan_id) {
+            all_plans.push_back(plan_id);
+            env.storage().persistent().set(&key_all, &all_plans);
         }
     }
 
@@ -675,6 +704,9 @@ impl InheritanceContract {
 
         env.storage().persistent().set(&claim_key, &claim);
 
+        // Mark plan as claimed
+        Self::add_plan_to_claimed(&env, plan.owner.clone(), plan_id);
+
         // Emit claim event
         env.events().publish(
             (symbol_short!("CLAIM"), symbol_short!("SUCCESS")),
@@ -953,6 +985,77 @@ impl InheritanceContract {
             }
         }
 
+        Ok(plans)
+    }
+
+    /// Retrieve a specific claimed plan belonging to the authenticated user
+    pub fn get_claimed_plan(
+        env: Env,
+        user: Address,
+        plan_id: u64,
+    ) -> Result<InheritancePlan, InheritanceError> {
+        user.require_auth();
+
+        let plan = Self::get_plan(&env, plan_id).ok_or(InheritanceError::PlanNotFound)?;
+
+        if plan.owner != user {
+            return Err(InheritanceError::Unauthorized);
+        }
+
+        let key = DataKey::UserClaimedPlans(user);
+        let user_plans: Vec<u64> = env
+            .storage()
+            .persistent()
+            .get(&key)
+            .unwrap_or(Vec::new(&env));
+
+        if !user_plans.contains(plan_id) {
+            return Err(InheritanceError::PlanNotClaimed);
+        }
+
+        Ok(plan)
+    }
+
+    /// Retrieve all claimed plans for the authenticated user
+    pub fn get_user_claimed_plans(env: Env, user: Address) -> Vec<InheritancePlan> {
+        user.require_auth();
+
+        let key = DataKey::UserClaimedPlans(user);
+        let user_plan_ids: Vec<u64> = env
+            .storage()
+            .persistent()
+            .get(&key)
+            .unwrap_or(Vec::new(&env));
+
+        let mut plans = Vec::new(&env);
+        for id in user_plan_ids.iter() {
+            if let Some(plan) = Self::get_plan(&env, id) {
+                plans.push_back(plan);
+            }
+        }
+        plans
+    }
+
+    /// Retrieve all claimed plans across all users; accessible only by administrators
+    pub fn get_all_claimed_plans(
+        env: Env,
+        admin: Address,
+    ) -> Result<Vec<InheritancePlan>, InheritanceError> {
+        Self::require_admin(&env, &admin)?;
+
+        let key = DataKey::AllClaimedPlans;
+        let all_plan_ids: Vec<u64> = env
+            .storage()
+            .persistent()
+            .get(&key)
+            .unwrap_or(Vec::new(&env));
+
+        let mut plans = Vec::new(&env);
+        for id in all_plan_ids.iter() {
+            if let Some(plan) = Self::get_plan(&env, id) {
+                plans.push_back(plan);
+            }
+        }
         Ok(plans)
     }
 

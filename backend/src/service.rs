@@ -6,6 +6,37 @@ use std::fmt;
 use std::str::FromStr;
 use uuid::Uuid;
 
+/// Payout currency preference
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "UPPERCASE")]
+pub enum CurrencyPreference {
+    Usdc,
+    Fiat,
+}
+
+impl CurrencyPreference {
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            CurrencyPreference::Usdc => "USDC",
+            CurrencyPreference::Fiat => "FIAT",
+        }
+    }
+}
+
+impl FromStr for CurrencyPreference {
+    type Err = ApiError;
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        match s {
+            "USDC" | "usdc" => Ok(CurrencyPreference::Usdc),
+            "FIAT" | "fiat" => Ok(CurrencyPreference::Fiat),
+            _ => Err(ApiError::BadRequest(
+                "currency_preference must be USDC or FIAT".to_string(),
+            )),
+        }
+    }
+}
+
 #[derive(Debug, Serialize, Deserialize)]
 pub struct DueForClaimPlan {
     pub id: Uuid,
@@ -19,13 +50,274 @@ pub struct DueForClaimPlan {
     pub distribution_method: Option<String>,
     pub is_active: Option<bool>,
     pub contract_created_at: Option<i64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub beneficiary_name: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub bank_name: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub bank_account_number: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub currency_preference: Option<String>,
     pub created_at: DateTime<Utc>,
     pub updated_at: DateTime<Utc>,
+}
+
+/// Plan details including beneficiary
+#[derive(Debug, Serialize, Deserialize)]
+pub struct PlanWithBeneficiary {
+    pub id: Uuid,
+    pub user_id: Uuid,
+    pub title: String,
+    pub description: Option<String>,
+    pub fee: rust_decimal::Decimal,
+    pub net_amount: rust_decimal::Decimal,
+    pub status: String,
+    pub contract_plan_id: Option<i64>,
+    pub distribution_method: Option<String>,
+    pub is_active: Option<bool>,
+    pub contract_created_at: Option<i64>,
+    pub beneficiary_name: Option<String>,
+    pub bank_name: Option<String>,
+    pub bank_account_number: Option<String>,
+    pub currency_preference: Option<String>,
+    pub created_at: DateTime<Utc>,
+    pub updated_at: DateTime<Utc>,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct CreatePlanRequest {
+    pub title: String,
+    pub description: Option<String>,
+    pub fee: rust_decimal::Decimal,
+    pub net_amount: rust_decimal::Decimal,
+    pub beneficiary_name: Option<String>,
+    pub bank_account_number: Option<String>,
+    pub bank_name: Option<String>,
+    pub currency_preference: String,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct ClaimPlanRequest {
+    pub beneficiary_email: String,
+    #[allow(dead_code)]
+    pub claim_code: Option<u32>,
+}
+
+#[derive(sqlx::FromRow)]
+struct PlanRowFull {
+    id: Uuid,
+    user_id: Uuid,
+    title: String,
+    description: Option<String>,
+    fee: String,
+    net_amount: String,
+    status: String,
+    contract_plan_id: Option<i64>,
+    distribution_method: Option<String>,
+    is_active: Option<bool>,
+    contract_created_at: Option<i64>,
+    beneficiary_name: Option<String>,
+    bank_account_number: Option<String>,
+    bank_name: Option<String>,
+    currency_preference: Option<String>,
+    created_at: DateTime<Utc>,
+    updated_at: DateTime<Utc>,
+}
+
+fn plan_row_to_plan_with_beneficiary(row: &PlanRowFull) -> Result<PlanWithBeneficiary, ApiError> {
+    Ok(PlanWithBeneficiary {
+        id: row.id,
+        user_id: row.user_id,
+        title: row.title.clone(),
+        description: row.description.clone(),
+        fee: row
+            .fee
+            .parse()
+            .map_err(|e| ApiError::Internal(anyhow::anyhow!("Failed to parse fee: {}", e)))?,
+        net_amount: row.net_amount.parse().map_err(|e| {
+            ApiError::Internal(anyhow::anyhow!("Failed to parse net_amount: {}", e))
+        })?,
+        status: row.status.clone(),
+        contract_plan_id: row.contract_plan_id,
+        distribution_method: row.distribution_method.clone(),
+        is_active: row.is_active,
+        contract_created_at: row.contract_created_at,
+        beneficiary_name: row.beneficiary_name.clone(),
+        bank_name: row.bank_name.clone(),
+        bank_account_number: row.bank_account_number.clone(),
+        currency_preference: row.currency_preference.clone(),
+        created_at: row.created_at,
+        updated_at: row.updated_at,
+    })
 }
 
 pub struct PlanService;
 
 impl PlanService {
+    /// Validates that bank details are present and non-empty when currency is FIAT.
+    pub fn validate_beneficiary_for_currency(
+        currency: &CurrencyPreference,
+        beneficiary_name: Option<&str>,
+        bank_name: Option<&str>,
+        bank_account_number: Option<&str>,
+    ) -> Result<(), ApiError> {
+        if *currency == CurrencyPreference::Fiat {
+            let name_ok = beneficiary_name
+                .map(|s| s.trim())
+                .filter(|s| !s.is_empty())
+                .is_some();
+            let bank_ok = bank_name
+                .map(|s| s.trim())
+                .filter(|s| !s.is_empty())
+                .is_some();
+            let account_ok = bank_account_number
+                .map(|s| s.trim())
+                .filter(|s| !s.is_empty())
+                .is_some();
+            if !name_ok || !bank_ok || !account_ok {
+                return Err(ApiError::BadRequest(
+                    "Bank account details (beneficiary_name, bank_name, bank_account_number) are \
+                     required for FIAT payouts"
+                        .to_string(),
+                ));
+            }
+        }
+        Ok(())
+    }
+
+    pub async fn create_plan(
+        db: &PgPool,
+        user_id: Uuid,
+        req: &CreatePlanRequest,
+    ) -> Result<PlanWithBeneficiary, ApiError> {
+        let currency = CurrencyPreference::from_str(req.currency_preference.trim())?;
+        Self::validate_beneficiary_for_currency(
+            &currency,
+            req.beneficiary_name.as_deref(),
+            req.bank_name.as_deref(),
+            req.bank_account_number.as_deref(),
+        )?;
+
+        let beneficiary_name = req
+            .beneficiary_name
+            .as_deref()
+            .map(|s| s.trim().to_string());
+        let bank_name = req.bank_name.as_deref().map(|s| s.trim().to_string());
+        let bank_account_number = req
+            .bank_account_number
+            .as_deref()
+            .map(|s| s.trim().to_string());
+        let currency_preference = Some(currency.as_str().to_string());
+
+        let row = sqlx::query_as::<_, PlanRowFull>(
+            r#"
+            INSERT INTO plans (
+                user_id, title, description, fee, net_amount, status,
+                beneficiary_name, bank_account_number, bank_name, currency_preference
+            )
+            VALUES ($1, $2, $3, $4, $5, 'pending', $6, $7, $8, $9)
+            RETURNING id, user_id, title, description, fee, net_amount, status,
+                      contract_plan_id, distribution_method, is_active, contract_created_at,
+                      beneficiary_name, bank_account_number, bank_name, currency_preference,
+                      created_at, updated_at
+            "#,
+        )
+        .bind(user_id)
+        .bind(&req.title)
+        .bind(&req.description)
+        .bind(req.fee.to_string())
+        .bind(req.net_amount.to_string())
+        .bind(&beneficiary_name)
+        .bind(&bank_account_number)
+        .bind(&bank_name)
+        .bind(&currency_preference)
+        .fetch_one(db)
+        .await?;
+
+        plan_row_to_plan_with_beneficiary(&row)
+    }
+
+    pub async fn get_plan_by_id(
+        db: &PgPool,
+        plan_id: Uuid,
+        user_id: Uuid,
+    ) -> Result<Option<PlanWithBeneficiary>, ApiError> {
+        let row = sqlx::query_as::<_, PlanRowFull>(
+            r#"
+            SELECT id, user_id, title, description, fee, net_amount, status,
+                   contract_plan_id, distribution_method, is_active, contract_created_at,
+                   beneficiary_name, bank_account_number, bank_name, currency_preference,
+                   created_at, updated_at
+            FROM plans
+            WHERE id = $1 AND user_id = $2
+            "#,
+        )
+        .bind(plan_id)
+        .bind(user_id)
+        .fetch_optional(db)
+        .await?;
+
+        match row {
+            Some(r) => Ok(Some(plan_row_to_plan_with_beneficiary(&r)?)),
+            None => Ok(None),
+        }
+    }
+
+    pub async fn claim_plan(
+        db: &PgPool,
+        plan_id: Uuid,
+        user_id: Uuid,
+        req: &ClaimPlanRequest,
+    ) -> Result<PlanWithBeneficiary, ApiError> {
+        let plan = Self::get_plan_by_id(db, plan_id, user_id)
+            .await?
+            .ok_or_else(|| ApiError::NotFound(format!("Plan {} not found", plan_id)))?;
+
+        let contract_plan_id = plan.contract_plan_id.unwrap_or(0_i64);
+
+        let currency = plan
+            .currency_preference
+            .as_deref()
+            .map(CurrencyPreference::from_str)
+            .transpose()?
+            .ok_or_else(|| {
+                ApiError::BadRequest("Plan has no currency preference set".to_string())
+            })?;
+
+        if currency == CurrencyPreference::Fiat {
+            Self::validate_beneficiary_for_currency(
+                &currency,
+                plan.beneficiary_name.as_deref(),
+                plan.bank_name.as_deref(),
+                plan.bank_account_number.as_deref(),
+            )?;
+        }
+
+        sqlx::query(
+            r#"
+            INSERT INTO claims (plan_id, contract_plan_id, beneficiary_email)
+            VALUES ($1, $2, $3)
+            "#,
+        )
+        .bind(plan_id)
+        .bind(contract_plan_id)
+        .bind(req.beneficiary_email.trim())
+        .execute(db)
+        .await
+        .map_err(|e| {
+            if let sqlx::Error::Database(ref db_err) = e {
+                if db_err.is_unique_violation() {
+                    return ApiError::BadRequest(
+                        "This plan has already been claimed by this beneficiary".to_string(),
+                    );
+                }
+            }
+            ApiError::from(e)
+        })?;
+
+        Ok(plan)
+    }
+
     pub fn is_due_for_claim(
         distribution_method: Option<&str>,
         contract_created_at: Option<i64>,
@@ -67,13 +359,20 @@ impl PlanService {
             distribution_method: Option<String>,
             is_active: Option<bool>,
             contract_created_at: Option<i64>,
+            beneficiary_name: Option<String>,
+            bank_account_number: Option<String>,
+            bank_name: Option<String>,
+            currency_preference: Option<String>,
             created_at: DateTime<Utc>,
             updated_at: DateTime<Utc>,
         }
 
         let plan_row = sqlx::query_as::<_, PlanRow>(
             r#"
-            SELECT p.*
+            SELECT p.id, p.user_id, p.title, p.description, p.fee, p.net_amount, p.status,
+                   p.contract_plan_id, p.distribution_method, p.is_active, p.contract_created_at,
+                   p.beneficiary_name, p.bank_account_number, p.bank_name, p.currency_preference,
+                   p.created_at, p.updated_at
             FROM plans p
             WHERE p.id = $1
               AND p.user_id = $2
@@ -104,6 +403,10 @@ impl PlanService {
                 distribution_method: row.distribution_method,
                 is_active: row.is_active,
                 contract_created_at: row.contract_created_at,
+                beneficiary_name: row.beneficiary_name,
+                bank_account_number: row.bank_account_number,
+                bank_name: row.bank_name,
+                currency_preference: row.currency_preference,
                 created_at: row.created_at,
                 updated_at: row.updated_at,
             })
@@ -149,13 +452,20 @@ impl PlanService {
             distribution_method: Option<String>,
             is_active: Option<bool>,
             contract_created_at: Option<i64>,
+            beneficiary_name: Option<String>,
+            bank_account_number: Option<String>,
+            bank_name: Option<String>,
+            currency_preference: Option<String>,
             created_at: DateTime<Utc>,
             updated_at: DateTime<Utc>,
         }
 
         let plan_rows = sqlx::query_as::<_, PlanRow>(
             r#"
-            SELECT p.*
+            SELECT p.id, p.user_id, p.title, p.description, p.fee, p.net_amount, p.status,
+                   p.contract_plan_id, p.distribution_method, p.is_active, p.contract_created_at,
+                   p.beneficiary_name, p.bank_account_number, p.bank_name, p.currency_preference,
+                   p.created_at, p.updated_at
             FROM plans p
             WHERE p.user_id = $1
               AND (p.is_active IS NULL OR p.is_active = true)
@@ -187,6 +497,10 @@ impl PlanService {
                     distribution_method: row.distribution_method,
                     is_active: row.is_active,
                     contract_created_at: row.contract_created_at,
+                    beneficiary_name: row.beneficiary_name,
+                    bank_account_number: row.bank_account_number,
+                    bank_name: row.bank_name,
+                    currency_preference: row.currency_preference,
                     created_at: row.created_at,
                     updated_at: row.updated_at,
                 })
@@ -233,13 +547,20 @@ impl PlanService {
             distribution_method: Option<String>,
             is_active: Option<bool>,
             contract_created_at: Option<i64>,
+            beneficiary_name: Option<String>,
+            bank_account_number: Option<String>,
+            bank_name: Option<String>,
+            currency_preference: Option<String>,
             created_at: DateTime<Utc>,
             updated_at: DateTime<Utc>,
         }
 
         let plan_rows = sqlx::query_as::<_, PlanRow>(
             r#"
-            SELECT p.*
+            SELECT p.id, p.user_id, p.title, p.description, p.fee, p.net_amount, p.status,
+                   p.contract_plan_id, p.distribution_method, p.is_active, p.contract_created_at,
+                   p.beneficiary_name, p.bank_account_number, p.bank_name, p.currency_preference,
+                   p.created_at, p.updated_at
             FROM plans p
             WHERE (p.is_active IS NULL OR p.is_active = true)
               AND p.status != 'claimed'
@@ -269,6 +590,10 @@ impl PlanService {
                     distribution_method: row.distribution_method,
                     is_active: row.is_active,
                     contract_created_at: row.contract_created_at,
+                    beneficiary_name: row.beneficiary_name,
+                    bank_account_number: row.bank_account_number,
+                    bank_name: row.bank_name,
+                    currency_preference: row.currency_preference,
                     created_at: row.created_at,
                     updated_at: row.updated_at,
                 })
@@ -392,5 +717,106 @@ impl KycService {
         .await?;
 
         Ok(record)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{CurrencyPreference, PlanService};
+    use crate::api_error::ApiError;
+    use std::str::FromStr;
+
+    #[test]
+    fn currency_preference_accepts_usdc() {
+        assert_eq!(
+            CurrencyPreference::from_str("USDC").unwrap(),
+            CurrencyPreference::Usdc
+        );
+        assert_eq!(
+            CurrencyPreference::from_str("usdc").unwrap(),
+            CurrencyPreference::Usdc
+        );
+        assert_eq!(CurrencyPreference::Usdc.as_str(), "USDC");
+    }
+
+    #[test]
+    fn currency_preference_accepts_fiat() {
+        assert_eq!(
+            CurrencyPreference::from_str("FIAT").unwrap(),
+            CurrencyPreference::Fiat
+        );
+        assert_eq!(
+            CurrencyPreference::from_str("fiat").unwrap(),
+            CurrencyPreference::Fiat
+        );
+        assert_eq!(CurrencyPreference::Fiat.as_str(), "FIAT");
+    }
+
+    #[test]
+    fn currency_preference_rejects_invalid() {
+        let err = CurrencyPreference::from_str("EUR").unwrap_err();
+        assert!(matches!(err, ApiError::BadRequest(_)));
+        assert!(err.to_string().contains("USDC or FIAT"));
+    }
+
+    #[test]
+    fn validate_beneficiary_usdc_does_not_require_bank() {
+        assert!(PlanService::validate_beneficiary_for_currency(
+            &CurrencyPreference::Usdc,
+            None,
+            None,
+            None
+        )
+        .is_ok());
+        assert!(PlanService::validate_beneficiary_for_currency(
+            &CurrencyPreference::Usdc,
+            Some(""),
+            Some(""),
+            None
+        )
+        .is_ok());
+    }
+
+    #[test]
+    fn validate_beneficiary_fiat_requires_all_fields() {
+        assert!(PlanService::validate_beneficiary_for_currency(
+            &CurrencyPreference::Fiat,
+            None,
+            None,
+            None
+        )
+        .is_err());
+        assert!(PlanService::validate_beneficiary_for_currency(
+            &CurrencyPreference::Fiat,
+            Some("Jane Doe"),
+            None,
+            None
+        )
+        .is_err());
+        assert!(PlanService::validate_beneficiary_for_currency(
+            &CurrencyPreference::Fiat,
+            Some("Jane Doe"),
+            Some("Acme Bank"),
+            None
+        )
+        .is_err());
+        assert!(PlanService::validate_beneficiary_for_currency(
+            &CurrencyPreference::Fiat,
+            Some("Jane Doe"),
+            Some("Acme Bank"),
+            Some("12345678")
+        )
+        .is_ok());
+    }
+
+    #[test]
+    fn validate_beneficiary_fiat_rejects_whitespace_only() {
+        assert!(PlanService::validate_beneficiary_for_currency(
+            &CurrencyPreference::Fiat,
+            Some("  "),
+            Some("Acme Bank"),
+            Some("12345678")
+        )
+        .is_err());
     }
 }
