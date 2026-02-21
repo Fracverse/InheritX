@@ -87,7 +87,39 @@ async fn create_plan(
     AuthenticatedUser(user): AuthenticatedUser,
     Json(req): Json<CreatePlanRequest>,
 ) -> Result<Json<Value>, ApiError> {
-    let plan = PlanService::create_plan(&state.db, user.user_id, &req).await?;
+    // Validate KYC approved
+    let kyc_record = KycService::get_kyc_status(&state.db, user.user_id).await?;
+    if kyc_record.status != "approved" {
+        return Err(ApiError::Forbidden("KYC not approved".to_string()));
+    }
+
+    // Require 2FA verification (stub, replace with actual logic)
+    // if !verify_2fa(user.user_id, req.2fa_code) {
+    //     return Err(ApiError::Forbidden("2FA verification failed".to_string()));
+    // }
+
+    // Deduct 2% fee
+    let amount = req.net_amount + req.fee;
+    let fee = amount * rust_decimal::Decimal::new(2, 2) / rust_decimal::Decimal::new(100, 0);
+    let net_amount = amount - fee;
+
+    let mut req_mut = req.clone();
+    req_mut.fee = fee;
+    req_mut.net_amount = net_amount;
+
+    let plan = PlanService::create_plan(&state.db, user.user_id, &req_mut).await?;
+
+    // Audit log
+    sqlx::query("INSERT INTO plan_logs (plan_id, action, performed_by) VALUES ($1, $2, $3)")
+        .bind(plan.id)
+        .bind("create")
+        .bind(user.user_id)
+        .execute(&state.db)
+        .await?;
+
+    // Notification (stub)
+    // notify_plan_created(user.user_id, plan.id);
+
     Ok(Json(json!({
         "status": "success",
         "data": plan
@@ -115,7 +147,33 @@ async fn claim_plan(
     AuthenticatedUser(user): AuthenticatedUser,
     Json(req): Json<ClaimPlanRequest>,
 ) -> Result<Json<Value>, ApiError> {
+    // Validate KYC approved
+    let kyc_record = KycService::get_kyc_status(&state.db, user.user_id).await?;
+    if kyc_record.status != "approved" {
+        return Err(ApiError::Forbidden("KYC not approved".to_string()));
+    }
+
+    // Require 2FA verification (stub, replace with actual logic)
+    // if !verify_2fa(user.user_id, req.2fa_code) {
+    //     return Err(ApiError::Forbidden("2FA verification failed".to_string()));
+    // }
+
     let plan = PlanService::claim_plan(&state.db, plan_id, user.user_id, &req).await?;
+
+    // Transfer USDC to user wallet (stub)
+    // transfer_usdc_to_wallet(user.user_id, plan.net_amount);
+
+    // Audit log
+    sqlx::query("INSERT INTO plan_logs (plan_id, action, performed_by) VALUES ($1, $2, $3)")
+        .bind(plan.id)
+        .bind("claim")
+        .bind(user.user_id)
+        .execute(&state.db)
+        .await?;
+
+    // Notification (stub)
+    // notify_plan_claimed(user.user_id, plan.id);
+
     Ok(Json(json!({
         "status": "success",
         "message": "Claim recorded",

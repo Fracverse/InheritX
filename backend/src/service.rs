@@ -1,3 +1,15 @@
+// Notification stubs
+pub fn notify_plan_created(_user_id: uuid::Uuid, _plan_id: uuid::Uuid) {
+    // TODO: Implement email or in-app notification for plan creation
+}
+
+pub fn notify_plan_claimed(_user_id: uuid::Uuid, _plan_id: uuid::Uuid) {
+    // TODO: Implement email or in-app notification for plan claim
+}
+
+pub fn notify_plan_deactivated(_user_id: uuid::Uuid, _plan_id: uuid::Uuid) {
+    // TODO: Implement email or in-app notification for plan deactivation
+}
 use crate::api_error::ApiError;
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
@@ -84,7 +96,7 @@ pub struct PlanWithBeneficiary {
     pub updated_at: DateTime<Utc>,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, Clone)]
 pub struct CreatePlanRequest {
     pub title: String,
     pub description: Option<String>,
