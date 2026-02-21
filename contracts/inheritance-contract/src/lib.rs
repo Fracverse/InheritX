@@ -1,7 +1,8 @@
 #![no_std]
 use soroban_sdk::{
-    contract, contracterror, contractimpl, contracttype, log, symbol_short, token, vec, Address,
-    Bytes, BytesN, Env, IntoVal, InvokeError, String, Symbol, Val, Vec,
+    contract, contracterror, contractimpl, contracttype, log, symbol_short,
+    token, vec, Address, Bytes, BytesN, Env, IntoVal, InvokeError, String,
+    Symbol, Val, Vec,
 };
 
 /// Current contract version - bump this on each upgrade
@@ -23,7 +24,7 @@ pub struct Beneficiary {
     pub hashed_email: BytesN<32>,
     pub hashed_claim_code: BytesN<32>,
     pub bank_account: Bytes, // Plain text for fiat settlement (MVP trade-off)
-    pub allocation_bp: u32,  // Allocation in basis points (0-10000, where 10000 = 100%)
+    pub allocation_bp: u32, // Allocation in basis points (0-10000, where 10000 = 100%)
 }
 
 #[contracttype]
@@ -207,7 +208,10 @@ impl InheritanceContract {
         env.crypto().sha256(&input).into()
     }
 
-    pub fn hash_claim_code(env: &Env, claim_code: u32) -> Result<BytesN<32>, InheritanceError> {
+    pub fn hash_claim_code(
+        env: &Env,
+        claim_code: u32,
+    ) -> Result<BytesN<32>, InheritanceError> {
         // Validate claim code is in range 0-999999 (6 digits)
         if claim_code > 999999 {
             return Err(InheritanceError::InvalidClaimCodeRange);
@@ -230,9 +234,13 @@ impl InheritanceContract {
         env.storage().instance().get(&key)
     }
 
-    fn require_admin(env: &Env, admin: &Address) -> Result<(), InheritanceError> {
+    fn require_admin(
+        env: &Env,
+        admin: &Address,
+    ) -> Result<(), InheritanceError> {
         admin.require_auth();
-        let stored_admin = Self::get_admin(env).ok_or(InheritanceError::AdminNotSet)?;
+        let stored_admin =
+            Self::get_admin(env).ok_or(InheritanceError::AdminNotSet)?;
         if stored_admin != *admin {
             return Err(InheritanceError::NotAdmin);
         }
@@ -312,7 +320,8 @@ impl InheritanceContract {
         }
 
         // Validate allocation basis points total to 10000 (100%)
-        let total_allocation: u32 = beneficiaries_data.iter().map(|(_, _, _, _, bp)| bp).sum();
+        let total_allocation: u32 =
+            beneficiaries_data.iter().map(|(_, _, _, _, bp)| bp).sum();
         if total_allocation != 10000 {
             return Err(InheritanceError::AllocationPercentageMismatch);
         }
@@ -438,7 +447,8 @@ impl InheritanceContract {
         owner.require_auth();
 
         // Get the plan
-        let mut plan = Self::get_plan(&env, plan_id).ok_or(InheritanceError::PlanNotFound)?;
+        let mut plan = Self::get_plan(&env, plan_id)
+            .ok_or(InheritanceError::PlanNotFound)?;
 
         // Verify caller is the plan owner
         if plan.owner != owner {
@@ -456,7 +466,8 @@ impl InheritanceContract {
         }
 
         // Check that total allocation won't exceed 10000 basis points (100%)
-        let new_total = plan.total_allocation_bp + beneficiary_input.allocation_bp;
+        let new_total =
+            plan.total_allocation_bp + beneficiary_input.allocation_bp;
         if new_total > 10000 {
             return Err(InheritanceError::AllocationExceedsLimit);
         }
@@ -518,7 +529,8 @@ impl InheritanceContract {
         owner.require_auth();
 
         // Get the plan
-        let mut plan = Self::get_plan(&env, plan_id).ok_or(InheritanceError::PlanNotFound)?;
+        let mut plan = Self::get_plan(&env, plan_id)
+            .ok_or(InheritanceError::PlanNotFound)?;
 
         // Verify caller is the plan owner
         if plan.owner != owner {
@@ -608,7 +620,8 @@ impl InheritanceContract {
         owner.require_auth();
 
         // Admin must be set to receive the fee
-        let admin = Self::get_admin(&env).ok_or(InheritanceError::AdminNotSet)?;
+        let admin =
+            Self::get_admin(&env).ok_or(InheritanceError::AdminNotSet)?;
 
         // Fee: 2% of user input; net amount stored in plan
         let fee = total_amount
@@ -744,7 +757,8 @@ impl InheritanceContract {
         claim_code: u32,
     ) -> Result<(), InheritanceError> {
         // Fetch the plan
-        let plan = Self::get_plan(&env, plan_id).ok_or(InheritanceError::PlanNotFound)?;
+        let plan = Self::get_plan(&env, plan_id)
+            .ok_or(InheritanceError::PlanNotFound)?;
 
         // Check if plan is active
         if !plan.is_active {
@@ -778,13 +792,16 @@ impl InheritanceContract {
         let mut beneficiary_index: Option<u32> = None;
         for i in 0..plan.beneficiaries.len() {
             let b = plan.beneficiaries.get(i).unwrap();
-            if b.hashed_email == hashed_email && b.hashed_claim_code == hashed_claim_code {
+            if b.hashed_email == hashed_email
+                && b.hashed_claim_code == hashed_claim_code
+            {
                 beneficiary_index = Some(i);
                 break;
             }
         }
 
-        let index = beneficiary_index.ok_or(InheritanceError::BeneficiaryNotFound)?;
+        let index =
+            beneficiary_index.ok_or(InheritanceError::BeneficiaryNotFound)?;
 
         // Record the claim
         let claim = ClaimRecord {
@@ -815,7 +832,10 @@ impl InheritanceContract {
     }
 
     /// Initialize contract admin. Can only be called once.
-    pub fn initialize_admin(env: Env, admin: Address) -> Result<(), InheritanceError> {
+    pub fn initialize_admin(
+        env: Env,
+        admin: Address,
+    ) -> Result<(), InheritanceError> {
         if Self::get_admin(&env).is_some() {
             return Err(InheritanceError::AdminAlreadyInitialized);
         }
@@ -829,14 +849,15 @@ impl InheritanceContract {
         user.require_auth();
 
         let key = DataKey::Kyc(user.clone());
-        let mut status = env.storage().persistent().get(&key).unwrap_or(KycStatus {
-            submitted: false,
-            approved: false,
-            rejected: false,
-            submitted_at: 0,
-            approved_at: 0,
-            rejected_at: 0,
-        });
+        let mut status =
+            env.storage().persistent().get(&key).unwrap_or(KycStatus {
+                submitted: false,
+                approved: false,
+                rejected: false,
+                submitted_at: 0,
+                approved_at: 0,
+                rejected_at: 0,
+            });
 
         if status.approved {
             return Err(InheritanceError::KycAlreadyApproved);
@@ -850,7 +871,11 @@ impl InheritanceContract {
     }
 
     /// Approve a user's KYC after off-chain verification (admin-only).
-    pub fn approve_kyc(env: Env, admin: Address, user: Address) -> Result<(), InheritanceError> {
+    pub fn approve_kyc(
+        env: Env,
+        admin: Address,
+        user: Address,
+    ) -> Result<(), InheritanceError> {
         Self::require_admin(&env, &admin)?;
 
         let key = DataKey::Kyc(user.clone());
@@ -955,7 +980,8 @@ impl InheritanceContract {
         owner.require_auth();
 
         // Get the plan
-        let mut plan = Self::get_plan(&env, plan_id).ok_or(InheritanceError::PlanNotFound)?;
+        let mut plan = Self::get_plan(&env, plan_id)
+            .ok_or(InheritanceError::PlanNotFound)?;
 
         // Verify caller is the plan owner
         if plan.owner != owner {
@@ -1003,7 +1029,8 @@ impl InheritanceContract {
     ) -> Result<InheritancePlan, InheritanceError> {
         user.require_auth();
 
-        let plan = Self::get_plan(&env, plan_id).ok_or(InheritanceError::PlanNotFound)?;
+        let plan = Self::get_plan(&env, plan_id)
+            .ok_or(InheritanceError::PlanNotFound)?;
 
         // Check if plan belongs to user
         if plan.owner != user {
@@ -1019,7 +1046,10 @@ impl InheritanceContract {
     }
 
     /// Retrieve all deactivated plans for a user
-    pub fn get_user_deactivated_plans(env: Env, user: Address) -> Vec<InheritancePlan> {
+    pub fn get_user_deactivated_plans(
+        env: Env,
+        user: Address,
+    ) -> Vec<InheritancePlan> {
         user.require_auth();
 
         let key = DataKey::UserPlans(user.clone());
@@ -1087,7 +1117,8 @@ impl InheritanceContract {
     ) -> Result<InheritancePlan, InheritanceError> {
         user.require_auth();
 
-        let plan = Self::get_plan(&env, plan_id).ok_or(InheritanceError::PlanNotFound)?;
+        let plan = Self::get_plan(&env, plan_id)
+            .ok_or(InheritanceError::PlanNotFound)?;
 
         if plan.owner != user {
             return Err(InheritanceError::Unauthorized);
@@ -1108,7 +1139,10 @@ impl InheritanceContract {
     }
 
     /// Retrieve all claimed plans for the authenticated user
-    pub fn get_user_claimed_plans(env: Env, user: Address) -> Vec<InheritancePlan> {
+    pub fn get_user_claimed_plans(
+        env: Env,
+        user: Address,
+    ) -> Vec<InheritancePlan> {
         user.require_auth();
 
         let key = DataKey::UserClaimedPlans(user);
@@ -1226,7 +1260,8 @@ impl InheritanceContract {
     pub fn migrate(env: Env, admin: Address) -> Result<(), InheritanceError> {
         Self::require_admin(&env, &admin)?;
 
-        let stored_version: u32 = env.storage().instance().get(&DataKey::Version).unwrap_or(0);
+        let stored_version: u32 =
+            env.storage().instance().get(&DataKey::Version).unwrap_or(0);
 
         if stored_version >= CONTRACT_VERSION {
             // Already up-to-date — nothing to migrate

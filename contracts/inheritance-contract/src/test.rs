@@ -2,8 +2,8 @@
 
 use super::*;
 use soroban_sdk::{
-    contract, contractimpl, contracttype, testutils::Address as _, vec, Address, Bytes, Env,
-    String, Symbol, Vec,
+    contract, contractimpl, contracttype, testutils::Address as _, vec,
+    Address, Bytes, Env, String, Symbol, Vec,
 };
 
 // Helper function to create test address
@@ -192,8 +192,12 @@ fn test_validate_plan_inputs() {
     );
 
     // Test invalid amount
-    let result =
-        InheritanceContract::validate_plan_inputs(valid_name, valid_description, asset_type, 0);
+    let result = InheritanceContract::validate_plan_inputs(
+        valid_name,
+        valid_description,
+        asset_type,
+        0,
+    );
     assert!(result.is_err());
     assert_eq!(result.err().unwrap(), InheritanceError::InvalidTotalAmount);
 }
@@ -221,12 +225,14 @@ fn test_validate_beneficiaries_basis_points() {
         ),
     ];
 
-    let result = InheritanceContract::validate_beneficiaries(valid_beneficiaries);
+    let result =
+        InheritanceContract::validate_beneficiaries(valid_beneficiaries);
     assert!(result.is_ok());
 
     // Test empty beneficiaries
     let empty_beneficiaries = Vec::new(&env);
-    let result = InheritanceContract::validate_beneficiaries(empty_beneficiaries);
+    let result =
+        InheritanceContract::validate_beneficiaries(empty_beneficiaries);
     assert!(result.is_err());
     assert_eq!(
         result.err().unwrap(),
@@ -252,7 +258,8 @@ fn test_validate_beneficiaries_basis_points() {
         ),
     ];
 
-    let result = InheritanceContract::validate_beneficiaries(invalid_allocation);
+    let result =
+        InheritanceContract::validate_beneficiaries(invalid_allocation);
     assert!(result.is_err());
     assert_eq!(
         result.err().unwrap(),
@@ -781,7 +788,8 @@ fn test_deactivate_plan_unauthorized() {
     ));
 
     // Try to deactivate with unauthorized address
-    let result = client.try_deactivate_inheritance_plan(&unauthorized, &plan_id);
+    let result =
+        client.try_deactivate_inheritance_plan(&unauthorized, &plan_id);
     assert!(result.is_err());
 }
 
@@ -995,7 +1003,8 @@ fn test_fee_transfer_to_admin_wallet() {
     let input_amount = 1000u64; // fee = 20
     let beneficiaries_data = default_beneficiaries(&env);
 
-    let admin_balance_before = MockTokenClient::new(&env, &token).balance(&admin);
+    let admin_balance_before =
+        MockTokenClient::new(&env, &token).balance(&admin);
 
     client.create_inheritance_plan(&plan_params(
         &env,
@@ -1008,7 +1017,8 @@ fn test_fee_transfer_to_admin_wallet() {
         &beneficiaries_data,
     ));
 
-    let admin_balance_after = MockTokenClient::new(&env, &token).balance(&admin);
+    let admin_balance_after =
+        MockTokenClient::new(&env, &token).balance(&admin);
     let expected_fee = 20i128; // 2% of 1000
     assert_eq!(
         admin_balance_after - admin_balance_before,
