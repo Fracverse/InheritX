@@ -69,3 +69,4 @@ async-trait = "0.1"
 [dev-dependencies]
 tokio-test = "0.4"
 httpmock = "0.7"
+tower05 = { package = "tower", version = "0.5", features = ["util"] }
