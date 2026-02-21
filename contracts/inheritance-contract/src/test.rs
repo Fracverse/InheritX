@@ -905,3 +905,601 @@ fn test_get_plan_details() {
     assert!(deactivated_plan.is_some());
     assert!(!deactivated_plan.unwrap().is_active);
 }
+
+#[test]
+fn test_kyc_approve_success() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let contract_id = env.register_contract(None, InheritanceContract);
+    let client = InheritanceContractClient::new(&env, &contract_id);
+
+    let admin = create_test_address(&env, 1);
+    let user = create_test_address(&env, 2);
+
+    client.initialize_admin(&admin);
+    client.submit_kyc(&user);
+
+    let result = client.try_approve_kyc(&admin, &user);
+    assert!(result.is_ok());
+
+    let stored: KycStatus = env.as_contract(&contract_id, || {
+        env.storage().persistent().get(&DataKey::Kyc(user)).unwrap()
+    });
+    assert!(stored.submitted);
+    assert!(stored.approved);
+}
+
+#[test]
+fn test_kyc_approve_non_admin_fails() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let contract_id = env.register_contract(None, InheritanceContract);
+    let client = InheritanceContractClient::new(&env, &contract_id);
+
+    let admin = create_test_address(&env, 1);
+    let non_admin = create_test_address(&env, 2);
+    let user = create_test_address(&env, 3);
+
+    client.initialize_admin(&admin);
+    client.submit_kyc(&user);
+
+    let result = client.try_approve_kyc(&non_admin, &user);
+    assert!(result.is_err());
+}
+
+#[test]
+fn test_kyc_approve_without_submission_fails() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let contract_id = env.register_contract(None, InheritanceContract);
+    let client = InheritanceContractClient::new(&env, &contract_id);
+
+    let admin = create_test_address(&env, 1);
+    let user = create_test_address(&env, 2);
+
+    client.initialize_admin(&admin);
+
+    let result = client.try_approve_kyc(&admin, &user);
+    assert!(result.is_err());
+}
+
+#[test]
+fn test_kyc_approve_already_approved_fails() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let contract_id = env.register_contract(None, InheritanceContract);
+    let client = InheritanceContractClient::new(&env, &contract_id);
+
+    let admin = create_test_address(&env, 1);
+    let user = create_test_address(&env, 2);
+
+    client.initialize_admin(&admin);
+    client.submit_kyc(&user);
+    client.approve_kyc(&admin, &user);
+
+    let result = client.try_approve_kyc(&admin, &user);
+    assert!(result.is_err());
+}
+
+// ───────────────────────────────────────────────────
+// KYC Rejection Tests
+// ───────────────────────────────────────────────────
+
+#[test]
+fn test_kyc_reject_success() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let contract_id = env.register_contract(None, InheritanceContract);
+    let client = InheritanceContractClient::new(&env, &contract_id);
+
+    let admin = create_test_address(&env, 1);
+    let user = create_test_address(&env, 2);
+
+    client.initialize_admin(&admin);
+    client.submit_kyc(&user);
+
+    let result = client.try_reject_kyc(&admin, &user);
+    assert!(result.is_ok());
+
+    let stored: KycStatus = env.as_contract(&contract_id, || {
+        env.storage().persistent().get(&DataKey::Kyc(user)).unwrap()
+    });
+    assert!(stored.submitted);
+    assert!(!stored.approved);
+    assert!(stored.rejected);
+    assert_eq!(stored.rejected_at, env.ledger().timestamp());
+}
+
+#[test]
+fn test_kyc_reject_non_admin_fails() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let contract_id = env.register_contract(None, InheritanceContract);
+    let client = InheritanceContractClient::new(&env, &contract_id);
+
+    let admin = create_test_address(&env, 1);
+    let non_admin = create_test_address(&env, 2);
+    let user = create_test_address(&env, 3);
+
+    client.initialize_admin(&admin);
+    client.submit_kyc(&user);
+
+    let result = client.try_reject_kyc(&non_admin, &user);
+    assert!(result.is_err());
+}
+
+#[test]
+fn test_kyc_reject_without_submission_fails() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let contract_id = env.register_contract(None, InheritanceContract);
+    let client = InheritanceContractClient::new(&env, &contract_id);
+
+    let admin = create_test_address(&env, 1);
+    let user = create_test_address(&env, 2);
+
+    client.initialize_admin(&admin);
+
+    let result = client.try_reject_kyc(&admin, &user);
+    assert!(result.is_err());
+}
+
+#[test]
+fn test_kyc_reject_already_rejected_fails() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let contract_id = env.register_contract(None, InheritanceContract);
+    let client = InheritanceContractClient::new(&env, &contract_id);
+
+    let admin = create_test_address(&env, 1);
+    let user = create_test_address(&env, 2);
+
+    client.initialize_admin(&admin);
+    client.submit_kyc(&user);
+    client.reject_kyc(&admin, &user);
+
+    let result = client.try_reject_kyc(&admin, &user);
+    assert!(result.is_err());
+}
+
+// ───────────────────────────────────────────────────
+// Contract Upgrade Tests
+// ───────────────────────────────────────────────────
+
+fn fake_wasm_hash(env: &Env) -> BytesN<32> {
+    BytesN::from_array(env, &[1u8; 32])
+}
+
+#[test]
+fn test_version_returns_default() {
+    let env = Env::default();
+    let contract_id = env.register_contract(None, InheritanceContract);
+    let client = InheritanceContractClient::new(&env, &contract_id);
+
+    let version = client.version();
+    assert_eq!(version, 1);
+}
+
+#[test]
+fn test_upgrade_rejects_non_admin() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let contract_id = env.register_contract(None, InheritanceContract);
+    let client = InheritanceContractClient::new(&env, &contract_id);
+
+    let admin = create_test_address(&env, 1);
+    let non_admin = create_test_address(&env, 2);
+    client.initialize_admin(&admin);
+
+    // Auth check happens before wasm swap, so this returns NotAdmin
+    let result = client.try_upgrade(&non_admin, &fake_wasm_hash(&env));
+    assert!(result.is_err());
+}
+
+#[test]
+fn test_upgrade_rejects_no_admin_initialized() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let contract_id = env.register_contract(None, InheritanceContract);
+    let client = InheritanceContractClient::new(&env, &contract_id);
+
+    let caller = create_test_address(&env, 1);
+
+    let result = client.try_upgrade(&caller, &fake_wasm_hash(&env));
+    assert!(result.is_err());
+}
+
+#[test]
+fn test_upgrade_version_stored_in_storage() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let contract_id = env.register_contract(None, InheritanceContract);
+    let client = InheritanceContractClient::new(&env, &contract_id);
+
+    let admin = create_test_address(&env, 1);
+    client.initialize_admin(&admin);
+
+    // Directly set version in storage to simulate upgrade version tracking
+    env.as_contract(&contract_id, || {
+        env.storage().instance().set(&DataKey::Version, &5u32);
+    });
+
+    let version = client.version();
+    assert_eq!(version, 5);
+}
+
+#[test]
+fn test_migrate_no_migration_needed() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let contract_id = env.register_contract(None, InheritanceContract);
+    let client = InheritanceContractClient::new(&env, &contract_id);
+
+    let admin = create_test_address(&env, 1);
+    client.initialize_admin(&admin);
+
+    // Set version to CONTRACT_VERSION so migration is not needed
+    env.as_contract(&contract_id, || {
+        env.storage().instance().set(&DataKey::Version, &1u32);
+    });
+    let result = client.try_migrate(&admin);
+    assert!(result.is_err());
+}
+
+#[test]
+fn test_migrate_rejects_non_admin() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let contract_id = env.register_contract(None, InheritanceContract);
+    let client = InheritanceContractClient::new(&env, &contract_id);
+
+    let admin = create_test_address(&env, 1);
+    let non_admin = create_test_address(&env, 2);
+    client.initialize_admin(&admin);
+
+    let result = client.try_migrate(&non_admin);
+    assert!(result.is_err());
+}
+
+#[test]
+fn test_migrate_runs_when_version_outdated() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let contract_id = env.register_contract(None, InheritanceContract);
+    let client = InheritanceContractClient::new(&env, &contract_id);
+
+    let admin = create_test_address(&env, 1);
+    client.initialize_admin(&admin);
+
+    // Set stored version to 0 (older than CONTRACT_VERSION) to simulate needing migration
+    env.as_contract(&contract_id, || {
+        env.storage().instance().set(&DataKey::Version, &0u32);
+    });
+
+    let result = client.try_migrate(&admin);
+    assert!(result.is_ok());
+
+    // After migration, version should be CONTRACT_VERSION
+    let version = client.version();
+    assert_eq!(version, 1);
+}
+
+#[test]
+fn test_plan_data_survives_across_versions() {
+    // Soroban upgrades preserve all persistent/instance storage.
+    // This test verifies plan data stays intact when version changes.
+    let env = Env::default();
+    env.mock_all_auths();
+    let contract_id = env.register_contract(None, InheritanceContract);
+    let client = InheritanceContractClient::new(&env, &contract_id);
+
+    let admin = create_test_address(&env, 1);
+    let owner = create_test_address(&env, 2);
+    client.initialize_admin(&admin);
+
+    // Create plans, claims, KYC before version bump
+    let beneficiaries_data = vec![
+        &env,
+        (
+            String::from_str(&env, "Alice"),
+            String::from_str(&env, "alice@example.com"),
+            111111u32,
+            create_test_bytes(&env, "1111111111111111"),
+            5000u32,
+        ),
+        (
+            String::from_str(&env, "Bob"),
+            String::from_str(&env, "bob@example.com"),
+            222222u32,
+            create_test_bytes(&env, "2222222222222222"),
+            5000u32,
+        ),
+    ];
+
+    let plan_id = client.create_inheritance_plan(
+        &owner,
+        &String::from_str(&env, "Pre-Upgrade Plan"),
+        &String::from_str(&env, "Should survive"),
+        &5000000u64,
+        &DistributionMethod::LumpSum,
+        &beneficiaries_data,
+    );
+
+    // Deactivate second plan
+    let deact_id = client.create_inheritance_plan(
+        &owner,
+        &String::from_str(&env, "Deactivated"),
+        &String::from_str(&env, "Will deactivate"),
+        &2000000u64,
+        &DistributionMethod::Monthly,
+        &beneficiaries_data.clone(),
+    );
+    client.deactivate_inheritance_plan(&owner, &deact_id);
+
+    // Submit + approve KYC
+    let user = create_test_address(&env, 3);
+    client.submit_kyc(&user);
+    client.approve_kyc(&admin, &user.clone());
+
+    // Simulate version bump (as upgrade would do)
+    env.as_contract(&contract_id, || {
+        env.storage().instance().set(&DataKey::Version, &2u32);
+    });
+
+    // All data still accessible
+    let plan = client.get_plan_details(&plan_id).unwrap();
+    assert!(plan.is_active);
+    assert_eq!(plan.total_amount, 5000000u64);
+    assert_eq!(plan.beneficiaries.len(), 2);
+    assert_eq!(plan.owner, owner);
+
+    let deact_plan = client.get_plan_details(&deact_id).unwrap();
+    assert!(!deact_plan.is_active);
+
+    let kyc: KycStatus = env.as_contract(&contract_id, || {
+        env.storage().persistent().get(&DataKey::Kyc(user)).unwrap()
+    });
+    assert!(kyc.submitted);
+    assert!(kyc.approved);
+
+    assert_eq!(client.version(), 2);
+}
+
+#[test]
+fn test_get_user_deactivated_plans() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let contract_id = env.register_contract(None, InheritanceContract);
+    let client = InheritanceContractClient::new(&env, &contract_id);
+
+    let owner = create_test_address(&env, 1);
+    let beneficiaries_data = vec![
+        &env,
+        (
+            String::from_str(&env, "Alice"),
+            String::from_str(&env, "alice@example.com"),
+            111111u32,
+            create_test_bytes(&env, "1111111111111111"),
+            10000u32,
+        ),
+    ];
+
+    // Create 2 plans
+    let plan1 = client.create_inheritance_plan(
+        &owner,
+        &String::from_str(&env, "Plan 1"),
+        &String::from_str(&env, "Desc 1"),
+        &1000000u64,
+        &DistributionMethod::LumpSum,
+        &beneficiaries_data,
+    );
+    let _plan2 = client.create_inheritance_plan(
+        &owner,
+        &String::from_str(&env, "Plan 2"),
+        &String::from_str(&env, "Desc 2"),
+        &1000000u64,
+        &DistributionMethod::LumpSum,
+        &beneficiaries_data,
+    );
+
+    // Deactivate plan 1
+    client.deactivate_inheritance_plan(&owner, &plan1);
+
+    // Get deactivated plans
+    let deactivated = client.get_user_deactivated_plans(&owner);
+    assert_eq!(deactivated.len(), 1);
+    assert_eq!(
+        deactivated.get(0).unwrap().plan_name,
+        String::from_str(&env, "Plan 1")
+    );
+}
+
+#[test]
+fn test_admin_retrieval() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let contract_id = env.register_contract(None, InheritanceContract);
+    let client = InheritanceContractClient::new(&env, &contract_id);
+
+    let admin = create_test_address(&env, 99);
+    client.initialize_admin(&admin);
+
+    let owner1 = create_test_address(&env, 1);
+    let owner2 = create_test_address(&env, 2);
+    let beneficiaries_data = vec![
+        &env,
+        (
+            String::from_str(&env, "Alice"),
+            String::from_str(&env, "alice@example.com"),
+            111111u32,
+            create_test_bytes(&env, "1111111111111111"),
+            10000u32,
+        ),
+    ];
+
+    // Owner 1 creates and deactivates
+    let plan1 = client.create_inheritance_plan(
+        &owner1,
+        &String::from_str(&env, "Plan 1"),
+        &String::from_str(&env, "Desc 1"),
+        &1000000u64,
+        &DistributionMethod::LumpSum,
+        &beneficiaries_data,
+    );
+    client.deactivate_inheritance_plan(&owner1, &plan1);
+
+    // Owner 2 creates and deactivates
+    let plan2 = client.create_inheritance_plan(
+        &owner2,
+        &String::from_str(&env, "Plan 2"),
+        &String::from_str(&env, "Desc 2"),
+        &1000u64,
+        &DistributionMethod::LumpSum,
+        &beneficiaries_data,
+    );
+    client.deactivate_inheritance_plan(&owner2, &plan2);
+
+    // Admin retrieves all
+    let all_deactivated = client.get_all_deactivated_plans(&admin);
+    assert_eq!(all_deactivated.len(), 2);
+}
+
+#[test]
+fn test_get_claimed_plan() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let contract_id = env.register_contract(None, InheritanceContract);
+    let client = InheritanceContractClient::new(&env, &contract_id);
+
+    let owner = create_test_address(&env, 1);
+    let beneficiaries = vec![
+        &env,
+        (
+            String::from_str(&env, "Alice"),
+            String::from_str(&env, "alice@example.com"),
+            123456u32,
+            create_test_bytes(&env, "1111"),
+            10000u32,
+        ),
+    ];
+
+    let plan_id = client.create_inheritance_plan(
+        &owner,
+        &String::from_str(&env, "Will"),
+        &String::from_str(&env, "Inheritance Plan"),
+        &1000u64,
+        &DistributionMethod::LumpSum,
+        &beneficiaries,
+    );
+
+    // Should error because it's not claimed yet
+    let result = client.try_get_claimed_plan(&owner, &plan_id);
+    assert!(result.is_err());
+
+    client.claim_inheritance_plan(
+        &plan_id,
+        &String::from_str(&env, "alice@example.com"),
+        &123456u32,
+    );
+
+    // Should succeed now
+    let plan = client.get_claimed_plan(&owner, &plan_id);
+    assert_eq!(plan.total_amount, 1000u64);
+}
+
+#[test]
+fn test_get_user_claimed_plans() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let contract_id = env.register_contract(None, InheritanceContract);
+    let client = InheritanceContractClient::new(&env, &contract_id);
+
+    let owner = create_test_address(&env, 1);
+    let beneficiaries = vec![
+        &env,
+        (
+            String::from_str(&env, "Alice"),
+            String::from_str(&env, "alice@example.com"),
+            123456u32,
+            create_test_bytes(&env, "1111"),
+            10000u32,
+        ),
+    ];
+
+    let plan1 = client.create_inheritance_plan(
+        &owner,
+        &String::from_str(&env, "Will 1"),
+        &String::from_str(&env, "Plan"),
+        &1000u64,
+        &DistributionMethod::LumpSum,
+        &beneficiaries,
+    );
+
+    let plan2 = client.create_inheritance_plan(
+        &owner,
+        &String::from_str(&env, "Will 2"),
+        &String::from_str(&env, "Plan"),
+        &2000u64,
+        &DistributionMethod::LumpSum,
+        &beneficiaries,
+    );
+
+    client.claim_inheritance_plan(
+        &plan1,
+        &String::from_str(&env, "alice@example.com"),
+        &123456u32,
+    );
+    client.claim_inheritance_plan(
+        &plan2,
+        &String::from_str(&env, "alice@example.com"),
+        &123456u32,
+    );
+
+    let plans = client.get_user_claimed_plans(&owner);
+    assert_eq!(plans.len(), 2);
+}
+
+#[test]
+fn test_get_all_claimed_plans() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let contract_id = env.register_contract(None, InheritanceContract);
+    let client = InheritanceContractClient::new(&env, &contract_id);
+
+    let admin = create_test_address(&env, 99);
+    client.initialize_admin(&admin);
+
+    let owner = create_test_address(&env, 1);
+    let beneficiaries = vec![
+        &env,
+        (
+            String::from_str(&env, "Alice"),
+            String::from_str(&env, "alice@example.com"),
+            123456u32,
+            create_test_bytes(&env, "1111"),
+            10000u32,
+        ),
+    ];
+
+    let plan1 = client.create_inheritance_plan(
+        &owner,
+        &String::from_str(&env, "Will"),
+        &String::from_str(&env, "Plan"),
+        &1000u64,
+        &DistributionMethod::LumpSum,
+        &beneficiaries,
+    );
+
+    client.claim_inheritance_plan(
+        &plan1,
+        &String::from_str(&env, "alice@example.com"),
+        &123456u32,
+    );
+
+    let plans = client.get_all_claimed_plans(&admin);
+    assert_eq!(plans.len(), 1);
+
+    let non_admin = create_test_address(&env, 2);
+    let result = client.try_get_all_claimed_plans(&non_admin);
+    assert!(result.is_err());
+}

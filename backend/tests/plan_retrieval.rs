@@ -107,6 +107,7 @@ async fn retrieves_plans_by_user_and_admin_scopes() {
         Config {
             database_url: std::env::var("DATABASE_URL").unwrap_or_default(),
             port: 0,
+            jwt_secret: "test-secret".to_string(),
         },
     )
     .await
@@ -237,6 +238,7 @@ async fn rejects_unauthorized_plan_access() {
         Config {
             database_url: std::env::var("DATABASE_URL").unwrap_or_default(),
             port: 0,
+            jwt_secret: "test-secret".to_string(),
         },
     )
     .await
