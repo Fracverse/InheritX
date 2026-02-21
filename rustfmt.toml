@@ -1,0 +1,2 @@
+# Match CI rustfmt so cargo fmt --check passes
+max_width = 80
