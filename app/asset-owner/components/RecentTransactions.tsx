@@ -8,7 +8,7 @@ const RecentTransactions = () => {
         Recent transactions
       </h2>
 
-      <div className="bg-[#182024]/50 rounded-[32px] p-8 md:p-24 border border-[#2A3338] flex flex-col items-center justify-center text-center">
+      <div className="bg-[#182024]/50 rounded-4xl p-8 md:p-24 border border-[#2A3338] flex flex-col items-center justify-center text-center">
         <h3 className="text-xl md:text-2xl font-semibold text-[#FCFFFF] mb-2">
           You don&apos;t have an activity record yet.
         </h3>
