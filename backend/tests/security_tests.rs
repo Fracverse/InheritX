@@ -6,7 +6,6 @@ use axum::{
 };
 use jsonwebtoken::{encode, EncodingKey, Header};
 use serde::{Deserialize, Serialize};
-use serde_json::json;
 use tower::ServiceExt;
 
 /// Test claims structure matching the backend's Claims struct
@@ -34,7 +33,7 @@ async fn test_modified_jwt_signature_rejected_on_admin_route() {
         exp: expiration,
     };
 
-    let valid_token = encode(
+    let _valid_token = encode(
         &Header::default(),
         &valid_claims,
         &EncodingKey::from_secret(
@@ -283,8 +282,10 @@ async fn test_jwt_with_different_algorithm_rejected() {
     let jwt_secret = std::env::var("JWT_SECRET").unwrap_or_else(|_| "test-jwt-secret".to_string());
 
     // Create token with different algorithm header (simulating tampering)
-    let mut header = Header::default();
-    header.alg = jsonwebtoken::Algorithm::HS512; // Different from default HS256
+    let header = jsonwebtoken::Header {
+        alg: jsonwebtoken::Algorithm::HS512,
+        ..Default::default()
+    };
 
     let token_with_different_alg = encode(
         &header,
