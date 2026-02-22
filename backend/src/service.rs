@@ -1,4 +1,19 @@
+// Notification stubs
+pub fn notify_plan_created(_user_id: uuid::Uuid, _plan_id: uuid::Uuid) {
+    // TODO: Implement email or in-app notification for plan creation
+}
+
+pub fn notify_plan_claimed(_user_id: uuid::Uuid, _plan_id: uuid::Uuid) {
+    // TODO: Implement email or in-app notification for plan claim
+}
+
+pub fn notify_plan_deactivated(_user_id: uuid::Uuid, _plan_id: uuid::Uuid) {
+    // TODO: Implement email or in-app notification for plan deactivation
+}
 use crate::api_error::ApiError;
+use crate::notifications::{
+    audit_action, entity_type, notif_type, AuditLogService, NotificationService,
+};
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use sqlx::PgPool;
@@ -84,7 +99,7 @@ pub struct PlanWithBeneficiary {
     pub updated_at: DateTime<Utc>,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, Clone)]
 pub struct CreatePlanRequest {
     pub title: String,
     pub description: Option<String>,
@@ -234,7 +249,19 @@ impl PlanService {
         .fetch_one(db)
         .await?;
 
-        plan_row_to_plan_with_beneficiary(&row)
+        let plan = plan_row_to_plan_with_beneficiary(&row)?;
+
+        // Audit: plan created
+        AuditLogService::log(
+            db,
+            Some(user_id),
+            audit_action::PLAN_CREATED,
+            Some(plan.id),
+            Some(entity_type::PLAN),
+        )
+        .await;
+
+        Ok(plan)
     }
 
     pub async fn get_plan_by_id(
@@ -314,6 +341,16 @@ impl PlanService {
             }
             ApiError::from(e)
         })?;
+
+        // Audit: plan claimed
+        AuditLogService::log(
+            db,
+            Some(user_id),
+            audit_action::PLAN_CLAIMED,
+            Some(plan_id),
+            Some(entity_type::PLAN),
+        )
+        .await;
 
         Ok(plan)
     }
@@ -715,6 +752,36 @@ impl KycService {
         .bind(now)
         .fetch_one(db)
         .await?;
+
+        // Fire notification to the affected user
+        let (ntype, msg) = match status {
+            KycStatus::Approved => (
+                notif_type::KYC_APPROVED,
+                "Your KYC verification has been approved.".to_string(),
+            ),
+            KycStatus::Rejected => (
+                notif_type::KYC_REJECTED,
+                "Your KYC verification has been rejected. Please contact support.".to_string(),
+            ),
+            KycStatus::Pending => (
+                notif_type::KYC_APPROVED, // won't be hit in normal flow
+                "KYC status updated.".to_string(),
+            ),
+        };
+        NotificationService::create_silent(db, user_id, ntype, msg).await;
+
+        // Audit log
+        AuditLogService::log(
+            db,
+            Some(admin_id),
+            match &record.status.as_str() {
+                &"approved" => audit_action::KYC_APPROVED,
+                _ => audit_action::KYC_REJECTED,
+            },
+            Some(user_id),
+            Some(entity_type::USER),
+        )
+        .await;
 
         Ok(record)
     }

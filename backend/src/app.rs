@@ -1,6 +1,6 @@
 use axum::{
     extract::{Path, State},
-    routing::{get, post},
+    routing::{get, patch, post},
     Json, Router,
 };
 use serde_json::{json, Value};
@@ -15,6 +15,7 @@ use crate::api_error::ApiError;
 use crate::auth::{AuthAdmin, AuthUser};
 use crate::auth::{AuthenticatedAdmin, AuthenticatedUser};
 use crate::config::Config;
+use crate::notifications::{AuditLogService, NotificationService};
 use crate::service;
 use crate::service::{
     ClaimPlanRequest, CreatePlanRequest, KycRecord, KycService, KycStatus, PlanService,
@@ -66,6 +67,11 @@ pub async fn create_app(db: PgPool, config: Config) -> Result<Router, ApiError> 
         .route("/api/admin/kyc/:user_id", get(get_kyc_status))
         .route("/api/admin/kyc/approve", post(approve_kyc))
         .route("/api/admin/kyc/reject", post(reject_kyc))
+        // ── Notifications ────────────────────────────────────────────────
+        .route("/api/notifications", get(list_notifications))
+        .route("/api/notifications/:id/read", patch(mark_notification_read))
+        // ── Admin Audit Logs ─────────────────────────────────────────────
+        .route("/api/admin/logs", get(list_audit_logs))
         .route("/plans", get(get_user_plans))
         .route("/plans/pending", get(get_user_pending_plans))
         .route("/plans/:id", get(get_user_plan_by_id))
@@ -94,7 +100,39 @@ async fn create_plan(
     AuthenticatedUser(user): AuthenticatedUser,
     Json(req): Json<CreatePlanRequest>,
 ) -> Result<Json<Value>, ApiError> {
-    let plan = PlanService::create_plan(&state.db, user.user_id, &req).await?;
+    // Validate KYC approved
+    let kyc_record = KycService::get_kyc_status(&state.db, user.user_id).await?;
+    if kyc_record.status != "approved" {
+        return Err(ApiError::Forbidden("KYC not approved".to_string()));
+    }
+
+    // Require 2FA verification (stub, replace with actual logic)
+    // if !verify_2fa(user.user_id, req.2fa_code) {
+    //     return Err(ApiError::Forbidden("2FA verification failed".to_string()));
+    // }
+
+    // Deduct 2% fee
+    let amount = req.net_amount + req.fee;
+    let fee = amount * rust_decimal::Decimal::new(2, 2) / rust_decimal::Decimal::new(100, 0);
+    let net_amount = amount - fee;
+
+    let mut req_mut = req.clone();
+    req_mut.fee = fee;
+    req_mut.net_amount = net_amount;
+
+    let plan = PlanService::create_plan(&state.db, user.user_id, &req_mut).await?;
+
+    // Audit log
+    sqlx::query("INSERT INTO plan_logs (plan_id, action, performed_by) VALUES ($1, $2, $3)")
+        .bind(plan.id)
+        .bind("create")
+        .bind(user.user_id)
+        .execute(&state.db)
+        .await?;
+
+    // Notification (stub)
+    // notify_plan_created(user.user_id, plan.id);
+
     Ok(Json(json!({
         "status": "success",
         "data": plan
@@ -122,7 +160,33 @@ async fn claim_plan(
     AuthenticatedUser(user): AuthenticatedUser,
     Json(req): Json<ClaimPlanRequest>,
 ) -> Result<Json<Value>, ApiError> {
+    // Validate KYC approved
+    let kyc_record = KycService::get_kyc_status(&state.db, user.user_id).await?;
+    if kyc_record.status != "approved" {
+        return Err(ApiError::Forbidden("KYC not approved".to_string()));
+    }
+
+    // Require 2FA verification (stub, replace with actual logic)
+    // if !verify_2fa(user.user_id, req.2fa_code) {
+    //     return Err(ApiError::Forbidden("2FA verification failed".to_string()));
+    // }
+
     let plan = PlanService::claim_plan(&state.db, plan_id, user.user_id, &req).await?;
+
+    // Transfer USDC to user wallet (stub)
+    // transfer_usdc_to_wallet(user.user_id, plan.net_amount);
+
+    // Audit log
+    sqlx::query("INSERT INTO plan_logs (plan_id, action, performed_by) VALUES ($1, $2, $3)")
+        .bind(plan.id)
+        .bind("claim")
+        .bind(user.user_id)
+        .execute(&state.db)
+        .await?;
+
+    // Notification (stub)
+    // notify_plan_claimed(user.user_id, plan.id);
+
     Ok(Json(json!({
         "status": "success",
         "message": "Claim recorded",
@@ -217,6 +281,46 @@ async fn reject_kyc(
     )
     .await?;
     Ok(Json(status))
+}
+
+// ── Notification Handlers ─────────────────────────────────────────────────────
+
+async fn list_notifications(
+    State(state): State<Arc<AppState>>,
+    AuthenticatedUser(user): AuthenticatedUser,
+) -> Result<Json<Value>, ApiError> {
+    let notifications = NotificationService::list_for_user(&state.db, user.user_id).await?;
+    Ok(Json(json!({
+        "status": "success",
+        "data": notifications,
+        "count": notifications.len()
+    })))
+}
+
+async fn mark_notification_read(
+    State(state): State<Arc<AppState>>,
+    Path(notif_id): Path<Uuid>,
+    AuthenticatedUser(user): AuthenticatedUser,
+) -> Result<Json<Value>, ApiError> {
+    let notification = NotificationService::mark_read(&state.db, notif_id, user.user_id).await?;
+    Ok(Json(json!({
+        "status": "success",
+        "data": notification
+    })))
+}
+
+// ── Admin Audit Log Handler ───────────────────────────────────────────────────
+
+async fn list_audit_logs(
+    State(state): State<Arc<AppState>>,
+    AuthenticatedAdmin(_admin): AuthenticatedAdmin,
+) -> Result<Json<Value>, ApiError> {
+    let logs = AuditLogService::list_all(&state.db).await?;
+    Ok(Json(json!({
+        "status": "success",
+        "data": logs,
+        "count": logs.len()
+    })))
 }
 
 async fn get_user_plan_by_id(
