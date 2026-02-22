@@ -82,9 +82,6 @@ pub enum InheritanceError {
     MigrationNotRequired = 26,
     PlanNotClaimed = 27,
     KycAlreadyRejected = 28,
-    AdminNotSet = 20,
-    NotAdmin = 21,
-    AdminAlreadyInitialized = 22,
 }
 
 #[contracttype]
@@ -100,9 +97,6 @@ pub enum DataKey {
     Admin,
     Kyc(Address),
     Version,
-    Claim(BytesN<32>), // keyed by hashed_email
-    UserPlans(Address),
-    Admin,
 }
 
 #[contracttype]
@@ -229,6 +223,17 @@ impl InheritanceContract {
         if stored_admin != *admin {
             return Err(InheritanceError::NotAdmin);
         }
+        Ok(())
+    }
+
+    pub fn initialize_admin(env: Env, admin: Address) -> Result<(), InheritanceError> {
+        admin.require_auth();
+        if Self::get_admin(&env).is_some() {
+            return Err(InheritanceError::AdminAlreadyInitialized);
+        }
+
+        let key = DataKey::Admin;
+        env.storage().instance().set(&key, &admin);
         Ok(())
     }
 
@@ -388,42 +393,6 @@ impl InheritanceContract {
             all_plans.push_back(plan_id);
             env.storage().persistent().set(&key_all, &all_plans);
         }
-    }
-
-    fn add_plan_to_user(env: &Env, owner: Address, plan_id: u64) {
-        let key = DataKey::UserPlans(owner);
-        let mut plans: Vec<u64> = env
-            .storage()
-            .persistent()
-            .get(&key)
-            .unwrap_or(Vec::new(env));
-        plans.push_back(plan_id);
-        env.storage().persistent().set(&key, &plans);
-    }
-
-    fn get_admin(env: &Env) -> Option<Address> {
-        let key = DataKey::Admin;
-        env.storage().instance().get(&key)
-    }
-
-    fn require_admin(env: &Env, admin: &Address) -> Result<(), InheritanceError> {
-        admin.require_auth();
-        let configured_admin = Self::get_admin(env).ok_or(InheritanceError::AdminNotSet)?;
-        if configured_admin != *admin {
-            return Err(InheritanceError::NotAdmin);
-        }
-        Ok(())
-    }
-
-    pub fn initialize_admin(env: Env, admin: Address) -> Result<(), InheritanceError> {
-        admin.require_auth();
-        if Self::get_admin(&env).is_some() {
-            return Err(InheritanceError::AdminAlreadyInitialized);
-        }
-
-        let key = DataKey::Admin;
-        env.storage().instance().set(&key, &admin);
-        Ok(())
     }
 
     /// Get plan details
@@ -742,7 +711,6 @@ impl InheritanceContract {
 
         // Add to user's plan list
         Self::add_plan_to_user(&env, owner.clone(), plan_id);
-        Self::add_plan_to_user(&env, owner, plan_id);
 
         log!(&env, "Inheritance plan created with ID: {}", plan_id);
 
@@ -835,16 +803,6 @@ impl InheritanceContract {
             email
         );
 
-        Ok(())
-    }
-
-    /// Initialize contract admin. Can only be called once.
-    pub fn initialize_admin(env: Env, admin: Address) -> Result<(), InheritanceError> {
-        if Self::get_admin(&env).is_some() {
-            return Err(InheritanceError::AdminAlreadyInitialized);
-        }
-        admin.require_auth();
-        env.storage().instance().set(&DataKey::Admin, &admin);
         Ok(())
     }
 
