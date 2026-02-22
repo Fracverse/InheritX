@@ -62,8 +62,8 @@ async fn test_health_endpoint() {
     };
 
     // Create a lazy connection pool
-    let db_pool = sqlx::PgPool::connect_lazy(&config.database_url)
-        .expect("Failed to create lazy db pool");
+    let db_pool =
+        sqlx::PgPool::connect_lazy(&config.database_url).expect("Failed to create lazy db pool");
 
     // Create the application using the actual router
     let app = create_app(db_pool, config)
@@ -80,8 +80,8 @@ async fn test_health_endpoint() {
     // This is required for tower-governor (rate limiting) to find the client IP.
     tokio::spawn(async move {
         axum::serve(
-            listener, 
-            app.into_make_service_with_connect_info::<SocketAddr>()
+            listener,
+            app.into_make_service_with_connect_info::<SocketAddr>(),
         )
         .await
         .expect("Server failed");
@@ -90,20 +90,22 @@ async fn test_health_endpoint() {
     // Client
     let client = reqwest::Client::new();
     let url = format!("http://{}/health", addr);
-    
+
     // Give it a moment to start
     tokio::time::sleep(std::time::Duration::from_millis(50)).await;
 
-    let response = client
-        .get(&url)
-        .send()
-        .await
-        .expect("Request failed");
+    let response = client.get(&url).send().await.expect("Request failed");
 
     let status = response.status();
     let body_text = response.text().await.expect("Failed to read body");
 
-    assert_eq!(status, reqwest::StatusCode::OK, "Status was {}, body: {}", status, body_text);
+    assert_eq!(
+        status,
+        reqwest::StatusCode::OK,
+        "Status was {}, body: {}",
+        status,
+        body_text
+    );
 
     let body: Value = serde_json::from_str(&body_text).expect("Failed to parse JSON");
     assert_eq!(body["status"], "ok");
