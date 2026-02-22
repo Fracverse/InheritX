@@ -49,7 +49,8 @@ async fn mark_notification_read_success() {
     .expect("Failed to generate token");
 
     // 4. Call mark read endpoint
-    let response = ctx.app
+    let response = ctx
+        .app
         .oneshot(
             Request::builder()
                 .method("PATCH")
@@ -82,7 +83,7 @@ async fn cannot_mark_another_user_notification() {
     // 1. Create two users
     let user_a_id = Uuid::new_v4();
     let user_b_id = Uuid::new_v4();
-    
+
     for id in &[user_a_id, user_b_id] {
         sqlx::query("INSERT INTO users (id, email, password_hash) VALUES ($1, $2, $3)")
             .bind(id)
@@ -117,7 +118,8 @@ async fn cannot_mark_another_user_notification() {
     .expect("Failed to generate token");
 
     // 4. Call mark read endpoint for user B's notification using user A's token
-    let response = ctx.app
+    let response = ctx
+        .app
         .oneshot(
             Request::builder()
                 .method("PATCH")
@@ -182,7 +184,8 @@ async fn mark_already_read_notification_safe_handling() {
     .expect("Failed to generate token");
 
     // 4. Call mark read endpoint again
-    let response = ctx.app
+    let response = ctx
+        .app
         .oneshot(
             Request::builder()
                 .method("PATCH")
