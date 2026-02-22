@@ -320,6 +320,10 @@ impl PlanService {
             )?;
         }
 
+        if !Self::is_due_for_claim(plan.distribution_method.as_deref(), plan.contract_created_at) {
+            return Err(ApiError::Forbidden("Plan is not yet due for claim".to_string()));
+        }
+
         sqlx::query(
             r#"
             INSERT INTO claims (plan_id, contract_plan_id, beneficiary_email)
