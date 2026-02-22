@@ -47,6 +47,13 @@ struct Admin {
     status: String,
 }
 
+#[derive(Debug, FromRow)]
+struct UserRow {
+    id: uuid::Uuid,
+    email: String,
+    nonce: Option<String>,
+}
+
 pub async fn login_admin(
     State(state): State<Arc<AppState>>,
     Json(payload): Json<LoginRequest>,
@@ -132,7 +139,8 @@ pub async fn wallet_login(
     State(state): State<Arc<AppState>>,
     Json(payload): Json<WalletLoginRequest>,
 ) -> Result<Json<LoginResponse>, ApiError> {
-    let user = sqlx::query!("SELECT id, email, nonce FROM users WHERE wallet_address = $1", payload.wallet_address)
+    let user = sqlx::query_as::<_, UserRow>("SELECT id, email, nonce FROM users WHERE wallet_address = $1")
+        .bind(&payload.wallet_address)
         .fetch_optional(&state.db)
         .await?;
 
