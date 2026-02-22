@@ -102,8 +102,8 @@ async fn test_valid_jwt_signature_accepted_on_admin_route() {
     };
 
     // Encode with the correct secret from config
-    let jwt_secret = std::env::var("JWT_SECRET")
-        .unwrap_or_else(|_| "test-jwt-secret".to_string());
+    let jwt_secret =
+        std::env::var("JWT_SECRET").unwrap_or_else(|_| "test-jwt-secret".to_string());
 
     let valid_token = encode(
         &Header::default(),
@@ -206,8 +206,8 @@ async fn test_expired_jwt_rejected() {
         exp: expired_time,
     };
 
-    let jwt_secret = std::env::var("JWT_SECRET")
-        .unwrap_or_else(|_| "test-jwt-secret".to_string());
+    let jwt_secret =
+        std::env::var("JWT_SECRET").unwrap_or_else(|_| "test-jwt-secret".to_string());
 
     let expired_token = encode(
         &Header::default(),
@@ -282,8 +282,8 @@ async fn test_jwt_with_different_algorithm_rejected() {
         exp: expiration,
     };
 
-    let jwt_secret = std::env::var("JWT_SECRET")
-        .unwrap_or_else(|_| "test-jwt-secret".to_string());
+    let jwt_secret =
+        std::env::var("JWT_SECRET").unwrap_or_else(|_| "test-jwt-secret".to_string());
 
     // Create token with different algorithm header (simulating tampering)
     let mut header = Header::default();
