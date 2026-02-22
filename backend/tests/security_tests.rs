@@ -26,8 +26,7 @@ async fn test_modified_jwt_signature_rejected_on_admin_route() {
     };
 
     // Create a valid token with user role
-    let expiration = (chrono::Utc::now() + chrono::Duration::hours(24))
-        .timestamp() as usize;
+    let expiration = (chrono::Utc::now() + chrono::Duration::hours(24)).timestamp() as usize;
 
     let valid_claims = TestClaims {
         sub: "550e8400-e29b-41d4-a716-446655440000".to_string(),
@@ -38,7 +37,13 @@ async fn test_modified_jwt_signature_rejected_on_admin_route() {
     let valid_token = encode(
         &Header::default(),
         &valid_claims,
-        &EncodingKey::from_secret(test_context.pool.connect_options().get_username().as_bytes()),
+        &EncodingKey::from_secret(
+            test_context
+                .pool
+                .connect_options()
+                .get_username()
+                .as_bytes(),
+        ),
     )
     .expect("failed to encode valid token");
 
@@ -88,8 +93,7 @@ async fn test_valid_jwt_signature_accepted_on_admin_route() {
         return;
     };
 
-    let expiration = (chrono::Utc::now() + chrono::Duration::hours(24))
-        .timestamp() as usize;
+    let expiration = (chrono::Utc::now() + chrono::Duration::hours(24)).timestamp() as usize;
 
     let valid_claims = TestClaims {
         sub: "550e8400-e29b-41d4-a716-446655440001".to_string(),
@@ -194,8 +198,7 @@ async fn test_expired_jwt_rejected() {
     };
 
     // Create token with expiration in the past
-    let expired_time = (chrono::Utc::now() - chrono::Duration::hours(1))
-        .timestamp() as usize;
+    let expired_time = (chrono::Utc::now() - chrono::Duration::hours(1)).timestamp() as usize;
 
     let expired_claims = TestClaims {
         sub: "550e8400-e29b-41d4-a716-446655440002".to_string(),
@@ -271,8 +274,7 @@ async fn test_jwt_with_different_algorithm_rejected() {
         return;
     };
 
-    let expiration = (chrono::Utc::now() + chrono::Duration::hours(24))
-        .timestamp() as usize;
+    let expiration = (chrono::Utc::now() + chrono::Duration::hours(24)).timestamp() as usize;
 
     let claims = TestClaims {
         sub: "550e8400-e29b-41d4-a716-446655440003".to_string(),
@@ -301,7 +303,10 @@ async fn test_jwt_with_different_algorithm_rejected() {
             Request::builder()
                 .method("GET")
                 .uri("/api/admin/logs")
-                .header("Authorization", format!("Bearer {}", token_with_different_alg))
+                .header(
+                    "Authorization",
+                    format!("Bearer {}", token_with_different_alg),
+                )
                 .body(Body::empty())
                 .unwrap(),
         )
