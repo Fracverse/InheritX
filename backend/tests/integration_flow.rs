@@ -44,7 +44,9 @@ async fn test_full_lifecycle_flow() {
         .unwrap();
 
     assert_eq!(response.status(), StatusCode::OK);
-    let body = axum::body::to_bytes(response.into_body(), usize::MAX).await.unwrap();
+    let body = axum::body::to_bytes(response.into_body(), usize::MAX)
+        .await
+        .unwrap();
     let body: Value = serde_json::from_slice(&body).unwrap();
     let nonce = body["nonce"].as_str().unwrap();
     assert!(!nonce.is_empty());
@@ -58,17 +60,22 @@ async fn test_full_lifecycle_flow() {
                 .method("POST")
                 .uri("/api/auth/wallet-login")
                 .header("Content-Type", "application/json")
-                .body(Body::from(json!({
-                    "wallet_address": wallet_address,
-                    "signature": "valid_signature" 
-                }).to_string()))
+                .body(Body::from(
+                    json!({
+                        "wallet_address": wallet_address,
+                        "signature": "valid_signature"
+                    })
+                    .to_string(),
+                ))
                 .unwrap(),
         )
         .await
         .unwrap();
 
     assert_eq!(response.status(), StatusCode::OK);
-    let body = axum::body::to_bytes(response.into_body(), usize::MAX).await.unwrap();
+    let body = axum::body::to_bytes(response.into_body(), usize::MAX)
+        .await
+        .unwrap();
     let body: Value = serde_json::from_slice(&body).unwrap();
     let user_token = body["token"].as_str().unwrap();
 
@@ -99,17 +106,22 @@ async fn test_full_lifecycle_flow() {
                 .method("POST")
                 .uri("/admin/login")
                 .header("Content-Type", "application/json")
-                .body(Body::from(json!({
-                    "email": admin_email,
-                    "password": admin_password
-                }).to_string()))
+                .body(Body::from(
+                    json!({
+                        "email": admin_email,
+                        "password": admin_password
+                    })
+                    .to_string(),
+                ))
                 .unwrap(),
         )
         .await
         .unwrap();
 
     assert_eq!(response.status(), StatusCode::OK);
-    let body = axum::body::to_bytes(response.into_body(), usize::MAX).await.unwrap();
+    let body = axum::body::to_bytes(response.into_body(), usize::MAX)
+        .await
+        .unwrap();
     let body: Value = serde_json::from_slice(&body).unwrap();
     let admin_token = body["token"].as_str().unwrap();
 
@@ -129,9 +141,12 @@ async fn test_full_lifecycle_flow() {
                 .uri("/api/admin/kyc/approve")
                 .header("Authorization", format!("Bearer {}", admin_token))
                 .header("Content-Type", "application/json")
-                .body(Body::from(json!({
-                    "user_id": user_id
-                }).to_string()))
+                .body(Body::from(
+                    json!({
+                        "user_id": user_id
+                    })
+                    .to_string(),
+                ))
                 .unwrap(),
         )
         .await
@@ -149,20 +164,25 @@ async fn test_full_lifecycle_flow() {
                 .uri("/api/plans")
                 .header("Authorization", format!("Bearer {}", user_token))
                 .header("Content-Type", "application/json")
-                .body(Body::from(json!({
-                    "title": "Inheritance Plan",
-                    "description": "A test plan",
-                    "fee": "2.00",
-                    "net_amount": "98.00",
-                    "currency_preference": "USDC"
-                }).to_string()))
+                .body(Body::from(
+                    json!({
+                        "title": "Inheritance Plan",
+                        "description": "A test plan",
+                        "fee": "2.00",
+                        "net_amount": "98.00",
+                        "currency_preference": "USDC"
+                    })
+                    .to_string(),
+                ))
                 .unwrap(),
         )
         .await
         .unwrap();
 
     assert_eq!(response.status(), StatusCode::OK);
-    let body = axum::body::to_bytes(response.into_body(), usize::MAX).await.unwrap();
+    let body = axum::body::to_bytes(response.into_body(), usize::MAX)
+        .await
+        .unwrap();
     let body: Value = serde_json::from_slice(&body).unwrap();
     let plan_id = body["data"]["id"].as_str().unwrap();
 
@@ -186,9 +206,12 @@ async fn test_full_lifecycle_flow() {
                 .uri(format!("/api/plans/{}/claim", plan_id))
                 .header("Authorization", format!("Bearer {}", user_token))
                 .header("Content-Type", "application/json")
-                .body(Body::from(json!({
-                    "beneficiary_email": "beneficiary@example.com"
-                }).to_string()))
+                .body(Body::from(
+                    json!({
+                        "beneficiary_email": "beneficiary@example.com"
+                    })
+                    .to_string(),
+                ))
                 .unwrap(),
         )
         .await
@@ -211,10 +234,12 @@ async fn test_full_lifecycle_flow() {
         .unwrap();
 
     assert_eq!(response.status(), StatusCode::OK);
-    let body = axum::body::to_bytes(response.into_body(), usize::MAX).await.unwrap();
+    let body = axum::body::to_bytes(response.into_body(), usize::MAX)
+        .await
+        .unwrap();
     let body: Value = serde_json::from_slice(&body).unwrap();
     let logs = body["data"].as_array().unwrap();
-    
+
     // Check if there is a plan_claimed log
     let has_claim_log = logs.iter().any(|log| log["action"] == "plan_claimed");
     assert!(has_claim_log, "Claim log not found in audit logs");
@@ -234,11 +259,15 @@ async fn test_full_lifecycle_flow() {
         .unwrap();
 
     assert_eq!(response.status(), StatusCode::OK);
-    let body = axum::body::to_bytes(response.into_body(), usize::MAX).await.unwrap();
+    let body = axum::body::to_bytes(response.into_body(), usize::MAX)
+        .await
+        .unwrap();
     let body: Value = serde_json::from_slice(&body).unwrap();
     let notifications = body["data"].as_array().unwrap();
-    
+
     // In our implementation, we create a silent notification for KYC approval
-    let has_kyc_notif = notifications.iter().any(|n| n["message"].as_str().unwrap().contains("KYC"));
+    let has_kyc_notif = notifications
+        .iter()
+        .any(|n| n["message"].as_str().unwrap().contains("KYC"));
     assert!(has_kyc_notif, "KYC notification not found");
 }

@@ -31,17 +31,18 @@ pub struct LoginResponse {
     token: String,
 }
 
-#[derive(Debug, Serialize, Deserialize)]
-pub struct Claims {
-    sub: String, // subject (user id)
-    role: String,
-    exp: usize,
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AdminClaims {
+    pub admin_id: uuid::Uuid,
+    pub email: String,
+    pub role: String,
+    pub exp: usize,
 }
 
 #[derive(Debug, FromRow)]
 struct Admin {
     id: uuid::Uuid,
-    _email: String,
+    email: String,
     password_hash: String,
     role: String,
     status: String,
@@ -86,8 +87,9 @@ pub async fn login_admin(
         .expect("valid timestamp")
         .timestamp();
 
-    let claims = Claims {
-        sub: admin.id.to_string(),
+    let claims = AdminClaims {
+        admin_id: admin.id,
+        email: admin.email,
         role: admin.role,
         exp: expiration as usize,
     };
@@ -109,10 +111,12 @@ pub async fn generate_nonce(
     let nonce = Uuid::new_v4().to_string();
 
     // Check if user exists, if not create a stub
-    let user_exists = sqlx::query_scalar::<_, bool>("SELECT EXISTS(SELECT 1 FROM users WHERE wallet_address = $1)")
-        .bind(&wallet_address)
-        .fetch_one(&state.db)
-        .await?;
+    let user_exists = sqlx::query_scalar::<_, bool>(
+        "SELECT EXISTS(SELECT 1 FROM users WHERE wallet_address = $1)",
+    )
+    .bind(&wallet_address)
+    .fetch_one(&state.db)
+    .await?;
 
     if user_exists {
         sqlx::query("UPDATE users SET nonce = $1 WHERE wallet_address = $2")
@@ -139,10 +143,12 @@ pub async fn wallet_login(
     State(state): State<Arc<AppState>>,
     Json(payload): Json<WalletLoginRequest>,
 ) -> Result<Json<LoginResponse>, ApiError> {
-    let user = sqlx::query_as::<_, UserRow>("SELECT id, email, nonce FROM users WHERE wallet_address = $1")
-        .bind(&payload.wallet_address)
-        .fetch_optional(&state.db)
-        .await?;
+    let user = sqlx::query_as::<_, UserRow>(
+        "SELECT id, email, nonce FROM users WHERE wallet_address = $1",
+    )
+    .bind(&payload.wallet_address)
+    .fetch_optional(&state.db)
+    .await?;
 
     let user = match user {
         Some(u) => u,
@@ -157,7 +163,7 @@ pub async fn wallet_login(
     // Verify signature logic (Stubbed for now as per usual implementation patterns in this repo)
     // In a real scenario, we'd use ed25519-dalek or similar to verify payload.signature against _nonce
     if payload.signature == "invalid_signature" {
-         return Err(ApiError::Unauthorized);
+        return Err(ApiError::Unauthorized);
     }
 
     // Clear nonce after successful login
@@ -174,6 +180,7 @@ pub async fn wallet_login(
     let claims = UserClaims {
         user_id: user.id,
         email: user.email,
+        exp: expiration as usize,
     };
 
     let token = encode(
@@ -194,13 +201,7 @@ use sqlx::PgPool;
 pub struct UserClaims {
     pub user_id: uuid::Uuid,
     pub email: String,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct AdminClaims {
-    pub admin_id: uuid::Uuid,
-    pub email: String,
-    pub role: String,
+    pub exp: usize,
 }
 
 pub struct AuthenticatedUser(pub UserClaims);
