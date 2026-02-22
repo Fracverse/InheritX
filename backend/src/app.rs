@@ -60,6 +60,7 @@ pub async fn create_app(db: PgPool, config: Config) -> Result<Router, ApiError> 
         .route("/api/plans/:plan_id/claim", post(claim_plan))
         .route("/api/plans/:plan_id", get(get_plan))
         .route("/api/plans", post(create_plan))
+        .route("/api/kyc/submit", post(submit_kyc))
         .route(
             "/api/admin/plans/due-for-claim",
             get(get_all_due_for_claim_plans_admin),
@@ -88,6 +89,14 @@ async fn db_health_check(
     Ok(Json(
         json!({ "status": "ok", "message": "Database is connected" }),
     ))
+}
+
+async fn submit_kyc(
+    State(state): State<Arc<AppState>>,
+    AuthenticatedUser(user): AuthenticatedUser,
+) -> Result<Json<KycRecord>, ApiError> {
+    let status = KycService::submit_kyc(&state.db, user.user_id).await?;
+    Ok(Json(status))
 }
 
 async fn create_plan(

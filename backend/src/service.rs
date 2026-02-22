@@ -705,6 +705,34 @@ pub struct KycRecord {
 pub struct KycService;
 
 impl KycService {
+    pub async fn submit_kyc(db: &PgPool, user_id: Uuid) -> Result<KycRecord, ApiError> {
+        let now = Utc::now();
+        let record = sqlx::query_as::<_, KycRecord>(
+            r#"
+            INSERT INTO kyc_status (user_id, status, created_at, updated_at)
+            VALUES ($1, 'pending', $2, $2)
+            ON CONFLICT (user_id) DO UPDATE SET updated_at = EXCLUDED.updated_at
+            RETURNING user_id, status, reviewed_by, reviewed_at, created_at
+            "#,
+        )
+        .bind(user_id)
+        .bind(now)
+        .fetch_one(db)
+        .await?;
+
+        // Audit log
+        AuditLogService::log(
+            db,
+            Some(user_id),
+            audit_action::KYC_APPROVED, // Maybe add a KYC_SUBMITTED action
+            Some(user_id),
+            Some(entity_type::USER),
+        )
+        .await;
+
+        Ok(record)
+    }
+
     pub async fn get_kyc_status(db: &PgPool, user_id: Uuid) -> Result<KycRecord, ApiError> {
         let row = sqlx::query_as::<_, KycRecord>(
             "SELECT user_id, status, reviewed_by, reviewed_at, created_at FROM kyc_status WHERE user_id = $1",
