@@ -38,7 +38,7 @@ async fn test_create_plan_rollback_on_audit_failure() {
         email,
         exp: expiration,
     };
-    
+
     let token = encode(
         &Header::default(),
         &claims,

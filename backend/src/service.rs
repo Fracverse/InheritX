@@ -377,7 +377,7 @@ impl PlanService {
 
         // Notification: plan claimed
         NotificationService::create(
-            &mut *tx,
+            &mut tx,
             user_id,
             notif_type::PLAN_CLAIMED,
             format!("Plan '{}' has been successfully claimed", plan.title),

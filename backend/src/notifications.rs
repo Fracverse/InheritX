@@ -33,7 +33,7 @@ pub struct Notification {
 pub struct NotificationService;
 
 impl NotificationService {
-    /// Insert a notification for a user. 
+    /// Insert a notification for a user.
     /// Now participates in the caller's transaction.
     pub async fn create(
         executor: &mut sqlx::PgConnection, // Changed from &PgPool
@@ -47,7 +47,7 @@ impl NotificationService {
             INSERT INTO notifications (user_id, type, message, is_read)
             VALUES ($1, $2, $3, false)
             RETURNING id, user_id, type, message, is_read, created_at
-            "#
+            "#,
         )
         .bind(user_id)
         .bind(notif_type)
@@ -59,7 +59,7 @@ impl NotificationService {
     }
 
     // REMOVED: create_silent
-    // Because atomic safety requires that if a notification fails, 
+    // Because atomic safety requires that if a notification fails,
     // the parent transaction MUST rollback.
 
     /// Return all notifications for a user (Read-only, can stay using &PgPool)

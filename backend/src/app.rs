@@ -281,7 +281,7 @@ async fn cancel_plan(
     Path(plan_id): Path<Uuid>,
     AuthenticatedUser(user): AuthenticatedUser,
 ) -> Result<Json<Value>, ApiError> {
-    // Pass only the pool (&state.db) as the service now handles 
+    // Pass only the pool (&state.db) as the service now handles
     // its own internal transaction orchestration.
     let plan = PlanService::cancel_plan(&state.db, plan_id, user.user_id).await?;
 
