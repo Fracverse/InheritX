@@ -361,6 +361,15 @@ impl PlanService {
         )
         .await;
 
+        // Notification: plan claimed
+        NotificationService::create_silent(
+            db,
+            user_id,
+            notif_type::PLAN_CLAIMED,
+            format!("Plan '{}' has been successfully claimed", plan.title),
+        )
+        .await;
+
         Ok(plan)
     }
 
