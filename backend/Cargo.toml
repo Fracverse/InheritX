@@ -43,7 +43,7 @@ postgres-types = { version = "0.2", features = ["with-chrono-0_4", "with-uuid-1"
 soroban-sdk = "21.0"
 
 # HTTP client
-reqwest = { version = "0.11", features = ["json", "rustls-tls"] }
+reqwest = { version = "0.11", default-features = false, features = ["json", "rustls-tls"] }
 
 # Logging
 tracing = "0.1"

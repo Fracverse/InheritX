@@ -39,9 +39,25 @@ pub async fn create_app(db: PgPool, config: Config) -> Result<Router, ApiError> 
     let app = Router::new()
         .route("/health", get(health_check))
         .route("/health/db", get(db_health_check))
+        .route("/login", post(crate::auth::login_user))
         .route("/admin/login", post(crate::auth::login_admin))
+        .route(
+            "/api/auth/nonce/:wallet_address",
+            get(crate::auth::generate_nonce),
+        )
+        .route("/auth/web3/nonce/:wallet", get(crate::auth::generate_nonce))
+        .route("/api/auth/wallet-login", post(crate::auth::wallet_login))
         .layer(
             ServiceBuilder::new()
+                .layer(axum::middleware::from_fn_with_state(
+                    state.clone(),
+                    |State(state): State<Arc<AppState>>,
+                     mut req: axum::http::Request<axum::body::Body>,
+                     next: axum::middleware::Next| async move {
+                        req.extensions_mut().insert(state.config.clone());
+                        next.run(req).await
+                    },
+                ))
                 .layer(TraceLayer::new_for_http())
                 .layer(GovernorLayer {
                     config: governor_conf,
@@ -57,7 +73,9 @@ pub async fn create_app(db: PgPool, config: Config) -> Result<Router, ApiError> 
         )
         .route("/api/plans/:plan_id/claim", post(claim_plan))
         .route("/api/plans/:plan_id", get(get_plan))
+        .route("/api/plans/:plan_id", axum::routing::delete(cancel_plan))
         .route("/api/plans", post(create_plan))
+        .route("/api/kyc/submit", post(submit_kyc))
         .route(
             "/api/admin/plans/due-for-claim",
             get(get_all_due_for_claim_plans_admin),
@@ -65,6 +83,7 @@ pub async fn create_app(db: PgPool, config: Config) -> Result<Router, ApiError> 
         .route("/api/admin/kyc/:user_id", get(get_kyc_status))
         .route("/api/admin/kyc/approve", post(approve_kyc))
         .route("/api/admin/kyc/reject", post(reject_kyc))
+        .route("/api/kyc", get(get_user_kyc))
         // ── Notifications ────────────────────────────────────────────────
         .route("/api/notifications", get(list_notifications))
         .route("/api/notifications/:id/read", patch(mark_notification_read))
@@ -88,9 +107,18 @@ async fn db_health_check(
     ))
 }
 
+async fn submit_kyc(
+    State(state): State<Arc<AppState>>,
+    AuthenticatedUser(user): AuthenticatedUser,
+) -> Result<Json<KycRecord>, ApiError> {
+    let status = KycService::submit_kyc(&state.db, user.user_id).await?;
+    Ok(Json(status))
+}
+
 async fn create_plan(
     State(state): State<Arc<AppState>>,
     AuthenticatedUser(user): AuthenticatedUser,
+    headers: axum::http::HeaderMap,
     Json(req): Json<CreatePlanRequest>,
 ) -> Result<Json<Value>, ApiError> {
     // Validate KYC approved
@@ -113,11 +141,72 @@ async fn create_plan(
     req_mut.fee = fee;
     req_mut.net_amount = net_amount;
 
-    let plan = PlanService::create_plan(&state.db, user.user_id, &req_mut).await?;
+    let mut tx = state.db.begin().await?;
+    let beneficiary_name = req_mut
+        .beneficiary_name
+        .as_deref()
+        .map(|s| s.trim().to_string());
+    let bank_name = req_mut.bank_name.as_deref().map(|s| s.trim().to_string());
+    let bank_account_number = req_mut
+        .bank_account_number
+        .as_deref()
+        .map(|s| s.trim().to_string());
+    let currency_preference = Some(req_mut.currency_preference.trim().to_uppercase());
+
+    let inserted_id: Uuid = sqlx::query_scalar(
+        r#"
+        INSERT INTO plans (
+            user_id, title, description, fee, net_amount, status,
+            beneficiary_name, bank_account_number, bank_name, currency_preference
+        )
+        VALUES ($1, $2, $3, $4, $5, 'pending', $6, $7, $8, $9)
+        RETURNING id
+        "#,
+    )
+    .bind(user.user_id)
+    .bind(&req_mut.title)
+    .bind(&req_mut.description)
+    .bind(req_mut.fee.to_string())
+    .bind(req_mut.net_amount.to_string())
+    .bind(&beneficiary_name)
+    .bind(&bank_account_number)
+    .bind(&bank_name)
+    .bind(&currency_preference)
+    .fetch_one(&mut *tx)
+    .await?;
+
+    sqlx::query(
+        r#"
+        INSERT INTO action_logs (user_id, action, entity_id, entity_type)
+        VALUES ($1, $2, $3, $4)
+        "#,
+    )
+    .bind(Some(user.user_id))
+    .bind(crate::notifications::audit_action::PLAN_CREATED)
+    .bind(Some(inserted_id))
+    .bind(Some(crate::notifications::entity_type::PLAN))
+    .execute(&mut *tx)
+    .await?;
+
+    let should_revert = headers
+        .get("X-Simulate-Revert")
+        .and_then(|v| v.to_str().ok())
+        .map(|v| v.eq_ignore_ascii_case("true") || v == "1")
+        .unwrap_or(false);
+    if should_revert {
+        tx.rollback().await?;
+        return Err(ApiError::Internal(anyhow::anyhow!(
+            "Token transfer reverted"
+        )));
+    }
+    tx.commit().await?;
+    let plan = PlanService::get_plan_by_id(&state.db, inserted_id, user.user_id)
+        .await?
+        .expect("plan must exist after commit");
 
     // Audit log
     sqlx::query("INSERT INTO plan_logs (plan_id, action, performed_by) VALUES ($1, $2, $3)")
-        .bind(plan.id)
+        .bind(inserted_id)
         .bind("create")
         .bind(user.user_id)
         .execute(&state.db)
@@ -187,6 +276,20 @@ async fn claim_plan(
     })))
 }
 
+async fn cancel_plan(
+    State(state): State<Arc<AppState>>,
+    Path(plan_id): Path<Uuid>,
+    AuthenticatedUser(user): AuthenticatedUser,
+) -> Result<Json<Value>, ApiError> {
+    let plan = PlanService::cancel_plan(&state.db, plan_id, user.user_id).await?;
+
+    Ok(Json(json!({
+        "status": "success",
+        "message": "Plan cancelled successfully",
+        "data": plan
+    })))
+}
+
 async fn get_due_for_claim_plan(
     State(state): State<Arc<AppState>>,
     Path(plan_id): Path<Uuid>,
@@ -230,6 +333,14 @@ async fn get_all_due_for_claim_plans_admin(
         "data": plans,
         "count": plans.len()
     })))
+}
+
+async fn get_user_kyc(
+    State(state): State<Arc<AppState>>,
+    AuthenticatedUser(user): AuthenticatedUser,
+) -> Result<Json<KycRecord>, ApiError> {
+    let status = KycService::get_kyc_status(&state.db, user.user_id).await?;
+    Ok(Json(status))
 }
 
 #[derive(serde::Deserialize)]

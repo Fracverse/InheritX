@@ -3,7 +3,7 @@ import { Plus } from "lucide-react";
 import React from "react";
 
 function ActivityBox() {
-  let activities = [];
+  const activities = [];
   return (
     <div className="rounded-[24px] bg-[#182024] min-h-[376px]">
       {activities.length === 0 && (
