@@ -88,18 +88,34 @@ async fn db_health_check(
     ))
 }
 
+/// Validates that the user has approved KYC status.
+/// Returns an error if KYC is not approved (pending or rejected).
+async fn validate_kyc_approved(
+    db: &PgPool,
+    user_id: Uuid,
+    action: &str,
+) -> Result<(), ApiError> {
+    let kyc_record = KycService::get_kyc_status(db, user_id).await?;
+    
+    // Parse status string to enum for type-safe comparison
+    let status = KycStatus::from_str(&kyc_record.status);
+    
+    match status {
+        Ok(KycStatus::Approved) => Ok(()),
+        _ => Err(ApiError::Forbidden(format!(
+            "KYC not approved: cannot {}",
+            action
+        ))),
+    }
+}
+
 async fn create_plan(
     State(state): State<Arc<AppState>>,
     AuthenticatedUser(user): AuthenticatedUser,
     Json(req): Json<CreatePlanRequest>,
 ) -> Result<Json<Value>, ApiError> {
     // Validate KYC approved - only users with 'approved' status can create plans
-    let kyc_record = KycService::get_kyc_status(&state.db, user.user_id).await?;
-    if kyc_record.status != "approved" {
-        return Err(ApiError::Forbidden(
-            "KYC not approved: cannot create plan".to_string(),
-        ));
-    }
+    validate_kyc_approved(&state.db, user.user_id, "create plan").await?;
 
     // Require 2FA verification (stub, replace with actual logic)
     // if !verify_2fa(user.user_id, req.2fa_code) {
@@ -156,12 +172,7 @@ async fn claim_plan(
     Json(req): Json<ClaimPlanRequest>,
 ) -> Result<Json<Value>, ApiError> {
     // Validate KYC approved - only users with 'approved' status can claim plans
-    let kyc_record = KycService::get_kyc_status(&state.db, user.user_id).await?;
-    if kyc_record.status != "approved" {
-        return Err(ApiError::Forbidden(
-            "KYC not approved: cannot claim plan".to_string(),
-        ));
-    }
+    validate_kyc_approved(&state.db, user.user_id, "claim plan").await?;
 
     // Require 2FA verification (stub, replace with actual logic)
     // if !verify_2fa(user.user_id, req.2fa_code) {
