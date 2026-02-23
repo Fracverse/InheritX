@@ -43,6 +43,7 @@ async fn mark_notification_read_success() {
     let claims = UserClaims {
         user_id,
         email: format!("test-{}@example.com", user_id),
+        exp: 0, // For tests, expiration can be 0 or a valid timestamp
     };
     let token = encode(
         &Header::default(),
@@ -115,6 +116,7 @@ async fn cannot_mark_another_user_notification() {
     let claims = UserClaims {
         user_id: user_a_id,
         email: format!("test-{}@example.com", user_a_id),
+        exp: 0, // For tests, expiration can be 0 or a valid timestamp
     };
     let token = encode(
         &Header::default(),
@@ -183,6 +185,7 @@ async fn mark_already_read_notification_safe_handling() {
     let claims = UserClaims {
         user_id,
         email: format!("test-{}@example.com", user_id),
+        exp: 0, // For tests, expiration can be 0 or a valid timestamp
     };
     let token = encode(
         &Header::default(),
