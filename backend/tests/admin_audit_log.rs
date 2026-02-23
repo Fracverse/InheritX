@@ -171,6 +171,8 @@ async fn user_cannot_reject_kyc() {
     // Since AuthenticatedAdmin expects AdminClaims, a user token will fail to parse and return 401
     assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
 }
+
+#[allow(dead_code)]
 async fn log_inserted_on_plan_create_and_claim() {
     let Some(ctx) = helpers::TestContext::from_env().await else {
         return;
