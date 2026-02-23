@@ -247,7 +247,10 @@ impl InheritanceContract {
         Ok(())
     }
 
-    pub fn initialize_admin(env: Env, admin: Address) -> Result<(), InheritanceError> {
+    pub fn initialize_admin(
+        env: Env,
+        admin: Address,
+    ) -> Result<(), InheritanceError> {
         admin.require_auth();
         if Self::get_admin(&env).is_some() {
             return Err(InheritanceError::AdminAlreadyInitialized);
@@ -435,7 +438,8 @@ impl InheritanceContract {
         plan_id: u64,
     ) -> Result<InheritancePlan, InheritanceError> {
         user.require_auth();
-        let plan = Self::get_plan(&env, plan_id).ok_or(InheritanceError::PlanNotFound)?;
+        let plan = Self::get_plan(&env, plan_id)
+            .ok_or(InheritanceError::PlanNotFound)?;
         if plan.owner != user {
             return Err(InheritanceError::Unauthorized);
         }
@@ -476,7 +480,10 @@ impl InheritanceContract {
         Ok(plans)
     }
 
-    pub fn get_user_pending_plans(env: Env, user: Address) -> Vec<InheritancePlan> {
+    pub fn get_user_pending_plans(
+        env: Env,
+        user: Address,
+    ) -> Vec<InheritancePlan> {
         let all_user_plans = Self::get_user_plans(env.clone(), user);
         let mut pending = Vec::new(&env);
         for plan in all_user_plans.iter() {
