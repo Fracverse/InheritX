@@ -4,6 +4,7 @@ use axum::{
     body::Body,
     http::{Request, StatusCode},
 };
+use chrono::{Duration, Utc};
 use inheritx_backend::auth::UserClaims;
 use jsonwebtoken::{encode, EncodingKey, Header};
 use serde_json::Value;
@@ -12,14 +13,19 @@ use uuid::Uuid;
 
 /// Generate a JWT token for a test user
 fn generate_user_token(user_id: Uuid) -> String {
+    let expiration = Utc::now()
+        .checked_add_signed(Duration::hours(24))
+        .expect("valid timestamp")
+        .timestamp();
     let claims = UserClaims {
         user_id,
         email: "testuser@inheritx.test".to_string(),
+        exp: expiration as usize,
     };
     encode(
         &Header::default(),
         &claims,
-        &EncodingKey::from_secret(b"secret_key_change_in_production"),
+        &EncodingKey::from_secret(b"test-jwt-secret"),
     )
     .unwrap()
 }

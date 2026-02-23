@@ -1,5 +1,6 @@
 use crate::api_error::ApiError;
 use crate::app::AppState;
+use crate::config::Config;
 use axum::{extract::State, Json};
 use bcrypt::verify;
 use chrono::{Duration, Utc};
@@ -19,20 +20,63 @@ pub struct LoginResponse {
     token: String,
 }
 
-#[derive(Debug, Serialize, Deserialize)]
-pub struct Claims {
-    sub: String, // subject (user id)
-    role: String,
-    exp: usize,
-}
-
 #[derive(Debug, FromRow)]
 struct Admin {
     id: uuid::Uuid,
-    _email: String,
+    email: String,
     password_hash: String,
     role: String,
     status: String,
+}
+
+#[derive(Debug, FromRow)]
+struct User {
+    id: uuid::Uuid,
+    email: String,
+    password_hash: String,
+}
+
+pub async fn login_user(
+    State(state): State<Arc<AppState>>,
+    Json(payload): Json<LoginRequest>,
+) -> Result<Json<LoginResponse>, ApiError> {
+    let user =
+        sqlx::query_as::<_, User>("SELECT id, email, password_hash FROM users WHERE email = $1")
+            .bind(&payload.email)
+            .fetch_optional(&state.db)
+            .await?;
+
+    let user = match user {
+        Some(u) => u,
+        None => return Err(ApiError::Unauthorized),
+    };
+
+    let valid = verify(&payload.password, &user.password_hash)
+        .map_err(|e| ApiError::Internal(anyhow::anyhow!(e)))?;
+
+    if !valid {
+        return Err(ApiError::Unauthorized);
+    }
+
+    let expiration = Utc::now()
+        .checked_add_signed(Duration::hours(24))
+        .expect("valid timestamp")
+        .timestamp();
+
+    let claims = UserClaims {
+        user_id: user.id,
+        email: user.email,
+        exp: expiration as usize,
+    };
+
+    let token = encode(
+        &Header::default(),
+        &claims,
+        &EncodingKey::from_secret(state.config.jwt_secret.as_bytes()),
+    )
+    .map_err(|e| ApiError::Internal(anyhow::anyhow!(e)))?;
+
+    Ok(Json(LoginResponse { token }))
 }
 
 pub async fn login_admin(
@@ -67,8 +111,9 @@ pub async fn login_admin(
         .expect("valid timestamp")
         .timestamp();
 
-    let claims = Claims {
-        sub: admin.id.to_string(),
+    let claims = AdminClaims {
+        admin_id: admin.id,
+        email: admin.email,
         role: admin.role,
         exp: expiration as usize,
     };
@@ -91,6 +136,7 @@ use sqlx::PgPool;
 pub struct UserClaims {
     pub user_id: uuid::Uuid,
     pub email: String,
+    pub exp: usize,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -98,6 +144,7 @@ pub struct AdminClaims {
     pub admin_id: uuid::Uuid,
     pub email: String,
     pub role: String,
+    pub exp: usize,
 }
 
 pub struct AuthenticatedUser(pub UserClaims);
@@ -112,6 +159,13 @@ where
     type Rejection = ApiError;
 
     async fn from_request_parts(parts: &mut Parts, _state: &S) -> Result<Self, Self::Rejection> {
+        let config =
+            parts
+                .extensions
+                .get::<Config>()
+                .ok_or(ApiError::Internal(anyhow::anyhow!(
+                    "Config not found in extensions"
+                )))?;
         let auth_header = parts
             .headers
             .get("Authorization")
@@ -126,7 +180,7 @@ where
 
         let claims: UserClaims = jsonwebtoken::decode(
             token,
-            &jsonwebtoken::DecodingKey::from_secret(b"secret_key_change_in_production"),
+            &jsonwebtoken::DecodingKey::from_secret(config.jwt_secret.as_bytes()),
             &jsonwebtoken::Validation::default(),
         )
         .map_err(|_| ApiError::Unauthorized)?
@@ -144,6 +198,13 @@ where
     type Rejection = ApiError;
 
     async fn from_request_parts(parts: &mut Parts, _state: &S) -> Result<Self, Self::Rejection> {
+        let config =
+            parts
+                .extensions
+                .get::<Config>()
+                .ok_or(ApiError::Internal(anyhow::anyhow!(
+                    "Config not found in extensions"
+                )))?;
         let auth_header = parts
             .headers
             .get("Authorization")
@@ -158,7 +219,7 @@ where
 
         let claims: AdminClaims = jsonwebtoken::decode(
             token,
-            &jsonwebtoken::DecodingKey::from_secret(b"secret_key_change_in_production"),
+            &jsonwebtoken::DecodingKey::from_secret(config.jwt_secret.as_bytes()),
             &jsonwebtoken::Validation::default(),
         )
         .map_err(|_| ApiError::Unauthorized)?

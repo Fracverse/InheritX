@@ -5,6 +5,7 @@ use axum::{
     body::Body,
     http::{Request, StatusCode},
 };
+use chrono::{Duration, Utc};
 use inheritx_backend::auth::UserClaims;
 use jsonwebtoken::{encode, EncodingKey, Header};
 use tower::ServiceExt;
@@ -39,10 +40,16 @@ async fn mark_notification_read_success() {
     .await
     .expect("Failed to create notification");
 
+    let expiration = Utc::now()
+        .checked_add_signed(Duration::hours(24))
+        .expect("valid timestamp")
+        .timestamp();
+
     // 3. Generate token
     let claims = UserClaims {
         user_id,
         email: format!("test-{}@example.com", user_id),
+        exp: expiration as usize,
     };
     let token = encode(
         &Header::default(),
@@ -111,10 +118,16 @@ async fn cannot_mark_another_user_notification() {
     .await
     .expect("Failed to create notification");
 
+    let expiration = Utc::now()
+        .checked_add_signed(Duration::hours(24))
+        .expect("valid timestamp")
+        .timestamp();
+
     // 3. Generate token for user A
     let claims = UserClaims {
         user_id: user_a_id,
         email: format!("test-{}@example.com", user_a_id),
+        exp: expiration as usize,
     };
     let token = encode(
         &Header::default(),
@@ -179,10 +192,16 @@ async fn mark_already_read_notification_safe_handling() {
     .await
     .expect("Failed to create notification");
 
+    let expiration = Utc::now()
+        .checked_add_signed(Duration::hours(24))
+        .expect("valid timestamp")
+        .timestamp();
+
     // 3. Generate token
     let claims = UserClaims {
         user_id,
         email: format!("test-{}@example.com", user_id),
+        exp: expiration as usize,
     };
     let token = encode(
         &Header::default(),
