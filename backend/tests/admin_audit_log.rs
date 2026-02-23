@@ -11,10 +11,11 @@ use tower::ServiceExt;
 use uuid::Uuid;
 
 fn generate_user_token(user_id: Uuid) -> String {
+    let exp = (chrono::Utc::now() + chrono::Duration::hours(24)).timestamp() as usize;
     let claims = UserClaims {
         user_id,
         email: format!("test-{}@example.com", user_id),
-        exp: 0, // For tests, expiration can be 0 or a valid timestamp
+        exp,
     };
     encode(
         &Header::default(),
@@ -25,11 +26,12 @@ fn generate_user_token(user_id: Uuid) -> String {
 }
 
 fn generate_admin_token(admin_id: Uuid) -> String {
+    let exp = (chrono::Utc::now() + chrono::Duration::hours(24)).timestamp() as usize;
     let claims = AdminClaims {
         admin_id,
         email: format!("admin-{}@example.com", admin_id),
         role: "admin".to_string(),
-        exp: 0, // For tests, expiration can be 0 or a valid timestamp
+        exp,
     };
     encode(
         &Header::default(),

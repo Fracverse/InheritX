@@ -10,11 +10,12 @@ use tower::ServiceExt; // for `oneshot`
 
 pub fn generate_admin_token() -> String {
     let admin_id = uuid::Uuid::new_v4();
+    let exp = (chrono::Utc::now() + chrono::Duration::hours(24)).timestamp() as usize;
     let claims = AdminClaims {
         admin_id,
         email: "admin@inheritx.test".to_string(),
         role: "admin".to_string(),
-        exp: 0, // For tests, expiration can be 0 or a valid timestamp
+        exp,
     };
     encode(
         &Header::default(),
@@ -26,10 +27,11 @@ pub fn generate_admin_token() -> String {
 
 pub fn generate_user_token() -> String {
     let user_id = uuid::Uuid::new_v4();
+    let exp = (chrono::Utc::now() + chrono::Duration::hours(24)).timestamp() as usize;
     let claims = UserClaims {
         user_id,
         email: "user@inheritx.test".to_string(),
-        exp: 0, // For tests, expiration can be 0 or a valid timestamp
+        exp,
     };
     encode(
         &Header::default(),
