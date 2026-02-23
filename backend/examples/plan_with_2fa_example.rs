@@ -6,9 +6,9 @@ use serde::{Deserialize, Serialize};
 use std::sync::Arc;
 use uuid::Uuid;
 
-use crate::api_error::ApiError;
-use crate::app::AppState;
-use crate::two_fa::service::TwoFAService;
+use inheritx_backend::api_error::ApiError;
+use inheritx_backend::app::AppState;
+use inheritx_backend::two_fa::service::TwoFAService;
 
 #[derive(Debug, Deserialize)]
 pub struct CreatePlanRequest {
@@ -85,6 +85,13 @@ pub async fn claim_assets_with_2fa(
         claim_id,
         message: "Assets claimed successfully".to_string(),
     }))
+}
+
+fn main() {
+    println!(
+        "This is an example file showing how to integrate 2FA with plan creation and claiming."
+    );
+    println!("See the handler functions above for implementation details.");
 }
 
 // Complete flow example:
