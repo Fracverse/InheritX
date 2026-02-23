@@ -89,6 +89,8 @@ pub async fn login_user(
     .map_err(|e| ApiError::Internal(anyhow::anyhow!(e)))?;
 
     Ok(Json(LoginResponse { token }))
+}
+#[derive(sqlx::FromRow)]
 struct UserRow {
     id: uuid::Uuid,
     email: String,
