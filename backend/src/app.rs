@@ -120,10 +120,7 @@ async fn create_plan(
         .beneficiary_name
         .as_deref()
         .map(|s| s.trim().to_string());
-    let bank_name = req_mut
-        .bank_name
-        .as_deref()
-        .map(|s| s.trim().to_string());
+    let bank_name = req_mut.bank_name.as_deref().map(|s| s.trim().to_string());
     let bank_account_number = req_mut
         .bank_account_number
         .as_deref()

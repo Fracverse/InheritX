@@ -70,12 +70,11 @@ async fn plan_creation_rolls_back_on_transfer_revert() {
 
     assert_eq!(response.status(), StatusCode::INTERNAL_SERVER_ERROR);
 
-    let plan_count: i64 =
-        sqlx::query_scalar("SELECT COUNT(*) FROM plans WHERE user_id = $1")
-            .bind(user_id)
-            .fetch_one(&ctx.pool)
-            .await
-            .expect("Failed to count plans");
+    let plan_count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM plans WHERE user_id = $1")
+        .bind(user_id)
+        .fetch_one(&ctx.pool)
+        .await
+        .expect("Failed to count plans");
     assert_eq!(plan_count, 0, "No plan should be inserted on revert");
 
     let audit_count: i64 = sqlx::query_scalar(
