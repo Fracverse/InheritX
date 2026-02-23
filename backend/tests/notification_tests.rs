@@ -1,3 +1,4 @@
+// This file contains tests for notification functionality.
 mod helpers;
 
 use axum::{
@@ -27,14 +28,16 @@ async fn mark_notification_read_success() {
 
     // 2. Create a notification
     let notif_id = Uuid::new_v4();
-    sqlx::query("INSERT INTO notifications (id, user_id, title, message, is_read) VALUES ($1, $2, $3, $4, false)")
-        .bind(notif_id)
-        .bind(user_id)
-        .bind("Test Notif")
-        .bind("Hello")
-        .execute(&ctx.pool)
-        .await
-        .expect("Failed to create notification");
+    sqlx::query(
+        "INSERT INTO notifications (id, user_id, title, message, is_read) VALUES ($1, $2, $3, $4, false)",
+    )
+    .bind(notif_id)
+    .bind(user_id)
+    .bind("Test Notif")
+    .bind("Hello")
+    .execute(&ctx.pool)
+    .await
+    .expect("Failed to create notification");
 
     // 3. Generate token
     let claims = UserClaims {
@@ -84,7 +87,8 @@ async fn cannot_mark_another_user_notification() {
     let user_a_id = Uuid::new_v4();
     let user_b_id = Uuid::new_v4();
 
-    for id in &[user_a_id, user_b_id] {
+    // FIX: destructure with `&id` to avoid double-reference (&&Uuid) from iterating &[...]
+    for &id in &[user_a_id, user_b_id] {
         sqlx::query("INSERT INTO users (id, email, password_hash) VALUES ($1, $2, $3)")
             .bind(id)
             .bind(format!("test-{}@example.com", id))
@@ -96,14 +100,16 @@ async fn cannot_mark_another_user_notification() {
 
     // 2. Create a notification for user B
     let notif_id = Uuid::new_v4();
-    sqlx::query("INSERT INTO notifications (id, user_id, title, message, is_read) VALUES ($1, $2, $3, $4, false)")
-        .bind(notif_id)
-        .bind(user_b_id)
-        .bind("User B Notif")
-        .bind("Hello B")
-        .execute(&ctx.pool)
-        .await
-        .expect("Failed to create notification");
+    sqlx::query(
+        "INSERT INTO notifications (id, user_id, title, message, is_read) VALUES ($1, $2, $3, $4, false)",
+    )
+    .bind(notif_id)
+    .bind(user_b_id)
+    .bind("User B Notif")
+    .bind("Hello B")
+    .execute(&ctx.pool)
+    .await
+    .expect("Failed to create notification");
 
     // 3. Generate token for user A
     let claims = UserClaims {
@@ -131,7 +137,7 @@ async fn cannot_mark_another_user_notification() {
         .await
         .expect("Request failed");
 
-    // Should return 404 per service implementation (it filters by user_id in UPDATE)
+    // Should return 404 — service filters by user_id in UPDATE, so no rows match
     assert_eq!(response.status(), StatusCode::NOT_FOUND);
 
     // 5. Verify notification is still unread in DB
@@ -160,16 +166,18 @@ async fn mark_already_read_notification_safe_handling() {
         .await
         .expect("Failed to create user");
 
-    // 2. Create an already read notification
+    // 2. Create an already-read notification
     let notif_id = Uuid::new_v4();
-    sqlx::query("INSERT INTO notifications (id, user_id, title, message, is_read) VALUES ($1, $2, $3, $4, true)")
-        .bind(notif_id)
-        .bind(user_id)
-        .bind("Already Read Notif")
-        .bind("Hello")
-        .execute(&ctx.pool)
-        .await
-        .expect("Failed to create notification");
+    sqlx::query(
+        "INSERT INTO notifications (id, user_id, title, message, is_read) VALUES ($1, $2, $3, $4, true)",
+    )
+    .bind(notif_id)
+    .bind(user_id)
+    .bind("Already Read Notif")
+    .bind("Hello")
+    .execute(&ctx.pool)
+    .await
+    .expect("Failed to create notification");
 
     // 3. Generate token
     let claims = UserClaims {
@@ -183,7 +191,7 @@ async fn mark_already_read_notification_safe_handling() {
     )
     .expect("Failed to generate token");
 
-    // 4. Call mark read endpoint again
+    // 4. Call mark read endpoint again — should be idempotent
     let response = ctx
         .app
         .oneshot(
