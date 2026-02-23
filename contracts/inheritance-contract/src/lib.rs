@@ -989,7 +989,11 @@ impl InheritanceContract {
     /// - `AdminNotSet` / `NotAdmin` if caller is not the admin
     /// - `KycNotSubmitted` if user has no submitted KYC data
     /// - `KycAlreadyRejected` if the KYC was already rejected
-    pub fn reject_kyc(env: Env, admin: Address, user: Address) -> Result<(), InheritanceError> {
+    pub fn reject_kyc(
+        env: Env,
+        admin: Address,
+        user: Address,
+    ) -> Result<(), InheritanceError> {
         Self::require_admin(&env, &admin)?;
 
         let key = DataKey::Kyc(user.clone());
