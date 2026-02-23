@@ -15,6 +15,7 @@ fn generate_user_token(user_id: Uuid) -> String {
     let claims = UserClaims {
         user_id,
         email: "testuser@inheritx.test".to_string(),
+        exp: 0, // For tests, expiration can be 0 or a valid timestamp
     };
     encode(
         &Header::default(),
