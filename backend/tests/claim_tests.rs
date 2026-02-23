@@ -176,8 +176,14 @@ async fn test_claim_before_maturity_returns_400() {
         .expect("Failed to send request");
 
     assert_eq!(response.status(), reqwest::StatusCode::BAD_REQUEST);
-    let body: Value = response.json().await.expect("Failed to parse claim response");
-    assert_eq!(body["error"], "Bad Request: Plan is not yet mature for claim");
+    let body: Value = response
+        .json()
+        .await
+        .expect("Failed to parse claim response");
+    assert_eq!(
+        body["error"],
+        "Bad Request: Plan is not yet mature for claim"
+    );
 }
 
 #[tokio::test]
