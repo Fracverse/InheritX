@@ -14,7 +14,7 @@ async fn test_get_nonce_returns_unique_nonce() {
     };
 
     let wallet = "GABC1234567890UNIQUE";
-    
+
     let response = test_context
         .app
         .clone()
@@ -28,7 +28,7 @@ async fn test_get_nonce_returns_unique_nonce() {
         .unwrap();
 
     assert_eq!(response.status(), StatusCode::OK);
-    
+
     let body = axum::body::to_bytes(response.into_body(), usize::MAX)
         .await
         .unwrap();
@@ -44,7 +44,7 @@ async fn test_nonce_stored_in_db() {
     };
 
     let wallet = "GABC1234567890STORED";
-    
+
     let response = test_context
         .app
         .clone()
@@ -65,12 +65,13 @@ async fn test_nonce_stored_in_db() {
     let nonce = body["nonce"].as_str().expect("nonce should be a string");
 
     // Verify in DB
-    let stored_nonce: String = sqlx::query_scalar("SELECT nonce FROM users WHERE wallet_address = $1")
-        .bind(wallet)
-        .fetch_one(&test_context.pool)
-        .await
-        .unwrap();
-    
+    let stored_nonce: String =
+        sqlx::query_scalar("SELECT nonce FROM users WHERE wallet_address = $1")
+            .bind(wallet)
+            .fetch_one(&test_context.pool)
+            .await
+            .unwrap();
+
     assert_eq!(nonce, stored_nonce);
 }
 
@@ -81,7 +82,7 @@ async fn test_two_requests_generate_different_nonces() {
     };
 
     let wallet = "GABC1234567890DIFFERENT";
-    
+
     // First request
     let response1 = test_context
         .app
@@ -94,7 +95,7 @@ async fn test_two_requests_generate_different_nonces() {
         )
         .await
         .unwrap();
-    
+
     let body1 = axum::body::to_bytes(response1.into_body(), usize::MAX)
         .await
         .unwrap();
@@ -113,7 +114,7 @@ async fn test_two_requests_generate_different_nonces() {
         )
         .await
         .unwrap();
-    
+
     let body2 = axum::body::to_bytes(response2.into_body(), usize::MAX)
         .await
         .unwrap();
