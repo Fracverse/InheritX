@@ -13,14 +13,11 @@ use uuid::Uuid;
 
 /// Generate a JWT token for a test user
 fn generate_user_token(user_id: Uuid) -> String {
-    let expiration = Utc::now()
-        .checked_add_signed(Duration::hours(24))
-        .expect("valid timestamp")
-        .timestamp();
+    let exp = (chrono::Utc::now() + chrono::Duration::hours(24)).timestamp() as usize;
     let claims = UserClaims {
         user_id,
         email: "testuser@inheritx.test".to_string(),
-        exp: expiration as usize,
+        exp,
     };
     encode(
         &Header::default(),

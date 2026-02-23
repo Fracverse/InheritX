@@ -15,11 +15,12 @@ pub fn generate_admin_token() -> String {
         .expect("valid timestamp")
         .timestamp();
     let admin_id = uuid::Uuid::new_v4();
+    let exp = (chrono::Utc::now() + chrono::Duration::hours(24)).timestamp() as usize;
     let claims = AdminClaims {
         admin_id,
         email: "admin@inheritx.test".to_string(),
         role: "admin".to_string(),
-        exp: expiration as usize,
+        exp,
     };
     encode(
         &Header::default(),
@@ -35,10 +36,11 @@ pub fn generate_user_token() -> String {
         .expect("valid timestamp")
         .timestamp();
     let user_id = uuid::Uuid::new_v4();
+    let exp = (chrono::Utc::now() + chrono::Duration::hours(24)).timestamp() as usize;
     let claims = UserClaims {
         user_id,
         email: "user@inheritx.test".to_string(),
-        exp: expiration as usize,
+        exp,
     };
     encode(
         &Header::default(),
