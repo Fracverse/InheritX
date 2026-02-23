@@ -5,6 +5,7 @@ use axum::{
 };
 use jsonwebtoken::{encode, EncodingKey, Header};
 use serde_json::json;
+use std::time::{SystemTime, UNIX_EPOCH};
 use tower::ServiceExt;
 use uuid::Uuid;
 
@@ -37,6 +38,11 @@ async fn plan_creation_rolls_back_on_transfer_revert() {
         &inheritx_backend::auth::UserClaims {
             user_id,
             email: format!("user-{}@example.com", user_id),
+            exp: (SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .unwrap()
+                .as_secs()
+                + 3600) as usize, // 1 hour from now
         },
         &EncodingKey::from_secret(b"secret_key_change_in_production"),
     )
