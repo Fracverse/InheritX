@@ -226,6 +226,17 @@ impl InheritanceContract {
         Ok(())
     }
 
+    pub fn initialize_admin(env: Env, admin: Address) -> Result<(), InheritanceError> {
+        admin.require_auth();
+        if Self::get_admin(&env).is_some() {
+            return Err(InheritanceError::AdminAlreadyInitialized);
+        }
+
+        let key = DataKey::Admin;
+        env.storage().instance().set(&key, &admin);
+        Ok(())
+    }
+
     fn create_beneficiary(
         env: &Env,
         full_name: String,
@@ -394,6 +405,78 @@ impl InheritanceContract {
     /// The InheritancePlan if found, None otherwise
     pub fn get_plan_details(env: Env, plan_id: u64) -> Option<InheritancePlan> {
         Self::get_plan(&env, plan_id)
+    }
+
+    pub fn get_user_plan(
+        env: Env,
+        user: Address,
+        plan_id: u64,
+    ) -> Result<InheritancePlan, InheritanceError> {
+        user.require_auth();
+        let plan = Self::get_plan(&env, plan_id).ok_or(InheritanceError::PlanNotFound)?;
+        if plan.owner != user {
+            return Err(InheritanceError::Unauthorized);
+        }
+        Ok(plan)
+    }
+
+    pub fn get_user_plans(env: Env, user: Address) -> Vec<InheritancePlan> {
+        user.require_auth();
+        let key = DataKey::UserPlans(user);
+        let plan_ids: Vec<u64> = env
+            .storage()
+            .persistent()
+            .get(&key)
+            .unwrap_or(Vec::new(&env));
+
+        let mut plans = Vec::new(&env);
+        for plan_id in plan_ids.iter() {
+            if let Some(plan) = Self::get_plan(&env, plan_id) {
+                plans.push_back(plan);
+            }
+        }
+        plans
+    }
+
+    pub fn get_all_plans(
+        env: Env,
+        admin: Address,
+    ) -> Result<Vec<InheritancePlan>, InheritanceError> {
+        Self::require_admin(&env, &admin)?;
+
+        let mut plans = Vec::new(&env);
+        let next_plan_id = Self::get_next_plan_id(&env);
+        for plan_id in 1..next_plan_id {
+            if let Some(plan) = Self::get_plan(&env, plan_id) {
+                plans.push_back(plan);
+            }
+        }
+        Ok(plans)
+    }
+
+    pub fn get_user_pending_plans(env: Env, user: Address) -> Vec<InheritancePlan> {
+        let all_user_plans = Self::get_user_plans(env.clone(), user);
+        let mut pending = Vec::new(&env);
+        for plan in all_user_plans.iter() {
+            if plan.is_active {
+                pending.push_back(plan);
+            }
+        }
+        pending
+    }
+
+    pub fn get_all_pending_plans(
+        env: Env,
+        admin: Address,
+    ) -> Result<Vec<InheritancePlan>, InheritanceError> {
+        let all_plans = Self::get_all_plans(env.clone(), admin)?;
+        let mut pending = Vec::new(&env);
+        for plan in all_plans.iter() {
+            if plan.is_active {
+                pending.push_back(plan);
+            }
+        }
+        Ok(pending)
     }
 
     /// Add a beneficiary to an existing inheritance plan
@@ -720,16 +803,6 @@ impl InheritanceContract {
             email
         );
 
-        Ok(())
-    }
-
-    /// Initialize contract admin. Can only be called once.
-    pub fn initialize_admin(env: Env, admin: Address) -> Result<(), InheritanceError> {
-        if Self::get_admin(&env).is_some() {
-            return Err(InheritanceError::AdminAlreadyInitialized);
-        }
-        admin.require_auth();
-        env.storage().instance().set(&DataKey::Admin, &admin);
         Ok(())
     }
 

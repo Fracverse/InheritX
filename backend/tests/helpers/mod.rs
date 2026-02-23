@@ -1,3 +1,4 @@
+// This file is a placeholder for helper functions and structs.
 use axum::Router;
 use inheritx_backend::{create_app, Config};
 use sqlx::{postgres::PgPoolOptions, PgPool};
@@ -5,6 +6,7 @@ use std::env;
 
 pub struct TestContext {
     pub app: Router,
+    #[allow(dead_code)]
     pub pool: PgPool,
 }
 
