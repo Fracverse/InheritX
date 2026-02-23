@@ -1,6 +1,6 @@
 mod helpers;
 
-use chrono::{Duration, Utc};
+use chrono::Utc;
 use inheritx_backend::auth::UserClaims;
 use jsonwebtoken::{encode, EncodingKey, Header};
 use serde_json::{json, Value};
@@ -9,9 +9,15 @@ use tokio::net::TcpListener;
 use uuid::Uuid;
 
 fn generate_test_token(user_id: Uuid, email: &str) -> String {
+    let expiration = Utc::now()
+        .checked_add_signed(chrono::Duration::hours(24))
+        .expect("valid timestamp")
+        .timestamp() as usize;
+
     let claims = UserClaims {
         user_id,
         email: email.to_string(),
+        exp: expiration,
     };
 
     // Using the hardcoded secret from auth.rs
