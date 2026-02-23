@@ -148,7 +148,7 @@ export default function CodeOfEthicsPage() {
                           <li className="flex items-start">
                             <span className="mr-2">›</span>
                             <span>
-                              Prioritizing Beneficiaries' Interests Above All
+                              Prioritizing Beneficiaries&apos; Interests Above All
                             </span>
                           </li>
                           <li className="flex items-start">

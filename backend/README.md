@@ -126,13 +126,29 @@ The backend follows a modular service architecture:
 The PostgreSQL database contains the following main tables:
 
 - `users` - User accounts and Stellar addresses
-- `merchants` - Merchant configurations and vaults
-- `payments` - Payment transactions
-- `transfers` - User-to-user transfers
-- `withdrawals` - Withdrawal transactions
-- `balances` - Account balances
-- `audit_logs` - Audit trail
-- `bridge_transactions` - Cross-chain bridge transactions
+- `plans` - Inheritance plans with beneficiary and payout options
+- `claims` - Record of plan claims by beneficiaries
+- `admins`, `kyc_status`, `two_fa`, `notifications`, `logs` - Supporting tables
+
+ Plans and beneficiary / currency
+
+Plans store optional beneficiary bank details and payout currency preference:
+
+- **beneficiary_name** – Full name of the beneficiary
+- **bank_account_number** – Account number for fiat transfers
+- **bank_name** – Name of the beneficiary’s bank
+- **currency_preference** – `USDC` (crypto) or `FIAT` (bank transfer)
+
+**Currency handling:**
+
+- **USDC**: Bank fields are optional; payout is processed as USDC transfer.
+- **FIAT**: `beneficiary_name`, `bank_name`, and `bank_account_number` are required when creating a plan or when claiming with FIAT preference. Missing or invalid bank info returns a 400 error.
+
+Plans API
+
+- **POST /api/plans** – Create a plan (body: title, description, fee, net_amount, beneficiary_name, bank_name, bank_account_number, currency_preference). Requires FIAT bank details when currency_preference is FIAT.
+- **GET /api/plans/:plan_id** – Get plan details including beneficiary info (owner only).
+- **POST /api/plans/:plan_id/claim** – Record a claim (body: beneficiary_email). Payout method is determined by the plan’s currency_preference; FIAT claims require valid bank details on the plan.
 
 ## Contributing
 
