@@ -7,7 +7,6 @@ use jsonwebtoken::{encode, EncodingKey, Header};
 use serde_json::json;
 use tower::ServiceExt;
 use uuid::Uuid;
-use chrono::{Duration, Utc};
 
 #[tokio::test]
 async fn plan_creation_rolls_back_on_transfer_revert() {

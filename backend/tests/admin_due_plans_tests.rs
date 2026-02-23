@@ -4,16 +4,11 @@ use axum::{
     body::Body,
     http::{Request, StatusCode},
 };
-use chrono::{Duration, Utc};
 use inheritx_backend::auth::{AdminClaims, UserClaims};
 use jsonwebtoken::{encode, EncodingKey, Header};
 use tower::ServiceExt; // for `oneshot`
 
 pub fn generate_admin_token() -> String {
-    let expiration = Utc::now()
-        .checked_add_signed(Duration::hours(24))
-        .expect("valid timestamp")
-        .timestamp();
     let admin_id = uuid::Uuid::new_v4();
     let exp = (chrono::Utc::now() + chrono::Duration::hours(24)).timestamp() as usize;
     let claims = AdminClaims {
@@ -31,10 +26,6 @@ pub fn generate_admin_token() -> String {
 }
 
 pub fn generate_user_token() -> String {
-    let expiration = Utc::now()
-        .checked_add_signed(Duration::hours(24))
-        .expect("valid timestamp")
-        .timestamp();
     let user_id = uuid::Uuid::new_v4();
     let exp = (chrono::Utc::now() + chrono::Duration::hours(24)).timestamp() as usize;
     let claims = UserClaims {
