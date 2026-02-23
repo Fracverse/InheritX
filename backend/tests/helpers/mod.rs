@@ -5,6 +5,7 @@ use std::env;
 
 pub struct TestContext {
     pub app: Router,
+    #[allow(dead_code)]
     pub pool: PgPool,
 }
 
