@@ -72,6 +72,7 @@ pub async fn create_app(db: PgPool, config: Config) -> Result<Router, ApiError> 
         .route("/api/admin/kyc/:user_id", get(get_kyc_status))
         .route("/api/admin/kyc/approve", post(approve_kyc))
         .route("/api/admin/kyc/reject", post(reject_kyc))
+        .route("/api/kyc", get(get_user_kyc))
         // ── Notifications ────────────────────────────────────────────────
         .route("/api/notifications", get(list_notifications))
         .route("/api/notifications/:id/read", patch(mark_notification_read))
@@ -321,6 +322,14 @@ async fn get_all_due_for_claim_plans_admin(
         "data": plans,
         "count": plans.len()
     })))
+}
+
+async fn get_user_kyc(
+    State(state): State<Arc<AppState>>,
+    AuthenticatedUser(user): AuthenticatedUser,
+) -> Result<Json<KycRecord>, ApiError> {
+    let status = KycService::get_kyc_status(&state.db, user.user_id).await?;
+    Ok(Json(status))
 }
 
 #[derive(serde::Deserialize)]

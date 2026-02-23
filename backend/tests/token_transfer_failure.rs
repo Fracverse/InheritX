@@ -37,6 +37,7 @@ async fn plan_creation_rolls_back_on_transfer_revert() {
         &inheritx_backend::auth::UserClaims {
             user_id,
             email: format!("user-{}@example.com", user_id),
+            exp: 10000000000, // distant future
         },
         &EncodingKey::from_secret(b"secret_key_change_in_production"),
     )
