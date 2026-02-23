@@ -30,7 +30,9 @@ async fn test_get_user_kyc_pending() {
     let resp = ctx.app.clone().oneshot(req).await.expect("request failed");
     assert_eq!(resp.status(), StatusCode::OK);
 
-    let body_bytes = axum::body::to_bytes(resp.into_body(), usize::MAX).await.unwrap();
+    let body_bytes = axum::body::to_bytes(resp.into_body(), usize::MAX)
+        .await
+        .unwrap();
     let body: Value = serde_json::from_slice(&body_bytes).unwrap();
 
     assert_eq!(body["user_id"], user_id.to_string());
