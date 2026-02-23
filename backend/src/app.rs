@@ -57,6 +57,7 @@ pub async fn create_app(db: PgPool, config: Config) -> Result<Router, ApiError> 
         )
         .route("/api/plans/:plan_id/claim", post(claim_plan))
         .route("/api/plans/:plan_id", get(get_plan))
+        .route("/api/plans/:plan_id", axum::routing::delete(cancel_plan))
         .route("/api/plans", post(create_plan))
         .route(
             "/api/admin/plans/due-for-claim",
@@ -183,6 +184,20 @@ async fn claim_plan(
     Ok(Json(json!({
         "status": "success",
         "message": "Claim recorded",
+        "data": plan
+    })))
+}
+
+async fn cancel_plan(
+    State(state): State<Arc<AppState>>,
+    Path(plan_id): Path<Uuid>,
+    AuthenticatedUser(user): AuthenticatedUser,
+) -> Result<Json<Value>, ApiError> {
+    let plan = PlanService::cancel_plan(&state.db, plan_id, user.user_id).await?;
+
+    Ok(Json(json!({
+        "status": "success",
+        "message": "Plan cancelled successfully",
         "data": plan
     })))
 }
