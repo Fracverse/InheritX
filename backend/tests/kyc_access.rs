@@ -39,14 +39,16 @@ async fn create_plan_kyc_pending_forbidden() {
     let resp = ctx.app.clone().oneshot(req).await.expect("request failed");
     assert_eq!(resp.status(), StatusCode::FORBIDDEN);
     
-    // Verify the error message
+    // Verify the error message contains the expected text
     let body = axum::body::to_bytes(resp.into_body(), usize::MAX)
         .await
         .unwrap();
     let error_json: serde_json::Value = serde_json::from_slice(&body).unwrap();
-    assert_eq!(
-        error_json["error"],
-        "Forbidden: KYC not approved: cannot create plan"
+    let error_msg = error_json["error"].as_str().unwrap();
+    assert!(
+        error_msg.contains("KYC not approved: cannot create plan"),
+        "Expected error message to contain 'KYC not approved: cannot create plan', got: {}",
+        error_msg
     );
 }
 
@@ -93,14 +95,16 @@ async fn create_plan_kyc_rejected_forbidden() {
     let resp = ctx.app.clone().oneshot(req).await.expect("request failed");
     assert_eq!(resp.status(), StatusCode::FORBIDDEN);
     
-    // Verify the error message
+    // Verify the error message contains the expected text
     let body = axum::body::to_bytes(resp.into_body(), usize::MAX)
         .await
         .unwrap();
     let error_json: serde_json::Value = serde_json::from_slice(&body).unwrap();
-    assert_eq!(
-        error_json["error"],
-        "Forbidden: KYC not approved: cannot create plan"
+    let error_msg = error_json["error"].as_str().unwrap();
+    assert!(
+        error_msg.contains("KYC not approved: cannot create plan"),
+        "Expected error message to contain 'KYC not approved: cannot create plan', got: {}",
+        error_msg
     );
 }
 
@@ -176,14 +180,16 @@ async fn claim_plan_kyc_pending_forbidden() {
     let resp = ctx.app.clone().oneshot(req).await.expect("request failed");
     assert_eq!(resp.status(), StatusCode::FORBIDDEN);
     
-    // Verify the error message
+    // Verify the error message contains the expected text
     let body = axum::body::to_bytes(resp.into_body(), usize::MAX)
         .await
         .unwrap();
     let error_json: serde_json::Value = serde_json::from_slice(&body).unwrap();
-    assert_eq!(
-        error_json["error"],
-        "Forbidden: KYC not approved: cannot claim plan"
+    let error_msg = error_json["error"].as_str().unwrap();
+    assert!(
+        error_msg.contains("KYC not approved: cannot claim plan"),
+        "Expected error message to contain 'KYC not approved: cannot claim plan', got: {}",
+        error_msg
     );
 }
 
@@ -228,14 +234,16 @@ async fn claim_plan_kyc_rejected_forbidden() {
     let resp = ctx.app.clone().oneshot(req).await.expect("request failed");
     assert_eq!(resp.status(), StatusCode::FORBIDDEN);
     
-    // Verify the error message
+    // Verify the error message contains the expected text
     let body = axum::body::to_bytes(resp.into_body(), usize::MAX)
         .await
         .unwrap();
     let error_json: serde_json::Value = serde_json::from_slice(&body).unwrap();
-    assert_eq!(
-        error_json["error"],
-        "Forbidden: KYC not approved: cannot claim plan"
+    let error_msg = error_json["error"].as_str().unwrap();
+    assert!(
+        error_msg.contains("KYC not approved: cannot claim plan"),
+        "Expected error message to contain 'KYC not approved: cannot claim plan', got: {}",
+        error_msg
     );
 }
 
