@@ -14,6 +14,7 @@ pub fn generate_admin_token() -> String {
         admin_id,
         email: "admin@inheritx.test".to_string(),
         role: "admin".to_string(),
+        exp: 0, // For tests, expiration can be 0 or a valid timestamp
     };
     encode(
         &Header::default(),
@@ -28,6 +29,7 @@ pub fn generate_user_token() -> String {
     let claims = UserClaims {
         user_id,
         email: "user@inheritx.test".to_string(),
+        exp: 0, // For tests, expiration can be 0 or a valid timestamp
     };
     encode(
         &Header::default(),

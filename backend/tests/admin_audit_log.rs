@@ -14,6 +14,7 @@ fn generate_user_token(user_id: Uuid) -> String {
     let claims = UserClaims {
         user_id,
         email: format!("test-{}@example.com", user_id),
+        exp: 0, // For tests, expiration can be 0 or a valid timestamp
     };
     encode(
         &Header::default(),
@@ -28,6 +29,7 @@ fn generate_admin_token(admin_id: Uuid) -> String {
         admin_id,
         email: format!("admin-{}@example.com", admin_id),
         role: "admin".to_string(),
+        exp: 0, // For tests, expiration can be 0 or a valid timestamp
     };
     encode(
         &Header::default(),
