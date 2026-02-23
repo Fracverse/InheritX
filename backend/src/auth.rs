@@ -95,6 +95,7 @@ struct UserRow {
     id: uuid::Uuid,
     email: String,
     nonce: Option<String>,
+    nonce_expires_at: Option<chrono::DateTime<Utc>>,
 }
 
 pub async fn login_admin(
@@ -160,18 +161,22 @@ pub async fn generate_nonce(
     .fetch_one(&state.db)
     .await?;
 
+    let expires_at = Utc::now() + Duration::minutes(5);
+
     if user_exists {
-        sqlx::query("UPDATE users SET nonce = $1 WHERE wallet_address = $2")
+        sqlx::query("UPDATE users SET nonce = $1, nonce_expires_at = $2 WHERE wallet_address = $3")
             .bind(&nonce)
+            .bind(expires_at)
             .bind(&wallet_address)
             .execute(&state.db)
             .await?;
     } else {
         // Create user with a dummy email for now or handle it differently
         let dummy_email = format!("{}@wallet.inheritx", wallet_address);
-        sqlx::query("INSERT INTO users (wallet_address, nonce, email, password_hash) VALUES ($1, $2, $3, $4)")
+        sqlx::query("INSERT INTO users (wallet_address, nonce, nonce_expires_at, email, password_hash) VALUES ($1, $2, $3, $4, $5)")
             .bind(&wallet_address)
             .bind(&nonce)
+            .bind(expires_at)
             .bind(&dummy_email)
             .bind("WALLET_LOGIN") // Placeholder since it's wallet login
             .execute(&state.db)
@@ -186,7 +191,7 @@ pub async fn wallet_login(
     Json(payload): Json<WalletLoginRequest>,
 ) -> Result<Json<LoginResponse>, ApiError> {
     let user = sqlx::query_as::<_, UserRow>(
-        "SELECT id, email, nonce FROM users WHERE wallet_address = $1",
+        "SELECT id, email, nonce, nonce_expires_at FROM users WHERE wallet_address = $1",
     )
     .bind(&payload.wallet_address)
     .fetch_optional(&state.db)
@@ -202,14 +207,21 @@ pub async fn wallet_login(
         None => return Err(ApiError::Unauthorized),
     };
 
+    // Check if nonce has expired
+    if let Some(expires_at) = user.nonce_expires_at {
+        if Utc::now() > expires_at {
+            return Err(ApiError::Unauthorized);
+        }
+    }
+
     // Verify signature logic (Stubbed for now as per usual implementation patterns in this repo)
     // In a real scenario, we'd use ed25519-dalek or similar to verify payload.signature against _nonce
     if payload.signature == "invalid_signature" {
         return Err(ApiError::Unauthorized);
     }
 
-    // Clear nonce after successful login
-    sqlx::query("UPDATE users SET nonce = NULL WHERE id = $1")
+    // Clear nonce and expiry after successful login
+    sqlx::query("UPDATE users SET nonce = NULL, nonce_expires_at = NULL WHERE id = $1")
         .bind(user.id)
         .execute(&state.db)
         .await?;
