@@ -44,6 +44,7 @@ pub async fn create_app(db: PgPool, config: Config) -> Result<Router, ApiError> 
             "/api/auth/nonce/:wallet_address",
             get(crate::auth::generate_nonce),
         )
+        .route("/auth/web3/nonce/:wallet", get(crate::auth::generate_nonce))
         .route("/api/auth/wallet-login", post(crate::auth::wallet_login))
         .layer(
             ServiceBuilder::new()
