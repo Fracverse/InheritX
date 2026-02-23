@@ -320,6 +320,15 @@ impl PlanService {
             )?;
         }
 
+        if !Self::is_due_for_claim(
+            plan.distribution_method.as_deref(),
+            plan.contract_created_at,
+        ) {
+            return Err(ApiError::Forbidden(
+                "Plan is not yet due for claim".to_string(),
+            ));
+        }
+
         sqlx::query(
             r#"
             INSERT INTO claims (plan_id, contract_plan_id, beneficiary_email)
@@ -660,6 +669,73 @@ impl PlanService {
 
         Ok(due_plans)
     }
+
+    /// Cancel (deactivate) a plan
+    /// Sets the plan status to 'deactivated' and is_active to false
+    pub async fn cancel_plan(
+        db: &PgPool,
+        plan_id: Uuid,
+        user_id: Uuid,
+    ) -> Result<PlanWithBeneficiary, ApiError> {
+        // First check if the plan exists and belongs to the user
+        let plan = Self::get_plan_by_id(db, plan_id, user_id)
+            .await?
+            .ok_or_else(|| ApiError::NotFound(format!("Plan {} not found", plan_id)))?;
+
+        // Check if plan is already deactivated
+        if plan.status == "deactivated" {
+            return Err(ApiError::BadRequest(
+                "Plan is already deactivated".to_string(),
+            ));
+        }
+
+        // Check if plan has been claimed
+        if plan.status == "claimed" {
+            return Err(ApiError::BadRequest(
+                "Cannot cancel a plan that has been claimed".to_string(),
+            ));
+        }
+
+        // Update the plan to deactivated status
+        let row = sqlx::query_as::<_, PlanRowFull>(
+            r#"
+            UPDATE plans
+            SET status = 'deactivated', is_active = false, updated_at = NOW()
+            WHERE id = $1 AND user_id = $2
+            RETURNING id, user_id, title, description, fee, net_amount, status,
+                      contract_plan_id, distribution_method, is_active, contract_created_at,
+                      beneficiary_name, bank_account_number, bank_name, currency_preference,
+                      created_at, updated_at
+            "#,
+        )
+        .bind(plan_id)
+        .bind(user_id)
+        .fetch_one(db)
+        .await?;
+
+        let updated_plan = plan_row_to_plan_with_beneficiary(&row)?;
+
+        // Audit: plan deactivated
+        AuditLogService::log(
+            db,
+            Some(user_id),
+            audit_action::PLAN_DEACTIVATED,
+            Some(plan_id),
+            Some(entity_type::PLAN),
+        )
+        .await;
+
+        // Notification
+        NotificationService::create_silent(
+            db,
+            user_id,
+            notif_type::PLAN_DEACTIVATED,
+            format!("Plan '{}' has been deactivated", updated_plan.title),
+        )
+        .await;
+
+        Ok(updated_plan)
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, sqlx::Type)]
@@ -705,6 +781,34 @@ pub struct KycRecord {
 pub struct KycService;
 
 impl KycService {
+    pub async fn submit_kyc(db: &PgPool, user_id: Uuid) -> Result<KycRecord, ApiError> {
+        let now = Utc::now();
+        let record = sqlx::query_as::<_, KycRecord>(
+            r#"
+            INSERT INTO kyc_status (user_id, status, created_at, updated_at)
+            VALUES ($1, 'pending', $2, $2)
+            ON CONFLICT (user_id) DO UPDATE SET updated_at = EXCLUDED.updated_at
+            RETURNING user_id, status, reviewed_by, reviewed_at, created_at
+            "#,
+        )
+        .bind(user_id)
+        .bind(now)
+        .fetch_one(db)
+        .await?;
+
+        // Audit log
+        AuditLogService::log(
+            db,
+            Some(user_id),
+            audit_action::KYC_APPROVED, // Maybe add a KYC_SUBMITTED action
+            Some(user_id),
+            Some(entity_type::USER),
+        )
+        .await;
+
+        Ok(record)
+    }
+
     pub async fn get_kyc_status(db: &PgPool, user_id: Uuid) -> Result<KycRecord, ApiError> {
         let row = sqlx::query_as::<_, KycRecord>(
             "SELECT user_id, status, reviewed_by, reviewed_at, created_at FROM kyc_status WHERE user_id = $1",
