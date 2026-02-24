@@ -3,25 +3,25 @@ use crate::app::AppState;
 use axum::{extract::State, Json};
 use bcrypt::verify;
 use chrono::{Duration, Utc};
+use hex;
 use jsonwebtoken::{encode, EncodingKey, Header};
+use ring::signature;
 use serde::{Deserialize, Serialize};
 use sqlx::FromRow;
 use std::sync::Arc;
-use ring::signature;
 use stellar_strkey::Strkey;
-use hex;
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Serialize, Deserialize)]
 pub struct NonceRequest {
     pub wallet_address: String,
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, Deserialize)]
 pub struct NonceResponse {
     pub nonce: String,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Serialize, Deserialize)]
 pub struct Web3LoginRequest {
     pub wallet_address: String,
     pub signature: String,
@@ -29,20 +29,20 @@ pub struct Web3LoginRequest {
 
 #[derive(Debug, Deserialize)]
 pub struct LoginRequest {
-    email: String,
-    password: String,
+    pub email: String,
+    pub password: String,
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, Deserialize)]
 pub struct LoginResponse {
-    token: String,
+    pub token: String,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
 pub struct Claims {
-    sub: String, // subject (user id)
-    role: String,
-    exp: usize,
+    pub sub: String, // subject (user id)
+    pub role: String,
+    pub exp: usize,
 }
 
 pub async fn get_nonce(
@@ -58,7 +58,7 @@ pub async fn get_nonce(
         VALUES ($1, $2, $3)
         ON CONFLICT (wallet_address) DO UPDATE
         SET nonce = EXCLUDED.nonce, expires_at = EXCLUDED.expires_at
-        "#
+        "#,
     )
     .bind(&payload.wallet_address)
     .bind(&nonce)
@@ -76,19 +76,22 @@ pub async fn web3_login(
     // 1. Verify wallet address is valid Stellar G-address
     let strkey = Strkey::from_string(&payload.wallet_address)
         .map_err(|_| ApiError::BadRequest("Invalid wallet address".to_string()))?;
-    
+
     let public_key_bytes = match strkey {
         Strkey::PublicKeyEd25519(pk) => pk.0,
-        _ => return Err(ApiError::BadRequest("Only Ed25519 public keys are supported".to_string())),
+        _ => {
+            return Err(ApiError::BadRequest(
+                "Only Ed25519 public keys are supported".to_string(),
+            ))
+        }
     };
 
     // 2. Retrieve nonce
-    let row: Option<(String, chrono::DateTime<Utc>)> = sqlx::query_as(
-        "SELECT nonce, expires_at FROM nonces WHERE wallet_address = $1"
-    )
-    .bind(&payload.wallet_address)
-    .fetch_optional(&state.db)
-    .await?;
+    let row: Option<(String, chrono::DateTime<Utc>)> =
+        sqlx::query_as("SELECT nonce, expires_at FROM nonces WHERE wallet_address = $1")
+            .bind(&payload.wallet_address)
+            .fetch_optional(&state.db)
+            .await?;
 
     let (nonce_val, expires_at) = row.ok_or_else(|| ApiError::Unauthorized)?;
 
@@ -101,16 +104,16 @@ pub async fn web3_login(
         .map_err(|_| ApiError::BadRequest("Invalid signature format".to_string()))?;
 
     let peer_public_key = signature::UnparsedPublicKey::new(&signature::ED25519, public_key_bytes);
-    peer_public_key.verify(nonce_val.as_bytes(), &signature_bytes)
+    peer_public_key
+        .verify(nonce_val.as_bytes(), &signature_bytes)
         .map_err(|_| ApiError::Unauthorized)?;
 
     // 4. Find or create user
-    let user_row: Option<uuid::Uuid> = sqlx::query_scalar(
-        "SELECT id FROM users WHERE wallet_address = $1"
-    )
-    .bind(&payload.wallet_address)
-    .fetch_optional(&state.db)
-    .await?;
+    let user_row: Option<uuid::Uuid> =
+        sqlx::query_scalar("SELECT id FROM users WHERE wallet_address = $1")
+            .bind(&payload.wallet_address)
+            .fetch_optional(&state.db)
+            .await?;
 
     let user_id = match user_row {
         Some(id) => id,
