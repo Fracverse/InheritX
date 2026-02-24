@@ -3,6 +3,7 @@ resolver = "2"
 members = [
   "example-contract",
   "inheritance-contract",
+  "mock-token",
 ]
 
 [workspace.dependencies]

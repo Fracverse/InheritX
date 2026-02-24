@@ -83,6 +83,8 @@ pub enum InheritanceError {
     MigrationNotRequired = 26,
     PlanNotClaimed = 27,
     KycAlreadyRejected = 28,
+    InsufficientBalance = 29,
+    FeeTransferFailed = 30,
 }
 
 #[contracttype]
