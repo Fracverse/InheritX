@@ -997,6 +997,61 @@ impl AdminService {
     }
 }
 
+// ── User Growth Metrics ──────────────────────────────────────────────────────
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct UserGrowthMetrics {
+    pub total_users: i64,
+    pub new_users_last_7_days: i64,
+    pub new_users_last_30_days: i64,
+    pub active_users: i64,
+}
+
+pub struct UserMetricsService;
+
+impl UserMetricsService {
+    pub async fn get_user_growth_metrics(db: &PgPool) -> Result<UserGrowthMetrics, ApiError> {
+        #[derive(sqlx::FromRow)]
+        struct Row {
+            total_users: i64,
+            new_users_last_7_days: i64,
+            new_users_last_30_days: i64,
+            active_users: i64,
+        }
+
+        let row = sqlx::query_as::<_, Row>(
+            r#"
+            SELECT
+                COUNT(*)::BIGINT AS total_users,
+                COUNT(*) FILTER (
+                    WHERE created_at >= NOW() - INTERVAL '7 days'
+                )::BIGINT AS new_users_last_7_days,
+                COUNT(*) FILTER (
+                    WHERE created_at >= NOW() - INTERVAL '30 days'
+                )::BIGINT AS new_users_last_30_days,
+                COUNT(*) FILTER (
+                    WHERE id IN (
+                        SELECT DISTINCT user_id FROM action_logs
+                        WHERE timestamp >= NOW() - INTERVAL '30 days'
+                          AND user_id IS NOT NULL
+                    )
+                )::BIGINT AS active_users
+            FROM users
+            "#,
+        )
+        .fetch_one(db)
+        .await?;
+
+        Ok(UserGrowthMetrics {
+            total_users: row.total_users,
+            new_users_last_7_days: row.new_users_last_7_days,
+            new_users_last_30_days: row.new_users_last_30_days,
+            active_users: row.active_users,
+        })
+    }
+}
+
 // ── Plan Statistics ───────────────────────────────────────────────────────────
 
 #[derive(Debug, Serialize, Deserialize)]
