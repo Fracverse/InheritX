@@ -33,11 +33,10 @@ pub struct Notification {
 pub struct NotificationService;
 
 impl NotificationService {
-    /// Insert a notification for a user. Fire-and-forget: errors are logged but
-    /// do **not** bubble up to callers so that a notification failure never
-    /// breaks the primary business operation.
+    /// Insert a notification for a user.
+    /// Now participates in the caller's transaction.
     pub async fn create(
-        db: &PgPool,
+        executor: &mut sqlx::PgConnection, // Changed from &PgPool
         user_id: Uuid,
         notif_type: &str,
         message: impl Into<String>,
@@ -53,32 +52,17 @@ impl NotificationService {
         .bind(user_id)
         .bind(notif_type)
         .bind(&message)
-        .fetch_one(db)
+        .fetch_one(executor) // Use the passed connection/transaction
         .await?;
 
         Ok(row)
     }
 
-    /// Silently create a notification — errors are only logged, not propagated.
-    /// Use this inside service methods where notification failure must not
-    /// abort the primary operation.
-    pub async fn create_silent(
-        db: &PgPool,
-        user_id: Uuid,
-        notif_type: &str,
-        message: impl Into<String>,
-    ) {
-        if let Err(e) = Self::create(db, user_id, notif_type, message).await {
-            tracing::warn!(
-                user_id = %user_id,
-                notif_type = %notif_type,
-                error = ?e,
-                "Failed to create notification (non-fatal)"
-            );
-        }
-    }
+    // REMOVED: create_silent
+    // Because atomic safety requires that if a notification fails,
+    // the parent transaction MUST rollback.
 
-    /// Return all notifications for a user, newest first.
+    /// Return all notifications for a user (Read-only, can stay using &PgPool)
     pub async fn list_for_user(db: &PgPool, user_id: Uuid) -> Result<Vec<Notification>, ApiError> {
         let rows = sqlx::query_as::<_, Notification>(
             r#"
@@ -95,8 +79,7 @@ impl NotificationService {
         Ok(rows)
     }
 
-    /// Mark a single notification as read. Returns `NotFound` if the
-    /// notification does not belong to `user_id`.
+    /// Mark a single notification as read.
     pub async fn mark_read(
         db: &PgPool,
         notif_id: Uuid,
@@ -118,11 +101,11 @@ impl NotificationService {
         row.ok_or_else(|| ApiError::NotFound(format!("Notification {} not found", notif_id)))
     }
 }
-
 // ─── Audit Log ───────────────────────────────────────────────────────────────
 
 /// Well-known action values stored in the `action` column of `action_logs`.
 pub mod audit_action {
+    pub const KYC_SUBMITTED: &str = "kyc_submitted";
     pub const KYC_APPROVED: &str = "kyc_approved";
     pub const KYC_REJECTED: &str = "kyc_rejected";
     pub const PLAN_CREATED: &str = "plan_created";
@@ -150,39 +133,30 @@ pub struct ActionLog {
 pub struct AuditLogService;
 
 impl AuditLogService {
-    /// Insert an audit log entry. Errors are not propagated (fire-and-forget)
-    /// so an audit failure never disrupts the primary operation.
     pub async fn log(
-        db: &PgPool,
+        // Use an executor that can be a Pool or a Transaction
+        executor: impl sqlx::PgExecutor<'_>,
         user_id: Option<Uuid>,
         action: &str,
         entity_id: Option<Uuid>,
         entity_type: Option<&str>,
-    ) {
-        let result = sqlx::query_as::<_, ActionLog>(
+    ) -> Result<(), ApiError> {
+        // Return Result instead of ()
+        sqlx::query(
             r#"
             INSERT INTO action_logs (user_id, action, entity_id, entity_type)
             VALUES ($1, $2, $3, $4)
-            RETURNING id, user_id, action, entity_id, entity_type, timestamp
             "#,
         )
         .bind(user_id)
         .bind(action)
         .bind(entity_id)
         .bind(entity_type)
-        .fetch_one(db)
-        .await;
+        .execute(executor) // Execute on the provided transaction/pool
+        .await?;
 
-        if let Err(e) = result {
-            tracing::warn!(
-                user_id = ?user_id,
-                action = %action,
-                error = ?e,
-                "Failed to write audit log (non-fatal)"
-            );
-        }
+        Ok(())
     }
-
     /// Return all audit log entries for admin inspection, newest first.
     pub async fn list_all(db: &PgPool) -> Result<Vec<ActionLog>, ApiError> {
         let rows = sqlx::query_as::<_, ActionLog>(
@@ -215,7 +189,6 @@ impl AuditLogService {
         Ok(rows)
     }
 }
-
 // ─── Tests ───────────────────────────────────────────────────────────────────
 
 #[cfg(test)]

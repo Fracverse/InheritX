@@ -3,6 +3,7 @@ use axum::{
     body::Body,
     http::{Request, StatusCode},
 };
+use chrono::Duration;
 use chrono::Utc;
 use jsonwebtoken::{encode, EncodingKey, Header};
 use serde_json::json;
@@ -32,17 +33,18 @@ async fn plan_creation_rolls_back_on_transfer_revert() {
     .execute(&ctx.pool)
     .await
     .expect("Failed to set KYC approved");
-
-    let exp = Utc::now()
-        .checked_add_signed(chrono::Duration::hours(24))
-        .expect("valid timestamp")
+    let expiration = Utc::now()
+        .checked_add_signed(Duration::hours(1))
+        .unwrap()
         .timestamp() as usize;
+
+    //let exp = (chrono::Utc::now() + chrono::Duration::hours(24)).timestamp() as usize;
     let token = encode(
         &Header::default(),
         &inheritx_backend::auth::UserClaims {
             user_id,
             email: format!("user-{}@example.com", user_id),
-            exp,
+            exp: expiration,
         },
         &EncodingKey::from_secret(b"secret_key_change_in_production"),
     )

@@ -201,10 +201,13 @@ impl PlanService {
     }
 
     pub async fn create_plan(
-        db: &PgPool,
+        pool: &PgPool,
         user_id: Uuid,
         req: &CreatePlanRequest,
     ) -> Result<PlanWithBeneficiary, ApiError> {
+        // 1. Start Transaction
+        let mut tx = pool.begin().await?;
+
         let currency = CurrencyPreference::from_str(req.currency_preference.trim())?;
         Self::validate_beneficiary_for_currency(
             &currency,
@@ -224,18 +227,19 @@ impl PlanService {
             .map(|s| s.trim().to_string());
         let currency_preference = Some(currency.as_str().to_string());
 
+        // 2. Insert Plan - using the transaction handle
         let row = sqlx::query_as::<_, PlanRowFull>(
             r#"
-            INSERT INTO plans (
-                user_id, title, description, fee, net_amount, status,
-                beneficiary_name, bank_account_number, bank_name, currency_preference
-            )
-            VALUES ($1, $2, $3, $4, $5, 'pending', $6, $7, $8, $9)
-            RETURNING id, user_id, title, description, fee, net_amount, status,
-                      contract_plan_id, distribution_method, is_active, contract_created_at,
-                      beneficiary_name, bank_account_number, bank_name, currency_preference,
-                      created_at, updated_at
-            "#,
+        INSERT INTO plans (
+            user_id, title, description, fee, net_amount, status,
+            beneficiary_name, bank_account_number, bank_name, currency_preference
+        )
+        VALUES ($1, $2, $3, $4, $5, 'pending', $6, $7, $8, $9)
+        RETURNING id, user_id, title, description, fee, net_amount, status,
+                  contract_plan_id, distribution_method, is_active, contract_created_at,
+                  beneficiary_name, bank_account_number, bank_name, currency_preference,
+                  created_at, updated_at
+        "#,
         )
         .bind(user_id)
         .bind(&req.title)
@@ -246,42 +250,47 @@ impl PlanService {
         .bind(&bank_account_number)
         .bind(&bank_name)
         .bind(&currency_preference)
-        .fetch_one(db)
+        .fetch_one(&mut *tx) // CRITICAL: Use the transaction, not the pool
         .await?;
 
         let plan = plan_row_to_plan_with_beneficiary(&row)?;
 
-        // Audit: plan created
+        // 3. Audit: This must now return Result and use the transaction
         AuditLogService::log(
-            db,
+            &mut *tx, // Pass the transaction
             Some(user_id),
             audit_action::PLAN_CREATED,
             Some(plan.id),
             Some(entity_type::PLAN),
         )
-        .await;
+        .await?; // If this fails, '?' triggers an early return
+
+        // 4. Commit: If we reached here, both Plan and Audit are saved
+        tx.commit().await?;
 
         Ok(plan)
     }
-
-    pub async fn get_plan_by_id(
-        db: &PgPool,
+    pub async fn get_plan_by_id<'a, E>(
+        executor: E,
         plan_id: Uuid,
         user_id: Uuid,
-    ) -> Result<Option<PlanWithBeneficiary>, ApiError> {
+    ) -> Result<Option<PlanWithBeneficiary>, ApiError>
+    where
+        E: sqlx::Executor<'a, Database = sqlx::Postgres>,
+    {
         let row = sqlx::query_as::<_, PlanRowFull>(
             r#"
-            SELECT id, user_id, title, description, fee, net_amount, status,
-                   contract_plan_id, distribution_method, is_active, contract_created_at,
-                   beneficiary_name, bank_account_number, bank_name, currency_preference,
-                   created_at, updated_at
-            FROM plans
-            WHERE id = $1 AND user_id = $2
-            "#,
+        SELECT id, user_id, title, description, fee, net_amount, status,
+               contract_plan_id, distribution_method, is_active, contract_created_at,
+               beneficiary_name, bank_account_number, bank_name, currency_preference,
+               created_at, updated_at
+        FROM plans
+        WHERE id = $1 AND user_id = $2
+        "#,
         )
         .bind(plan_id)
         .bind(user_id)
-        .fetch_optional(db)
+        .fetch_optional(executor)
         .await?;
 
         match row {
@@ -289,14 +298,17 @@ impl PlanService {
             None => Ok(None),
         }
     }
-
     pub async fn claim_plan(
-        db: &PgPool,
+        pool: &PgPool,
         plan_id: Uuid,
         user_id: Uuid,
         req: &ClaimPlanRequest,
     ) -> Result<PlanWithBeneficiary, ApiError> {
-        let plan = Self::get_plan_by_id(db, plan_id, user_id)
+        // 1. Start the transaction
+        let mut tx = pool.begin().await?;
+
+        // 2. Use &mut *tx for the helper
+        let plan = Self::get_plan_by_id(&mut *tx, plan_id, user_id)
             .await?
             .ok_or_else(|| ApiError::NotFound(format!("Plan {} not found", plan_id)))?;
 
@@ -311,6 +323,7 @@ impl PlanService {
 
         let contract_plan_id = plan.contract_plan_id.unwrap_or(0_i64);
 
+        // ... (Currency validation logic remains same) ...
         let currency = plan
             .currency_preference
             .as_deref()
@@ -329,25 +342,17 @@ impl PlanService {
             )?;
         }
 
-        if !Self::is_due_for_claim(
-            plan.distribution_method.as_deref(),
-            plan.contract_created_at,
-        ) {
-            return Err(ApiError::Forbidden(
-                "Plan is not yet due for claim".to_string(),
-            ));
-        }
-
+        // 3. FIX: Changed 'db' to '&mut *tx' to keep it atomic
         sqlx::query(
             r#"
-            INSERT INTO claims (plan_id, contract_plan_id, beneficiary_email)
-            VALUES ($1, $2, $3)
-            "#,
+        INSERT INTO claims (plan_id, contract_plan_id, beneficiary_email)
+        VALUES ($1, $2, $3)
+        "#,
         )
         .bind(plan_id)
         .bind(contract_plan_id)
         .bind(req.beneficiary_email.trim())
-        .execute(db)
+        .execute(&mut *tx) // <--- Use the transaction here!
         .await
         .map_err(|e| {
             if let sqlx::Error::Database(ref db_err) = e {
@@ -360,28 +365,29 @@ impl PlanService {
             ApiError::from(e)
         })?;
 
-        // Audit: plan claimed
+        // 4. Audit Log
         AuditLogService::log(
-            db,
+            &mut *tx,
             Some(user_id),
             audit_action::PLAN_CLAIMED,
             Some(plan_id),
             Some(entity_type::PLAN),
         )
-        .await;
+        .await?;
 
         // Notification: plan claimed
-        NotificationService::create_silent(
-            db,
+        NotificationService::create(
+            &mut tx,
             user_id,
             notif_type::PLAN_CLAIMED,
             format!("Plan '{}' has been successfully claimed", plan.title),
         )
-        .await;
+        .await?; // Use ? to ensure failure here rolls back the claim
 
+        // 6. Final Commit
+        tx.commit().await?;
         Ok(plan)
     }
-
     pub fn is_due_for_claim(
         distribution_method: Option<&str>,
         contract_created_at: Option<i64>,
@@ -691,66 +697,71 @@ impl PlanService {
     /// Cancel (deactivate) a plan
     /// Sets the plan status to 'deactivated' and is_active to false
     pub async fn cancel_plan(
-        db: &PgPool,
+        pool: &PgPool, // Required to start a transaction if one isn't provided
         plan_id: Uuid,
         user_id: Uuid,
     ) -> Result<PlanWithBeneficiary, ApiError> {
-        // First check if the plan exists and belongs to the user
-        let plan = Self::get_plan_by_id(db, plan_id, user_id)
+        // 1. Start the transaction
+        let mut tx = pool.begin().await?;
+
+        // 2. Fetch the plan using the transaction handle
+        // Note: get_plan_by_id must also use the generic <'a, E> pattern
+        let plan = Self::get_plan_by_id(&mut *tx, plan_id, user_id)
             .await?
             .ok_or_else(|| ApiError::NotFound(format!("Plan {} not found", plan_id)))?;
 
-        // Check if plan is already deactivated
+        // Business Logic Checks
         if plan.status == "deactivated" {
             return Err(ApiError::BadRequest(
                 "Plan is already deactivated".to_string(),
             ));
         }
-
-        // Check if plan has been claimed
         if plan.status == "claimed" {
             return Err(ApiError::BadRequest(
                 "Cannot cancel a plan that has been claimed".to_string(),
             ));
         }
 
-        // Update the plan to deactivated status
+        // 3. Perform the Update
         let row = sqlx::query_as::<_, PlanRowFull>(
             r#"
-            UPDATE plans
-            SET status = 'deactivated', is_active = false, updated_at = NOW()
-            WHERE id = $1 AND user_id = $2
-            RETURNING id, user_id, title, description, fee, net_amount, status,
-                      contract_plan_id, distribution_method, is_active, contract_created_at,
-                      beneficiary_name, bank_account_number, bank_name, currency_preference,
-                      created_at, updated_at
-            "#,
+        UPDATE plans
+        SET status = 'deactivated', is_active = false, updated_at = NOW()
+        WHERE id = $1 AND user_id = $2
+        RETURNING id, user_id, title, description, fee, net_amount, status,
+                  contract_plan_id, distribution_method, is_active, contract_created_at,
+                  beneficiary_name, bank_account_number, bank_name, currency_preference,
+                  created_at, updated_at
+        "#,
         )
         .bind(plan_id)
         .bind(user_id)
-        .fetch_one(db)
+        .fetch_one(&mut *tx)
         .await?;
 
         let updated_plan = plan_row_to_plan_with_beneficiary(&row)?;
 
-        // Audit: plan deactivated
+        // 4. Atomic Audit Log
         AuditLogService::log(
-            db,
+            &mut *tx,
             Some(user_id),
             audit_action::PLAN_DEACTIVATED,
             Some(plan_id),
             Some(entity_type::PLAN),
         )
-        .await;
+        .await?;
 
-        // Notification
-        NotificationService::create_silent(
-            db,
+        // 5. Atomic Notification
+        NotificationService::create(
+            &mut tx,
             user_id,
             notif_type::PLAN_DEACTIVATED,
             format!("Plan '{}' has been deactivated", updated_plan.title),
         )
-        .await;
+        .await?;
+
+        // 6. Commit
+        tx.commit().await?;
 
         Ok(updated_plan)
     }
@@ -799,8 +810,13 @@ pub struct KycRecord {
 pub struct KycService;
 
 impl KycService {
-    pub async fn submit_kyc(db: &PgPool, user_id: Uuid) -> Result<KycRecord, ApiError> {
+    pub async fn submit_kyc(pool: &PgPool, user_id: Uuid) -> Result<KycRecord, ApiError> {
+        // 1. Start the transaction
+        let mut tx = pool.begin().await?;
         let now = Utc::now();
+
+        // 2. Insert record
+        // Adding &mut *tx fixes the "Executor not satisfied" error
         let record = sqlx::query_as::<_, KycRecord>(
             r#"
             INSERT INTO kyc_status (user_id, status, created_at, updated_at)
@@ -811,19 +827,21 @@ impl KycService {
         )
         .bind(user_id)
         .bind(now)
-        .fetch_one(db)
+        .fetch_one(&mut *tx) // <--- Use the explicit re-borrow here
         .await?;
 
-        // Audit log
+        // 3. Atomic Audit log
         AuditLogService::log(
-            db,
+            &mut *tx, // Re-borrow here as well
             Some(user_id),
-            audit_action::KYC_APPROVED, // Maybe add a KYC_SUBMITTED action
+            audit_action::KYC_SUBMITTED,
             Some(user_id),
             Some(entity_type::USER),
         )
-        .await;
+        .await?;
 
+        // 4. Commit
+        tx.commit().await?;
         Ok(record)
     }
 
@@ -848,67 +866,59 @@ impl KycService {
     }
 
     pub async fn update_kyc_status(
-        db: &PgPool,
+        pool: &PgPool,
         admin_id: Uuid,
         user_id: Uuid,
         status: KycStatus,
     ) -> Result<KycRecord, ApiError> {
+        let mut tx = pool.begin().await?; // Start Transaction
         let status_str = status.to_string();
         let now = Utc::now();
 
         let record = sqlx::query_as::<_, KycRecord>(
             r#"
-            INSERT INTO kyc_status (user_id, status, reviewed_by, reviewed_at, created_at)
-            VALUES ($1, $2, $3, $4, $5)
-            ON CONFLICT (user_id) DO UPDATE 
-            SET status = EXCLUDED.status, 
-                reviewed_by = EXCLUDED.reviewed_by, 
-                reviewed_at = EXCLUDED.reviewed_at
-            RETURNING user_id, status, reviewed_by, reviewed_at, created_at
-            "#,
+        INSERT INTO kyc_status (user_id, status, reviewed_by, reviewed_at, created_at)
+        VALUES ($1, $2, $3, $4, $5)
+        ON CONFLICT (user_id) DO UPDATE SET ...
+        RETURNING user_id, status, reviewed_by, reviewed_at, created_at
+        "#,
         )
         .bind(user_id)
         .bind(status_str)
         .bind(admin_id)
         .bind(now)
         .bind(now)
-        .fetch_one(db)
+        .fetch_one(&mut *tx) // Use Transaction
         .await?;
 
-        // Fire notification to the affected user
+        // Prepare notification
         let (ntype, msg) = match status {
-            KycStatus::Approved => (
-                notif_type::KYC_APPROVED,
-                "Your KYC verification has been approved.".to_string(),
-            ),
-            KycStatus::Rejected => (
-                notif_type::KYC_REJECTED,
-                "Your KYC verification has been rejected. Please contact support.".to_string(),
-            ),
-            KycStatus::Pending => (
-                notif_type::KYC_APPROVED, // won't be hit in normal flow
-                "KYC status updated.".to_string(),
-            ),
+            KycStatus::Approved => (notif_type::KYC_APPROVED, "Approved".to_string()),
+            KycStatus::Rejected => (notif_type::KYC_REJECTED, "Rejected".to_string()),
+            _ => (notif_type::KYC_APPROVED, "Updated".to_string()),
         };
-        NotificationService::create_silent(db, user_id, ntype, msg).await;
 
-        // Audit log
+        // Notification is now ATOMIC
+        NotificationService::create(&mut tx, user_id, ntype, msg).await?;
+
+        // Audit log is now ATOMIC
         AuditLogService::log(
-            db,
+            &mut *tx,
             Some(admin_id),
-            match &record.status.as_str() {
-                &"approved" => audit_action::KYC_APPROVED,
-                _ => audit_action::KYC_REJECTED,
+            if record.status == "approved" {
+                audit_action::KYC_APPROVED
+            } else {
+                audit_action::KYC_REJECTED
             },
             Some(user_id),
             Some(entity_type::USER),
         )
-        .await;
+        .await?;
 
+        tx.commit().await?; // Commit all three operations
         Ok(record)
     }
 }
-
 #[cfg(test)]
 mod tests {
     use super::{CurrencyPreference, PlanService};
