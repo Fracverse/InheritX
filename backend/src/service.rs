@@ -947,6 +947,111 @@ impl KycService {
     }
 }
 
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AdminMetrics {
+    pub total_revenue: f64,
+    pub total_plans: i64,
+    pub total_claims: i64,
+    pub active_plans: i64,
+    pub total_users: i64,
+}
+
+pub struct AdminService;
+
+impl AdminService {
+    pub async fn get_metrics_overview(db: &PgPool) -> Result<AdminMetrics, ApiError> {
+        #[derive(sqlx::FromRow)]
+        struct MetricsRow {
+            total_revenue: f64,
+            total_plans: i64,
+            total_claims: i64,
+            active_plans: i64,
+            total_users: i64,
+        }
+
+        let row = sqlx::query_as::<_, MetricsRow>(
+            r#"
+            SELECT
+                COALESCE(SUM(fee), 0)::FLOAT8 AS total_revenue,
+                COUNT(*)::BIGINT AS total_plans,
+                (SELECT COUNT(*)::BIGINT FROM claims) AS total_claims,
+                COUNT(*) FILTER (
+                    WHERE is_active IS NOT FALSE
+                      AND status NOT IN ('claimed', 'deactivated')
+                )::BIGINT AS active_plans,
+                (SELECT COUNT(*)::BIGINT FROM users) AS total_users
+            FROM plans
+            "#,
+        )
+        .fetch_one(db)
+        .await?;
+
+        Ok(AdminMetrics {
+            total_revenue: row.total_revenue,
+            total_plans: row.total_plans,
+            total_claims: row.total_claims,
+            active_plans: row.active_plans,
+            total_users: row.total_users,
+        })
+    }
+}
+
+// ── User Growth Metrics ──────────────────────────────────────────────────────
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct UserGrowthMetrics {
+    pub total_users: i64,
+    pub new_users_last_7_days: i64,
+    pub new_users_last_30_days: i64,
+    pub active_users: i64,
+}
+
+pub struct UserMetricsService;
+
+impl UserMetricsService {
+    pub async fn get_user_growth_metrics(db: &PgPool) -> Result<UserGrowthMetrics, ApiError> {
+        #[derive(sqlx::FromRow)]
+        struct Row {
+            total_users: i64,
+            new_users_last_7_days: i64,
+            new_users_last_30_days: i64,
+            active_users: i64,
+        }
+
+        let row = sqlx::query_as::<_, Row>(
+            r#"
+            SELECT
+                COUNT(*)::BIGINT AS total_users,
+                COUNT(*) FILTER (
+                    WHERE created_at >= NOW() - INTERVAL '7 days'
+                )::BIGINT AS new_users_last_7_days,
+                COUNT(*) FILTER (
+                    WHERE created_at >= NOW() - INTERVAL '30 days'
+                )::BIGINT AS new_users_last_30_days,
+                COUNT(*) FILTER (
+                    WHERE id IN (
+                        SELECT DISTINCT user_id FROM action_logs
+                        WHERE timestamp >= NOW() - INTERVAL '30 days'
+                          AND user_id IS NOT NULL
+                    )
+                )::BIGINT AS active_users
+            FROM users
+            "#,
+        )
+        .fetch_one(db)
+        .await?;
+
+        Ok(UserGrowthMetrics {
+            total_users: row.total_users,
+            new_users_last_7_days: row.new_users_last_7_days,
+            new_users_last_30_days: row.new_users_last_30_days,
+            active_users: row.active_users,
+        })
+    }
+}
+
 // ── Plan Statistics ───────────────────────────────────────────────────────────
 
 #[derive(Debug, Serialize, Deserialize)]

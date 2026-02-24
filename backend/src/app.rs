@@ -16,8 +16,8 @@ use crate::auth::{AuthenticatedAdmin, AuthenticatedUser};
 use crate::config::Config;
 use crate::notifications::{AuditLogService, NotificationService};
 use crate::service::{
-    ClaimPlanRequest, CreatePlanRequest, KycRecord, KycService, KycStatus, PlanService,
-    PlanStatisticsService,
+    AdminMetrics, AdminService, ClaimPlanRequest, CreatePlanRequest, KycRecord, KycService,
+    KycStatus, PlanService, PlanStatisticsService, UserMetricsService,
 };
 
 pub struct AppState {
@@ -85,6 +85,7 @@ pub async fn create_app(db: PgPool, config: Config) -> Result<Router, ApiError> 
         .route("/api/admin/kyc/:user_id", get(get_kyc_status))
         .route("/api/admin/kyc/approve", post(approve_kyc))
         .route("/api/admin/kyc/reject", post(reject_kyc))
+        .route("/admin/metrics/overview", get(get_admin_metrics_overview))
         .route("/api/kyc", get(get_user_kyc))
         // ── Notifications ────────────────────────────────────────────────
         .route("/api/notifications", get(list_notifications))
@@ -93,6 +94,7 @@ pub async fn create_app(db: PgPool, config: Config) -> Result<Router, ApiError> 
         .route("/api/admin/logs", get(list_audit_logs))
         // ── Admin Metrics ────────────────────────────────────────────────
         .route("/api/admin/metrics/plans", get(get_plan_statistics))
+        .route("/admin/metrics/users", get(get_user_growth_metrics))
         .with_state(state);
 
     Ok(app)
@@ -441,6 +443,14 @@ async fn list_audit_logs(
     })))
 }
 
+async fn get_admin_metrics_overview(
+    State(state): State<Arc<AppState>>,
+    AuthenticatedAdmin(_admin): AuthenticatedAdmin,
+) -> Result<Json<AdminMetrics>, ApiError> {
+    let metrics = AdminService::get_metrics_overview(&state.db).await?;
+    Ok(Json(metrics))
+}
+
 // ── Admin Metrics Handler ─────────────────────────────────────────────────────
 
 async fn get_plan_statistics(
@@ -451,5 +461,16 @@ async fn get_plan_statistics(
     Ok(Json(json!({
         "status": "success",
         "data": stats
+    })))
+}
+
+async fn get_user_growth_metrics(
+    State(state): State<Arc<AppState>>,
+    AuthenticatedAdmin(_admin): AuthenticatedAdmin,
+) -> Result<Json<Value>, ApiError> {
+    let metrics = UserMetricsService::get_user_growth_metrics(&state.db).await?;
+    Ok(Json(json!({
+        "status": "success",
+        "data": metrics
     })))
 }
