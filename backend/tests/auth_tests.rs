@@ -54,7 +54,6 @@ async fn test_web3_login_success() {
     .to_string();
     let wallet_address = String::from(wallet_address);
 
-
     // 2. Request Nonce
     let response = client
         .post(format!("{}/api/auth/nonce", base_url))

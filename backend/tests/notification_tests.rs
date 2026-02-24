@@ -563,4 +563,3 @@ async fn mark_already_read_notification_safe_handling() {
 
     assert!(is_read);
 }
-

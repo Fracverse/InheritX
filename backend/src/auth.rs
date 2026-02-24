@@ -19,7 +19,6 @@ pub struct NonceResponse {
 
 #[derive(Debug, Serialize, Deserialize)]
 pub struct NonceRequest {
-
     pub wallet_address: String,
 }
 
@@ -77,21 +76,26 @@ pub async fn web3_login(
     // Wait, the incoming tests use "GABC1234567890UNIQUE" which is NOT a valid Stellar address (too short).
     // I should probably support both or make the checks more flexible if needed, but let's stick to valid ones.
 
-    let public_key_bytes = if payload.wallet_address.starts_with('G') && payload.wallet_address.len() == 56 {
-        let strkey = Strkey::from_string(&payload.wallet_address)
-            .map_err(|_| ApiError::BadRequest("Invalid Stellar address".to_string()))?;
+    let public_key_bytes =
+        if payload.wallet_address.starts_with('G') && payload.wallet_address.len() == 56 {
+            let strkey = Strkey::from_string(&payload.wallet_address)
+                .map_err(|_| ApiError::BadRequest("Invalid Stellar address".to_string()))?;
 
-        match strkey {
-            Strkey::PublicKeyEd25519(pk) => pk.0,
-            _ => return Err(ApiError::BadRequest("Only Ed25519 public keys are supported".to_string())),
-        }
-    } else {
-        // Fallback for tests or hex addresses
-        hex::decode(&payload.wallet_address)
-            .map_err(|_| ApiError::BadRequest("Invalid wallet address format".to_string()))?
-            .try_into()
-            .map_err(|_| ApiError::BadRequest("Invalid public key length".to_string()))?
-    };
+            match strkey {
+                Strkey::PublicKeyEd25519(pk) => pk.0,
+                _ => {
+                    return Err(ApiError::BadRequest(
+                        "Only Ed25519 public keys are supported".to_string(),
+                    ))
+                }
+            }
+        } else {
+            // Fallback for tests or hex addresses
+            hex::decode(&payload.wallet_address)
+                .map_err(|_| ApiError::BadRequest("Invalid wallet address format".to_string()))?
+                .try_into()
+                .map_err(|_| ApiError::BadRequest("Invalid public key length".to_string()))?
+        };
 
     // 2. Retrieve nonce
     let row: Option<(String, chrono::DateTime<Utc>)> =
@@ -116,11 +120,12 @@ pub async fn web3_login(
         .map_err(|_| ApiError::Unauthorized)?;
 
     // 4. Find or create user
-    let user_row: Option<UserRow> =
-        sqlx::query_as("SELECT id, email, nonce, nonce_expires_at FROM users WHERE wallet_address = $1")
-            .bind(&payload.wallet_address)
-            .fetch_optional(&state.db)
-            .await?;
+    let user_row: Option<UserRow> = sqlx::query_as(
+        "SELECT id, email, nonce, nonce_expires_at FROM users WHERE wallet_address = $1",
+    )
+    .bind(&payload.wallet_address)
+    .fetch_optional(&state.db)
+    .await?;
 
     let (user_id, email) = match user_row {
         Some(row) => (row.id, row.email),
@@ -290,14 +295,12 @@ pub async fn generate_nonce(
     get_nonce(State(state), Json(NonceRequest { wallet_address })).await
 }
 
-
 pub async fn wallet_login(
     State(state): State<Arc<AppState>>,
     Json(payload): Json<WalletLoginRequest>,
 ) -> Result<Json<LoginResponse>, ApiError> {
     web3_login(State(state), Json(payload)).await
 }
-
 
 use axum::extract::FromRequestParts;
 use axum::http::request::Parts;
