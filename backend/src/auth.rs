@@ -120,12 +120,11 @@ pub async fn web3_login(
         .map_err(|_| ApiError::Unauthorized)?;
 
     // 4. Find or create user
-    let user_row: Option<UserRow> = sqlx::query_as(
-        "SELECT id, email, nonce, nonce_expires_at FROM users WHERE wallet_address = $1",
-    )
-    .bind(&payload.wallet_address)
-    .fetch_optional(&state.db)
-    .await?;
+    let user_row: Option<UserRow> =
+        sqlx::query_as("SELECT id, email FROM users WHERE wallet_address = $1")
+            .bind(&payload.wallet_address)
+            .fetch_optional(&state.db)
+            .await?;
 
     let (user_id, email) = match user_row {
         Some(row) => (row.id, row.email),
@@ -235,8 +234,6 @@ pub async fn login_user(
 struct UserRow {
     id: uuid::Uuid,
     email: String,
-    nonce: Option<String>,
-    nonce_expires_at: Option<chrono::DateTime<Utc>>,
 }
 
 pub async fn login_admin(

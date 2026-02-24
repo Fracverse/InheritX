@@ -2,7 +2,6 @@ mod helpers;
 
 use axum::{
     body::Body,
-    extract::connect_info::IntoMakeServiceWithConnectInfo,
     http::{Request, StatusCode},
 };
 use inheritx_backend::auth::{
@@ -51,14 +50,14 @@ async fn test_web3_login_success() {
     let wallet_address = stellar_strkey::Strkey::PublicKeyEd25519(
         stellar_strkey::ed25519::PublicKey(public_key_bytes.try_into().unwrap()),
     )
+    .to_string()
     .to_string();
-    let wallet_address = String::from(wallet_address);
 
     // 2. Request Nonce
     let response = client
         .post(format!("{}/api/auth/nonce", base_url))
         .json(&NonceRequest {
-            wallet_address: wallet_address.clone(),
+            wallet_address: wallet_address.to_string(),
         })
         .send()
         .await
@@ -76,7 +75,7 @@ async fn test_web3_login_success() {
     let response = client
         .post(format!("{}/api/auth/web3-login", base_url))
         .json(&Web3LoginRequest {
-            wallet_address: wallet_address.clone(),
+            wallet_address: wallet_address.to_string(),
             signature: signature_hex,
         })
         .send()
