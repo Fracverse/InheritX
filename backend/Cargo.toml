@@ -71,3 +71,6 @@ stellar-strkey = "0.0.16"
 [dev-dependencies]
 tokio-test = "0.4"
 httpmock = "0.7"
+ring = "0.17"
+hex = "0.4"
+rust_decimal = { version = "1.33", features = ["serde-with-str"] }
