@@ -16,7 +16,8 @@ use crate::auth::{AuthenticatedAdmin, AuthenticatedUser};
 use crate::config::Config;
 use crate::notifications::{AuditLogService, NotificationService};
 use crate::service::{
-    ClaimPlanRequest, CreatePlanRequest, KycRecord, KycService, KycStatus, PlanService,
+    AdminMetrics, AdminService, ClaimPlanRequest, CreatePlanRequest, KycRecord, KycService,
+    KycStatus, PlanService,
 };
 
 pub struct AppState {
@@ -83,6 +84,7 @@ pub async fn create_app(db: PgPool, config: Config) -> Result<Router, ApiError> 
         .route("/api/admin/kyc/:user_id", get(get_kyc_status))
         .route("/api/admin/kyc/approve", post(approve_kyc))
         .route("/api/admin/kyc/reject", post(reject_kyc))
+        .route("/admin/metrics/overview", get(get_admin_metrics_overview))
         .route("/api/kyc", get(get_user_kyc))
         // ── Notifications ────────────────────────────────────────────────
         .route("/api/notifications", get(list_notifications))
@@ -435,4 +437,12 @@ async fn list_audit_logs(
         "data": logs,
         "count": logs.len()
     })))
+}
+
+async fn get_admin_metrics_overview(
+    State(state): State<Arc<AppState>>,
+    AuthenticatedAdmin(_admin): AuthenticatedAdmin,
+) -> Result<Json<AdminMetrics>, ApiError> {
+    let metrics = AdminService::get_metrics_overview(&state.db).await?;
+    Ok(Json(metrics))
 }
