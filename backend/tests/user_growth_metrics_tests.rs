@@ -107,7 +107,10 @@ async fn user_growth_metrics_returns_correct_types() {
     let json: Value = serde_json::from_slice(&body).expect("Response is not valid JSON");
 
     let data = &json["data"];
-    assert!(data["totalUsers"].is_number(), "totalUsers should be a number");
+    assert!(
+        data["totalUsers"].is_number(),
+        "totalUsers should be a number"
+    );
     assert!(
         data["newUsersLast7Days"].is_number(),
         "newUsersLast7Days should be a number"
@@ -116,7 +119,10 @@ async fn user_growth_metrics_returns_correct_types() {
         data["newUsersLast30Days"].is_number(),
         "newUsersLast30Days should be a number"
     );
-    assert!(data["activeUsers"].is_number(), "activeUsers should be a number");
+    assert!(
+        data["activeUsers"].is_number(),
+        "activeUsers should be a number"
+    );
 }
 
 #[tokio::test]
