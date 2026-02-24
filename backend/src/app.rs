@@ -226,12 +226,20 @@ async fn get_plan(
     Path(plan_id): Path<Uuid>,
     AuthenticatedUser(user): AuthenticatedUser,
 ) -> Result<Json<Value>, ApiError> {
-    let plan = PlanService::get_plan_by_id(&state.db, plan_id, user.user_id).await?;
+    let plan = PlanService::get_plan_by_id_any_user(&state.db, plan_id).await?;
     match plan {
-        Some(p) => Ok(Json(json!({
-            "status": "success",
-            "data": p
-        }))),
+        Some(p) => {
+            if p.user_id != user.user_id {
+                return Err(ApiError::Forbidden(format!(
+                    "You do not have permission to access plan {}",
+                    plan_id
+                )));
+            }
+            Ok(Json(json!({
+                "status": "success",
+                "data": p
+            })))
+        }
         None => Err(ApiError::NotFound(format!("Plan {} not found", plan_id))),
     }
 }

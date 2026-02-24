@@ -298,6 +298,33 @@ impl PlanService {
             None => Ok(None),
         }
     }
+
+    pub async fn get_plan_by_id_any_user<'a, E>(
+        executor: E,
+        plan_id: Uuid,
+    ) -> Result<Option<PlanWithBeneficiary>, ApiError>
+    where
+        E: sqlx::Executor<'a, Database = sqlx::Postgres>,
+    {
+        let row = sqlx::query_as::<_, PlanRowFull>(
+            r#"
+        SELECT id, user_id, title, description, fee, net_amount, status,
+               contract_plan_id, distribution_method, is_active, contract_created_at,
+               beneficiary_name, bank_account_number, bank_name, currency_preference,
+               created_at, updated_at
+        FROM plans
+        WHERE id = $1
+        "#,
+        )
+        .bind(plan_id)
+        .fetch_optional(executor)
+        .await?;
+
+        match row {
+            Some(r) => Ok(Some(plan_row_to_plan_with_beneficiary(&r)?)),
+            None => Ok(None),
+        }
+    }
     pub async fn claim_plan(
         pool: &PgPool,
         plan_id: Uuid,
