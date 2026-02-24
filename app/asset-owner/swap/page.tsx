@@ -269,7 +269,7 @@ export default function SwapPage() {
                   ))
                 ) : (
                   <div className="py-10 text-center text-[#92A5A8]">
-                    No tokens found matching "{searchQuery}"
+                    No tokens found matching &quot;{searchQuery}&quot;
                   </div>
                 )}
               </div>

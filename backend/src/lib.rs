@@ -5,6 +5,7 @@ pub mod config;
 pub mod db;
 pub mod email_service;
 pub mod middleware;
+pub mod notifications;
 pub mod service;
 pub mod telemetry;
 pub mod two_fa;

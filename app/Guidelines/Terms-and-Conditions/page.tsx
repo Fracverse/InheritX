@@ -265,7 +265,7 @@ export default function TermsAndConditionsPage() {
                           <li className="flex items-start">
                             <span className="mr-2">›</span>
                             <span>
-                              Unauthorized Access To Other Users' Accounts
+                              Unauthorized Access To Other Users&apos; Accounts
                             </span>
                           </li>
                           <li className="flex items-start">
@@ -412,13 +412,13 @@ export default function TermsAndConditionsPage() {
                           PLATFORM LIABILITY
                         </h3>
                         <p className="text-slate-400 text-sm mb-3">
-                          InheritX's Liability Is Limited As Follows:
+                          InheritX&apos;s Liability Is Limited As Follows:
                         </p>
                         <ul className="space-y-2 text-slate-300">
                           <li className="flex items-start">
                             <span className="mr-2">›</span>
                             <span>
-                              We Provide The Platform "As Is" Without Warranties
+                              We Provide The Platform &quot;As Is&quot; Without Warranties
                             </span>
                           </li>
                           <li className="flex items-start">

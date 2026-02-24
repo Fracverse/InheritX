@@ -1,8 +1,11 @@
 #![no_std]
 use soroban_sdk::{
-    contract, contracterror, contractimpl, contracttype, log, symbol_short, vec, Address, Bytes,
-    BytesN, Env, String, Symbol, Vec,
+    contract, contracterror, contractimpl, contracttype, log, symbol_short, token, vec, Address,
+    Bytes, BytesN, Env, IntoVal, InvokeError, String, Symbol, Val, Vec,
 };
+
+/// Current contract version - bump this on each upgrade
+const CONTRACT_VERSION: u32 = 1;
 
 #[contracttype]
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -70,6 +73,17 @@ pub enum InheritanceError {
     BeneficiaryNotFound = 17,
     PlanAlreadyDeactivated = 18,
     PlanNotActive = 19,
+    AdminNotSet = 20,
+    AdminAlreadyInitialized = 21,
+    NotAdmin = 22,
+    KycNotSubmitted = 23,
+    KycAlreadyApproved = 24,
+    UpgradeFailed = 25,
+    MigrationNotRequired = 26,
+    PlanNotClaimed = 27,
+    KycAlreadyRejected = 28,
+    InsufficientBalance = 29,
+    FeeTransferFailed = 30,
 }
 
 #[contracttype]
@@ -77,7 +91,14 @@ pub enum InheritanceError {
 pub enum DataKey {
     NextPlanId,
     Plan(u64),
-    Claim(BytesN<32>), // keyed by hashed_email
+    Claim(BytesN<32>),         // keyed by hashed_email
+    UserPlans(Address),        // keyed by owner Address, value is Vec<u64>
+    UserClaimedPlans(Address), // keyed by owner Address, value is Vec<u64>
+    DeactivatedPlans,          // value is Vec<u64> of all deactivated plan IDs
+    AllClaimedPlans,           // value is Vec<u64> of all claimed plan IDs
+    Admin,
+    Kyc(Address),
+    Version,
 }
 
 #[contracttype]
@@ -86,6 +107,17 @@ pub struct ClaimRecord {
     pub plan_id: u64,
     pub beneficiary_index: u32,
     pub claimed_at: u64,
+}
+
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct KycStatus {
+    pub submitted: bool,
+    pub approved: bool,
+    pub rejected: bool,
+    pub submitted_at: u64,
+    pub approved_at: u64,
+    pub rejected_at: u64,
 }
 
 // Events for beneficiary operations
@@ -112,6 +144,43 @@ pub struct PlanDeactivatedEvent {
     pub owner: Address,
     pub total_amount: u64,
     pub deactivated_at: u64,
+}
+
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct KycApprovedEvent {
+    pub user: Address,
+    pub approved_at: u64,
+}
+
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct KycRejectedEvent {
+    pub user: Address,
+    pub rejected_at: u64,
+}
+
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct ContractUpgradedEvent {
+    pub old_version: u32,
+    pub new_version: u32,
+    pub new_wasm_hash: BytesN<32>,
+    pub admin: Address,
+    pub upgraded_at: u64,
+}
+
+/// Parameters for creating an inheritance plan (groups args to satisfy Clippy).
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct CreateInheritancePlanParams {
+    pub owner: Address,
+    pub token: Address,
+    pub plan_name: String,
+    pub description: String,
+    pub total_amount: u64,
+    pub distribution_method: DistributionMethod,
+    pub beneficiaries_data: Vec<(String, String, u32, Bytes, u32)>,
 }
 
 #[contract]
@@ -156,6 +225,31 @@ impl InheritanceContract {
         }
 
         Ok(env.crypto().sha256(&data).into())
+    }
+
+    fn get_admin(env: &Env) -> Option<Address> {
+        let key = DataKey::Admin;
+        env.storage().instance().get(&key)
+    }
+
+    fn require_admin(env: &Env, admin: &Address) -> Result<(), InheritanceError> {
+        admin.require_auth();
+        let stored_admin = Self::get_admin(env).ok_or(InheritanceError::AdminNotSet)?;
+        if stored_admin != *admin {
+            return Err(InheritanceError::NotAdmin);
+        }
+        Ok(())
+    }
+
+    pub fn initialize_admin(env: Env, admin: Address) -> Result<(), InheritanceError> {
+        admin.require_auth();
+        if Self::get_admin(&env).is_some() {
+            return Err(InheritanceError::AdminAlreadyInitialized);
+        }
+
+        let key = DataKey::Admin;
+        env.storage().instance().set(&key, &admin);
+        Ok(())
     }
 
     fn create_beneficiary(
@@ -263,6 +357,59 @@ impl InheritanceContract {
         env.storage().persistent().get(&key)
     }
 
+    fn add_plan_to_user(env: &Env, owner: Address, plan_id: u64) {
+        let key = DataKey::UserPlans(owner.clone());
+        let mut plans: Vec<u64> = env
+            .storage()
+            .persistent()
+            .get(&key)
+            .unwrap_or(Vec::new(env));
+
+        plans.push_back(plan_id);
+        env.storage().persistent().set(&key, &plans);
+    }
+
+    fn add_plan_to_deactivated(env: &Env, plan_id: u64) {
+        let key = DataKey::DeactivatedPlans;
+        let mut plans: Vec<u64> = env
+            .storage()
+            .persistent()
+            .get(&key)
+            .unwrap_or(Vec::new(env));
+
+        // Avoid duplicates if called multiple times (though logic should prevent this)
+        if !plans.contains(plan_id) {
+            plans.push_back(plan_id);
+            env.storage().persistent().set(&key, &plans);
+        }
+    }
+
+    fn add_plan_to_claimed(env: &Env, owner: Address, plan_id: u64) {
+        let key_user = DataKey::UserClaimedPlans(owner);
+        let mut user_plans: Vec<u64> = env
+            .storage()
+            .persistent()
+            .get(&key_user)
+            .unwrap_or(Vec::new(env));
+
+        if !user_plans.contains(plan_id) {
+            user_plans.push_back(plan_id);
+            env.storage().persistent().set(&key_user, &user_plans);
+        }
+
+        let key_all = DataKey::AllClaimedPlans;
+        let mut all_plans: Vec<u64> = env
+            .storage()
+            .persistent()
+            .get(&key_all)
+            .unwrap_or(Vec::new(env));
+
+        if !all_plans.contains(plan_id) {
+            all_plans.push_back(plan_id);
+            env.storage().persistent().set(&key_all, &all_plans);
+        }
+    }
+
     /// Get plan details
     ///
     /// # Arguments
@@ -273,6 +420,78 @@ impl InheritanceContract {
     /// The InheritancePlan if found, None otherwise
     pub fn get_plan_details(env: Env, plan_id: u64) -> Option<InheritancePlan> {
         Self::get_plan(&env, plan_id)
+    }
+
+    pub fn get_user_plan(
+        env: Env,
+        user: Address,
+        plan_id: u64,
+    ) -> Result<InheritancePlan, InheritanceError> {
+        user.require_auth();
+        let plan = Self::get_plan(&env, plan_id).ok_or(InheritanceError::PlanNotFound)?;
+        if plan.owner != user {
+            return Err(InheritanceError::Unauthorized);
+        }
+        Ok(plan)
+    }
+
+    pub fn get_user_plans(env: Env, user: Address) -> Vec<InheritancePlan> {
+        user.require_auth();
+        let key = DataKey::UserPlans(user);
+        let plan_ids: Vec<u64> = env
+            .storage()
+            .persistent()
+            .get(&key)
+            .unwrap_or(Vec::new(&env));
+
+        let mut plans = Vec::new(&env);
+        for plan_id in plan_ids.iter() {
+            if let Some(plan) = Self::get_plan(&env, plan_id) {
+                plans.push_back(plan);
+            }
+        }
+        plans
+    }
+
+    pub fn get_all_plans(
+        env: Env,
+        admin: Address,
+    ) -> Result<Vec<InheritancePlan>, InheritanceError> {
+        Self::require_admin(&env, &admin)?;
+
+        let mut plans = Vec::new(&env);
+        let next_plan_id = Self::get_next_plan_id(&env);
+        for plan_id in 1..next_plan_id {
+            if let Some(plan) = Self::get_plan(&env, plan_id) {
+                plans.push_back(plan);
+            }
+        }
+        Ok(plans)
+    }
+
+    pub fn get_user_pending_plans(env: Env, user: Address) -> Vec<InheritancePlan> {
+        let all_user_plans = Self::get_user_plans(env.clone(), user);
+        let mut pending = Vec::new(&env);
+        for plan in all_user_plans.iter() {
+            if plan.is_active {
+                pending.push_back(plan);
+            }
+        }
+        pending
+    }
+
+    pub fn get_all_pending_plans(
+        env: Env,
+        admin: Address,
+    ) -> Result<Vec<InheritancePlan>, InheritanceError> {
+        let all_plans = Self::get_all_plans(env.clone(), admin)?;
+        let mut pending = Vec::new(&env);
+        for plan in all_plans.iter() {
+            if plan.is_active {
+                pending.push_back(plan);
+            }
+        }
+        Ok(pending)
     }
 
     /// Add a beneficiary to an existing inheritance plan
@@ -430,14 +649,20 @@ impl InheritanceContract {
         Ok(())
     }
 
-    /// Create a new inheritance plan
+    /// Creation fee in basis points (2% = 200 bp).
+    const CREATION_FEE_BP: u64 = 200;
+
+    /// Create a new inheritance plan.
+    /// Applies a 2% creation fee: fee is deducted from the user's input amount,
+    /// transferred to the admin wallet, and the net amount is saved in the plan.
     ///
     /// # Arguments
     /// * `env` - The environment
-    /// * `owner` - The plan owner
+    /// * `owner` - The plan owner (must authorize and have sufficient token balance)
+    /// * `token` - The token contract address (e.g. USDC)
     /// * `plan_name` - Name of the inheritance plan (required)
     /// * `description` - Description of the plan (max 500 characters)
-    /// * `total_amount` - Total amount in the plan (must be > 0)
+    /// * `total_amount` - User-input amount (must be > 0); fee is 2% of this, plan stores net
     /// * `distribution_method` - How to distribute the inheritance
     /// * `beneficiaries_data` - Vector of beneficiary data tuples: (full_name, email, claim_code, bank_account, allocation_bp)
     ///
@@ -445,20 +670,45 @@ impl InheritanceContract {
     /// The plan ID of the created inheritance plan
     ///
     /// # Errors
-    /// Returns InheritanceError for various validation failures
+    /// - AdminNotSet: Admin wallet not initialized
+    /// - InsufficientBalance: Owner balance less than total_amount
+    /// - FeeTransferFailed: Fee transfer to admin failed
+    /// - InvalidTotalAmount: Net amount would be zero after fee
+    /// - Other validation errors from validate_plan_inputs / validate_beneficiaries
     pub fn create_inheritance_plan(
         env: Env,
-        owner: Address,
-        plan_name: String,
-        description: String,
-        total_amount: u64,
-        distribution_method: DistributionMethod,
-        beneficiaries_data: Vec<(String, String, u32, Bytes, u32)>,
+        params: CreateInheritancePlanParams,
     ) -> Result<u64, InheritanceError> {
+        let CreateInheritancePlanParams {
+            owner,
+            token,
+            plan_name,
+            description,
+            total_amount,
+            distribution_method,
+            beneficiaries_data,
+        } = params;
+
         // Require owner authorization
         owner.require_auth();
 
-        // Validate plan inputs (asset type is hardcoded to USDC)
+        // Admin must be set to receive the fee
+        let admin = Self::get_admin(&env).ok_or(InheritanceError::AdminNotSet)?;
+
+        // Fee: 2% of user input; net amount stored in plan
+        let fee = total_amount
+            .checked_mul(Self::CREATION_FEE_BP)
+            .and_then(|v| v.checked_div(10000))
+            .unwrap_or(0);
+        let net_amount = total_amount
+            .checked_sub(fee)
+            .ok_or(InheritanceError::InvalidTotalAmount)?;
+
+        if net_amount == 0 {
+            return Err(InheritanceError::InvalidTotalAmount);
+        }
+
+        // Validate plan inputs using user input for "full amount" validation
         let usdc_symbol = Symbol::new(&env, "USDC");
         Self::validate_plan_inputs(
             plan_name.clone(),
@@ -466,6 +716,53 @@ impl InheritanceContract {
             usdc_symbol.clone(),
             total_amount,
         )?;
+
+        // Wallet balance validation: must cover full amount (what user is debited)
+        let token_client = token::Client::new(&env, &token);
+        let balance = token_client.balance(&owner);
+        let required = total_amount as i128;
+        if balance < required {
+            return Err(InheritanceError::InsufficientBalance);
+        }
+
+        // Transfer fee to admin (owner must have authorized this via auth).
+        // Use try_invoke_contract so we can return FeeTransferFailed instead of trapping.
+        let fee_i128 = fee as i128;
+        if fee_i128 > 0 {
+            let args: Vec<Val> = vec![
+                &env,
+                owner.clone().into_val(&env),
+                admin.clone().into_val(&env),
+                fee_i128.into_val(&env),
+            ];
+            let res = env.try_invoke_contract::<(), InvokeError>(
+                &token,
+                &symbol_short!("transfer"),
+                args,
+            );
+            if res.is_err() {
+                return Err(InheritanceError::FeeTransferFailed);
+            }
+        }
+
+        // Transfer net amount to this contract (escrow for the plan).
+        // Same: catch failure and return FeeTransferFailed.
+        let contract_id = env.current_contract_address();
+        let net_i128 = net_amount as i128;
+        let net_args: Vec<Val> = vec![
+            &env,
+            owner.clone().into_val(&env),
+            contract_id.clone().into_val(&env),
+            net_i128.into_val(&env),
+        ];
+        let net_res = env.try_invoke_contract::<(), InvokeError>(
+            &token,
+            &symbol_short!("transfer"),
+            net_args,
+        );
+        if net_res.is_err() {
+            return Err(InheritanceError::FeeTransferFailed);
+        }
 
         // Validate beneficiaries
         Self::validate_beneficiaries(beneficiaries_data.clone())?;
@@ -487,12 +784,12 @@ impl InheritanceContract {
             beneficiaries.push_back(beneficiary);
         }
 
-        // Create the inheritance plan
+        // Create the inheritance plan with net amount (user input minus 2% fee)
         let plan = InheritancePlan {
             plan_name,
             description,
             asset_type: Symbol::new(&env, "USDC"),
-            total_amount,
+            total_amount: net_amount,
             distribution_method,
             beneficiaries,
             total_allocation_bp,
@@ -504,6 +801,9 @@ impl InheritanceContract {
         // Store the plan and get the plan ID
         let plan_id = Self::increment_plan_id(&env);
         Self::store_plan(&env, plan_id, &plan);
+
+        // Add to user's plan list
+        Self::add_plan_to_user(&env, owner.clone(), plan_id);
 
         log!(&env, "Inheritance plan created with ID: {}", plan_id);
 
@@ -580,6 +880,9 @@ impl InheritanceContract {
 
         env.storage().persistent().set(&claim_key, &claim);
 
+        // Mark plan as claimed
+        Self::add_plan_to_claimed(&env, plan.owner.clone(), plan_id);
+
         // Emit claim event
         env.events().publish(
             (symbol_short!("CLAIM"), symbol_short!("SUCCESS")),
@@ -591,6 +894,109 @@ impl InheritanceContract {
             "Inheritance claimed for plan {} by {}",
             plan_id,
             email
+        );
+
+        Ok(())
+    }
+
+    /// Record KYC submission on-chain (called after off-chain submission).
+    pub fn submit_kyc(env: Env, user: Address) -> Result<(), InheritanceError> {
+        user.require_auth();
+
+        let key = DataKey::Kyc(user.clone());
+        let mut status = env.storage().persistent().get(&key).unwrap_or(KycStatus {
+            submitted: false,
+            approved: false,
+            rejected: false,
+            submitted_at: 0,
+            approved_at: 0,
+            rejected_at: 0,
+        });
+
+        if status.approved {
+            return Err(InheritanceError::KycAlreadyApproved);
+        }
+
+        status.submitted = true;
+        status.submitted_at = env.ledger().timestamp();
+        env.storage().persistent().set(&key, &status);
+
+        Ok(())
+    }
+
+    /// Approve a user's KYC after off-chain verification (admin-only).
+    pub fn approve_kyc(env: Env, admin: Address, user: Address) -> Result<(), InheritanceError> {
+        Self::require_admin(&env, &admin)?;
+
+        let key = DataKey::Kyc(user.clone());
+        let mut status: KycStatus = env
+            .storage()
+            .persistent()
+            .get(&key)
+            .ok_or(InheritanceError::KycNotSubmitted)?;
+
+        if !status.submitted {
+            return Err(InheritanceError::KycNotSubmitted);
+        }
+
+        if status.approved {
+            return Err(InheritanceError::KycAlreadyApproved);
+        }
+
+        status.approved = true;
+        status.approved_at = env.ledger().timestamp();
+        env.storage().persistent().set(&key, &status);
+
+        env.events().publish(
+            (symbol_short!("KYC"), symbol_short!("APPROV")),
+            KycApprovedEvent {
+                user,
+                approved_at: status.approved_at,
+            },
+        );
+
+        Ok(())
+    }
+
+    /// Reject a user's KYC after off-chain review (admin-only).
+    ///
+    /// # Arguments
+    /// * `env` - The environment
+    /// * `admin` - The admin address (must be the initialized admin)
+    /// * `user` - The user address whose KYC is being rejected
+    ///
+    /// # Errors
+    /// - `AdminNotSet` / `NotAdmin` if caller is not the admin
+    /// - `KycNotSubmitted` if user has no submitted KYC data
+    /// - `KycAlreadyRejected` if the KYC was already rejected
+    pub fn reject_kyc(env: Env, admin: Address, user: Address) -> Result<(), InheritanceError> {
+        Self::require_admin(&env, &admin)?;
+
+        let key = DataKey::Kyc(user.clone());
+        let mut status: KycStatus = env
+            .storage()
+            .persistent()
+            .get(&key)
+            .ok_or(InheritanceError::KycNotSubmitted)?;
+
+        if !status.submitted {
+            return Err(InheritanceError::KycNotSubmitted);
+        }
+
+        if status.rejected {
+            return Err(InheritanceError::KycAlreadyRejected);
+        }
+
+        status.rejected = true;
+        status.rejected_at = env.ledger().timestamp();
+        env.storage().persistent().set(&key, &status);
+
+        env.events().publish(
+            (symbol_short!("KYC"), symbol_short!("REJECT")),
+            KycRejectedEvent {
+                user,
+                rejected_at: status.rejected_at,
+            },
         );
 
         Ok(())
@@ -641,6 +1047,7 @@ impl InheritanceContract {
 
         // Store updated plan
         Self::store_plan(&env, plan_id, &plan);
+        Self::add_plan_to_deactivated(&env, plan_id);
 
         // Emit deactivation event
         env.events().publish(
@@ -654,6 +1061,270 @@ impl InheritanceContract {
         );
 
         log!(&env, "Inheritance plan {} deactivated by owner", plan_id);
+
+        Ok(())
+    }
+
+    /// Retrieve a specific deactivated plan (User)
+    ///
+    /// # Arguments
+    /// * `env` - The environment
+    /// * `user` - The user requesting the plan (must be owner)
+    /// * `plan_id` - The ID of the plan
+    pub fn get_deactivated_plan(
+        env: Env,
+        user: Address,
+        plan_id: u64,
+    ) -> Result<InheritancePlan, InheritanceError> {
+        user.require_auth();
+
+        let plan = Self::get_plan(&env, plan_id).ok_or(InheritanceError::PlanNotFound)?;
+
+        // Check if plan belongs to user
+        if plan.owner != user {
+            return Err(InheritanceError::Unauthorized);
+        }
+
+        // Check if plan is deactivated
+        if plan.is_active {
+            return Err(InheritanceError::PlanNotActive);
+        }
+
+        Ok(plan)
+    }
+
+    /// Retrieve all deactivated plans for a user
+    pub fn get_user_deactivated_plans(env: Env, user: Address) -> Vec<InheritancePlan> {
+        user.require_auth();
+
+        let key = DataKey::UserPlans(user.clone());
+        let user_plan_ids: Vec<u64> = env
+            .storage()
+            .persistent()
+            .get(&key)
+            .unwrap_or(Vec::new(&env));
+
+        let mut deactivated_plans = Vec::new(&env);
+
+        for plan_id in user_plan_ids.iter() {
+            if let Some(plan) = Self::get_plan(&env, plan_id) {
+                if !plan.is_active {
+                    deactivated_plans.push_back(plan);
+                }
+            }
+        }
+
+        deactivated_plans
+    }
+
+    /// Retrieve all deactivated plans (Admin only)
+    pub fn get_all_deactivated_plans(
+        env: Env,
+        admin: Address,
+    ) -> Result<Vec<InheritancePlan>, InheritanceError> {
+        admin.require_auth();
+
+        // Verify admin
+        let stored_admin: Address = env
+            .storage()
+            .instance()
+            .get(&DataKey::Admin)
+            .ok_or(InheritanceError::Unauthorized)?;
+        if admin != stored_admin {
+            return Err(InheritanceError::Unauthorized);
+        }
+
+        let key = DataKey::DeactivatedPlans;
+        let deactivated_ids: Vec<u64> = env
+            .storage()
+            .persistent()
+            .get(&key)
+            .unwrap_or(Vec::new(&env));
+
+        let mut plans = Vec::new(&env);
+        for plan_id in deactivated_ids.iter() {
+            if let Some(plan) = Self::get_plan(&env, plan_id) {
+                // Double check it's inactive just in case
+                if !plan.is_active {
+                    plans.push_back(plan);
+                }
+            }
+        }
+
+        Ok(plans)
+    }
+
+    /// Retrieve a specific claimed plan belonging to the authenticated user
+    pub fn get_claimed_plan(
+        env: Env,
+        user: Address,
+        plan_id: u64,
+    ) -> Result<InheritancePlan, InheritanceError> {
+        user.require_auth();
+
+        let plan = Self::get_plan(&env, plan_id).ok_or(InheritanceError::PlanNotFound)?;
+
+        if plan.owner != user {
+            return Err(InheritanceError::Unauthorized);
+        }
+
+        let key = DataKey::UserClaimedPlans(user);
+        let user_plans: Vec<u64> = env
+            .storage()
+            .persistent()
+            .get(&key)
+            .unwrap_or(Vec::new(&env));
+
+        if !user_plans.contains(plan_id) {
+            return Err(InheritanceError::PlanNotClaimed);
+        }
+
+        Ok(plan)
+    }
+
+    /// Retrieve all claimed plans for the authenticated user
+    pub fn get_user_claimed_plans(env: Env, user: Address) -> Vec<InheritancePlan> {
+        user.require_auth();
+
+        let key = DataKey::UserClaimedPlans(user);
+        let user_plan_ids: Vec<u64> = env
+            .storage()
+            .persistent()
+            .get(&key)
+            .unwrap_or(Vec::new(&env));
+
+        let mut plans = Vec::new(&env);
+        for id in user_plan_ids.iter() {
+            if let Some(plan) = Self::get_plan(&env, id) {
+                plans.push_back(plan);
+            }
+        }
+        plans
+    }
+
+    /// Retrieve all claimed plans across all users; accessible only by administrators
+    pub fn get_all_claimed_plans(
+        env: Env,
+        admin: Address,
+    ) -> Result<Vec<InheritancePlan>, InheritanceError> {
+        Self::require_admin(&env, &admin)?;
+
+        let key = DataKey::AllClaimedPlans;
+        let all_plan_ids: Vec<u64> = env
+            .storage()
+            .persistent()
+            .get(&key)
+            .unwrap_or(Vec::new(&env));
+
+        let mut plans = Vec::new(&env);
+        for id in all_plan_ids.iter() {
+            if let Some(plan) = Self::get_plan(&env, id) {
+                plans.push_back(plan);
+            }
+        }
+        Ok(plans)
+    }
+
+    // ───────────────────────────────────────────
+    // Contract Upgrade Functions
+    // ───────────────────────────────────────────
+
+    /// Get the current contract version.
+    pub fn version(env: Env) -> u32 {
+        env.storage()
+            .instance()
+            .get(&DataKey::Version)
+            .unwrap_or(CONTRACT_VERSION)
+    }
+
+    /// Upgrade the contract to a new WASM binary.
+    ///
+    /// # Arguments
+    /// * `env` - The environment
+    /// * `admin` - The admin address (must be the initialized admin)
+    /// * `new_wasm_hash` - The hash of the new WASM binary to deploy
+    ///
+    /// # Errors
+    /// - `AdminNotSet` if admin has not been initialized
+    /// - `NotAdmin` if the caller is not the admin
+    pub fn upgrade(
+        env: Env,
+        admin: Address,
+        new_wasm_hash: BytesN<32>,
+    ) -> Result<(), InheritanceError> {
+        // Only the contract admin can trigger an upgrade
+        Self::require_admin(&env, &admin)?;
+
+        let old_version = Self::version(env.clone());
+        let new_version = old_version + 1;
+
+        // Store the new version before upgrading
+        env.storage()
+            .instance()
+            .set(&DataKey::Version, &new_version);
+
+        // Emit upgrade event for audit trail
+        env.events().publish(
+            (symbol_short!("CONTRACT"), symbol_short!("UPGRADE")),
+            ContractUpgradedEvent {
+                old_version,
+                new_version,
+                new_wasm_hash: new_wasm_hash.clone(),
+                admin: admin.clone(),
+                upgraded_at: env.ledger().timestamp(),
+            },
+        );
+
+        log!(
+            &env,
+            "Contract upgraded from v{} to v{} by admin",
+            old_version,
+            new_version
+        );
+
+        // Perform the atomic WASM upgrade — this replaces the contract code
+        // while preserving all storage (plans, claims, KYC, admin, etc.)
+        env.deployer().update_current_contract_wasm(new_wasm_hash);
+
+        Ok(())
+    }
+
+    /// Post-upgrade migration hook for data schema changes.
+    ///
+    /// Call this after deploying a new WASM if the new version requires
+    /// storage migrations. If no migration is needed the function is a no-op
+    /// so it is always safe to call.
+    ///
+    /// # Arguments
+    /// * `env` - The environment
+    /// * `admin` - The admin address (must be the initialized admin)
+    pub fn migrate(env: Env, admin: Address) -> Result<(), InheritanceError> {
+        Self::require_admin(&env, &admin)?;
+
+        let stored_version: u32 = env.storage().instance().get(&DataKey::Version).unwrap_or(0);
+
+        if stored_version >= CONTRACT_VERSION {
+            // Already up-to-date — nothing to migrate
+            return Err(InheritanceError::MigrationNotRequired);
+        }
+
+        // ── Version-specific migrations go here ──
+        // Example for a future migration:
+        // if stored_version < 2 {
+        //     // migrate from v1 → v2 schema changes
+        // }
+
+        // Update stored version to current
+        env.storage()
+            .instance()
+            .set(&DataKey::Version, &CONTRACT_VERSION);
+
+        log!(
+            &env,
+            "Contract migrated from v{} to v{}",
+            stored_version,
+            CONTRACT_VERSION
+        );
 
         Ok(())
     }
