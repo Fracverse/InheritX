@@ -42,7 +42,7 @@ export default function ContactPage() {
           Contact Support
         </h1>
         <p className="text-white/50 text-sm font-light">
-          We're here if you need help or clarity on things
+          We&apos;re here if you need help or clarity on things
           concerning InheritX
         </p>
       </div>

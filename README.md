@@ -143,6 +143,19 @@ git clone https://github.com/Fracverse/InheritX
 cd InheritX
 ```
 
+- **Deploy Smart Contracts**
+Make sure you have an identity set up with `stellar-cli`.
+```bash
+# Add identity via secret key if you haven't
+stellar keys add deployer 
+
+# Run the deployment script (defaults to testnet)
+./scripts/deploy.sh --admin deployer
+
+# Or specify network explicitly
+./scripts/deploy.sh --network mainnet --admin deployer
+```
+
 - **Install dependencies**
 ```bash 
 npm install
