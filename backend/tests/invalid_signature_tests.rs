@@ -209,7 +209,9 @@ async fn test_random_bytes_as_signature_is_rejected() {
     let _ = fetch_nonce(ctx.app.clone(), &wallet).await;
 
     // 64 bytes of predictable "random" data (non-zero pattern).
-    let garbage: Vec<u8> = (0u8..64).map(|i| i.wrapping_mul(7).wrapping_add(13)).collect();
+    let garbage: Vec<u8> = (0u8..64)
+        .map(|i| i.wrapping_mul(7).wrapping_add(13))
+        .collect();
     let bad_sig = hex(&garbage);
 
     let status = attempt_login(ctx.app.clone(), &wallet, &bad_sig).await;

@@ -217,14 +217,11 @@ pub async fn wallet_login(
     // Real Ed25519 signature verification using ring.
     // Convention: wallet_address is the hex-encoded Ed25519 public key bytes,
     // and signature is the hex-encoded Ed25519 signature over the raw nonce bytes.
-    let pub_key_bytes =
-        hex::decode(&payload.wallet_address).map_err(|_| ApiError::Unauthorized)?;
+    let pub_key_bytes = hex::decode(&payload.wallet_address).map_err(|_| ApiError::Unauthorized)?;
     let sig_bytes = hex::decode(&payload.signature).map_err(|_| ApiError::Unauthorized)?;
 
-    let public_key = ring::signature::UnparsedPublicKey::new(
-        &ring::signature::ED25519,
-        pub_key_bytes,
-    );
+    let public_key =
+        ring::signature::UnparsedPublicKey::new(&ring::signature::ED25519, pub_key_bytes);
 
     public_key
         .verify(_nonce.as_bytes(), &sig_bytes)
