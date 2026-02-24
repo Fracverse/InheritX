@@ -63,7 +63,7 @@ regex = "1.10"
 base64 = "0.21"
 dotenvy = "0.15"
 async-trait = "0.1"
-stellar-strkey = "0.11"
+stellar-strkey = "0.0.16"
 hex = "0.4"
 
 

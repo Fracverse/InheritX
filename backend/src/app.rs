@@ -40,6 +40,8 @@ pub async fn create_app(db: PgPool, config: Config) -> Result<Router, ApiError> 
         .route("/health", get(health_check))
         .route("/health/db", get(db_health_check))
         .route("/admin/login", post(crate::auth::login_admin))
+        .route("/api/auth/nonce", post(crate::auth::get_nonce))
+        .route("/api/auth/web3-login", post(crate::auth::web3_login))
         .layer(
             ServiceBuilder::new()
                 .layer(TraceLayer::new_for_http())
