@@ -18,6 +18,7 @@ use crate::notifications::{AuditLogService, NotificationService};
 use crate::service::{
     AdminMetrics, AdminService, ClaimPlanRequest, CreatePlanRequest, KycRecord, KycService,
     KycStatus, PlanService,
+    PlanStatisticsService,
 };
 
 pub struct AppState {
@@ -91,6 +92,8 @@ pub async fn create_app(db: PgPool, config: Config) -> Result<Router, ApiError> 
         .route("/api/notifications/:id/read", patch(mark_notification_read))
         // ── Admin Audit Logs ─────────────────────────────────────────────
         .route("/api/admin/logs", get(list_audit_logs))
+        // ── Admin Metrics ────────────────────────────────────────────────
+        .route("/api/admin/metrics/plans", get(get_plan_statistics))
         .with_state(state);
 
     Ok(app)
@@ -445,4 +448,17 @@ async fn get_admin_metrics_overview(
 ) -> Result<Json<AdminMetrics>, ApiError> {
     let metrics = AdminService::get_metrics_overview(&state.db).await?;
     Ok(Json(metrics))
+}
+
+// ── Admin Metrics Handler ─────────────────────────────────────────────────────
+
+async fn get_plan_statistics(
+    State(state): State<Arc<AppState>>,
+    AuthenticatedAdmin(_admin): AuthenticatedAdmin,
+) -> Result<Json<Value>, ApiError> {
+    let stats = PlanStatisticsService::get_plan_statistics(&state.db).await?;
+    Ok(Json(json!({
+        "status": "success",
+        "data": stats
+    })))
 }

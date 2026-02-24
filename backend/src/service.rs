@@ -997,6 +997,106 @@ impl AdminService {
     }
 }
 
+
+// ── Plan Statistics ───────────────────────────────────────────────────────────
+
+#[derive(Debug, Serialize, Deserialize)]
+pub struct PlanStatistics {
+    pub total_plans: i64,
+    pub active_plans: i64,
+    pub expired_plans: i64,
+    pub triggered_plans: i64,
+    pub claimed_plans: i64,
+    pub by_status: Vec<PlanStatusCount>,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+pub struct PlanStatusCount {
+    pub status: String,
+    pub count: i64,
+}
+
+pub struct PlanStatisticsService;
+
+impl PlanStatisticsService {
+    pub async fn get_plan_statistics(db: &PgPool) -> Result<PlanStatistics, ApiError> {
+        // Get total plans count
+        let total_plans: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM plans")
+            .fetch_one(db)
+            .await?;
+
+        // Get active plans (is_active = true or NULL, and not deactivated/claimed)
+        let active_plans: i64 = sqlx::query_scalar(
+            r#"
+            SELECT COUNT(*) FROM plans
+            WHERE (is_active IS NULL OR is_active = true)
+              AND status NOT IN ('deactivated', 'claimed')
+            "#,
+        )
+        .fetch_one(db)
+        .await?;
+
+        // Get expired plans (plans that are past their claim period but not claimed)
+        // This is a simplified version - you may need to adjust based on your business logic
+        let expired_plans: i64 = sqlx::query_scalar(
+            r#"
+            SELECT COUNT(*) FROM plans
+            WHERE status = 'deactivated'
+            "#,
+        )
+        .fetch_one(db)
+        .await?;
+
+        // Get triggered plans (plans that are due for claim)
+        // Plans with distribution_method set and contract_created_at set
+        let triggered_plans: i64 = sqlx::query_scalar(
+            r#"
+            SELECT COUNT(*) FROM plans
+            WHERE distribution_method IS NOT NULL
+              AND contract_created_at IS NOT NULL
+              AND (is_active IS NULL OR is_active = true)
+              AND status NOT IN ('claimed', 'deactivated')
+            "#,
+        )
+        .fetch_one(db)
+        .await?;
+
+        // Get claimed plans
+        let claimed_plans: i64 = sqlx::query_scalar(
+            r#"
+            SELECT COUNT(*) FROM plans
+            WHERE status = 'claimed'
+            "#,
+        )
+        .fetch_one(db)
+        .await?;
+
+        // Get counts grouped by status
+        let by_status: Vec<PlanStatusCount> = sqlx::query_as::<_, (String, i64)>(
+            r#"
+            SELECT status, COUNT(*) as count
+            FROM plans
+            GROUP BY status
+            ORDER BY count DESC
+            "#,
+        )
+        .fetch_all(db)
+        .await?
+        .into_iter()
+        .map(|(status, count)| PlanStatusCount { status, count })
+        .collect();
+
+        Ok(PlanStatistics {
+            total_plans,
+            active_plans,
+            expired_plans,
+            triggered_plans,
+            claimed_plans,
+            by_status,
+        })
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::{CurrencyPreference, PlanService};
