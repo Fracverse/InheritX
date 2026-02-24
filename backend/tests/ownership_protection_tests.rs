@@ -119,7 +119,7 @@ async fn test_fetch_own_plan() {
         .expect("request failed");
 
     assert_eq!(response.status(), StatusCode::OK);
-    
+
     let body = axum::body::to_bytes(response.into_body(), usize::MAX)
         .await
         .expect("Failed to read response body");
@@ -167,7 +167,7 @@ async fn test_fetch_other_user_plan() {
         .expect("request failed");
 
     assert_eq!(response.status(), StatusCode::FORBIDDEN);
-    
+
     let body = axum::body::to_bytes(response.into_body(), usize::MAX)
         .await
         .expect("Failed to read response body");
