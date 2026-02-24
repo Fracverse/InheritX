@@ -1,4 +1,3 @@
-
 mod helpers;
 
 use axum::{
@@ -227,7 +226,10 @@ async fn submit_kyc_response_contains_expected_fields() {
     // All KycRecord fields must be present in the response
     assert!(body.get("user_id").is_some(), "missing field: user_id");
     assert!(body.get("status").is_some(), "missing field: status");
-    assert!(body.get("created_at").is_some(), "missing field: created_at");
+    assert!(
+        body.get("created_at").is_some(),
+        "missing field: created_at"
+    );
 
     // reviewed_by and reviewed_at should be null on a fresh submission
     assert!(
