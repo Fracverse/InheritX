@@ -1,15 +1,14 @@
 [package]
-name = "inheritance-contract"
+name = "mock_token"
 version = "0.0.0"
 edition = "2021"
 publish = false
 
 [lib]
-crate-type = ["cdylib"]
+crate-type = ["cdylib", "rlib"]
 doctest = false
 
 [dependencies]
-mock_token = { path = "../mock-token" }
 soroban-sdk = { workspace = true }
 
 [dev-dependencies]
