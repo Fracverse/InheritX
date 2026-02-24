@@ -214,11 +214,21 @@ pub async fn wallet_login(
         }
     }
 
-    // Verify signature logic (Stubbed for now as per usual implementation patterns in this repo)
-    // In a real scenario, we'd use ed25519-dalek or similar to verify payload.signature against _nonce
-    if payload.signature == "invalid_signature" {
-        return Err(ApiError::Unauthorized);
-    }
+    // Real Ed25519 signature verification using ring.
+    // Convention: wallet_address is the hex-encoded Ed25519 public key bytes,
+    // and signature is the hex-encoded Ed25519 signature over the raw nonce bytes.
+    let pub_key_bytes =
+        hex::decode(&payload.wallet_address).map_err(|_| ApiError::Unauthorized)?;
+    let sig_bytes = hex::decode(&payload.signature).map_err(|_| ApiError::Unauthorized)?;
+
+    let public_key = ring::signature::UnparsedPublicKey::new(
+        &ring::signature::ED25519,
+        pub_key_bytes,
+    );
+
+    public_key
+        .verify(_nonce.as_bytes(), &sig_bytes)
+        .map_err(|_| ApiError::Unauthorized)?;
 
     // Clear nonce and expiry after successful login
     sqlx::query("UPDATE users SET nonce = NULL, nonce_expires_at = NULL WHERE id = $1")

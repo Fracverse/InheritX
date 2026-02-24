@@ -1892,6 +1892,7 @@ dependencies = [
  "config",
  "dotenvy",
  "governor",
+ "hex",
  "httpmock",
  "jsonwebtoken",
  "postgres-types",
