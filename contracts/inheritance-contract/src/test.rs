@@ -17,6 +17,24 @@ fn create_test_bytes(env: &Env, data: &str) -> Bytes {
     bytes
 }
 
+fn one_beneficiary(
+    env: &Env,
+    name: &str,
+    email: &str,
+    claim_code: u32,
+) -> Vec<(String, String, u32, Bytes, u32)> {
+    vec![
+        env,
+        (
+            String::from_str(env, name),
+            String::from_str(env, email),
+            claim_code,
+            create_test_bytes(env, "1111111111111111"),
+            10000u32,
+        ),
+    ]
+}
+
 #[test]
 fn test_hash_string() {
     let env = Env::default();
@@ -1502,4 +1520,193 @@ fn test_get_all_claimed_plans() {
     let non_admin = create_test_address(&env, 2);
     let result = client.try_get_all_claimed_plans(&non_admin);
     assert!(result.is_err());
+}
+
+#[test]
+fn test_get_user_plan_supports_active_and_inactive() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let contract_id = env.register_contract(None, InheritanceContract);
+    let client = InheritanceContractClient::new(&env, &contract_id);
+
+    let owner = create_test_address(&env, 1);
+    let stranger = create_test_address(&env, 2);
+
+    let plan_id = client.create_inheritance_plan(
+        &owner,
+        &String::from_str(&env, "Plan A"),
+        &String::from_str(&env, "Plan A Description"),
+        &1000000u64,
+        &DistributionMethod::LumpSum,
+        &one_beneficiary(&env, "Alice", "alice1@example.com", 123456),
+    );
+
+    let active_plan = client.get_user_plan(&owner, &plan_id);
+    assert!(active_plan.is_active);
+
+    client.deactivate_inheritance_plan(&owner, &plan_id);
+    let inactive_plan = client.get_user_plan(&owner, &plan_id);
+    assert!(!inactive_plan.is_active);
+
+    let unauthorized = client.try_get_user_plan(&stranger, &plan_id);
+    assert!(unauthorized.is_err());
+}
+
+#[test]
+fn test_get_user_plans_returns_all_user_plans() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let contract_id = env.register_contract(None, InheritanceContract);
+    let client = InheritanceContractClient::new(&env, &contract_id);
+
+    let owner = create_test_address(&env, 1);
+
+    let plan_1 = client.create_inheritance_plan(
+        &owner,
+        &String::from_str(&env, "Plan 1"),
+        &String::from_str(&env, "Description 1"),
+        &1000000u64,
+        &DistributionMethod::LumpSum,
+        &one_beneficiary(&env, "Alice", "alice2@example.com", 111111),
+    );
+
+    let _plan_2 = client.create_inheritance_plan(
+        &owner,
+        &String::from_str(&env, "Plan 2"),
+        &String::from_str(&env, "Description 2"),
+        &2000000u64,
+        &DistributionMethod::LumpSum,
+        &one_beneficiary(&env, "Bob", "bob2@example.com", 222222),
+    );
+
+    client.deactivate_inheritance_plan(&owner, &plan_1);
+
+    let plans = client.get_user_plans(&owner);
+    assert_eq!(plans.len(), 2);
+}
+
+#[test]
+fn test_get_all_plans_admin_only_and_includes_active_inactive() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let contract_id = env.register_contract(None, InheritanceContract);
+    let client = InheritanceContractClient::new(&env, &contract_id);
+
+    let admin = create_test_address(&env, 100);
+    client.initialize_admin(&admin);
+
+    let user_a = create_test_address(&env, 1);
+    let user_b = create_test_address(&env, 2);
+
+    let plan_a1 = client.create_inheritance_plan(
+        &user_a,
+        &String::from_str(&env, "A1"),
+        &String::from_str(&env, "A1 Desc"),
+        &1000000u64,
+        &DistributionMethod::LumpSum,
+        &one_beneficiary(&env, "A", "a1@example.com", 100001),
+    );
+
+    let _plan_a2 = client.create_inheritance_plan(
+        &user_a,
+        &String::from_str(&env, "A2"),
+        &String::from_str(&env, "A2 Desc"),
+        &2000000u64,
+        &DistributionMethod::LumpSum,
+        &one_beneficiary(&env, "A", "a2@example.com", 100002),
+    );
+
+    let _plan_b1 = client.create_inheritance_plan(
+        &user_b,
+        &String::from_str(&env, "B1"),
+        &String::from_str(&env, "B1 Desc"),
+        &3000000u64,
+        &DistributionMethod::LumpSum,
+        &one_beneficiary(&env, "B", "b1@example.com", 100003),
+    );
+
+    client.deactivate_inheritance_plan(&user_a, &plan_a1);
+
+    let all_plans = client.get_all_plans(&admin);
+    assert_eq!(all_plans.len(), 3);
+
+    let non_admin = create_test_address(&env, 999);
+    let unauthorized = client.try_get_all_plans(&non_admin);
+    assert!(unauthorized.is_err());
+}
+
+#[test]
+fn test_get_user_pending_plans_filters_only_active() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let contract_id = env.register_contract(None, InheritanceContract);
+    let client = InheritanceContractClient::new(&env, &contract_id);
+
+    let owner = create_test_address(&env, 1);
+
+    let plan_1 = client.create_inheritance_plan(
+        &owner,
+        &String::from_str(&env, "Plan 1"),
+        &String::from_str(&env, "Description 1"),
+        &1000000u64,
+        &DistributionMethod::LumpSum,
+        &one_beneficiary(&env, "Alice", "alice3@example.com", 333333),
+    );
+
+    let _plan_2 = client.create_inheritance_plan(
+        &owner,
+        &String::from_str(&env, "Plan 2"),
+        &String::from_str(&env, "Description 2"),
+        &2000000u64,
+        &DistributionMethod::LumpSum,
+        &one_beneficiary(&env, "Bob", "bob3@example.com", 444444),
+    );
+
+    client.deactivate_inheritance_plan(&owner, &plan_1);
+
+    let pending = client.get_user_pending_plans(&owner);
+    assert_eq!(pending.len(), 1);
+    assert!(pending.get(0).unwrap().is_active);
+}
+
+#[test]
+fn test_get_all_pending_plans_admin_only() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let contract_id = env.register_contract(None, InheritanceContract);
+    let client = InheritanceContractClient::new(&env, &contract_id);
+
+    let admin = create_test_address(&env, 100);
+    client.initialize_admin(&admin);
+
+    let user_a = create_test_address(&env, 1);
+    let user_b = create_test_address(&env, 2);
+
+    let plan_a = client.create_inheritance_plan(
+        &user_a,
+        &String::from_str(&env, "A"),
+        &String::from_str(&env, "A Desc"),
+        &1000000u64,
+        &DistributionMethod::LumpSum,
+        &one_beneficiary(&env, "A", "a3@example.com", 555555),
+    );
+
+    let _plan_b = client.create_inheritance_plan(
+        &user_b,
+        &String::from_str(&env, "B"),
+        &String::from_str(&env, "B Desc"),
+        &2000000u64,
+        &DistributionMethod::LumpSum,
+        &one_beneficiary(&env, "B", "b3@example.com", 666666),
+    );
+
+    client.deactivate_inheritance_plan(&user_a, &plan_a);
+
+    let pending = client.get_all_pending_plans(&admin);
+    assert_eq!(pending.len(), 1);
+    assert!(pending.get(0).unwrap().is_active);
+
+    let not_admin = create_test_address(&env, 999);
+    let unauthorized = client.try_get_all_pending_plans(&not_admin);
+    assert!(unauthorized.is_err());
 }
