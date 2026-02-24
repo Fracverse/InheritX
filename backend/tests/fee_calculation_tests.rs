@@ -101,7 +101,9 @@ async fn create_plan_via_app(
 
 fn fee_and_net_from_response(json: &Value) -> (Decimal, Decimal) {
     let fee_str = json["data"]["fee"].as_str().expect("data.fee string");
-    let net_str = json["data"]["net_amount"].as_str().expect("data.net_amount string");
+    let net_str = json["data"]["net_amount"]
+        .as_str()
+        .expect("data.net_amount string");
     let fee: Decimal = fee_str.parse().expect("fee decimal");
     let net: Decimal = net_str.parse().expect("net_amount decimal");
     (fee, net)
@@ -126,14 +128,8 @@ async fn fee_calculation_small_decimals() {
     let token = user_token(user_id);
 
     // Total = 1.11 => fee = 0.0222, net = 1.0878 (server recomputes from fee + net_amount)
-    let (status, json) = create_plan_via_app(
-        &ctx.app,
-        &token,
-        "0.02",
-        "1.09",
-        "Small decimals plan",
-    )
-    .await;
+    let (status, json) =
+        create_plan_via_app(&ctx.app, &token, "0.02", "1.09", "Small decimals plan").await;
 
     assert_eq!(status, StatusCode::OK, "response: {:?}", json);
     assert_eq!(json["status"], "success");
@@ -177,7 +173,10 @@ async fn fee_calculation_large_values() {
     let total = fee + net_amount;
     let expected_fee = total * two_percent();
 
-    assert_eq!(fee, expected_fee, "fee must be exactly 2% of total for large values");
+    assert_eq!(
+        fee, expected_fee,
+        "fee must be exactly 2% of total for large values"
+    );
     assert_eq!(fee + net_amount, total);
 }
 
@@ -195,14 +194,7 @@ async fn fee_calculation_no_rounding_error() {
     let token = user_token(user_id);
 
     // Total 100 => fee 2, net 98 (exact)
-    let (status, json) = create_plan_via_app(
-        &ctx.app,
-        &token,
-        "2",
-        "98",
-        "No rounding plan",
-    )
-    .await;
+    let (status, json) = create_plan_via_app(&ctx.app, &token, "2", "98", "No rounding plan").await;
 
     assert_eq!(status, StatusCode::OK, "response: {:?}", json);
     assert_eq!(json["status"], "success");
@@ -211,9 +203,17 @@ async fn fee_calculation_no_rounding_error() {
     let total = fee + net_amount;
 
     assert_eq!(fee, Decimal::new(2, 0), "fee must be exactly 2");
-    assert_eq!(net_amount, Decimal::new(98, 0), "net_amount must be exactly 98");
+    assert_eq!(
+        net_amount,
+        Decimal::new(98, 0),
+        "net_amount must be exactly 98"
+    );
     assert_eq!(total, Decimal::new(100, 0), "total must be exactly 100");
-    assert_eq!(fee + net_amount, total, "no rounding: fee + net_amount == total");
+    assert_eq!(
+        fee + net_amount,
+        total,
+        "no rounding: fee + net_amount == total"
+    );
 }
 
 // -----------------------------------------------------------------------------
@@ -230,14 +230,8 @@ async fn fee_calculation_exactly_2_percent() {
     let token = user_token(user_id);
 
     // Arbitrary total; server computes fee = amount * 0.02
-    let (status, json) = create_plan_via_app(
-        &ctx.app,
-        &token,
-        "10",
-        "490",
-        "Exactly 2% plan",
-    )
-    .await;
+    let (status, json) =
+        create_plan_via_app(&ctx.app, &token, "10", "490", "Exactly 2% plan").await;
 
     assert_eq!(status, StatusCode::OK, "response: {:?}", json);
     assert_eq!(json["status"], "success");
