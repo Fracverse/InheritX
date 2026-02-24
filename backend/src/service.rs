@@ -946,6 +946,57 @@ impl KycService {
         Ok(record)
     }
 }
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AdminMetrics {
+    pub total_revenue: f64,
+    pub total_plans: i64,
+    pub total_claims: i64,
+    pub active_plans: i64,
+    pub total_users: i64,
+}
+
+pub struct AdminService;
+
+impl AdminService {
+    pub async fn get_metrics_overview(db: &PgPool) -> Result<AdminMetrics, ApiError> {
+        #[derive(sqlx::FromRow)]
+        struct MetricsRow {
+            total_revenue: f64,
+            total_plans: i64,
+            total_claims: i64,
+            active_plans: i64,
+            total_users: i64,
+        }
+
+        let row = sqlx::query_as::<_, MetricsRow>(
+            r#"
+            SELECT
+                COALESCE(SUM(fee), 0)::FLOAT8 AS total_revenue,
+                COUNT(*)::BIGINT AS total_plans,
+                (SELECT COUNT(*)::BIGINT FROM claims) AS total_claims,
+                COUNT(*) FILTER (
+                    WHERE is_active IS NOT FALSE
+                      AND status NOT IN ('claimed', 'deactivated')
+                )::BIGINT AS active_plans,
+                (SELECT COUNT(*)::BIGINT FROM users) AS total_users
+            FROM plans
+            "#,
+        )
+        .fetch_one(db)
+        .await?;
+
+        Ok(AdminMetrics {
+            total_revenue: row.total_revenue,
+            total_plans: row.total_plans,
+            total_claims: row.total_claims,
+            active_plans: row.active_plans,
+            total_users: row.total_users,
+        })
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::{CurrencyPreference, PlanService};
