@@ -100,12 +100,11 @@ pub async fn web3_login(
         };
 
     // 2. Retrieve nonce
-    let row: Option<(String, chrono::DateTime<Utc>)> = sqlx::query_as(
-        "SELECT nonce, expires_at FROM nonces WHERE wallet_address = $1 FOR UPDATE",
-    )
-    .bind(&payload.wallet_address)
-    .fetch_optional(&mut *tx)
-    .await?;
+    let row: Option<(String, chrono::DateTime<Utc>)> =
+        sqlx::query_as("SELECT nonce, expires_at FROM nonces WHERE wallet_address = $1 FOR UPDATE")
+            .bind(&payload.wallet_address)
+            .fetch_optional(&mut *tx)
+            .await?;
 
     let (nonce_val, expires_at) = row.ok_or_else(|| ApiError::Unauthorized)?;
 
