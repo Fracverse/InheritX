@@ -838,25 +838,39 @@ impl InheritanceContract {
         Ok(plan_id)
     }
 
-    pub fn set_lendable(env: Env, owner: Address, plan_id: u64, is_lendable: bool) -> Result<(), InheritanceError> {
+    pub fn set_lendable(
+        env: Env,
+        owner: Address,
+        plan_id: u64,
+        is_lendable: bool,
+    ) -> Result<(), InheritanceError> {
         owner.require_auth();
         let mut plan = Self::get_plan(&env, plan_id).ok_or(InheritanceError::PlanNotFound)?;
         if plan.owner != owner {
             return Err(InheritanceError::Unauthorized);
         }
-        
+
         plan.is_lendable = is_lendable;
         Self::store_plan(&env, plan_id, &plan);
 
         env.events().publish(
             (symbol_short!("VAULT"), symbol_short!("LENDABLE")),
-            VaultLendableChangedEvent { plan_id, is_lendable },
+            VaultLendableChangedEvent {
+                plan_id,
+                is_lendable,
+            },
         );
         log!(&env, "Vault {} lendable set to {}", plan_id, is_lendable);
         Ok(())
     }
 
-    pub fn deposit(env: Env, owner: Address, token: Address, plan_id: u64, amount: u64) -> Result<(), InheritanceError> {
+    pub fn deposit(
+        env: Env,
+        owner: Address,
+        token: Address,
+        plan_id: u64,
+        amount: u64,
+    ) -> Result<(), InheritanceError> {
         owner.require_auth();
         if amount == 0 {
             return Err(InheritanceError::InvalidTotalAmount);
@@ -883,11 +897,8 @@ impl InheritanceContract {
             contract_id.clone().into_val(&env),
             required.into_val(&env),
         ];
-        let res = env.try_invoke_contract::<(), InvokeError>(
-            &token,
-            &symbol_short!("transfer"),
-            args,
-        );
+        let res =
+            env.try_invoke_contract::<(), InvokeError>(&token, &symbol_short!("transfer"), args);
         if res.is_err() {
             return Err(InheritanceError::FeeTransferFailed);
         }
@@ -903,7 +914,13 @@ impl InheritanceContract {
         Ok(())
     }
 
-    pub fn withdraw(env: Env, owner: Address, token: Address, plan_id: u64, amount: u64) -> Result<(), InheritanceError> {
+    pub fn withdraw(
+        env: Env,
+        owner: Address,
+        token: Address,
+        plan_id: u64,
+        amount: u64,
+    ) -> Result<(), InheritanceError> {
         owner.require_auth();
         if amount == 0 {
             return Err(InheritanceError::InvalidTotalAmount);
@@ -912,7 +929,7 @@ impl InheritanceContract {
         if plan.owner != owner {
             return Err(InheritanceError::Unauthorized);
         }
-        
+
         let available = plan.total_amount.saturating_sub(plan.total_loaned);
         if amount > available {
             return Err(InheritanceError::InsufficientLiquidity);
@@ -926,11 +943,8 @@ impl InheritanceContract {
             owner.clone().into_val(&env),
             required.into_val(&env),
         ];
-        let res = env.try_invoke_contract::<(), InvokeError>(
-            &token,
-            &symbol_short!("transfer"),
-            args,
-        );
+        let res =
+            env.try_invoke_contract::<(), InvokeError>(&token, &symbol_short!("transfer"), args);
         if res.is_err() {
             return Err(InheritanceError::FeeTransferFailed);
         }

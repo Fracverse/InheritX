@@ -1991,14 +1991,16 @@ fn test_vault_withdraw_prevents_over_withdrawal() {
     ));
 
     client.deposit(&owner, &token, &plan_id, &500u64);
-    
+
     // We don't have a public function to change total_loaned from the client (since
     // it's for external protocols), so we simulate it by setting it in storage.
     let mut plan = client.get_plan_details(&plan_id).unwrap();
     plan.total_loaned = 1000;
-    
+
     env.as_contract(&client.address, || {
-        env.storage().persistent().set(&DataKey::Plan(plan_id), &plan);
+        env.storage()
+            .persistent()
+            .set(&DataKey::Plan(plan_id), &plan);
     });
 
     let modified_plan = client.get_plan_details(&plan_id).unwrap();
@@ -2006,7 +2008,9 @@ fn test_vault_withdraw_prevents_over_withdrawal() {
     assert_eq!(modified_plan.total_loaned, 1000);
 
     // Withdraw 400 OK (1480 - 1000 = 480 available)
-    assert!(client.try_withdraw(&owner, &token, &plan_id, &400u64).is_ok());
+    assert!(client
+        .try_withdraw(&owner, &token, &plan_id, &400u64)
+        .is_ok());
 
     // Another 100 FAILS (480 - 400 = 80 available)
     let err = client.try_withdraw(&owner, &token, &plan_id, &100u64);
