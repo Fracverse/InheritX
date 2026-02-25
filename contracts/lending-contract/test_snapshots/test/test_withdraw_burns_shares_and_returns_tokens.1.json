@@ -89,7 +89,7 @@
                   "address": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAK3IM"
                 },
                 {
-                  "u64": 1000
+                  "u64": 2000
                 }
               ]
             }
@@ -110,7 +110,7 @@
                     {
                       "i128": {
                         "hi": 0,
-                        "lo": 1000
+                        "lo": 2000
                       }
                     }
                   ]
@@ -405,7 +405,7 @@
                                 "symbol": "total_deposits"
                               },
                               "val": {
-                                "u64": 500
+                                "u64": 1500
                               }
                             },
                             {
@@ -413,7 +413,7 @@
                                 "symbol": "total_shares"
                               },
                               "val": {
-                                "u64": 500
+                                "u64": 1500
                               }
                             }
                           ]
@@ -551,7 +551,7 @@
                       "val": {
                         "i128": {
                           "hi": 0,
-                          "lo": 500
+                          "lo": 1500
                         }
                       }
                     },
@@ -624,7 +624,7 @@
                       "val": {
                         "i128": {
                           "hi": 0,
-                          "lo": 9500
+                          "lo": 8500
                         }
                       }
                     },
@@ -1082,7 +1082,7 @@
                   "address": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAK3IM"
                 },
                 {
-                  "u64": 1000
+                  "u64": 2000
                 }
               ]
             }
@@ -1120,7 +1120,7 @@
                 {
                   "i128": {
                     "hi": 0,
-                    "lo": 1000
+                    "lo": 2000
                   }
                 }
               ]
@@ -1154,7 +1154,7 @@
             "data": {
               "i128": {
                 "hi": 0,
-                "lo": 1000
+                "lo": 2000
               }
             }
           }
@@ -1205,7 +1205,7 @@
                     "symbol": "amount"
                   },
                   "val": {
-                    "u64": 1000
+                    "u64": 2000
                   }
                 },
                 {
@@ -1249,7 +1249,7 @@
                   "string": "Deposited {} tokens, minted {} shares"
                 },
                 {
-                  "u64": 1000
+                  "u64": 2000
                 },
                 {
                   "u64": 1000
@@ -1328,7 +1328,7 @@
             "data": {
               "i128": {
                 "hi": 0,
-                "lo": 9000
+                "lo": 8000
               }
             }
           }
@@ -1606,7 +1606,7 @@
             "data": {
               "i128": {
                 "hi": 0,
-                "lo": 9500
+                "lo": 8500
               }
             }
           }
@@ -1733,7 +1733,7 @@
                     "symbol": "total_deposits"
                   },
                   "val": {
-                    "u64": 500
+                    "u64": 1500
                   }
                 },
                 {
@@ -1741,7 +1741,7 @@
                     "symbol": "total_shares"
                   },
                   "val": {
-                    "u64": 500
+                    "u64": 1500
                   }
                 }
               ]
