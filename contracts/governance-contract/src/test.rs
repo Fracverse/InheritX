@@ -1,7 +1,7 @@
 #![cfg(test)]
 use super::*;
 use soroban_sdk::testutils::Address as _;
-use soroban_sdk::{Env};
+use soroban_sdk::Env;
 
 #[test]
 fn test_governance_flow() {
@@ -10,7 +10,7 @@ fn test_governance_flow() {
     let client = GovernanceContractClient::new(&env, &contract_id);
 
     let admin = Address::generate(&env);
-    
+
     // Initialize
     client.initialize(&admin, &500, &15000, &500);
 
@@ -21,7 +21,7 @@ fn test_governance_flow() {
 
     // Update parameters
     env.mock_all_auths();
-    
+
     client.update_interest_rate(&600);
     assert_eq!(client.get_interest_rate(), 600);
 
@@ -40,7 +40,7 @@ fn test_unauthorized_update() {
     let client = GovernanceContractClient::new(&env, &contract_id);
 
     let admin = Address::generate(&env);
-    
+
     client.initialize(&admin, &500, &15000, &500);
 
     // Call without mock_all_auths and without providing admin auth
