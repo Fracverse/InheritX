@@ -1151,6 +1151,73 @@ impl PlanStatisticsService {
     }
 }
 
+// ── Revenue Metrics ───────────────────────────────────────────────────────────
+
+#[derive(Debug, Serialize, Deserialize)]
+pub struct RevenueMetric {
+    pub date: String,
+    pub amount: f64,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+pub struct RevenueMetricsResponse {
+    pub range: String,
+    pub data: Vec<RevenueMetric>,
+}
+
+pub struct RevenueMetricsService;
+
+impl RevenueMetricsService {
+    pub async fn get_revenue_breakdown(
+        pool: &PgPool,
+        range: &str,
+    ) -> Result<RevenueMetricsResponse, ApiError> {
+        #[derive(sqlx::FromRow)]
+        struct Row {
+            date: String,
+            amount: f64,
+        }
+
+        let (interval, trunc) = match range {
+            "daily" => ("30 days", "day"),
+            "weekly" => ("12 weeks", "week"),
+            "monthly" => ("12 months", "month"),
+            _ => {
+                return Err(ApiError::BadRequest(
+                    "Invalid range. Use daily, weekly, or monthly.".to_string(),
+                ))
+            }
+        };
+
+        let query = format!(
+            r#"
+            SELECT 
+                DATE_TRUNC('{}', created_at)::DATE::TEXT as date,
+                COALESCE(SUM(fee), 0)::FLOAT8 as amount
+            FROM plans
+            WHERE created_at >= NOW() - INTERVAL '{}'
+            GROUP BY 1
+            ORDER BY 1
+            "#,
+            trunc, interval
+        );
+
+        let rows = sqlx::query_as::<_, Row>(&query)
+            .fetch_all(pool)
+            .await?;
+
+        let data = rows
+            .into_iter()
+            .map(|r| RevenueMetric { date: r.date, amount: r.amount })
+            .collect();
+
+        Ok(RevenueMetricsResponse {
+            range: range.to_string(),
+            data,
+        })
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::{CurrencyPreference, PlanService};
