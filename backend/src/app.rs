@@ -15,6 +15,8 @@ use crate::api_error::ApiError;
 use crate::auth::{AuthenticatedAdmin, AuthenticatedUser};
 use crate::config::Config;
 use crate::notifications::{AuditLogService, NotificationService};
+use crate::price_feed::{DefaultPriceFeedService, PriceFeedService};
+use crate::price_feed_handlers;
 use crate::service::{
     ClaimPlanRequest, CreatePlanRequest, KycRecord, KycService, KycStatus, PlanService,
 };
@@ -25,7 +27,11 @@ pub struct AppState {
 }
 
 pub async fn create_app(db: PgPool, config: Config) -> Result<Router, ApiError> {
-    let state = Arc::new(AppState { db, config });
+    let state = Arc::new(AppState { db: db.clone(), config });
+
+    // Initialize price feed service
+    let price_service = Arc::new(DefaultPriceFeedService::new(db.clone(), 300)); // 5 min cache
+    price_service.initialize_defaults().await?;
 
     // Rate limiting configuration
     let governor_conf = Arc::new(
@@ -88,6 +94,33 @@ pub async fn create_app(db: PgPool, config: Config) -> Result<Router, ApiError> 
         .route("/api/notifications/:id/read", patch(mark_notification_read))
         // ── Admin Audit Logs ─────────────────────────────────────────────
         .route("/api/admin/logs", get(list_audit_logs))
+        // ── Price Feeds & Collateral Valuation ───────────────────────────
+        .route("/api/prices/:asset_code", get(price_feed_handlers::get_price))
+        .route(
+            "/api/prices/:asset_code/history",
+            get(price_feed_handlers::get_price_history),
+        )
+        .route(
+            "/api/admin/price-feeds/register",
+            post(price_feed_handlers::register_price_feed),
+        )
+        .route(
+            "/api/admin/prices/:asset_code",
+            post(price_feed_handlers::update_price),
+        )
+        .route(
+            "/api/admin/price-feeds",
+            get(price_feed_handlers::get_active_feeds),
+        )
+        .route(
+            "/api/valuations/:asset_code/:amount",
+            get(price_feed_handlers::calculate_valuation),
+        )
+        .route(
+            "/api/plans/:plan_id/valuation",
+            get(price_feed_handlers::get_plan_valuation),
+        )
+        .with_state((db, price_service))
         .with_state(state);
 
     Ok(app)
