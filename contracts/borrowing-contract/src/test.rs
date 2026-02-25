@@ -85,7 +85,34 @@ fn test_liquidation() {
     let liquidator = Address::generate(&env);
     sac_client(&env, &collateral_addr).mint(&borrower, &1200);
     let loan_id = client.create_loan(&borrower, &1000, &5, &1000000, &collateral_addr, &1200);
-    client.liquidate(&liquidator, &loan_id);
+    client.liquidate(&liquidator, &loan_id, &1000);
     let loan = client.get_loan(&loan_id);
     assert!(!loan.is_active);
+}
+
+#[test]
+fn test_partial_liquidation() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let admin = Address::generate(&env);
+    let collateral_addr = create_token_addr(&env);
+    let contract_id = env.register_contract(None, BorrowingContract);
+    let client = BorrowingContractClient::new(&env, &contract_id);
+    client.initialize(&admin, &12000, &13000, &500);
+    client.whitelist_collateral(&admin, &collateral_addr);
+    let borrower = Address::generate(&env);
+    let liquidator = Address::generate(&env);
+    sac_client(&env, &collateral_addr).mint(&borrower, &1200);
+    let loan_id = client.create_loan(&borrower, &1000, &5, &1000000, &collateral_addr, &1200);
+
+    // Liquidate 500 out of 1000 debt
+    client.liquidate(&liquidator, &loan_id, &500);
+
+    let loan = client.get_loan(&loan_id);
+    assert!(loan.is_active);
+    assert_eq!(loan.amount_repaid, 500);
+    assert_eq!(loan.collateral_amount, 675); // 1200 - (500 + 500 * 5%) = 675
+
+    let hf = client.get_health_factor(&loan_id);
+    assert_eq!(hf, 13500); // 675 * 10000 / 500
 }

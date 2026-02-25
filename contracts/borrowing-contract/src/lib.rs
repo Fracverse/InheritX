@@ -37,6 +37,7 @@ pub enum BorrowingError {
     LoanNotFound = 5,
     LoanHealthy = 6,
     LoanNotActive = 7,
+    InvalidAmount = 8,
 }
 
 #[contract]
@@ -188,7 +189,12 @@ impl BorrowingContract {
             .unwrap_or(15000)
     }
 
-    pub fn liquidate(env: Env, liquidator: Address, loan_id: u64) -> Result<(), BorrowingError> {
+    pub fn liquidate(
+        env: Env,
+        liquidator: Address,
+        loan_id: u64,
+        liquidate_amount: i128,
+    ) -> Result<(), BorrowingError> {
         liquidator.require_auth();
 
         let mut loan: Loan = env
@@ -201,8 +207,13 @@ impl BorrowingContract {
             return Err(BorrowingError::LoanNotActive);
         }
 
-        // Calculate health factor
         let debt = loan.principal - loan.amount_repaid;
+
+        if liquidate_amount <= 0 || liquidate_amount > debt {
+            return Err(BorrowingError::InvalidAmount);
+        }
+
+        // Calculate health factor
         let health_factor = if debt == 0 {
             10000
         } else {
@@ -219,13 +230,17 @@ impl BorrowingContract {
             return Err(BorrowingError::LoanHealthy);
         }
 
-        // Calculate liquidation amounts
+        // Calculate liquidation amounts based on liquidate_amount
         let liquidation_bonus = Self::get_liquidation_bonus(&env);
-        let bonus_amount = (debt as u128)
+        let bonus_amount = (liquidate_amount as u128)
             .checked_mul(liquidation_bonus as u128)
             .and_then(|v| v.checked_div(10000))
             .unwrap_or(0) as i128;
-        let liquidator_reward = debt + bonus_amount;
+        let liquidator_reward = liquidate_amount + bonus_amount;
+
+        if liquidator_reward > loan.collateral_amount {
+            return Err(BorrowingError::InvalidAmount);
+        }
 
         // Transfer collateral to liquidator
         let token_client = token::Client::new(&env, &loan.collateral_token);
@@ -235,8 +250,14 @@ impl BorrowingContract {
             &liquidator_reward,
         );
 
-        // Mark loan as inactive
-        loan.is_active = false;
+        loan.collateral_amount -= liquidator_reward;
+        loan.amount_repaid += liquidate_amount;
+
+        // Mark loan as inactive if fully repaid
+        if loan.amount_repaid >= loan.principal {
+            loan.is_active = false;
+        }
+
         env.storage()
             .persistent()
             .set(&DataKey::Loan(loan_id), &loan);
