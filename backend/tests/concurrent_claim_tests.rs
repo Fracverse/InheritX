@@ -7,8 +7,6 @@ use axum::{
     http::{Request, StatusCode},
 };
 use chrono::Utc;
-use inheritx_backend::auth::UserClaims;
-use jsonwebtoken::{encode, EncodingKey, Header};
 use serde_json::json;
 use tokio::join;
 use tower::ServiceExt;
