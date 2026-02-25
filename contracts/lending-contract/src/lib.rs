@@ -14,7 +14,8 @@ pub struct PoolState {
     pub total_deposits: u64, // Total underlying tokens deposited (net, tracks repayments too)
     pub total_shares: u64,   // Total pool shares outstanding
     pub total_borrowed: u64, // Total principal currently on loan
-    pub interest_rate_bps: u32, // Fixed interest rate in basis points (1/10000)
+    pub base_rate_bps: u32,  // Base interest rate in basis points (1/10000)
+    pub multiplier_bps: u32, // Multiplier applied to utilization to get variable rate
 }
 
 const SECONDS_IN_YEAR: u64 = 31_536_000;
@@ -112,7 +113,8 @@ impl LendingContract {
         env: Env,
         admin: Address,
         token: Address,
-        interest_rate_bps: u32,
+        base_rate_bps: u32,
+        multiplier_bps: u32,
     ) -> Result<(), LendingError> {
         admin.require_auth();
         if env.storage().instance().has(&DataKey::Admin) {
@@ -126,7 +128,8 @@ impl LendingContract {
                 total_deposits: 0,
                 total_shares: 0,
                 total_borrowed: 0,
-                interest_rate_bps,
+                base_rate_bps,
+                multiplier_bps,
             },
         );
         Ok(())
@@ -228,6 +231,31 @@ impl LendingContract {
         let denominator = (10000u128).checked_mul(SECONDS_IN_YEAR as u128).unwrap();
 
         (numerator.checked_div(denominator).unwrap_or(0)) as u64
+    }
+
+    /// Calculate the pool utilization ratio in basis points (0 to 10000)
+    fn get_utilization_bps(total_borrowed: u64, total_deposits: u64) -> u32 {
+        if total_deposits == 0 {
+            return 0;
+        }
+        let utilization = (total_borrowed as u128)
+            .checked_mul(10000)
+            .and_then(|v| v.checked_div(total_deposits as u128))
+            .unwrap_or(0);
+        utilization as u32
+    }
+
+    /// Calculate the dynamic interest rate based on utilization
+    fn calculate_dynamic_rate(
+        base_rate_bps: u32,
+        multiplier_bps: u32,
+        utilization_bps: u32,
+    ) -> u32 {
+        let variable_rate = (utilization_bps as u64)
+            .checked_mul(multiplier_bps as u64)
+            .unwrap_or(0)
+            / 10000;
+        base_rate_bps.saturating_add(variable_rate as u32)
     }
 
     // ─── Public Functions ────────────────────────────
@@ -343,6 +371,11 @@ impl LendingContract {
         }
 
         pool.total_borrowed += amount;
+
+        let utilization_bps = Self::get_utilization_bps(pool.total_borrowed, pool.total_deposits);
+        let dynamic_rate_bps =
+            Self::calculate_dynamic_rate(pool.base_rate_bps, pool.multiplier_bps, utilization_bps);
+
         Self::set_pool(&env, &pool);
 
         env.storage().persistent().set(
@@ -351,7 +384,7 @@ impl LendingContract {
                 borrower: borrower.clone(),
                 amount,
                 borrow_time: env.ledger().timestamp(),
-                interest_rate_bps: pool.interest_rate_bps,
+                interest_rate_bps: dynamic_rate_bps,
             },
         );
 
@@ -453,6 +486,18 @@ impl LendingContract {
         Self::require_initialized(&env)?;
         let pool = Self::get_pool(&env);
         Ok(pool.total_deposits.saturating_sub(pool.total_borrowed))
+    }
+
+    /// Returns the current dynamic interest rate that would be given to a new loan
+    pub fn get_current_interest_rate(env: Env) -> Result<u32, LendingError> {
+        Self::require_initialized(&env)?;
+        let pool = Self::get_pool(&env);
+        let utilization_bps = Self::get_utilization_bps(pool.total_borrowed, pool.total_deposits);
+        Ok(Self::calculate_dynamic_rate(
+            pool.base_rate_bps,
+            pool.multiplier_bps,
+            utilization_bps,
+        ))
     }
 }
 

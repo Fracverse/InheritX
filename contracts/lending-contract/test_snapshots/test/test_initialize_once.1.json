@@ -39,7 +39,10 @@
                   "address": "CBUSYNQKASUYFWYC3M2GUEDMX4AIVWPALDBYJPNK6554BREHTGZ2IUNF"
                 },
                 {
-                  "u32": 1000
+                  "u32": 500
+                },
+                {
+                  "u32": 2000
                 }
               ]
             }
@@ -201,10 +204,18 @@
                           "map": [
                             {
                               "key": {
-                                "symbol": "interest_rate_bps"
+                                "symbol": "base_rate_bps"
                               },
                               "val": {
-                                "u32": 1000
+                                "u32": 500
+                              }
+                            },
+                            {
+                              "key": {
+                                "symbol": "multiplier_bps"
+                              },
+                              "val": {
+                                "u32": 2000
                               }
                             },
                             {
@@ -539,7 +550,10 @@
                   "address": "CBUSYNQKASUYFWYC3M2GUEDMX4AIVWPALDBYJPNK6554BREHTGZ2IUNF"
                 },
                 {
-                  "u32": 1000
+                  "u32": 500
+                },
+                {
+                  "u32": 2000
                 }
               ]
             }
@@ -596,7 +610,10 @@
                   "address": "CBUSYNQKASUYFWYC3M2GUEDMX4AIVWPALDBYJPNK6554BREHTGZ2IUNF"
                 },
                 {
-                  "u32": 1000
+                  "u32": 500
+                },
+                {
+                  "u32": 2000
                 }
               ]
             }
@@ -689,7 +706,10 @@
                       "address": "CBUSYNQKASUYFWYC3M2GUEDMX4AIVWPALDBYJPNK6554BREHTGZ2IUNF"
                     },
                     {
-                      "u32": 1000
+                      "u32": 500
+                    },
+                    {
+                      "u32": 2000
                     }
                   ]
                 }

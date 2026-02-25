@@ -39,7 +39,10 @@
                   "address": "CBUSYNQKASUYFWYC3M2GUEDMX4AIVWPALDBYJPNK6554BREHTGZ2IUNF"
                 },
                 {
-                  "u32": 1000
+                  "u32": 500
+                },
+                {
+                  "u32": 2000
                 }
               ]
             }
@@ -167,6 +170,7 @@
       ]
     ],
     [],
+    [],
     [
       [
         "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAMDR4",
@@ -198,7 +202,7 @@
                     {
                       "i128": {
                         "hi": 0,
-                        "lo": 5500
+                        "lo": 5750
                       }
                     }
                   ]
@@ -496,10 +500,18 @@
                           "map": [
                             {
                               "key": {
-                                "symbol": "interest_rate_bps"
+                                "symbol": "base_rate_bps"
                               },
                               "val": {
-                                "u32": 1000
+                                "u32": 500
+                              }
+                            },
+                            {
+                              "key": {
+                                "symbol": "multiplier_bps"
+                              },
+                              "val": {
+                                "u32": 2000
                               }
                             },
                             {
@@ -800,7 +812,7 @@
                       "val": {
                         "i128": {
                           "hi": 0,
-                          "lo": 100500
+                          "lo": 100750
                         }
                       }
                     },
@@ -873,7 +885,7 @@
                       "val": {
                         "i128": {
                           "hi": 0,
-                          "lo": 99500
+                          "lo": 99250
                         }
                       }
                     },
@@ -1185,7 +1197,10 @@
                   "address": "CBUSYNQKASUYFWYC3M2GUEDMX4AIVWPALDBYJPNK6554BREHTGZ2IUNF"
                 },
                 {
-                  "u32": 1000
+                  "u32": 500
+                },
+                {
+                  "u32": 2000
                 }
               ]
             }
@@ -1847,6 +1862,53 @@
                 "bytes": "0000000000000000000000000000000000000000000000000000000000000004"
               },
               {
+                "symbol": "get_current_interest_rate"
+              }
+            ],
+            "data": "void"
+          }
+        }
+      },
+      "failed_call": false
+    },
+    {
+      "event": {
+        "ext": "v0",
+        "contract_id": "0000000000000000000000000000000000000000000000000000000000000004",
+        "type_": "diagnostic",
+        "body": {
+          "v0": {
+            "topics": [
+              {
+                "symbol": "fn_return"
+              },
+              {
+                "symbol": "get_current_interest_rate"
+              }
+            ],
+            "data": {
+              "u32": 1500
+            }
+          }
+        }
+      },
+      "failed_call": false
+    },
+    {
+      "event": {
+        "ext": "v0",
+        "contract_id": null,
+        "type_": "diagnostic",
+        "body": {
+          "v0": {
+            "topics": [
+              {
+                "symbol": "fn_call"
+              },
+              {
+                "bytes": "0000000000000000000000000000000000000000000000000000000000000004"
+              },
+              {
                 "symbol": "get_repayment_amount"
               }
             ],
@@ -1874,7 +1936,7 @@
               }
             ],
             "data": {
-              "u64": 5500
+              "u64": 5750
             }
           }
         }
@@ -1936,7 +1998,7 @@
                 {
                   "i128": {
                     "hi": 0,
-                    "lo": 5500
+                    "lo": 5750
                   }
                 }
               ]
@@ -1970,7 +2032,7 @@
             "data": {
               "i128": {
                 "hi": 0,
-                "lo": 5500
+                "lo": 5750
               }
             }
           }
@@ -2021,7 +2083,7 @@
                     "symbol": "amount"
                   },
                   "val": {
-                    "u64": 5500
+                    "u64": 5750
                   }
                 },
                 {
@@ -2057,10 +2119,10 @@
                   "string": "Repaid {} tokens ({} interest)"
                 },
                 {
-                  "u64": 5500
+                  "u64": 5750
                 },
                 {
-                  "u64": 500
+                  "u64": 750
                 }
               ]
             }
@@ -2085,7 +2147,7 @@
               }
             ],
             "data": {
-              "u64": 5500
+              "u64": 5750
             }
           }
         }
@@ -2135,10 +2197,18 @@
               "map": [
                 {
                   "key": {
-                    "symbol": "interest_rate_bps"
+                    "symbol": "base_rate_bps"
                   },
                   "val": {
-                    "u32": 1000
+                    "u32": 500
+                  }
+                },
+                {
+                  "key": {
+                    "symbol": "multiplier_bps"
+                  },
+                  "val": {
+                    "u32": 2000
                   }
                 },
                 {
@@ -2154,7 +2224,7 @@
                     "symbol": "total_deposits"
                   },
                   "val": {
-                    "u64": 10500
+                    "u64": 10750
                   }
                 },
                 {
@@ -2234,7 +2304,7 @@
                 {
                   "i128": {
                     "hi": 0,
-                    "lo": 10500
+                    "lo": 10750
                   }
                 }
               ]
@@ -2268,7 +2338,7 @@
             "data": {
               "i128": {
                 "hi": 0,
-                "lo": 10500
+                "lo": 10750
               }
             }
           }
@@ -2319,7 +2389,7 @@
                     "symbol": "amount"
                   },
                   "val": {
-                    "u64": 10500
+                    "u64": 10750
                   }
                 },
                 {
@@ -2363,7 +2433,7 @@
                   "string": "Withdrew {} tokens, burned {} shares"
                 },
                 {
-                  "u64": 10500
+                  "u64": 10750
                 },
                 {
                   "u64": 10000
@@ -2391,7 +2461,7 @@
               }
             ],
             "data": {
-              "u64": 10500
+              "u64": 10750
             }
           }
         }

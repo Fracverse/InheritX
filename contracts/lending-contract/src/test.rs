@@ -34,7 +34,7 @@ fn setup(env: &Env) -> (LendingContractClient<'_>, Address, Address) {
 
     let contract_id = env.register_contract(None, LendingContract);
     let client = LendingContractClient::new(env, &contract_id);
-    client.initialize(&admin, &token_addr, &1000u32); // 10% APY
+    client.initialize(&admin, &token_addr, &500u32, &2000u32); // 5% base, 20% multiplier
 
     (client, token_addr, admin)
 }
@@ -50,7 +50,7 @@ fn test_initialize_once() {
     let (client, token_addr, admin) = setup(&env);
 
     // Second init must fail
-    let result = client.try_initialize(&admin, &token_addr, &1000u32);
+    let result = client.try_initialize(&admin, &token_addr, &500u32, &2000u32);
     assert!(result.is_err());
 }
 
@@ -323,7 +323,7 @@ fn test_invalid_amounts_rejected() {
 fn test_interest_accrual() {
     let env = Env::default();
     env.mock_all_auths();
-    // 10% APY (1000 bps)
+    // 5% APY base, 20% multiplier
     let (client, token_addr, _admin) = setup(&env);
 
     let depositor = Address::generate(&env);
@@ -335,30 +335,33 @@ fn test_interest_accrual() {
     client.deposit(&depositor, &10_000u64);
 
     // 2. Borrow 5,000
+    // Utilization = 5000 / 10000 = 50%.
+    // Rate = 5% + (50% * 20%) = 15% (1500 bps)
     client.borrow(&borrower, &5_000u64);
+
+    let current_rate = client.get_current_interest_rate();
+    assert_eq!(current_rate, 1500u32);
 
     // 3. Jump time by 1 year (31,536,000 seconds)
     env.ledger()
         .set_timestamp(env.ledger().timestamp() + 31_536_000);
 
-    // 4. Expected interest: 5,000 * 0.10 * 1 year = 500
+    // 4. Expected interest: 5,000 * 0.15 * 1 year = 750
     let repayment_amount = client.get_repayment_amount(&borrower);
-    assert_eq!(repayment_amount, 5_500u64);
+    assert_eq!(repayment_amount, 5_750u64);
 
     // 5. Repay
     client.repay(&borrower);
 
     // 6. Verify pool state
     let pool = client.get_pool_state();
-    // total_deposits should be 10,000 (initial) + 500 (interest) = 10,500
-    assert_eq!(pool.total_deposits, 10_500);
+    // total_deposits should be 10,000 (initial) + 750 (interest) = 10,750
+    assert_eq!(pool.total_deposits, 10_750);
     assert_eq!(pool.total_borrowed, 0);
 
     // 7. Verify depositor can withdraw more than they put in
-    // shares = 10,000, pool_shares = 10,000, pool_deposits = 10,500
-    // amount = 10,000 * 10,500 / 10,000 = 10,500
     let withdrawn = client.withdraw(&depositor, &10_000u64);
-    assert_eq!(withdrawn, 10_500);
+    assert_eq!(withdrawn, 10_750);
 }
 
 #[test]
@@ -375,11 +378,68 @@ fn test_interest_precision_short_time() {
     client.deposit(&depositor, &10_000u64);
     client.borrow(&borrower, &5_000u64);
 
-    // 1 hour = 3600 seconds
-    // Interest = (5000 * 1000 * 3600) / (10000 * 31536000) = 18000000000 / 315360000000 ≈ 0.057
-    // Should be 0 due to truncation in simple implementation
     env.ledger().set_timestamp(env.ledger().timestamp() + 3600);
 
     let repayment_amount = client.get_repayment_amount(&borrower);
     assert_eq!(repayment_amount, 5_000u64);
+}
+
+#[test]
+fn test_dynamic_interest_rate_increases_with_utilization() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let (client, token_addr, _admin) = setup(&env);
+
+    let depositor = Address::generate(&env);
+    mint_to(&env, &token_addr, &depositor, 100_000);
+    client.deposit(&depositor, &10_000u64);
+
+    // At 0 utilization, rate should be base rate (500)
+    assert_eq!(client.get_current_interest_rate(), 500u32);
+
+    let borrower1 = Address::generate(&env);
+    mint_to(&env, &token_addr, &borrower1, 100_000);
+    // Borrow 2,000 (20% utilization)
+    // Dynamic rate should be 500 + (2000 * 2000 / 10000) = 500 + 400 = 900
+    client.borrow(&borrower1, &2_000u64);
+    let loan1 = client.get_loan(&borrower1).unwrap();
+    assert_eq!(loan1.interest_rate_bps, 900u32);
+
+    // Now utilization is 20%. The *next* borrower will get 900.
+    assert_eq!(client.get_current_interest_rate(), 900u32);
+
+    let borrower2 = Address::generate(&env);
+    mint_to(&env, &token_addr, &borrower2, 100_000);
+    // Borrow 3,000 more (total borrowed 5,000 -> 50% utilization)
+    // Dynamic rate for this loan should be based on previous utilization (which changes mid-transaction in real world, but our implementation updates *after* applying the new borrow amount).
+    // Let's look at implementation: pool.total_borrowed += amount, THEN get_utilization_bps.
+    // So for loan2, total_borrowed becomes 5,000. Utilization = 50%.
+    // Rate = 500 + (5000 * 2000 / 10000) = 500 + 1000 = 1500.
+    client.borrow(&borrower2, &3_000u64);
+    let loan2 = client.get_loan(&borrower2).unwrap();
+    assert_eq!(loan2.interest_rate_bps, 1500u32);
+}
+
+#[test]
+fn test_repay_decreases_interest_rate() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let (client, token_addr, _admin) = setup(&env);
+
+    let depositor = Address::generate(&env);
+    mint_to(&env, &token_addr, &depositor, 100_000);
+    client.deposit(&depositor, &10_000u64);
+
+    let borrower = Address::generate(&env);
+    mint_to(&env, &token_addr, &borrower, 100_000);
+
+    // Borrow 50% (5,000). Rate becomes 15% (1500)
+    client.borrow(&borrower, &5_000u64);
+    assert_eq!(client.get_current_interest_rate(), 1500u32);
+
+    // Repay immediately
+    client.repay(&borrower);
+
+    // Utilization goes back to 0. Rate goes back to 5% (500)
+    assert_eq!(client.get_current_interest_rate(), 500u32);
 }
