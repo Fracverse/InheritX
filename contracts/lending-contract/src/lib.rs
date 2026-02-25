@@ -1,7 +1,7 @@
 #![no_std]
 use soroban_sdk::{
-    contract, contracterror, contractimpl, contracttype, log, symbol_short, vec, Address,
-    Env, IntoVal, InvokeError, Val, Vec,
+    contract, contracterror, contractimpl, contracttype, log, symbol_short, vec, Address, Env,
+    IntoVal, InvokeError, Val, Vec,
 };
 
 // ─────────────────────────────────────────────────
@@ -154,7 +154,13 @@ impl LendingContract {
             .set(&DataKey::Shares(owner.clone()), &shares);
     }
 
-    fn transfer(env: &Env, token: &Address, from: &Address, to: &Address, amount: u64) -> Result<(), LendingError> {
+    fn transfer(
+        env: &Env,
+        token: &Address,
+        from: &Address,
+        to: &Address,
+        amount: u64,
+    ) -> Result<(), LendingError> {
         let amount_i128 = amount as i128;
         let args: Vec<Val> = vec![
             env,
@@ -162,7 +168,8 @@ impl LendingContract {
             to.clone().into_val(env),
             amount_i128.into_val(env),
         ];
-        let res = env.try_invoke_contract::<(), InvokeError>(token, &symbol_short!("transfer"), args);
+        let res =
+            env.try_invoke_contract::<(), InvokeError>(token, &symbol_short!("transfer"), args);
         if res.is_err() {
             return Err(LendingError::TransferFailed);
         }
@@ -230,7 +237,12 @@ impl LendingContract {
                 shares_minted: shares,
             },
         );
-        log!(&env, "Deposited {} tokens, minted {} shares", amount, shares);
+        log!(
+            &env,
+            "Deposited {} tokens, minted {} shares",
+            amount,
+            shares
+        );
         Ok(shares)
     }
 
@@ -289,7 +301,11 @@ impl LendingContract {
         }
 
         // Only one open loan per borrower
-        if env.storage().persistent().has(&DataKey::Loan(borrower.clone())) {
+        if env
+            .storage()
+            .persistent()
+            .has(&DataKey::Loan(borrower.clone()))
+        {
             return Err(LendingError::LoanAlreadyExists);
         }
 
@@ -378,9 +394,7 @@ impl LendingContract {
 
     /// Returns the outstanding loan record for the given borrower, if any.
     pub fn get_loan(env: Env, borrower: Address) -> Option<LoanRecord> {
-        env.storage()
-            .persistent()
-            .get(&DataKey::Loan(borrower))
+        env.storage().persistent().get(&DataKey::Loan(borrower))
     }
 
     /// Returns the available (un-borrowed) liquidity in the pool.
