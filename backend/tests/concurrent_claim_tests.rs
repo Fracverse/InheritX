@@ -10,31 +10,9 @@ use chrono::Utc;
 use inheritx_backend::auth::UserClaims;
 use jsonwebtoken::{encode, EncodingKey, Header};
 use serde_json::json;
-use std::net::SocketAddr;
 use tokio::join;
-use tokio::net::TcpListener;
 use tower::ServiceExt;
 use uuid::Uuid;
-
-fn generate_user_token(user_id: Uuid, email: &str) -> String {
-    let exp = Utc::now()
-        .checked_add_signed(chrono::Duration::hours(24))
-        .expect("valid timestamp")
-        .timestamp() as usize;
-
-    let claims = UserClaims {
-        user_id,
-        email: email.to_string(),
-        exp,
-    };
-
-    encode(
-        &Header::default(),
-        &claims,
-        &EncodingKey::from_secret(b"secret_key_change_in_production"),
-    )
-    .expect("Failed to generate user token")
-}
 
 async fn insert_due_plan(pool: &sqlx::PgPool, user_id: Uuid) -> Uuid {
     let plan_id = Uuid::new_v4();
