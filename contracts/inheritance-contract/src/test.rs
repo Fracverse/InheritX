@@ -1616,9 +1616,9 @@ fn test_get_claimed_plan() {
         &123456u32,
     );
 
-    // Should succeed now (plan stores net after 2% fee: 1000 * 0.98 = 980)
+    // Should succeed now, but total amount should be 0 since the entire inheritance was paid out
     let plan = client.get_claimed_plan(&owner, &plan_id);
-    assert_eq!(plan.total_amount, 980u64);
+    assert_eq!(plan.total_amount, 0u64);
 }
 
 #[test]
