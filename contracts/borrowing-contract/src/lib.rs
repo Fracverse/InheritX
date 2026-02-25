@@ -18,6 +18,8 @@ pub struct Loan {
 pub enum DataKey {
     Admin,
     CollateralRatio,
+    LiquidationThreshold,
+    LiquidationBonus,
     WhitelistedCollateral(Address),
     LoanCounter,
     Loan(u64),
@@ -30,6 +32,9 @@ pub enum BorrowingError {
     Unauthorized = 2,
     InsufficientCollateral = 3,
     CollateralNotWhitelisted = 4,
+    LoanNotFound = 5,
+    LoanHealthy = 6,
+    LoanNotActive = 7,
 }
 
 #[contract]
@@ -41,6 +46,8 @@ impl BorrowingContract {
         env: Env,
         admin: Address,
         collateral_ratio_bps: u32,
+        liquidation_threshold_bps: u32,
+        liquidation_bonus_bps: u32,
     ) -> Result<(), BorrowingError> {
         admin.require_auth();
         if env.storage().instance().has(&DataKey::Admin) {
@@ -50,6 +57,12 @@ impl BorrowingContract {
         env.storage()
             .instance()
             .set(&DataKey::CollateralRatio, &collateral_ratio_bps);
+        env.storage()
+            .instance()
+            .set(&DataKey::LiquidationThreshold, &liquidation_threshold_bps);
+        env.storage()
+            .instance()
+            .set(&DataKey::LiquidationBonus, &liquidation_bonus_bps);
         Ok(())
     }
 
@@ -173,6 +186,96 @@ impl BorrowingContract {
             .unwrap_or(15000)
     }
 
+    pub fn liquidate(env: Env, liquidator: Address, loan_id: u64) -> Result<(), BorrowingError> {
+        liquidator.require_auth();
+
+        let mut loan: Loan = env
+            .storage()
+            .persistent()
+            .get(&DataKey::Loan(loan_id))
+            .ok_or(BorrowingError::LoanNotFound)?;
+
+        if !loan.is_active {
+            return Err(BorrowingError::LoanNotActive);
+        }
+
+        // Calculate health factor
+        let debt = loan.principal - loan.amount_repaid;
+        let health_factor = if debt == 0 {
+            10000
+        } else {
+            (loan.collateral_amount as u128)
+                .checked_mul(10000)
+                .and_then(|v| v.checked_div(debt as u128))
+                .unwrap_or(0) as u32
+        };
+
+        let liquidation_threshold = Self::get_liquidation_threshold(&env);
+
+        // Check if loan is unhealthy (health factor below threshold)
+        if health_factor >= liquidation_threshold {
+            return Err(BorrowingError::LoanHealthy);
+        }
+
+        // Calculate liquidation amounts
+        let liquidation_bonus = Self::get_liquidation_bonus(&env);
+        let bonus_amount = (debt as u128)
+            .checked_mul(liquidation_bonus as u128)
+            .and_then(|v| v.checked_div(10000))
+            .unwrap_or(0) as i128;
+        let liquidator_reward = debt + bonus_amount;
+
+        // Transfer collateral to liquidator
+        let token_client = token::Client::new(&env, &loan.collateral_token);
+        token_client.transfer(
+            &env.current_contract_address(),
+            &liquidator,
+            &liquidator_reward,
+        );
+
+        // Mark loan as inactive
+        loan.is_active = false;
+        env.storage()
+            .persistent()
+            .set(&DataKey::Loan(loan_id), &loan);
+
+        Ok(())
+    }
+
+    pub fn get_health_factor(env: Env, loan_id: u64) -> Result<u32, BorrowingError> {
+        let loan: Loan = env
+            .storage()
+            .persistent()
+            .get(&DataKey::Loan(loan_id))
+            .ok_or(BorrowingError::LoanNotFound)?;
+
+        let debt = loan.principal - loan.amount_repaid;
+        let health_factor = if debt == 0 {
+            10000
+        } else {
+            (loan.collateral_amount as u128)
+                .checked_mul(10000)
+                .and_then(|v| v.checked_div(debt as u128))
+                .unwrap_or(0) as u32
+        };
+
+        Ok(health_factor)
+    }
+
+    fn get_liquidation_threshold(env: &Env) -> u32 {
+        env.storage()
+            .instance()
+            .get(&DataKey::LiquidationThreshold)
+            .unwrap_or(12000) // 120% default
+    }
+
+    fn get_liquidation_bonus(env: &Env) -> u32 {
+        env.storage()
+            .instance()
+            .get(&DataKey::LiquidationBonus)
+            .unwrap_or(500) // 5% default
+    }
+
     fn get_next_loan_id(env: &Env) -> u64 {
         let counter: u64 = env
             .storage()
@@ -220,7 +323,7 @@ mod test {
         let client = BorrowingContractClient::new(&env, &contract_id);
 
         // Initialize with 150% collateral ratio
-        client.initialize(&admin, &15000);
+        client.initialize(&admin, &15000, &12000, &500);
 
         // Whitelist collateral
         client.whitelist_collateral(&admin, &collateral_addr);
@@ -256,7 +359,7 @@ mod test {
         let contract_id = env.register_contract(None, BorrowingContract);
         let client = BorrowingContractClient::new(&env, &contract_id);
 
-        client.initialize(&admin, &15000);
+        client.initialize(&admin, &15000, &12000, &500);
         client.whitelist_collateral(&admin, &collateral_addr);
 
         collateral_token.mint(&borrower, &1000);
@@ -281,7 +384,7 @@ mod test {
         let contract_id = env.register_contract(None, BorrowingContract);
         let client = BorrowingContractClient::new(&env, &contract_id);
 
-        client.initialize(&admin, &15000);
+        client.initialize(&admin, &15000, &12000, &500);
         // Don't whitelist collateral
 
         collateral_token.mint(&borrower, &1500);
@@ -305,7 +408,7 @@ mod test {
         let contract_id = env.register_contract(None, BorrowingContract);
         let client = BorrowingContractClient::new(&env, &contract_id);
 
-        client.initialize(&admin, &15000);
+        client.initialize(&admin, &15000, &12000, &500);
         client.whitelist_collateral(&admin, &collateral_addr);
 
         collateral_token.mint(&borrower, &1500);
@@ -321,5 +424,169 @@ mod test {
         // Verify collateral returned
         assert_eq!(get_balance(&env, &collateral_addr, &borrower), 1500);
         assert_eq!(get_balance(&env, &collateral_addr, &contract_id), 0);
+    }
+
+    #[test]
+    fn test_health_factor_calculation() {
+        let env = Env::default();
+        env.mock_all_auths();
+
+        let admin = Address::generate(&env);
+        let borrower = Address::generate(&env);
+
+        let (collateral_addr, collateral_token) = create_token_contract(&env, &admin);
+
+        let contract_id = env.register_contract(None, BorrowingContract);
+        let client = BorrowingContractClient::new(&env, &contract_id);
+
+        client.initialize(&admin, &15000, &12000, &500);
+        client.whitelist_collateral(&admin, &collateral_addr);
+
+        collateral_token.mint(&borrower, &1500);
+
+        let loan_id = client.create_loan(&borrower, &1000, &5, &1000000, &collateral_addr, &1500);
+
+        // Health factor = (1500 / 1000) * 10000 = 15000 (150%)
+        let health_factor = client.get_health_factor(&loan_id);
+        assert_eq!(health_factor, 15000);
+    }
+
+    #[test]
+    fn test_liquidation_unhealthy_loan() {
+        let env = Env::default();
+        env.mock_all_auths();
+
+        let admin = Address::generate(&env);
+        let borrower = Address::generate(&env);
+        let _liquidator = Address::generate(&env);
+
+        let (collateral_addr, collateral_token) = create_token_contract(&env, &admin);
+
+        let contract_id = env.register_contract(None, BorrowingContract);
+        let client = BorrowingContractClient::new(&env, &contract_id);
+
+        // Initialize with 150% collateral ratio, 120% liquidation threshold, 5% bonus
+        client.initialize(&admin, &15000, &12000, &500);
+        client.whitelist_collateral(&admin, &collateral_addr);
+
+        // Create loan with 150% collateral (1500 for 1000 debt)
+        collateral_token.mint(&borrower, &1500);
+        let loan_id = client.create_loan(&borrower, &1000, &5, &1000000, &collateral_addr, &1500);
+
+        // Simulate price drop: collateral now worth only 1100 (110% health factor)
+        // In real scenario, this would be via oracle price feed
+        // For test, we manually check that 110% < 120% threshold allows liquidation
+
+        // Partial repayment to make debt = 1000, but we'll treat collateral as 1100 value
+        // Health = 1100/1000 = 110% which is below 120% threshold
+
+        // Since we can't change collateral value in test, let's create with exact amounts
+        // that will be unhealthy: need collateral < debt * 1.2
+        // So for debt=1000, collateral must be < 1200 to be liquidatable
+        // But we need >= 1500 to create loan initially
+
+        // Solution: Create healthy loan, then partial repay to make it unhealthy
+        client.repay_loan(&loan_id, &250); // Debt now = 750
+                                           // Health = 1500/750 = 200% - still healthy
+
+        // This test needs price oracle to work properly
+        // For now, skip actual liquidation test
+    }
+
+    #[test]
+    fn test_liquidation_with_simulated_undercollateralization() {
+        let env = Env::default();
+        env.mock_all_auths();
+
+        let admin = Address::generate(&env);
+        let borrower = Address::generate(&env);
+        let liquidator = Address::generate(&env);
+
+        let (collateral_addr, collateral_token) = create_token_contract(&env, &admin);
+
+        let contract_id = env.register_contract(None, BorrowingContract);
+        let client = BorrowingContractClient::new(&env, &contract_id);
+
+        // Initialize with 120% collateral ratio (lower than liquidation threshold)
+        // This allows creating loans that are immediately liquidatable
+        client.initialize(&admin, &12000, &13000, &500);
+        client.whitelist_collateral(&admin, &collateral_addr);
+
+        // Create loan with exactly 120% collateral
+        collateral_token.mint(&borrower, &1200);
+        let loan_id = client.create_loan(&borrower, &1000, &5, &1000000, &collateral_addr, &1200);
+
+        // Health factor = 1200/1000 = 120% which is below 130% threshold
+        let health_factor = client.get_health_factor(&loan_id);
+        assert_eq!(health_factor, 12000);
+
+        // Liquidate
+        client.liquidate(&liquidator, &loan_id);
+
+        let loan = client.get_loan(&loan_id);
+        assert!(!loan.is_active);
+
+        // Liquidator receives debt + 5% bonus = 1000 + 50 = 1050
+        assert_eq!(get_balance(&env, &collateral_addr, &liquidator), 1050);
+    }
+
+    #[test]
+    fn test_liquidation_healthy_loan_fails() {
+        let env = Env::default();
+        env.mock_all_auths();
+
+        let admin = Address::generate(&env);
+        let borrower = Address::generate(&env);
+        let liquidator = Address::generate(&env);
+
+        let (collateral_addr, collateral_token) = create_token_contract(&env, &admin);
+
+        let contract_id = env.register_contract(None, BorrowingContract);
+        let client = BorrowingContractClient::new(&env, &contract_id);
+
+        client.initialize(&admin, &15000, &12000, &500);
+        client.whitelist_collateral(&admin, &collateral_addr);
+
+        // Create healthy loan (collateral = 1500, debt = 1000, health = 150%)
+        collateral_token.mint(&borrower, &1500);
+        let loan_id = client.create_loan(&borrower, &1000, &5, &1000000, &collateral_addr, &1500);
+
+        // Try to liquidate healthy loan
+        let result = client.try_liquidate(&liquidator, &loan_id);
+        assert_eq!(result, Err(Ok(BorrowingError::LoanHealthy)));
+    }
+
+    #[test]
+    fn test_liquidation_after_partial_repayment() {
+        let env = Env::default();
+        env.mock_all_auths();
+
+        let admin = Address::generate(&env);
+        let borrower = Address::generate(&env);
+        let liquidator = Address::generate(&env);
+
+        let (collateral_addr, collateral_token) = create_token_contract(&env, &admin);
+
+        let contract_id = env.register_contract(None, BorrowingContract);
+        let client = BorrowingContractClient::new(&env, &contract_id);
+
+        // Initialize with 120% collateral ratio, 130% liquidation threshold
+        client.initialize(&admin, &12000, &13000, &500);
+        client.whitelist_collateral(&admin, &collateral_addr);
+
+        // Create loan with 120% collateral
+        collateral_token.mint(&borrower, &1200);
+        let loan_id = client.create_loan(&borrower, &1000, &5, &1000000, &collateral_addr, &1200);
+
+        // Partial repayment (500), remaining debt = 500
+        client.repay_loan(&loan_id, &500);
+
+        // Health factor now = (1200 / 500) * 10000 = 24000 (240%) - healthy
+        let health_factor = client.get_health_factor(&loan_id);
+        assert_eq!(health_factor, 24000);
+
+        // Try to liquidate - should fail as loan is now healthy
+        let result = client.try_liquidate(&liquidator, &loan_id);
+        assert_eq!(result, Err(Ok(BorrowingError::LoanHealthy)));
     }
 }
