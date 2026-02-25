@@ -5,6 +5,12 @@ use soroban_sdk::{
 };
 
 // ─────────────────────────────────────────────────
+// Constants
+// ─────────────────────────────────────────────────
+
+const MINIMUM_LIQUIDITY: u64 = 1000;
+
+// ─────────────────────────────────────────────────
 // Data Types
 // ─────────────────────────────────────────────────
 
@@ -220,7 +226,19 @@ impl LendingContract {
         Self::transfer(&env, &token, &depositor, &contract_id, amount)?;
 
         let mut pool = Self::get_pool(&env);
-        let shares = Self::shares_for_deposit(&pool, amount);
+        let mut shares = Self::shares_for_deposit(&pool, amount);
+
+        if pool.total_shares == 0 {
+            if shares <= MINIMUM_LIQUIDITY {
+                return Err(LendingError::InvalidAmount);
+            }
+            shares -= MINIMUM_LIQUIDITY;
+            pool.total_shares += MINIMUM_LIQUIDITY;
+        }
+
+        if shares == 0 {
+            return Err(LendingError::InvalidAmount);
+        }
 
         pool.total_deposits += amount;
         pool.total_shares += shares;
@@ -263,6 +281,10 @@ impl LendingContract {
 
         let mut pool = Self::get_pool(&env);
         let amount = Self::assets_for_shares(&pool, shares);
+
+        if amount == 0 {
+            return Err(LendingError::InvalidAmount);
+        }
 
         let available = pool.total_deposits.saturating_sub(pool.total_borrowed);
         if amount > available {

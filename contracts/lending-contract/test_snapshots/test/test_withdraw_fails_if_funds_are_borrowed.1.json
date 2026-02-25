@@ -83,7 +83,7 @@
                   "address": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAK3IM"
                 },
                 {
-                  "u64": 1000
+                  "u64": 2000
                 }
               ]
             }
@@ -104,7 +104,7 @@
                     {
                       "i128": {
                         "hi": 0,
-                        "lo": 1000
+                        "lo": 2000
                       }
                     }
                   ]
@@ -129,7 +129,7 @@
                   "address": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAMDR4"
                 },
                 {
-                  "u64": 900
+                  "u64": 1900
                 }
               ]
             }
@@ -341,7 +341,7 @@
                         "symbol": "amount"
                       },
                       "val": {
-                        "u64": 900
+                        "u64": 1900
                       }
                     },
                     {
@@ -464,7 +464,7 @@
                                 "symbol": "total_borrowed"
                               },
                               "val": {
-                                "u64": 900
+                                "u64": 1900
                               }
                             },
                             {
@@ -472,7 +472,7 @@
                                 "symbol": "total_deposits"
                               },
                               "val": {
-                                "u64": 900
+                                "u64": 1900
                               }
                             },
                             {
@@ -480,7 +480,7 @@
                                 "symbol": "total_shares"
                               },
                               "val": {
-                                "u64": 900
+                                "u64": 1900
                               }
                             }
                           ]
@@ -724,7 +724,7 @@
                       "val": {
                         "i128": {
                           "hi": 0,
-                          "lo": 9100
+                          "lo": 8100
                         }
                       }
                     },
@@ -797,7 +797,7 @@
                       "val": {
                         "i128": {
                           "hi": 0,
-                          "lo": 900
+                          "lo": 1900
                         }
                       }
                     },
@@ -1249,7 +1249,7 @@
                   "address": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAK3IM"
                 },
                 {
-                  "u64": 1000
+                  "u64": 2000
                 }
               ]
             }
@@ -1287,7 +1287,7 @@
                 {
                   "i128": {
                     "hi": 0,
-                    "lo": 1000
+                    "lo": 2000
                   }
                 }
               ]
@@ -1321,7 +1321,7 @@
             "data": {
               "i128": {
                 "hi": 0,
-                "lo": 1000
+                "lo": 2000
               }
             }
           }
@@ -1372,7 +1372,7 @@
                     "symbol": "amount"
                   },
                   "val": {
-                    "u64": 1000
+                    "u64": 2000
                   }
                 },
                 {
@@ -1416,7 +1416,7 @@
                   "string": "Deposited {} tokens, minted {} shares"
                 },
                 {
-                  "u64": 1000
+                  "u64": 2000
                 },
                 {
                   "u64": 1000
@@ -1475,7 +1475,7 @@
                   "address": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAMDR4"
                 },
                 {
-                  "u64": 900
+                  "u64": 1900
                 }
               ]
             }
@@ -1513,7 +1513,7 @@
                 {
                   "i128": {
                     "hi": 0,
-                    "lo": 900
+                    "lo": 1900
                   }
                 }
               ]
@@ -1547,7 +1547,7 @@
             "data": {
               "i128": {
                 "hi": 0,
-                "lo": 900
+                "lo": 1900
               }
             }
           }
@@ -1598,7 +1598,7 @@
                     "symbol": "amount"
                   },
                   "val": {
-                    "u64": 900
+                    "u64": 1900
                   }
                 },
                 {
@@ -1634,7 +1634,7 @@
                   "string": "Borrowed {} tokens"
                 },
                 {
-                  "u64": 900
+                  "u64": 1900
                 }
               ]
             }
