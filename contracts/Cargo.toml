@@ -2,7 +2,9 @@
 resolver = "2"
 members = [
   "example-contract",
-  "inheritance-contract",
+  "inheritance-contract", "lending-contract",
+  "borrowing-contract",
+  "mock-token",
 ]
 
 [workspace.dependencies]
