@@ -55,7 +55,8 @@ fn test_initialize_once() {
     let (client, token_addr, collateral_addr, admin) = setup(&env);
 
     // Second init must fail
-    let result = client.try_initialize(&admin, &token_addr, &500u32, &2000u32, &15000u32, &10000u32);
+    let result =
+        client.try_initialize(&admin, &token_addr, &500u32, &2000u32, &15000u32, &10000u32);
     assert!(result.is_err());
 }
 
@@ -842,10 +843,22 @@ fn test_utilization_cap_enforced() {
     client.deposit(&depositor, &10_000u64);
 
     // Try to borrow 8,001 (80.01% utilization) - should fail
-    let result = client.try_borrow(&borrower, &8_001u64, &collateral_addr, &12_002u64, &(30 * 24 * 60 * 60));
+    let result = client.try_borrow(
+        &borrower,
+        &8_001u64,
+        &collateral_addr,
+        &12_002u64,
+        &(30 * 24 * 60 * 60),
+    );
     assert_eq!(result, Err(Ok(LendingError::UtilizationCapExceeded)));
 
     // Borrow exactly 8,000 (80% utilization) - should succeed
-    let loan_id = client.borrow(&borrower, &8_000u64, &collateral_addr, &12_000u64, &(30 * 24 * 60 * 60));
+    let loan_id = client.borrow(
+        &borrower,
+        &8_000u64,
+        &collateral_addr,
+        &12_000u64,
+        &(30 * 24 * 60 * 60),
+    );
     assert!(loan_id > 0);
 }
