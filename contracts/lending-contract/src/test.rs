@@ -1,4 +1,5 @@
 #![cfg(test)]
+#![allow(unused_variables)]
 
 use super::*;
 use soroban_sdk::{testutils::Address as _, testutils::Ledger, token, Address, Env};
@@ -26,17 +27,21 @@ fn mint_to(env: &Env, token: &Address, to: &Address, amount: i128) {
 }
 
 // ─────────────────────────────────────────────────
-// Setup: returns (client, token_addr, admin)
+// Setup: returns (client, token_addr, collateral_addr, admin)
 // ─────────────────────────────────────────────────
-fn setup(env: &Env) -> (LendingContractClient<'_>, Address, Address) {
+fn setup(env: &Env) -> (LendingContractClient<'_>, Address, Address, Address) {
     let admin = Address::generate(env);
     let token_addr = create_token_addr(env);
+    let collateral_addr = create_token_addr(env);
 
     let contract_id = env.register_contract(None, LendingContract);
     let client = LendingContractClient::new(env, &contract_id);
-    client.initialize(&admin, &token_addr, &500u32, &2000u32); // 5% base, 20% multiplier
+    client.initialize(&admin, &token_addr, &500u32, &2000u32, &15000u32); // 5% base, 20% multiplier, 150% collateral
 
-    (client, token_addr, admin)
+    // Whitelist collateral token
+    client.whitelist_collateral(&admin, &collateral_addr);
+
+    (client, token_addr, collateral_addr, admin)
 }
 
 // ─────────────────────────────────────────────────
@@ -47,10 +52,10 @@ fn setup(env: &Env) -> (LendingContractClient<'_>, Address, Address) {
 fn test_initialize_once() {
     let env = Env::default();
     env.mock_all_auths();
-    let (client, token_addr, admin) = setup(&env);
+    let (client, token_addr, collateral_addr, admin) = setup(&env);
 
     // Second init must fail
-    let result = client.try_initialize(&admin, &token_addr, &500u32, &2000u32);
+    let result = client.try_initialize(&admin, &token_addr, &500u32, &2000u32, &15000u32);
     assert!(result.is_err());
 }
 
@@ -58,7 +63,7 @@ fn test_initialize_once() {
 fn test_deposit_mints_shares() {
     let env = Env::default();
     env.mock_all_auths();
-    let (client, token_addr, _admin) = setup(&env);
+    let (client, token_addr, collateral_addr, _admin) = setup(&env);
 
     let depositor = Address::generate(&env);
     mint_to(&env, &token_addr, &depositor, 10_000);
@@ -78,7 +83,7 @@ fn test_deposit_mints_shares() {
 fn test_second_deposit_proportional_shares() {
     let env = Env::default();
     env.mock_all_auths();
-    let (client, token_addr, _admin) = setup(&env);
+    let (client, token_addr, collateral_addr, _admin) = setup(&env);
 
     let depositor1 = Address::generate(&env);
     let depositor2 = Address::generate(&env);
@@ -102,7 +107,7 @@ fn test_second_deposit_proportional_shares() {
 fn test_withdraw_burns_shares_and_returns_tokens() {
     let env = Env::default();
     env.mock_all_auths();
-    let (client, token_addr, _admin) = setup(&env);
+    let (client, token_addr, collateral_addr, _admin) = setup(&env);
 
     let depositor = Address::generate(&env);
     mint_to(&env, &token_addr, &depositor, 10_000);
@@ -128,7 +133,7 @@ fn test_withdraw_burns_shares_and_returns_tokens() {
 fn test_withdraw_fails_not_enough_shares() {
     let env = Env::default();
     env.mock_all_auths();
-    let (client, token_addr, _admin) = setup(&env);
+    let (client, token_addr, collateral_addr, _admin) = setup(&env);
 
     let depositor = Address::generate(&env);
     mint_to(&env, &token_addr, &depositor, 10_000);
@@ -143,16 +148,24 @@ fn test_withdraw_fails_not_enough_shares() {
 fn test_borrow_reduces_available_liquidity() {
     let env = Env::default();
     env.mock_all_auths();
-    let (client, token_addr, _admin) = setup(&env);
+    let (client, token_addr, collateral_addr, _admin) = setup(&env);
 
     let depositor = Address::generate(&env);
     let borrower = Address::generate(&env);
+    mint_to(&env, &collateral_addr, &borrower, 100_000);
     mint_to(&env, &token_addr, &depositor, 10_000);
+    mint_to(&env, &collateral_addr, &borrower, 10_000);
     client.deposit(&depositor, &2000u64);
 
     let borrow_amount = 400u64;
     let balance_before = tok_client(&env, &token_addr).balance(&borrower);
-    let loan_id = client.borrow(&borrower, &borrow_amount, &(30 * 24 * 60 * 60)); // 30 days
+    let loan_id = client.borrow(
+        &borrower,
+        &borrow_amount,
+        &collateral_addr,
+        &600u64,
+        &(30 * 24 * 60 * 60),
+    ); // 30 days
 
     assert!(loan_id > 0);
     assert_eq!(
@@ -171,13 +184,19 @@ fn test_borrow_reduces_available_liquidity() {
 fn test_borrow_fails_if_insufficient_liquidity() {
     let env = Env::default();
     env.mock_all_auths();
-    let (client, token_addr, _admin) = setup(&env);
+    let (client, token_addr, collateral_addr, _admin) = setup(&env);
 
     let depositor = Address::generate(&env);
     mint_to(&env, &token_addr, &depositor, 10_000);
     client.deposit(&depositor, &2000u64);
 
-    let result = client.try_borrow(&depositor, &2001u64, &(30 * 24 * 60 * 60));
+    let result = client.try_borrow(
+        &depositor,
+        &2001u64,
+        &collateral_addr,
+        &3001u64,
+        &(30 * 24 * 60 * 60),
+    );
     assert!(result.is_err());
 }
 
@@ -185,16 +204,29 @@ fn test_borrow_fails_if_insufficient_liquidity() {
 fn test_borrow_fails_with_existing_loan() {
     let env = Env::default();
     env.mock_all_auths();
-    let (client, token_addr, _admin) = setup(&env);
+    let (client, token_addr, collateral_addr, _admin) = setup(&env);
 
     let depositor = Address::generate(&env);
     let borrower = Address::generate(&env);
+    mint_to(&env, &collateral_addr, &borrower, 100_000);
     mint_to(&env, &token_addr, &depositor, 10_000);
     client.deposit(&depositor, &2000u64);
-    client.borrow(&borrower, &200u64, &(30 * 24 * 60 * 60));
+    client.borrow(
+        &borrower,
+        &200u64,
+        &collateral_addr,
+        &300u64,
+        &(30 * 24 * 60 * 60),
+    );
 
     // Second borrow should fail
-    let result = client.try_borrow(&borrower, &100u64, &(30 * 24 * 60 * 60));
+    let result = client.try_borrow(
+        &borrower,
+        &100u64,
+        &collateral_addr,
+        &150u64,
+        &(30 * 24 * 60 * 60),
+    );
     assert!(result.is_err());
 }
 
@@ -202,15 +234,22 @@ fn test_borrow_fails_with_existing_loan() {
 fn test_repay_restores_liquidity() {
     let env = Env::default();
     env.mock_all_auths();
-    let (client, token_addr, _admin) = setup(&env);
+    let (client, token_addr, collateral_addr, _admin) = setup(&env);
 
     let depositor = Address::generate(&env);
     let borrower = Address::generate(&env);
+    mint_to(&env, &collateral_addr, &borrower, 100_000);
     mint_to(&env, &token_addr, &depositor, 10_000);
     mint_to(&env, &token_addr, &borrower, 10_000); // pre-fund borrower for repayment
 
     client.deposit(&depositor, &2000u64);
-    client.borrow(&borrower, &400u64, &(30 * 24 * 60 * 60));
+    client.borrow(
+        &borrower,
+        &400u64,
+        &collateral_addr,
+        &600u64,
+        &(30 * 24 * 60 * 60),
+    );
 
     assert_eq!(client.available_liquidity(), 1600u64);
 
@@ -231,7 +270,7 @@ fn test_repay_restores_liquidity() {
 fn test_repay_fails_with_no_loan() {
     let env = Env::default();
     env.mock_all_auths();
-    let (client, _token_addr, admin) = setup(&env);
+    let (client, _token_addr, _collateral_addr, admin) = setup(&env);
 
     let result = client.try_repay(&admin);
     assert!(result.is_err());
@@ -241,14 +280,21 @@ fn test_repay_fails_with_no_loan() {
 fn test_withdraw_fails_if_funds_are_borrowed() {
     let env = Env::default();
     env.mock_all_auths();
-    let (client, token_addr, _admin) = setup(&env);
+    let (client, token_addr, collateral_addr, _admin) = setup(&env);
 
     let depositor = Address::generate(&env);
     let borrower = Address::generate(&env);
+    mint_to(&env, &collateral_addr, &borrower, 100_000);
     mint_to(&env, &token_addr, &depositor, 10_000);
 
     client.deposit(&depositor, &2000u64);
-    client.borrow(&borrower, &1900u64, &(30 * 24 * 60 * 60)); // only 100 tokens left un-borrowed
+    client.borrow(
+        &borrower,
+        &1900u64,
+        &collateral_addr,
+        &2850u64,
+        &(30 * 24 * 60 * 60),
+    ); // only 100 tokens left un-borrowed
 
     // Depositor tries to withdraw 500 → only 100 available
     let result = client.try_withdraw(&depositor, &500u64);
@@ -262,10 +308,11 @@ fn test_withdraw_fails_if_funds_are_borrowed() {
 fn test_available_liquidity_before_and_after() {
     let env = Env::default();
     env.mock_all_auths();
-    let (client, token_addr, _admin) = setup(&env);
+    let (client, token_addr, collateral_addr, _admin) = setup(&env);
 
     let depositor = Address::generate(&env);
     let borrower = Address::generate(&env);
+    mint_to(&env, &collateral_addr, &borrower, 100_000);
     mint_to(&env, &token_addr, &depositor, 10_000);
     mint_to(&env, &token_addr, &borrower, 10_000);
 
@@ -274,7 +321,13 @@ fn test_available_liquidity_before_and_after() {
     client.deposit(&depositor, &2000u64);
     assert_eq!(client.available_liquidity(), 2000u64);
 
-    client.borrow(&borrower, &1500u64, &(30 * 24 * 60 * 60));
+    client.borrow(
+        &borrower,
+        &1500u64,
+        &collateral_addr,
+        &2250u64,
+        &(30 * 24 * 60 * 60),
+    );
     assert_eq!(client.available_liquidity(), 500u64);
 
     client.repay(&borrower);
@@ -285,7 +338,7 @@ fn test_available_liquidity_before_and_after() {
 fn test_get_loan_returns_none_when_no_loan() {
     let env = Env::default();
     env.mock_all_auths();
-    let (client, _token_addr, _admin) = setup(&env);
+    let (client, _token_addr, _collateral_addr, _admin) = setup(&env);
 
     let no_loan_addr = Address::generate(&env);
     let loan = client.get_loan(&no_loan_addr);
@@ -296,14 +349,21 @@ fn test_get_loan_returns_none_when_no_loan() {
 fn test_get_loan_returns_record_when_active() {
     let env = Env::default();
     env.mock_all_auths();
-    let (client, token_addr, _admin) = setup(&env);
+    let (client, token_addr, collateral_addr, _admin) = setup(&env);
 
     let depositor = Address::generate(&env);
     let borrower = Address::generate(&env);
+    mint_to(&env, &collateral_addr, &borrower, 100_000);
     mint_to(&env, &token_addr, &depositor, 10_000);
 
     client.deposit(&depositor, &2000u64);
-    let loan_id = client.borrow(&borrower, &300u64, &(30 * 24 * 60 * 60));
+    let loan_id = client.borrow(
+        &borrower,
+        &300u64,
+        &collateral_addr,
+        &450u64,
+        &(30 * 24 * 60 * 60),
+    );
 
     let loan = client.get_loan(&borrower).unwrap();
     assert_eq!(loan.loan_id, loan_id);
@@ -314,26 +374,27 @@ fn test_get_loan_returns_record_when_active() {
     let loan_by_id = client.get_loan_by_id(&loan_id).unwrap();
     assert_eq!(loan_by_id.loan_id, loan_id);
     assert_eq!(loan_by_id.principal, 300u64);
+    assert_eq!(loan_by_id.collateral_amount, 450u64);
 }
 
 #[test]
 fn test_invalid_amounts_rejected() {
     let env = Env::default();
     env.mock_all_auths();
-    let (client, _token_addr, admin) = setup(&env);
+    let (client, _token_addr, collateral_addr, admin) = setup(&env);
 
     let depositor = Address::generate(&env);
     assert!(client.try_deposit(&depositor, &0u64).is_err());
     assert!(client.try_withdraw(&depositor, &0u64).is_err());
     assert!(client
-        .try_borrow(&admin, &0u64, &(30 * 24 * 60 * 60))
+        .try_borrow(&admin, &0u64, &collateral_addr, &0u64, &(30 * 24 * 60 * 60))
         .is_err());
 }
 #[test]
 fn test_rounding_loss_exploit_prevented() {
     let env = Env::default();
     env.mock_all_auths();
-    let (client, token_addr, _admin) = setup(&env);
+    let (client, token_addr, collateral_addr, _admin) = setup(&env);
 
     let attacker = Address::generate(&env);
     let victim = Address::generate(&env);
@@ -355,10 +416,11 @@ fn test_interest_accrual() {
     let env = Env::default();
     env.mock_all_auths();
     // 5% APY base, 20% multiplier
-    let (client, token_addr, _admin) = setup(&env);
+    let (client, token_addr, collateral_addr, _admin) = setup(&env);
 
     let depositor = Address::generate(&env);
     let borrower = Address::generate(&env);
+    mint_to(&env, &collateral_addr, &borrower, 100_000);
     mint_to(&env, &token_addr, &depositor, 100_000);
     mint_to(&env, &token_addr, &borrower, 100_000);
 
@@ -368,7 +430,13 @@ fn test_interest_accrual() {
     // 2. Borrow 5,000
     // Utilization = 5000 / 10000 = 50%.
     // Rate = 5% + (50% * 20%) = 15% (1500 bps)
-    client.borrow(&borrower, &5_000u64, &(365 * 24 * 60 * 60)); // 1 year duration
+    client.borrow(
+        &borrower,
+        &5_000u64,
+        &collateral_addr,
+        &7500u64,
+        &(365 * 24 * 60 * 60),
+    ); // 1 year duration
 
     let current_rate = client.get_current_interest_rate();
     assert_eq!(current_rate, 1500u32);
@@ -401,15 +469,22 @@ fn test_interest_accrual() {
 fn test_interest_precision_short_time() {
     let env = Env::default();
     env.mock_all_auths();
-    let (client, token_addr, _admin) = setup(&env);
+    let (client, token_addr, collateral_addr, _admin) = setup(&env);
 
     let depositor = Address::generate(&env);
     let borrower = Address::generate(&env);
+    mint_to(&env, &collateral_addr, &borrower, 100_000);
     mint_to(&env, &token_addr, &depositor, 100_000);
     mint_to(&env, &token_addr, &borrower, 100_000);
 
     client.deposit(&depositor, &10_000u64);
-    client.borrow(&borrower, &5_000u64, &(30 * 24 * 60 * 60)); // 30 days
+    client.borrow(
+        &borrower,
+        &5_000u64,
+        &collateral_addr,
+        &7500u64,
+        &(30 * 24 * 60 * 60),
+    ); // 30 days
 
     env.ledger().set_timestamp(env.ledger().timestamp() + 3600);
 
@@ -421,7 +496,7 @@ fn test_interest_precision_short_time() {
 fn test_dynamic_interest_rate_increases_with_utilization() {
     let env = Env::default();
     env.mock_all_auths();
-    let (client, token_addr, _admin) = setup(&env);
+    let (client, token_addr, collateral_addr, _admin) = setup(&env);
 
     let depositor = Address::generate(&env);
     mint_to(&env, &token_addr, &depositor, 100_000);
@@ -431,10 +506,16 @@ fn test_dynamic_interest_rate_increases_with_utilization() {
     assert_eq!(client.get_current_interest_rate(), 500u32);
 
     let borrower1 = Address::generate(&env);
-    mint_to(&env, &token_addr, &borrower1, 100_000);
+    mint_to(&env, &collateral_addr, &borrower1, 100_000);
     // Borrow 2,000 (20% utilization)
     // Dynamic rate should be 500 + (2000 * 2000 / 10000) = 500 + 400 = 900
-    client.borrow(&borrower1, &2_000u64, &(30 * 24 * 60 * 60));
+    client.borrow(
+        &borrower1,
+        &2_000u64,
+        &collateral_addr,
+        &3000u64,
+        &(30 * 24 * 60 * 60),
+    );
     let loan1 = client.get_loan(&borrower1).unwrap();
     assert_eq!(loan1.interest_rate_bps, 900u32);
 
@@ -442,13 +523,20 @@ fn test_dynamic_interest_rate_increases_with_utilization() {
     assert_eq!(client.get_current_interest_rate(), 900u32);
 
     let borrower2 = Address::generate(&env);
+    mint_to(&env, &collateral_addr, &borrower2, 100_000);
     mint_to(&env, &token_addr, &borrower2, 100_000);
     // Borrow 3,000 more (total borrowed 5,000 -> 50% utilization)
     // Dynamic rate for this loan should be based on previous utilization (which changes mid-transaction in real world, but our implementation updates *after* applying the new borrow amount).
     // Let's look at implementation: pool.total_borrowed += amount, THEN get_utilization_bps.
     // So for loan2, total_borrowed becomes 5,000. Utilization = 50%.
     // Rate = 500 + (5000 * 2000 / 10000) = 500 + 1000 = 1500.
-    client.borrow(&borrower2, &3_000u64, &(30 * 24 * 60 * 60));
+    client.borrow(
+        &borrower2,
+        &3_000u64,
+        &collateral_addr,
+        &4500u64,
+        &(30 * 24 * 60 * 60),
+    );
     let loan2 = client.get_loan(&borrower2).unwrap();
     assert_eq!(loan2.interest_rate_bps, 1500u32);
 }
@@ -457,7 +545,7 @@ fn test_dynamic_interest_rate_increases_with_utilization() {
 fn test_unique_loan_ids() {
     let env = Env::default();
     env.mock_all_auths();
-    let (client, token_addr, _admin) = setup(&env);
+    let (client, token_addr, collateral_addr, _admin) = setup(&env);
 
     let depositor = Address::generate(&env);
     mint_to(&env, &token_addr, &depositor, 100_000);
@@ -465,18 +553,32 @@ fn test_unique_loan_ids() {
 
     let borrower1 = Address::generate(&env);
     let borrower2 = Address::generate(&env);
+    mint_to(&env, &collateral_addr, &borrower1, 100_000);
+    mint_to(&env, &collateral_addr, &borrower2, 100_000);
     mint_to(&env, &token_addr, &borrower1, 100_000);
     mint_to(&env, &token_addr, &borrower2, 100_000);
 
     // Create first loan
-    let loan_id_1 = client.borrow(&borrower1, &1_000u64, &(30 * 24 * 60 * 60));
+    let loan_id_1 = client.borrow(
+        &borrower1,
+        &1_000u64,
+        &collateral_addr,
+        &1500u64,
+        &(30 * 24 * 60 * 60),
+    );
     assert_eq!(loan_id_1, 1);
 
     // Repay first loan
     client.repay(&borrower1);
 
     // Create second loan - should have different ID
-    let loan_id_2 = client.borrow(&borrower2, &2_000u64, &(60 * 24 * 60 * 60));
+    let loan_id_2 = client.borrow(
+        &borrower2,
+        &2_000u64,
+        &collateral_addr,
+        &3000u64,
+        &(60 * 24 * 60 * 60),
+    );
     assert_eq!(loan_id_2, 2);
 
     // Verify loan can be retrieved by ID
@@ -490,10 +592,11 @@ fn test_unique_loan_ids() {
 fn test_loan_tracks_due_date() {
     let env = Env::default();
     env.mock_all_auths();
-    let (client, token_addr, _admin) = setup(&env);
+    let (client, token_addr, collateral_addr, _admin) = setup(&env);
 
     let depositor = Address::generate(&env);
     let borrower = Address::generate(&env);
+    mint_to(&env, &collateral_addr, &borrower, 100_000);
     mint_to(&env, &token_addr, &depositor, 100_000);
     mint_to(&env, &token_addr, &borrower, 100_000);
 
@@ -502,7 +605,7 @@ fn test_loan_tracks_due_date() {
     let duration = 30 * 24 * 60 * 60u64; // 30 days
     let borrow_time = env.ledger().timestamp();
 
-    client.borrow(&borrower, &1_000u64, &duration);
+    client.borrow(&borrower, &1_000u64, &collateral_addr, &1_500u64, &duration);
 
     let loan = client.get_loan(&borrower).unwrap();
     assert_eq!(loan.borrow_time, borrow_time);
@@ -513,15 +616,22 @@ fn test_loan_tracks_due_date() {
 fn test_repayment_updates_state_correctly() {
     let env = Env::default();
     env.mock_all_auths();
-    let (client, token_addr, _admin) = setup(&env);
+    let (client, token_addr, collateral_addr, _admin) = setup(&env);
 
     let depositor = Address::generate(&env);
     let borrower = Address::generate(&env);
+    mint_to(&env, &collateral_addr, &borrower, 100_000);
     mint_to(&env, &token_addr, &depositor, 100_000);
     mint_to(&env, &token_addr, &borrower, 100_000);
 
     client.deposit(&depositor, &10_000u64);
-    let loan_id = client.borrow(&borrower, &5_000u64, &(365 * 24 * 60 * 60));
+    let loan_id = client.borrow(
+        &borrower,
+        &5_000u64,
+        &collateral_addr,
+        &7500u64,
+        &(365 * 24 * 60 * 60),
+    );
 
     // Advance time to accrue interest
     env.ledger()
@@ -548,17 +658,25 @@ fn test_repayment_updates_state_correctly() {
 fn test_repay_decreases_interest_rate() {
     let env = Env::default();
     env.mock_all_auths();
-    let (client, token_addr, _admin) = setup(&env);
+    let (client, token_addr, collateral_addr, _admin) = setup(&env);
 
     let depositor = Address::generate(&env);
     mint_to(&env, &token_addr, &depositor, 100_000);
     client.deposit(&depositor, &10_000u64);
 
     let borrower = Address::generate(&env);
+    mint_to(&env, &collateral_addr, &borrower, 100_000);
     mint_to(&env, &token_addr, &borrower, 100_000);
+    mint_to(&env, &collateral_addr, &borrower, 100_000);
 
     // Borrow 50% (5,000). Rate becomes 15% (1500)
-    client.borrow(&borrower, &5_000u64, &(30 * 24 * 60 * 60));
+    client.borrow(
+        &borrower,
+        &5_000u64,
+        &collateral_addr,
+        &7500u64,
+        &(30 * 24 * 60 * 60),
+    );
     assert_eq!(client.get_current_interest_rate(), 1500u32);
 
     // Repay immediately
@@ -566,4 +684,139 @@ fn test_repay_decreases_interest_rate() {
 
     // Utilization goes back to 0. Rate goes back to 5% (500)
     assert_eq!(client.get_current_interest_rate(), 500u32);
+}
+
+#[test]
+fn test_collateral_required() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let (client, token_addr, collateral_addr, _admin) = setup(&env);
+
+    let depositor = Address::generate(&env);
+    let borrower = Address::generate(&env);
+    mint_to(&env, &collateral_addr, &borrower, 100_000);
+    mint_to(&env, &token_addr, &depositor, 100_000);
+    mint_to(&env, &collateral_addr, &borrower, 100_000);
+
+    client.deposit(&depositor, &10_000u64);
+
+    // Try to borrow without sufficient collateral (need 150% = 1500 for 1000 borrow)
+    let result = client.try_borrow(
+        &borrower,
+        &1_000u64,
+        &collateral_addr,
+        &1_400u64,
+        &(30 * 24 * 60 * 60),
+    );
+    assert_eq!(result, Err(Ok(LendingError::InsufficientCollateral)));
+
+    // With exact collateral should work
+    let loan_id = client.borrow(
+        &borrower,
+        &1_000u64,
+        &collateral_addr,
+        &1_500u64,
+        &(30 * 24 * 60 * 60),
+    );
+    assert!(loan_id > 0);
+}
+
+#[test]
+fn test_collateral_not_whitelisted() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let (client, token_addr, collateral_addr, _admin) = setup(&env);
+
+    let depositor = Address::generate(&env);
+    let borrower = Address::generate(&env);
+    mint_to(&env, &collateral_addr, &borrower, 100_000);
+    let bad_collateral = create_token_addr(&env);
+
+    mint_to(&env, &token_addr, &depositor, 100_000);
+    mint_to(&env, &bad_collateral, &borrower, 100_000);
+
+    client.deposit(&depositor, &10_000u64);
+
+    // Try to borrow with non-whitelisted collateral
+    let result = client.try_borrow(
+        &borrower,
+        &1_000u64,
+        &bad_collateral,
+        &1_500u64,
+        &(30 * 24 * 60 * 60),
+    );
+    assert_eq!(result, Err(Ok(LendingError::CollateralNotWhitelisted)));
+}
+
+#[test]
+fn test_collateral_returned_on_repay() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let (client, token_addr, collateral_addr, _admin) = setup(&env);
+
+    let depositor = Address::generate(&env);
+    let borrower = Address::generate(&env);
+    mint_to(&env, &collateral_addr, &borrower, 100_000);
+    mint_to(&env, &token_addr, &depositor, 100_000);
+    mint_to(&env, &token_addr, &borrower, 100_000);
+    mint_to(&env, &collateral_addr, &borrower, 100_000);
+
+    client.deposit(&depositor, &10_000u64);
+
+    let collateral_balance_before = tok_client(&env, &collateral_addr).balance(&borrower);
+
+    client.borrow(
+        &borrower,
+        &1_000u64,
+        &collateral_addr,
+        &1_500u64,
+        &(30 * 24 * 60 * 60),
+    );
+
+    // Collateral should be locked
+    assert_eq!(
+        tok_client(&env, &collateral_addr).balance(&borrower),
+        collateral_balance_before - 1_500
+    );
+
+    client.repay(&borrower);
+
+    // Collateral should be returned
+    assert_eq!(
+        tok_client(&env, &collateral_addr).balance(&borrower),
+        collateral_balance_before
+    );
+}
+
+#[test]
+fn test_whitelist_management() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let (client, _token_addr, collateral_addr, admin) = setup(&env);
+
+    let new_collateral = create_token_addr(&env);
+
+    // Initially not whitelisted
+    assert!(!client.is_whitelisted(&new_collateral));
+
+    // Admin whitelists it
+    client.whitelist_collateral(&admin, &new_collateral);
+    assert!(client.is_whitelisted(&new_collateral));
+
+    // Admin removes it
+    client.remove_collateral(&admin, &new_collateral);
+    assert!(!client.is_whitelisted(&new_collateral));
+
+    // Original collateral still whitelisted
+    assert!(client.is_whitelisted(&collateral_addr));
+}
+
+#[test]
+fn test_collateral_ratio() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let (client, _token_addr, _collateral_addr, _admin) = setup(&env);
+
+    // Should be 150% (15000 bps)
+    assert_eq!(client.get_collateral_ratio_bps(), 15000u32);
 }
