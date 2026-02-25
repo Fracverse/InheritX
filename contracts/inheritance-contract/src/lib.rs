@@ -1,7 +1,7 @@
 #![no_std]
 use soroban_sdk::{
-    contract, contracterror, contractimpl, contracttype, log, symbol_short, vec, Address, Bytes,
-    BytesN, Env, String, Symbol, Vec,
+    contract, contracterror, contractimpl, contracttype, log, symbol_short, token, vec, Address,
+    Bytes, BytesN, Env, IntoVal, InvokeError, String, Symbol, Val, Vec,
 };
 
 /// Current contract version - bump this on each upgrade
@@ -49,6 +49,8 @@ pub struct InheritancePlan {
     pub owner: Address,           // Plan owner
     pub created_at: u64,
     pub is_active: bool, // Plan activation status
+    pub is_lendable: bool,
+    pub total_loaned: u64,
 }
 
 #[contracterror]
@@ -82,6 +84,9 @@ pub enum InheritanceError {
     MigrationNotRequired = 26,
     PlanNotClaimed = 27,
     KycAlreadyRejected = 28,
+    InsufficientBalance = 29,
+    FeeTransferFailed = 30,
+    InsufficientLiquidity = 31,
 }
 
 #[contracttype]
@@ -166,6 +171,41 @@ pub struct ContractUpgradedEvent {
     pub new_wasm_hash: BytesN<32>,
     pub admin: Address,
     pub upgraded_at: u64,
+}
+
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct VaultDepositEvent {
+    pub plan_id: u64,
+    pub amount: u64,
+}
+
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct VaultWithdrawEvent {
+    pub plan_id: u64,
+    pub amount: u64,
+}
+
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct VaultLendableChangedEvent {
+    pub plan_id: u64,
+    pub is_lendable: bool,
+}
+
+/// Parameters for creating an inheritance plan (groups args to satisfy Clippy).
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct CreateInheritancePlanParams {
+    pub owner: Address,
+    pub token: Address,
+    pub plan_name: String,
+    pub description: String,
+    pub total_amount: u64,
+    pub distribution_method: DistributionMethod,
+    pub beneficiaries_data: Vec<(String, String, u32, Bytes, u32)>,
+    pub is_lendable: bool,
 }
 
 #[contract]
@@ -634,14 +674,20 @@ impl InheritanceContract {
         Ok(())
     }
 
-    /// Create a new inheritance plan
+    /// Creation fee in basis points (2% = 200 bp).
+    const CREATION_FEE_BP: u64 = 200;
+
+    /// Create a new inheritance plan.
+    /// Applies a 2% creation fee: fee is deducted from the user's input amount,
+    /// transferred to the admin wallet, and the net amount is saved in the plan.
     ///
     /// # Arguments
     /// * `env` - The environment
-    /// * `owner` - The plan owner
+    /// * `owner` - The plan owner (must authorize and have sufficient token balance)
+    /// * `token` - The token contract address (e.g. USDC)
     /// * `plan_name` - Name of the inheritance plan (required)
     /// * `description` - Description of the plan (max 500 characters)
-    /// * `total_amount` - Total amount in the plan (must be > 0)
+    /// * `total_amount` - User-input amount (must be > 0); fee is 2% of this, plan stores net
     /// * `distribution_method` - How to distribute the inheritance
     /// * `beneficiaries_data` - Vector of beneficiary data tuples: (full_name, email, claim_code, bank_account, allocation_bp)
     ///
@@ -649,20 +695,46 @@ impl InheritanceContract {
     /// The plan ID of the created inheritance plan
     ///
     /// # Errors
-    /// Returns InheritanceError for various validation failures
+    /// - AdminNotSet: Admin wallet not initialized
+    /// - InsufficientBalance: Owner balance less than total_amount
+    /// - FeeTransferFailed: Fee transfer to admin failed
+    /// - InvalidTotalAmount: Net amount would be zero after fee
+    /// - Other validation errors from validate_plan_inputs / validate_beneficiaries
     pub fn create_inheritance_plan(
         env: Env,
-        owner: Address,
-        plan_name: String,
-        description: String,
-        total_amount: u64,
-        distribution_method: DistributionMethod,
-        beneficiaries_data: Vec<(String, String, u32, Bytes, u32)>,
+        params: CreateInheritancePlanParams,
     ) -> Result<u64, InheritanceError> {
+        let CreateInheritancePlanParams {
+            owner,
+            token,
+            plan_name,
+            description,
+            total_amount,
+            distribution_method,
+            beneficiaries_data,
+            is_lendable,
+        } = params;
+
         // Require owner authorization
         owner.require_auth();
 
-        // Validate plan inputs (asset type is hardcoded to USDC)
+        // Admin must be set to receive the fee
+        let admin = Self::get_admin(&env).ok_or(InheritanceError::AdminNotSet)?;
+
+        // Fee: 2% of user input; net amount stored in plan
+        let fee = total_amount
+            .checked_mul(Self::CREATION_FEE_BP)
+            .and_then(|v| v.checked_div(10000))
+            .unwrap_or(0);
+        let net_amount = total_amount
+            .checked_sub(fee)
+            .ok_or(InheritanceError::InvalidTotalAmount)?;
+
+        if net_amount == 0 {
+            return Err(InheritanceError::InvalidTotalAmount);
+        }
+
+        // Validate plan inputs using user input for "full amount" validation
         let usdc_symbol = Symbol::new(&env, "USDC");
         Self::validate_plan_inputs(
             plan_name.clone(),
@@ -670,6 +742,53 @@ impl InheritanceContract {
             usdc_symbol.clone(),
             total_amount,
         )?;
+
+        // Wallet balance validation: must cover full amount (what user is debited)
+        let token_client = token::Client::new(&env, &token);
+        let balance = token_client.balance(&owner);
+        let required = total_amount as i128;
+        if balance < required {
+            return Err(InheritanceError::InsufficientBalance);
+        }
+
+        // Transfer fee to admin (owner must have authorized this via auth).
+        // Use try_invoke_contract so we can return FeeTransferFailed instead of trapping.
+        let fee_i128 = fee as i128;
+        if fee_i128 > 0 {
+            let args: Vec<Val> = vec![
+                &env,
+                owner.clone().into_val(&env),
+                admin.clone().into_val(&env),
+                fee_i128.into_val(&env),
+            ];
+            let res = env.try_invoke_contract::<(), InvokeError>(
+                &token,
+                &symbol_short!("transfer"),
+                args,
+            );
+            if res.is_err() {
+                return Err(InheritanceError::FeeTransferFailed);
+            }
+        }
+
+        // Transfer net amount to this contract (escrow for the plan).
+        // Same: catch failure and return FeeTransferFailed.
+        let contract_id = env.current_contract_address();
+        let net_i128 = net_amount as i128;
+        let net_args: Vec<Val> = vec![
+            &env,
+            owner.clone().into_val(&env),
+            contract_id.clone().into_val(&env),
+            net_i128.into_val(&env),
+        ];
+        let net_res = env.try_invoke_contract::<(), InvokeError>(
+            &token,
+            &symbol_short!("transfer"),
+            net_args,
+        );
+        if net_res.is_err() {
+            return Err(InheritanceError::FeeTransferFailed);
+        }
 
         // Validate beneficiaries
         Self::validate_beneficiaries(beneficiaries_data.clone())?;
@@ -691,18 +810,20 @@ impl InheritanceContract {
             beneficiaries.push_back(beneficiary);
         }
 
-        // Create the inheritance plan
+        // Create the inheritance plan with net amount (user input minus 2% fee)
         let plan = InheritancePlan {
             plan_name,
             description,
             asset_type: Symbol::new(&env, "USDC"),
-            total_amount,
+            total_amount: net_amount,
             distribution_method,
             beneficiaries,
             total_allocation_bp,
             owner: owner.clone(),
             created_at: env.ledger().timestamp(),
             is_active: true,
+            is_lendable,
+            total_loaned: 0,
         };
 
         // Store the plan and get the plan ID
@@ -715,6 +836,128 @@ impl InheritanceContract {
         log!(&env, "Inheritance plan created with ID: {}", plan_id);
 
         Ok(plan_id)
+    }
+
+    pub fn set_lendable(
+        env: Env,
+        owner: Address,
+        plan_id: u64,
+        is_lendable: bool,
+    ) -> Result<(), InheritanceError> {
+        owner.require_auth();
+        let mut plan = Self::get_plan(&env, plan_id).ok_or(InheritanceError::PlanNotFound)?;
+        if plan.owner != owner {
+            return Err(InheritanceError::Unauthorized);
+        }
+
+        plan.is_lendable = is_lendable;
+        Self::store_plan(&env, plan_id, &plan);
+
+        env.events().publish(
+            (symbol_short!("VAULT"), symbol_short!("LENDABLE")),
+            VaultLendableChangedEvent {
+                plan_id,
+                is_lendable,
+            },
+        );
+        log!(&env, "Vault {} lendable set to {}", plan_id, is_lendable);
+        Ok(())
+    }
+
+    pub fn deposit(
+        env: Env,
+        owner: Address,
+        token: Address,
+        plan_id: u64,
+        amount: u64,
+    ) -> Result<(), InheritanceError> {
+        owner.require_auth();
+        if amount == 0 {
+            return Err(InheritanceError::InvalidTotalAmount);
+        }
+        let mut plan = Self::get_plan(&env, plan_id).ok_or(InheritanceError::PlanNotFound)?;
+        if plan.owner != owner {
+            return Err(InheritanceError::Unauthorized);
+        }
+        if !plan.is_active {
+            return Err(InheritanceError::PlanNotActive);
+        }
+
+        let token_client = token::Client::new(&env, &token);
+        let balance = token_client.balance(&owner);
+        let required = amount as i128;
+        if balance < required {
+            return Err(InheritanceError::InsufficientBalance);
+        }
+
+        let contract_id = env.current_contract_address();
+        let args: Vec<Val> = vec![
+            &env,
+            owner.clone().into_val(&env),
+            contract_id.clone().into_val(&env),
+            required.into_val(&env),
+        ];
+        let res =
+            env.try_invoke_contract::<(), InvokeError>(&token, &symbol_short!("transfer"), args);
+        if res.is_err() {
+            return Err(InheritanceError::FeeTransferFailed);
+        }
+
+        plan.total_amount += amount;
+        Self::store_plan(&env, plan_id, &plan);
+
+        env.events().publish(
+            (symbol_short!("VAULT"), symbol_short!("DEPOSIT")),
+            VaultDepositEvent { plan_id, amount },
+        );
+        log!(&env, "Deposited {} into plan {}", amount, plan_id);
+        Ok(())
+    }
+
+    pub fn withdraw(
+        env: Env,
+        owner: Address,
+        token: Address,
+        plan_id: u64,
+        amount: u64,
+    ) -> Result<(), InheritanceError> {
+        owner.require_auth();
+        if amount == 0 {
+            return Err(InheritanceError::InvalidTotalAmount);
+        }
+        let mut plan = Self::get_plan(&env, plan_id).ok_or(InheritanceError::PlanNotFound)?;
+        if plan.owner != owner {
+            return Err(InheritanceError::Unauthorized);
+        }
+
+        let available = plan.total_amount.saturating_sub(plan.total_loaned);
+        if amount > available {
+            return Err(InheritanceError::InsufficientLiquidity);
+        }
+
+        let contract_id = env.current_contract_address();
+        let required = amount as i128;
+        let args: Vec<Val> = vec![
+            &env,
+            contract_id.clone().into_val(&env),
+            owner.clone().into_val(&env),
+            required.into_val(&env),
+        ];
+        let res =
+            env.try_invoke_contract::<(), InvokeError>(&token, &symbol_short!("transfer"), args);
+        if res.is_err() {
+            return Err(InheritanceError::FeeTransferFailed);
+        }
+
+        plan.total_amount -= amount;
+        Self::store_plan(&env, plan_id, &plan);
+
+        env.events().publish(
+            (symbol_short!("VAULT"), symbol_short!("WITHDRAW")),
+            VaultWithdrawEvent { plan_id, amount },
+        );
+        log!(&env, "Withdrew {} from plan {}", amount, plan_id);
+        Ok(())
     }
 
     fn is_claim_time_valid(env: &Env, plan: &InheritancePlan) -> bool {

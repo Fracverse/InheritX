@@ -160,3 +160,8 @@ Plans API
 ## License
 
 This project is part of the INHERITX ecosystem.
+
+### Admin Metrics API
+
+- **GET /api/admin/metrics/plans** – Get comprehensive plan statistics (admin only)
+  - Returns: total_plans, active_plans, expired_plans, triggered_plans, claimed_plans, and breakdown by status

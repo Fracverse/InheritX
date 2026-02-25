@@ -1,5 +1,5 @@
 use axum::{
-    extract::{Path, State},
+    extract::{Path, Query, State},
     routing::{get, patch, post},
     Json, Router,
 };
@@ -18,12 +18,26 @@ use crate::notifications::{AuditLogService, NotificationService};
 use crate::price_feed::{DefaultPriceFeedService, PriceFeedService};
 use crate::price_feed_handlers;
 use crate::service::{
-    ClaimPlanRequest, CreatePlanRequest, KycRecord, KycService, KycStatus, PlanService,
+    AdminMetrics, AdminService, ClaimMetricsService, ClaimPlanRequest, CreatePlanRequest,
+    KycRecord, KycService, KycStatus, PlanService, PlanStatisticsService, RevenueMetricsResponse,
+    RevenueMetricsService, UserMetricsService,
 };
 
 pub struct AppState {
     pub db: PgPool,
     pub config: Config,
+}
+
+#[derive(serde::Deserialize)]
+pub struct PaginationQuery {
+    pub page: Option<u32>,
+    pub limit: Option<u32>,
+}
+
+fn normalize_pagination(query: &PaginationQuery) -> (u32, u32) {
+    let page = query.page.unwrap_or(1).max(1);
+    let limit = query.limit.unwrap_or(10).clamp(1, 100);
+    (page, limit)
 }
 
 pub async fn create_app(db: PgPool, config: Config) -> Result<Router, ApiError> {
@@ -47,11 +61,13 @@ pub async fn create_app(db: PgPool, config: Config) -> Result<Router, ApiError> 
         .route("/health/db", get(db_health_check))
         .route("/login", post(crate::auth::login_user))
         .route("/admin/login", post(crate::auth::login_admin))
+        .route("/api/auth/nonce", post(crate::auth::get_nonce))
         .route(
             "/api/auth/nonce/:wallet_address",
             get(crate::auth::generate_nonce),
         )
-        .route("/api/auth/wallet-login", post(crate::auth::wallet_login))
+        .route("/api/auth/web3-login", post(crate::auth::web3_login))
+        .route("/api/auth/wallet-login", post(crate::auth::web3_login))
         .layer(
             ServiceBuilder::new()
                 .layer(axum::middleware::from_fn_with_state(
@@ -88,39 +104,18 @@ pub async fn create_app(db: PgPool, config: Config) -> Result<Router, ApiError> 
         .route("/api/admin/kyc/:user_id", get(get_kyc_status))
         .route("/api/admin/kyc/approve", post(approve_kyc))
         .route("/api/admin/kyc/reject", post(reject_kyc))
+        .route("/admin/metrics/overview", get(get_admin_metrics_overview))
         .route("/api/kyc", get(get_user_kyc))
         // ── Notifications ────────────────────────────────────────────────
         .route("/api/notifications", get(list_notifications))
         .route("/api/notifications/:id/read", patch(mark_notification_read))
         // ── Admin Audit Logs ─────────────────────────────────────────────
         .route("/api/admin/logs", get(list_audit_logs))
-        // ── Price Feeds & Collateral Valuation ───────────────────────────
-        .route("/api/prices/:asset_code", get(price_feed_handlers::get_price))
-        .route(
-            "/api/prices/:asset_code/history",
-            get(price_feed_handlers::get_price_history),
-        )
-        .route(
-            "/api/admin/price-feeds/register",
-            post(price_feed_handlers::register_price_feed),
-        )
-        .route(
-            "/api/admin/prices/:asset_code",
-            post(price_feed_handlers::update_price),
-        )
-        .route(
-            "/api/admin/price-feeds",
-            get(price_feed_handlers::get_active_feeds),
-        )
-        .route(
-            "/api/valuations/:asset_code/:amount",
-            get(price_feed_handlers::calculate_valuation),
-        )
-        .route(
-            "/api/plans/:plan_id/valuation",
-            get(price_feed_handlers::get_plan_valuation),
-        )
-        .with_state((db, price_service))
+        // ── Admin Metrics ────────────────────────────────────────────────
+        .route("/api/admin/metrics/plans", get(get_plan_statistics))
+        .route("/admin/metrics/claims", get(get_claim_statistics))
+        .route("/admin/metrics/users", get(get_user_growth_metrics))
+        .route("/admin/metrics/revenue", get(get_revenue_metrics))
         .with_state(state);
 
     Ok(app)
@@ -258,12 +253,20 @@ async fn get_plan(
     Path(plan_id): Path<Uuid>,
     AuthenticatedUser(user): AuthenticatedUser,
 ) -> Result<Json<Value>, ApiError> {
-    let plan = PlanService::get_plan_by_id(&state.db, plan_id, user.user_id).await?;
+    let plan = PlanService::get_plan_by_id_any_user(&state.db, plan_id).await?;
     match plan {
-        Some(p) => Ok(Json(json!({
-            "status": "success",
-            "data": p
-        }))),
+        Some(p) => {
+            if p.user_id != user.user_id {
+                return Err(ApiError::Forbidden(format!(
+                    "You do not have permission to access plan {}",
+                    plan_id
+                )));
+            }
+            Ok(Json(json!({
+                "status": "success",
+                "data": p
+            })))
+        }
         None => Err(ApiError::NotFound(format!("Plan {} not found", plan_id))),
     }
 }
@@ -313,6 +316,8 @@ async fn cancel_plan(
     Path(plan_id): Path<Uuid>,
     AuthenticatedUser(user): AuthenticatedUser,
 ) -> Result<Json<Value>, ApiError> {
+    // Pass only the pool (&state.db) as the service now handles
+    // its own internal transaction orchestration.
     let plan = PlanService::cancel_plan(&state.db, plan_id, user.user_id).await?;
 
     Ok(Json(json!({
@@ -343,27 +348,63 @@ async fn get_due_for_claim_plan(
 
 async fn get_all_due_for_claim_plans_user(
     State(state): State<Arc<AppState>>,
+    Query(query): Query<PaginationQuery>,
     AuthenticatedUser(user): AuthenticatedUser,
 ) -> Result<Json<Value>, ApiError> {
+    let (page, limit) = normalize_pagination(&query);
     let plans = PlanService::get_all_due_for_claim_plans_for_user(&state.db, user.user_id).await?;
+    let total_count = plans.len() as u64;
+    let start = ((page - 1) as usize) * (limit as usize);
+    let paged_plans = plans
+        .into_iter()
+        .skip(start)
+        .take(limit as usize)
+        .collect::<Vec<_>>();
+    let total_pages = if total_count == 0 {
+        0
+    } else {
+        total_count.div_ceil(limit as u64)
+    };
 
     Ok(Json(json!({
         "status": "success",
-        "data": plans,
-        "count": plans.len()
+        "data": paged_plans,
+        "count": paged_plans.len(),
+        "page": page,
+        "limit": limit,
+        "total_count": total_count,
+        "total_pages": total_pages
     })))
 }
 
 async fn get_all_due_for_claim_plans_admin(
     State(state): State<Arc<AppState>>,
+    Query(query): Query<PaginationQuery>,
     AuthenticatedAdmin(_admin): AuthenticatedAdmin,
 ) -> Result<Json<Value>, ApiError> {
+    let (page, limit) = normalize_pagination(&query);
     let plans = PlanService::get_all_due_for_claim_plans_admin(&state.db).await?;
+    let total_count = plans.len() as u64;
+    let start = ((page - 1) as usize) * (limit as usize);
+    let paged_plans = plans
+        .into_iter()
+        .skip(start)
+        .take(limit as usize)
+        .collect::<Vec<_>>();
+    let total_pages = if total_count == 0 {
+        0
+    } else {
+        total_count.div_ceil(limit as u64)
+    };
 
     Ok(Json(json!({
         "status": "success",
-        "data": plans,
-        "count": plans.len()
+        "data": paged_plans,
+        "count": paged_plans.len(),
+        "page": page,
+        "limit": limit,
+        "total_count": total_count,
+        "total_pages": total_pages
     })))
 }
 
@@ -423,13 +464,27 @@ async fn reject_kyc(
 
 async fn list_notifications(
     State(state): State<Arc<AppState>>,
+    Query(query): Query<PaginationQuery>,
     AuthenticatedUser(user): AuthenticatedUser,
 ) -> Result<Json<Value>, ApiError> {
-    let notifications = NotificationService::list_for_user(&state.db, user.user_id).await?;
+    let (page, limit) = normalize_pagination(&query);
+    let notifications =
+        NotificationService::list_for_user_paginated(&state.db, user.user_id, page, limit).await?;
+    let total_count = NotificationService::count_for_user(&state.db, user.user_id).await? as u64;
+    let total_pages = if total_count == 0 {
+        0
+    } else {
+        total_count.div_ceil(limit as u64)
+    };
+
     Ok(Json(json!({
         "status": "success",
         "data": notifications,
-        "count": notifications.len()
+        "count": notifications.len(),
+        "page": page,
+        "limit": limit,
+        "total_count": total_count,
+        "total_pages": total_pages
     })))
 }
 
@@ -449,12 +504,83 @@ async fn mark_notification_read(
 
 async fn list_audit_logs(
     State(state): State<Arc<AppState>>,
+    Query(query): Query<PaginationQuery>,
     AuthenticatedAdmin(_admin): AuthenticatedAdmin,
 ) -> Result<Json<Value>, ApiError> {
-    let logs = AuditLogService::list_all(&state.db).await?;
+    let (page, limit) = normalize_pagination(&query);
+    let logs = AuditLogService::list_all_paginated(&state.db, page, limit).await?;
+    let total_count = AuditLogService::count_all(&state.db).await? as u64;
+    let total_pages = if total_count == 0 {
+        0
+    } else {
+        total_count.div_ceil(limit as u64)
+    };
+
     Ok(Json(json!({
         "status": "success",
         "data": logs,
-        "count": logs.len()
+        "count": logs.len(),
+        "page": page,
+        "limit": limit,
+        "total_count": total_count,
+        "total_pages": total_pages
+    })))
+}
+
+async fn get_admin_metrics_overview(
+    State(state): State<Arc<AppState>>,
+    AuthenticatedAdmin(_admin): AuthenticatedAdmin,
+) -> Result<Json<AdminMetrics>, ApiError> {
+    let metrics = AdminService::get_metrics_overview(&state.db).await?;
+    Ok(Json(metrics))
+}
+
+// ── Admin Metrics Handler ─────────────────────────────────────────────────────
+
+async fn get_plan_statistics(
+    State(state): State<Arc<AppState>>,
+    AuthenticatedAdmin(_admin): AuthenticatedAdmin,
+) -> Result<Json<Value>, ApiError> {
+    let stats = PlanStatisticsService::get_plan_statistics(&state.db).await?;
+    Ok(Json(json!({
+        "status": "success",
+        "data": stats
+    })))
+}
+
+async fn get_user_growth_metrics(
+    State(state): State<Arc<AppState>>,
+    AuthenticatedAdmin(_admin): AuthenticatedAdmin,
+) -> Result<Json<Value>, ApiError> {
+    let metrics = UserMetricsService::get_user_growth_metrics(&state.db).await?;
+    Ok(Json(json!({
+        "status": "success",
+        "data": metrics
+    })))
+}
+
+#[derive(serde::Deserialize)]
+pub struct RevenueMetricsQuery {
+    pub range: Option<String>,
+}
+
+async fn get_revenue_metrics(
+    State(state): State<Arc<AppState>>,
+    AuthenticatedAdmin(_admin): AuthenticatedAdmin,
+    Query(query): Query<RevenueMetricsQuery>,
+) -> Result<Json<RevenueMetricsResponse>, ApiError> {
+    let range = query.range.unwrap_or_else(|| "daily".to_string());
+    let metrics = RevenueMetricsService::get_revenue_breakdown(&state.db, &range).await?;
+    Ok(Json(metrics))
+}
+
+async fn get_claim_statistics(
+    State(state): State<Arc<AppState>>,
+    AuthenticatedAdmin(_admin): AuthenticatedAdmin,
+) -> Result<Json<Value>, ApiError> {
+    let metrics = ClaimMetricsService::get_claim_statistics(&state.db).await?;
+    Ok(Json(json!({
+        "status": "success",
+        "data": metrics
     })))
 }

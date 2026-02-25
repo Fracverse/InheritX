@@ -1,4 +1,3 @@
-// This file contains tests for notification functionality.
 mod helpers;
 
 use axum::{
@@ -424,7 +423,6 @@ async fn cannot_mark_another_user_notification() {
     let user_a_id = Uuid::new_v4();
     let user_b_id = Uuid::new_v4();
 
-    // FIX: destructure with `&id` to avoid double-reference (&&Uuid) from iterating &[...]
     for &id in &[user_a_id, user_b_id] {
         sqlx::query("INSERT INTO users (id, email, password_hash) VALUES ($1, $2, $3)")
             .bind(id)
