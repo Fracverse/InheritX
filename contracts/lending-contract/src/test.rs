@@ -152,8 +152,9 @@ fn test_borrow_reduces_available_liquidity() {
 
     let borrow_amount = 400u64;
     let balance_before = tok_client(&env, &token_addr).balance(&borrower);
-    client.borrow(&borrower, &borrow_amount);
+    let loan_id = client.borrow(&borrower, &borrow_amount, &(30 * 24 * 60 * 60)); // 30 days
 
+    assert!(loan_id > 0);
     assert_eq!(
         tok_client(&env, &token_addr).balance(&borrower),
         balance_before + 400
@@ -176,7 +177,7 @@ fn test_borrow_fails_if_insufficient_liquidity() {
     mint_to(&env, &token_addr, &depositor, 10_000);
     client.deposit(&depositor, &2000u64);
 
-    let result = client.try_borrow(&depositor, &2001u64);
+    let result = client.try_borrow(&depositor, &2001u64, &(30 * 24 * 60 * 60));
     assert!(result.is_err());
 }
 
@@ -190,10 +191,10 @@ fn test_borrow_fails_with_existing_loan() {
     let borrower = Address::generate(&env);
     mint_to(&env, &token_addr, &depositor, 10_000);
     client.deposit(&depositor, &2000u64);
-    client.borrow(&borrower, &200u64);
+    client.borrow(&borrower, &200u64, &(30 * 24 * 60 * 60));
 
     // Second borrow should fail
-    let result = client.try_borrow(&borrower, &100u64);
+    let result = client.try_borrow(&borrower, &100u64, &(30 * 24 * 60 * 60));
     assert!(result.is_err());
 }
 
@@ -209,7 +210,7 @@ fn test_repay_restores_liquidity() {
     mint_to(&env, &token_addr, &borrower, 10_000); // pre-fund borrower for repayment
 
     client.deposit(&depositor, &2000u64);
-    client.borrow(&borrower, &400u64);
+    client.borrow(&borrower, &400u64, &(30 * 24 * 60 * 60));
 
     assert_eq!(client.available_liquidity(), 1600u64);
 
@@ -247,7 +248,7 @@ fn test_withdraw_fails_if_funds_are_borrowed() {
     mint_to(&env, &token_addr, &depositor, 10_000);
 
     client.deposit(&depositor, &2000u64);
-    client.borrow(&borrower, &1900u64); // only 100 tokens left un-borrowed
+    client.borrow(&borrower, &1900u64, &(30 * 24 * 60 * 60)); // only 100 tokens left un-borrowed
 
     // Depositor tries to withdraw 500 → only 100 available
     let result = client.try_withdraw(&depositor, &500u64);
@@ -273,7 +274,7 @@ fn test_available_liquidity_before_and_after() {
     client.deposit(&depositor, &2000u64);
     assert_eq!(client.available_liquidity(), 2000u64);
 
-    client.borrow(&borrower, &1500u64);
+    client.borrow(&borrower, &1500u64, &(30 * 24 * 60 * 60));
     assert_eq!(client.available_liquidity(), 500u64);
 
     client.repay(&borrower);
@@ -302,11 +303,17 @@ fn test_get_loan_returns_record_when_active() {
     mint_to(&env, &token_addr, &depositor, 10_000);
 
     client.deposit(&depositor, &2000u64);
-    client.borrow(&borrower, &300u64);
+    let loan_id = client.borrow(&borrower, &300u64, &(30 * 24 * 60 * 60));
 
     let loan = client.get_loan(&borrower).unwrap();
-    assert_eq!(loan.amount, 300u64);
+    assert_eq!(loan.loan_id, loan_id);
+    assert_eq!(loan.principal, 300u64);
     assert_eq!(loan.borrower, borrower);
+
+    // Test get_loan_by_id
+    let loan_by_id = client.get_loan_by_id(&loan_id).unwrap();
+    assert_eq!(loan_by_id.loan_id, loan_id);
+    assert_eq!(loan_by_id.principal, 300u64);
 }
 
 #[test]
@@ -318,7 +325,9 @@ fn test_invalid_amounts_rejected() {
     let depositor = Address::generate(&env);
     assert!(client.try_deposit(&depositor, &0u64).is_err());
     assert!(client.try_withdraw(&depositor, &0u64).is_err());
-    assert!(client.try_borrow(&admin, &0u64).is_err());
+    assert!(client
+        .try_borrow(&admin, &0u64, &(30 * 24 * 60 * 60))
+        .is_err());
 }
 #[test]
 fn test_rounding_loss_exploit_prevented() {
@@ -359,7 +368,7 @@ fn test_interest_accrual() {
     // 2. Borrow 5,000
     // Utilization = 5000 / 10000 = 50%.
     // Rate = 5% + (50% * 20%) = 15% (1500 bps)
-    client.borrow(&borrower, &5_000u64);
+    client.borrow(&borrower, &5_000u64, &(365 * 24 * 60 * 60)); // 1 year duration
 
     let current_rate = client.get_current_interest_rate();
     assert_eq!(current_rate, 1500u32);
@@ -400,7 +409,7 @@ fn test_interest_precision_short_time() {
     mint_to(&env, &token_addr, &borrower, 100_000);
 
     client.deposit(&depositor, &10_000u64);
-    client.borrow(&borrower, &5_000u64);
+    client.borrow(&borrower, &5_000u64, &(30 * 24 * 60 * 60)); // 30 days
 
     env.ledger().set_timestamp(env.ledger().timestamp() + 3600);
 
@@ -425,7 +434,7 @@ fn test_dynamic_interest_rate_increases_with_utilization() {
     mint_to(&env, &token_addr, &borrower1, 100_000);
     // Borrow 2,000 (20% utilization)
     // Dynamic rate should be 500 + (2000 * 2000 / 10000) = 500 + 400 = 900
-    client.borrow(&borrower1, &2_000u64);
+    client.borrow(&borrower1, &2_000u64, &(30 * 24 * 60 * 60));
     let loan1 = client.get_loan(&borrower1).unwrap();
     assert_eq!(loan1.interest_rate_bps, 900u32);
 
@@ -439,9 +448,100 @@ fn test_dynamic_interest_rate_increases_with_utilization() {
     // Let's look at implementation: pool.total_borrowed += amount, THEN get_utilization_bps.
     // So for loan2, total_borrowed becomes 5,000. Utilization = 50%.
     // Rate = 500 + (5000 * 2000 / 10000) = 500 + 1000 = 1500.
-    client.borrow(&borrower2, &3_000u64);
+    client.borrow(&borrower2, &3_000u64, &(30 * 24 * 60 * 60));
     let loan2 = client.get_loan(&borrower2).unwrap();
     assert_eq!(loan2.interest_rate_bps, 1500u32);
+}
+
+#[test]
+fn test_unique_loan_ids() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let (client, token_addr, _admin) = setup(&env);
+
+    let depositor = Address::generate(&env);
+    mint_to(&env, &token_addr, &depositor, 100_000);
+    client.deposit(&depositor, &50_000u64);
+
+    let borrower1 = Address::generate(&env);
+    let borrower2 = Address::generate(&env);
+    mint_to(&env, &token_addr, &borrower1, 100_000);
+    mint_to(&env, &token_addr, &borrower2, 100_000);
+
+    // Create first loan
+    let loan_id_1 = client.borrow(&borrower1, &1_000u64, &(30 * 24 * 60 * 60));
+    assert_eq!(loan_id_1, 1);
+
+    // Repay first loan
+    client.repay(&borrower1);
+
+    // Create second loan - should have different ID
+    let loan_id_2 = client.borrow(&borrower2, &2_000u64, &(60 * 24 * 60 * 60));
+    assert_eq!(loan_id_2, 2);
+
+    // Verify loan can be retrieved by ID
+    let loan = client.get_loan_by_id(&loan_id_2).unwrap();
+    assert_eq!(loan.loan_id, 2);
+    assert_eq!(loan.principal, 2_000u64);
+    assert_eq!(loan.borrower, borrower2);
+}
+
+#[test]
+fn test_loan_tracks_due_date() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let (client, token_addr, _admin) = setup(&env);
+
+    let depositor = Address::generate(&env);
+    let borrower = Address::generate(&env);
+    mint_to(&env, &token_addr, &depositor, 100_000);
+    mint_to(&env, &token_addr, &borrower, 100_000);
+
+    client.deposit(&depositor, &10_000u64);
+
+    let duration = 30 * 24 * 60 * 60u64; // 30 days
+    let borrow_time = env.ledger().timestamp();
+
+    client.borrow(&borrower, &1_000u64, &duration);
+
+    let loan = client.get_loan(&borrower).unwrap();
+    assert_eq!(loan.borrow_time, borrow_time);
+    assert_eq!(loan.due_date, borrow_time + duration);
+}
+
+#[test]
+fn test_repayment_updates_state_correctly() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let (client, token_addr, _admin) = setup(&env);
+
+    let depositor = Address::generate(&env);
+    let borrower = Address::generate(&env);
+    mint_to(&env, &token_addr, &depositor, 100_000);
+    mint_to(&env, &token_addr, &borrower, 100_000);
+
+    client.deposit(&depositor, &10_000u64);
+    let loan_id = client.borrow(&borrower, &5_000u64, &(365 * 24 * 60 * 60));
+
+    // Advance time to accrue interest
+    env.ledger()
+        .set_timestamp(env.ledger().timestamp() + 31_536_000); // 1 year
+
+    let pool_before = client.get_pool_state();
+    assert_eq!(pool_before.total_borrowed, 5_000);
+
+    // Repay
+    let total_repaid = client.repay(&borrower);
+    assert_eq!(total_repaid, 5_750); // 5000 + 750 interest
+
+    // Verify state updates
+    let pool_after = client.get_pool_state();
+    assert_eq!(pool_after.total_borrowed, 0);
+    assert_eq!(pool_after.total_deposits, 10_750); // Original + interest
+
+    // Verify loan is removed
+    assert!(client.get_loan(&borrower).is_none());
+    assert!(client.get_loan_by_id(&loan_id).is_none());
 }
 
 #[test]
@@ -458,7 +558,7 @@ fn test_repay_decreases_interest_rate() {
     mint_to(&env, &token_addr, &borrower, 100_000);
 
     // Borrow 50% (5,000). Rate becomes 15% (1500)
-    client.borrow(&borrower, &5_000u64);
+    client.borrow(&borrower, &5_000u64, &(30 * 24 * 60 * 60));
     assert_eq!(client.get_current_interest_rate(), 1500u32);
 
     // Repay immediately

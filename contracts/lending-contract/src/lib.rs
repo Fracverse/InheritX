@@ -29,9 +29,11 @@ const SECONDS_IN_YEAR: u64 = 31_536_000;
 #[contracttype]
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct LoanRecord {
+    pub loan_id: u64,
     pub borrower: Address,
-    pub amount: u64,
+    pub principal: u64,
     pub borrow_time: u64,
+    pub due_date: u64,
     pub interest_rate_bps: u32,
 }
 
@@ -58,15 +60,20 @@ pub struct WithdrawEvent {
 #[contracttype]
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct BorrowEvent {
+    pub loan_id: u64,
     pub borrower: Address,
     pub amount: u64,
+    pub due_date: u64,
 }
 
 #[contracttype]
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct RepayEvent {
+    pub loan_id: u64,
     pub borrower: Address,
-    pub amount: u64,
+    pub principal: u64,
+    pub interest: u64,
+    pub total_amount: u64,
 }
 
 // ─────────────────────────────────────────────────
@@ -100,6 +107,8 @@ pub enum DataKey {
     Pool,
     Shares(Address),
     Loan(Address),
+    NextLoanId,
+    LoanById(u64),
 }
 
 // ─────────────────────────────────────────────────
@@ -171,6 +180,21 @@ impl LendingContract {
         env.storage()
             .persistent()
             .set(&DataKey::Shares(owner.clone()), &shares);
+    }
+
+    fn get_next_loan_id(env: &Env) -> u64 {
+        env.storage()
+            .instance()
+            .get(&DataKey::NextLoanId)
+            .unwrap_or(1u64)
+    }
+
+    fn increment_loan_id(env: &Env) -> u64 {
+        let current = Self::get_next_loan_id(env);
+        env.storage()
+            .instance()
+            .set(&DataKey::NextLoanId, &(current + 1));
+        current
     }
 
     fn transfer(
@@ -369,7 +393,13 @@ impl LendingContract {
 
     /// Borrow `amount` of the underlying token from the pool.
     /// Reduces available liquidity. Only one open loan per borrower at a time.
-    pub fn borrow(env: Env, borrower: Address, amount: u64) -> Result<(), LendingError> {
+    /// Returns the unique loan ID.
+    pub fn borrow(
+        env: Env,
+        borrower: Address,
+        amount: u64,
+        duration_seconds: u64,
+    ) -> Result<u64, LendingError> {
         Self::require_initialized(&env)?;
         borrower.require_auth();
 
@@ -400,15 +430,25 @@ impl LendingContract {
 
         Self::set_pool(&env, &pool);
 
-        env.storage().persistent().set(
-            &DataKey::Loan(borrower.clone()),
-            &LoanRecord {
-                borrower: borrower.clone(),
-                amount,
-                borrow_time: env.ledger().timestamp(),
-                interest_rate_bps: dynamic_rate_bps,
-            },
-        );
+        let loan_id = Self::increment_loan_id(&env);
+        let borrow_time = env.ledger().timestamp();
+        let due_date = borrow_time + duration_seconds;
+
+        let loan = LoanRecord {
+            loan_id,
+            borrower: borrower.clone(),
+            principal: amount,
+            borrow_time,
+            due_date,
+            interest_rate_bps: dynamic_rate_bps,
+        };
+
+        env.storage()
+            .persistent()
+            .set(&DataKey::Loan(borrower.clone()), &loan);
+        env.storage()
+            .persistent()
+            .set(&DataKey::LoanById(loan_id), &loan);
 
         let token = Self::get_token(&env);
         let contract_id = env.current_contract_address();
@@ -417,16 +457,19 @@ impl LendingContract {
         env.events().publish(
             (symbol_short!("POOL"), symbol_short!("BORROW")),
             BorrowEvent {
+                loan_id,
                 borrower: borrower.clone(),
                 amount,
+                due_date,
             },
         );
-        log!(&env, "Borrowed {} tokens", amount);
-        Ok(())
+        log!(&env, "Loan {} created: {} tokens", loan_id, amount);
+        Ok(loan_id)
     }
 
     /// Repay the full outstanding loan for the caller.
     /// Restores liquidity to the pool and closes the loan record.
+    /// Returns the total amount repaid (principal + interest).
     pub fn repay(env: Env, borrower: Address) -> Result<u64, LendingError> {
         Self::require_initialized(&env)?;
         borrower.require_auth();
@@ -438,33 +481,41 @@ impl LendingContract {
             .ok_or(LendingError::NoOpenLoan)?;
 
         let elapsed = env.ledger().timestamp().saturating_sub(loan.borrow_time);
-        let interest = Self::calculate_interest(loan.amount, loan.interest_rate_bps, elapsed);
-        let total_repayment = loan.amount + interest;
+        let interest = Self::calculate_interest(loan.principal, loan.interest_rate_bps, elapsed);
+        let total_repayment = loan.principal + interest;
 
         let token = Self::get_token(&env);
         let contract_id = env.current_contract_address();
         Self::transfer(&env, &token, &borrower, &contract_id, total_repayment)?;
 
         let mut pool = Self::get_pool(&env);
-        pool.total_borrowed -= loan.amount;
+        pool.total_borrowed -= loan.principal;
         pool.total_deposits += interest; // Interest increases pool value for share holders
         Self::set_pool(&env, &pool);
 
         env.storage()
             .persistent()
             .remove(&DataKey::Loan(borrower.clone()));
+        env.storage()
+            .persistent()
+            .remove(&DataKey::LoanById(loan.loan_id));
 
         env.events().publish(
             (symbol_short!("POOL"), symbol_short!("REPAY")),
             RepayEvent {
+                loan_id: loan.loan_id,
                 borrower: borrower.clone(),
-                amount: total_repayment,
+                principal: loan.principal,
+                interest,
+                total_amount: total_repayment,
             },
         );
         log!(
             &env,
-            "Repaid {} tokens ({} interest)",
+            "Loan {} repaid: {} total ({} principal + {} interest)",
+            loan.loan_id,
             total_repayment,
+            loan.principal,
             interest
         );
         Ok(total_repayment)
@@ -478,8 +529,8 @@ impl LendingContract {
             Some(loan) => {
                 let elapsed = env.ledger().timestamp().saturating_sub(loan.borrow_time);
                 let interest =
-                    Self::calculate_interest(loan.amount, loan.interest_rate_bps, elapsed);
-                Ok(loan.amount + interest)
+                    Self::calculate_interest(loan.principal, loan.interest_rate_bps, elapsed);
+                Ok(loan.principal + interest)
             }
             None => Err(LendingError::NoOpenLoan),
         }
@@ -501,6 +552,11 @@ impl LendingContract {
     /// Returns the outstanding loan record for the given borrower, if any.
     pub fn get_loan(env: Env, borrower: Address) -> Option<LoanRecord> {
         env.storage().persistent().get(&DataKey::Loan(borrower))
+    }
+
+    /// Returns the loan record by unique loan ID, if any.
+    pub fn get_loan_by_id(env: Env, loan_id: u64) -> Option<LoanRecord> {
+        env.storage().persistent().get(&DataKey::LoanById(loan_id))
     }
 
     /// Returns the available (un-borrowed) liquidity in the pool.
