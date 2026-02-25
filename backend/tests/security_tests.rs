@@ -309,8 +309,7 @@ async fn test_malformed_jwt_rejected() {
         return;
     };
 
-    let malformed_token =
-        "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.invalid_payload.invalid_signature";
+    let malformed_token = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.invalid_payload.invalid_signature";
 
     let response = test_context
         .app
