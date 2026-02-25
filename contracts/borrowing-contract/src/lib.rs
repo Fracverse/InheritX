@@ -291,4 +291,3 @@ impl BorrowingContract {
         next_id
     }
 }
-
