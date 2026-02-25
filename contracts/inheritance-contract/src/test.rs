@@ -2016,3 +2016,543 @@ fn test_vault_withdraw_prevents_over_withdrawal() {
     let err = client.try_withdraw(&owner, &token, &plan_id, &100u64);
     assert!(err.is_err());
 }
+
+// ───────────────────────────────────────────────────
+// Loan Recall on Inheritance Trigger Tests
+// ───────────────────────────────────────────────────
+
+#[test]
+fn test_trigger_inheritance_freezes_loans() {
+    let env = Env::default();
+    let (client, token, admin, owner) = setup_with_token_and_admin(&env);
+
+    let plan_id = client.create_inheritance_plan(&plan_params(
+        &env,
+        &owner,
+        &token,
+        "Will",
+        "My will",
+        100_000u64,
+        DistributionMethod::LumpSum,
+        &one_beneficiary(&env, "Alice", "alice@example.com", 123456),
+    ));
+
+    // Plan should be lendable initially
+    let plan = client.get_plan_details(&plan_id).unwrap();
+    assert!(plan.is_lendable);
+
+    // Trigger inheritance
+    client.trigger_inheritance(&admin, &plan_id);
+
+    // Plan should now have is_lendable = false (loans frozen)
+    let plan = client.get_plan_details(&plan_id).unwrap();
+    assert!(!plan.is_lendable);
+
+    // Trigger info should exist
+    let trigger_info = client.get_inheritance_trigger(&plan_id);
+    assert!(trigger_info.is_some());
+    let info = trigger_info.unwrap();
+    assert!(info.loan_freeze_active);
+    assert!(!info.recall_attempted);
+    assert!(!info.liquidation_triggered);
+}
+
+#[test]
+fn test_trigger_inheritance_double_trigger_fails() {
+    let env = Env::default();
+    let (client, token, admin, owner) = setup_with_token_and_admin(&env);
+
+    let plan_id = client.create_inheritance_plan(&plan_params(
+        &env,
+        &owner,
+        &token,
+        "Will",
+        "My will",
+        100_000u64,
+        DistributionMethod::LumpSum,
+        &one_beneficiary(&env, "Alice", "alice@example.com", 123456),
+    ));
+
+    client.trigger_inheritance(&admin, &plan_id);
+
+    // Second trigger should fail
+    let result = client.try_trigger_inheritance(&admin, &plan_id);
+    assert!(result.is_err());
+}
+
+#[test]
+fn test_trigger_inheritance_non_admin_fails() {
+    let env = Env::default();
+    let (client, token, _admin, owner) = setup_with_token_and_admin(&env);
+
+    let plan_id = client.create_inheritance_plan(&plan_params(
+        &env,
+        &owner,
+        &token,
+        "Will",
+        "My will",
+        100_000u64,
+        DistributionMethod::LumpSum,
+        &one_beneficiary(&env, "Alice", "alice@example.com", 123456),
+    ));
+
+    let non_admin = create_test_address(&env, 999);
+    let result = client.try_trigger_inheritance(&non_admin, &plan_id);
+    assert!(result.is_err());
+}
+
+#[test]
+fn test_trigger_inheritance_inactive_plan_fails() {
+    let env = Env::default();
+    let (client, token, admin, owner) = setup_with_token_and_admin(&env);
+
+    let plan_id = client.create_inheritance_plan(&plan_params(
+        &env,
+        &owner,
+        &token,
+        "Will",
+        "My will",
+        100_000u64,
+        DistributionMethod::LumpSum,
+        &one_beneficiary(&env, "Alice", "alice@example.com", 123456),
+    ));
+
+    // Deactivate first
+    client.deactivate_inheritance_plan(&owner, &plan_id);
+
+    let result = client.try_trigger_inheritance(&admin, &plan_id);
+    assert!(result.is_err());
+}
+
+#[test]
+fn test_recall_loan_success() {
+    let env = Env::default();
+    let (client, token, admin, owner) = setup_with_token_and_admin(&env);
+
+    let plan_id = client.create_inheritance_plan(&plan_params(
+        &env,
+        &owner,
+        &token,
+        "Will",
+        "My will",
+        100_000u64,
+        DistributionMethod::LumpSum,
+        &one_beneficiary(&env, "Alice", "alice@example.com", 123456),
+    ));
+
+    // Simulate outstanding loans by setting total_loaned
+    let mut plan = client.get_plan_details(&plan_id).unwrap();
+    plan.total_loaned = 50_000;
+    env.as_contract(&client.address, || {
+        env.storage()
+            .persistent()
+            .set(&DataKey::Plan(plan_id), &plan);
+    });
+
+    // Trigger inheritance
+    client.trigger_inheritance(&admin, &plan_id);
+
+    // Recall 30,000 of the 50,000 loaned
+    client.recall_loan(&admin, &plan_id, &30_000u64);
+
+    let plan = client.get_plan_details(&plan_id).unwrap();
+    assert_eq!(plan.total_loaned, 20_000);
+
+    let info = client.get_inheritance_trigger(&plan_id).unwrap();
+    assert!(info.recall_attempted);
+    assert_eq!(info.recalled_amount, 30_000);
+
+    // Recall remaining
+    client.recall_loan(&admin, &plan_id, &20_000u64);
+
+    let plan = client.get_plan_details(&plan_id).unwrap();
+    assert_eq!(plan.total_loaned, 0);
+
+    let info = client.get_inheritance_trigger(&plan_id).unwrap();
+    assert_eq!(info.recalled_amount, 50_000);
+}
+
+#[test]
+fn test_recall_loan_exceeds_loaned_fails() {
+    let env = Env::default();
+    let (client, token, admin, owner) = setup_with_token_and_admin(&env);
+
+    let plan_id = client.create_inheritance_plan(&plan_params(
+        &env,
+        &owner,
+        &token,
+        "Will",
+        "My will",
+        100_000u64,
+        DistributionMethod::LumpSum,
+        &one_beneficiary(&env, "Alice", "alice@example.com", 123456),
+    ));
+
+    let mut plan = client.get_plan_details(&plan_id).unwrap();
+    plan.total_loaned = 10_000;
+    env.as_contract(&client.address, || {
+        env.storage()
+            .persistent()
+            .set(&DataKey::Plan(plan_id), &plan);
+    });
+
+    client.trigger_inheritance(&admin, &plan_id);
+
+    // Recall more than loaned should fail
+    let result = client.try_recall_loan(&admin, &plan_id, &20_000u64);
+    assert!(result.is_err());
+}
+
+#[test]
+fn test_recall_loan_without_trigger_fails() {
+    let env = Env::default();
+    let (client, token, admin, owner) = setup_with_token_and_admin(&env);
+
+    let plan_id = client.create_inheritance_plan(&plan_params(
+        &env,
+        &owner,
+        &token,
+        "Will",
+        "My will",
+        100_000u64,
+        DistributionMethod::LumpSum,
+        &one_beneficiary(&env, "Alice", "alice@example.com", 123456),
+    ));
+
+    // Try to recall without triggering inheritance first
+    let result = client.try_recall_loan(&admin, &plan_id, &1000u64);
+    assert!(result.is_err());
+}
+
+#[test]
+fn test_recall_loan_no_outstanding_loans_fails() {
+    let env = Env::default();
+    let (client, token, admin, owner) = setup_with_token_and_admin(&env);
+
+    let plan_id = client.create_inheritance_plan(&plan_params(
+        &env,
+        &owner,
+        &token,
+        "Will",
+        "My will",
+        100_000u64,
+        DistributionMethod::LumpSum,
+        &one_beneficiary(&env, "Alice", "alice@example.com", 123456),
+    ));
+
+    client.trigger_inheritance(&admin, &plan_id);
+
+    // No loans to recall
+    let result = client.try_recall_loan(&admin, &plan_id, &1000u64);
+    assert!(result.is_err());
+}
+
+#[test]
+fn test_liquidation_fallback_success() {
+    let env = Env::default();
+    let (client, token, admin, owner) = setup_with_token_and_admin(&env);
+
+    let plan_id = client.create_inheritance_plan(&plan_params(
+        &env,
+        &owner,
+        &token,
+        "Will",
+        "My will",
+        100_000u64,
+        DistributionMethod::LumpSum,
+        &one_beneficiary(&env, "Alice", "alice@example.com", 123456),
+    ));
+
+    // Plan stores 98,000 (100,000 - 2% fee)
+    // Simulate 30,000 in loans
+    let mut plan = client.get_plan_details(&plan_id).unwrap();
+    plan.total_loaned = 30_000;
+    env.as_contract(&client.address, || {
+        env.storage()
+            .persistent()
+            .set(&DataKey::Plan(plan_id), &plan);
+    });
+
+    // Trigger inheritance
+    client.trigger_inheritance(&admin, &plan_id);
+
+    // Trigger liquidation fallback — write off 30,000
+    client.liquidation_fallback(&admin, &plan_id);
+
+    let plan = client.get_plan_details(&plan_id).unwrap();
+    assert_eq!(plan.total_loaned, 0);
+    // 98,000 - 30,000 = 68,000 claimable
+    assert_eq!(plan.total_amount, 68_000);
+
+    let info = client.get_inheritance_trigger(&plan_id).unwrap();
+    assert!(info.liquidation_triggered);
+    assert_eq!(info.settled_amount, 30_000);
+}
+
+#[test]
+fn test_liquidation_fallback_without_trigger_fails() {
+    let env = Env::default();
+    let (client, token, admin, owner) = setup_with_token_and_admin(&env);
+
+    let plan_id = client.create_inheritance_plan(&plan_params(
+        &env,
+        &owner,
+        &token,
+        "Will",
+        "My will",
+        100_000u64,
+        DistributionMethod::LumpSum,
+        &one_beneficiary(&env, "Alice", "alice@example.com", 123456),
+    ));
+
+    let result = client.try_liquidation_fallback(&admin, &plan_id);
+    assert!(result.is_err());
+}
+
+#[test]
+fn test_liquidation_fallback_no_loans_fails() {
+    let env = Env::default();
+    let (client, token, admin, owner) = setup_with_token_and_admin(&env);
+
+    let plan_id = client.create_inheritance_plan(&plan_params(
+        &env,
+        &owner,
+        &token,
+        "Will",
+        "My will",
+        100_000u64,
+        DistributionMethod::LumpSum,
+        &one_beneficiary(&env, "Alice", "alice@example.com", 123456),
+    ));
+
+    client.trigger_inheritance(&admin, &plan_id);
+
+    // No loans to liquidate
+    let result = client.try_liquidation_fallback(&admin, &plan_id);
+    assert!(result.is_err());
+}
+
+#[test]
+fn test_partial_recall_then_liquidation_fallback() {
+    let env = Env::default();
+    let (client, token, admin, owner) = setup_with_token_and_admin(&env);
+
+    let plan_id = client.create_inheritance_plan(&plan_params(
+        &env,
+        &owner,
+        &token,
+        "Will",
+        "My will",
+        100_000u64,
+        DistributionMethod::LumpSum,
+        &one_beneficiary(&env, "Alice", "alice@example.com", 123456),
+    ));
+
+    // Plan stores 98,000, simulate 40,000 in loans
+    let mut plan = client.get_plan_details(&plan_id).unwrap();
+    plan.total_loaned = 40_000;
+    env.as_contract(&client.address, || {
+        env.storage()
+            .persistent()
+            .set(&DataKey::Plan(plan_id), &plan);
+    });
+
+    client.trigger_inheritance(&admin, &plan_id);
+
+    // Recall 25,000 of 40,000
+    client.recall_loan(&admin, &plan_id, &25_000u64);
+
+    let plan = client.get_plan_details(&plan_id).unwrap();
+    assert_eq!(plan.total_loaned, 15_000);
+
+    // Liquidation fallback for remaining 15,000
+    client.liquidation_fallback(&admin, &plan_id);
+
+    let plan = client.get_plan_details(&plan_id).unwrap();
+    assert_eq!(plan.total_loaned, 0);
+    // 98,000 - 15,000 = 83,000 claimable
+    assert_eq!(plan.total_amount, 83_000);
+
+    let info = client.get_inheritance_trigger(&plan_id).unwrap();
+    assert!(info.recall_attempted);
+    assert!(info.liquidation_triggered);
+    assert_eq!(info.recalled_amount, 25_000);
+    assert_eq!(info.settled_amount, 15_000);
+}
+
+#[test]
+fn test_inheritance_claim_not_blocked_by_loans() {
+    let env = Env::default();
+    let (client, token, admin, owner) = setup_with_token_and_admin(&env);
+
+    let plan_id = client.create_inheritance_plan(&plan_params(
+        &env,
+        &owner,
+        &token,
+        "Will",
+        "My will",
+        100_000u64,
+        DistributionMethod::LumpSum,
+        &one_beneficiary(&env, "Alice", "alice@example.com", 123456),
+    ));
+
+    // Simulate outstanding loans
+    let mut plan = client.get_plan_details(&plan_id).unwrap();
+    plan.total_loaned = 50_000;
+    env.as_contract(&client.address, || {
+        env.storage()
+            .persistent()
+            .set(&DataKey::Plan(plan_id), &plan);
+    });
+
+    // Trigger inheritance
+    client.trigger_inheritance(&admin, &plan_id);
+
+    // Claim should succeed even with outstanding loans
+    client.claim_inheritance_plan(
+        &plan_id,
+        &String::from_str(&env, "alice@example.com"),
+        &123456u32,
+    );
+
+    // Claimable amount should reflect deduction
+    let claimable = client.get_claimable_amount(&plan_id);
+    // 98,000 - 50,000 = 48,000
+    assert_eq!(claimable, 48_000);
+}
+
+#[test]
+fn test_inheritance_claim_bypasses_time_check_when_triggered() {
+    let env = Env::default();
+    let (client, token, admin, owner) = setup_with_token_and_admin(&env);
+
+    // Create plan with Yearly distribution (would normally need 365 days)
+    let plan_id = client.create_inheritance_plan(&plan_params(
+        &env,
+        &owner,
+        &token,
+        "Will",
+        "My will",
+        100_000u64,
+        DistributionMethod::Yearly,
+        &one_beneficiary(&env, "Alice", "alice@example.com", 123456),
+    ));
+
+    // Without trigger, claim should fail (time not met)
+    let result = client.try_claim_inheritance_plan(
+        &plan_id,
+        &String::from_str(&env, "alice@example.com"),
+        &123456u32,
+    );
+    assert!(result.is_err());
+
+    // Trigger inheritance
+    client.trigger_inheritance(&admin, &plan_id);
+
+    // Now claim should succeed despite time not elapsed
+    client.claim_inheritance_plan(
+        &plan_id,
+        &String::from_str(&env, "alice@example.com"),
+        &123456u32,
+    );
+}
+
+#[test]
+fn test_get_claimable_amount() {
+    let env = Env::default();
+    let (client, token, _admin, owner) = setup_with_token_and_admin(&env);
+
+    let plan_id = client.create_inheritance_plan(&plan_params(
+        &env,
+        &owner,
+        &token,
+        "Will",
+        "My will",
+        100_000u64,
+        DistributionMethod::LumpSum,
+        &one_beneficiary(&env, "Alice", "alice@example.com", 123456),
+    ));
+
+    // No loans — full amount claimable (98,000 after 2% fee)
+    let claimable = client.get_claimable_amount(&plan_id);
+    assert_eq!(claimable, 98_000);
+
+    // Simulate loans
+    let mut plan = client.get_plan_details(&plan_id).unwrap();
+    plan.total_loaned = 20_000;
+    env.as_contract(&client.address, || {
+        env.storage()
+            .persistent()
+            .set(&DataKey::Plan(plan_id), &plan);
+    });
+
+    let claimable = client.get_claimable_amount(&plan_id);
+    assert_eq!(claimable, 78_000);
+}
+
+#[test]
+fn test_full_loan_recall_workflow() {
+    let env = Env::default();
+    let (client, token, admin, owner) = setup_with_token_and_admin(&env);
+
+    // Step 1: Create plan
+    let plan_id = client.create_inheritance_plan(&plan_params(
+        &env,
+        &owner,
+        &token,
+        "Estate",
+        "Full estate plan",
+        500_000u64,
+        DistributionMethod::LumpSum,
+        &one_beneficiary(&env, "Alice", "alice@example.com", 123456),
+    ));
+
+    // Plan stores 490,000 (500k - 2% fee)
+    let plan = client.get_plan_details(&plan_id).unwrap();
+    assert_eq!(plan.total_amount, 490_000);
+    assert!(plan.is_lendable);
+
+    // Step 2: Simulate some funds being loaned out
+    let mut plan = client.get_plan_details(&plan_id).unwrap();
+    plan.total_loaned = 200_000;
+    env.as_contract(&client.address, || {
+        env.storage()
+            .persistent()
+            .set(&DataKey::Plan(plan_id), &plan);
+    });
+
+    // Step 3: Trigger inheritance — freezes new loans
+    client.trigger_inheritance(&admin, &plan_id);
+    let plan = client.get_plan_details(&plan_id).unwrap();
+    assert!(!plan.is_lendable); // Frozen
+
+    // Step 4: Attempt recall — recover 150k of 200k
+    client.recall_loan(&admin, &plan_id, &150_000u64);
+
+    // Step 5: Liquidation fallback for remaining 50k
+    client.liquidation_fallback(&admin, &plan_id);
+
+    let plan = client.get_plan_details(&plan_id).unwrap();
+    assert_eq!(plan.total_loaned, 0);
+    // 490,000 - 50,000 = 440,000 (only unrecoverable 50k was written off)
+    assert_eq!(plan.total_amount, 440_000);
+
+    // Step 6: Beneficiary claims
+    client.claim_inheritance_plan(
+        &plan_id,
+        &String::from_str(&env, "alice@example.com"),
+        &123456u32,
+    );
+
+    let claimable = client.get_claimable_amount(&plan_id);
+    assert_eq!(claimable, 440_000);
+
+    // Verify full trigger info
+    let info = client.get_inheritance_trigger(&plan_id).unwrap();
+    assert!(info.loan_freeze_active);
+    assert!(info.recall_attempted);
+    assert!(info.liquidation_triggered);
+    assert_eq!(info.original_loaned, 200_000);
+    assert_eq!(info.recalled_amount, 150_000);
+    assert_eq!(info.settled_amount, 50_000);
+}
