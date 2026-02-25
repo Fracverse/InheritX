@@ -1617,8 +1617,9 @@ fn test_get_claimed_plan() {
     );
 
     // Should succeed now (plan stores net after 2% fee: 1000 * 0.98 = 980)
+    // After 100% claim, the remaining balance should be 0.
     let plan = client.get_claimed_plan(&owner, &plan_id);
-    assert_eq!(plan.total_amount, 980u64);
+    assert_eq!(plan.total_amount, 0u64);
 }
 
 #[test]
