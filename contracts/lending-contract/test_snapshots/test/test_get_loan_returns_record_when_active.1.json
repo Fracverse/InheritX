@@ -37,6 +37,9 @@
                 },
                 {
                   "address": "CBUSYNQKASUYFWYC3M2GUEDMX4AIVWPALDBYJPNK6554BREHTGZ2IUNF"
+                },
+                {
+                  "u32": 1000
                 }
               ]
             }
@@ -337,6 +340,14 @@
                       "val": {
                         "address": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAMDR4"
                       }
+                    },
+                    {
+                      "key": {
+                        "symbol": "interest_rate_bps"
+                      },
+                      "val": {
+                        "u32": 1000
+                      }
                     }
                   ]
                 }
@@ -437,6 +448,14 @@
                         },
                         "val": {
                           "map": [
+                            {
+                              "key": {
+                                "symbol": "interest_rate_bps"
+                              },
+                              "val": {
+                                "u32": 1000
+                              }
+                            },
                             {
                               "key": {
                                 "symbol": "total_borrowed"
@@ -1052,6 +1071,9 @@
                 },
                 {
                   "address": "CBUSYNQKASUYFWYC3M2GUEDMX4AIVWPALDBYJPNK6554BREHTGZ2IUNF"
+                },
+                {
+                  "u32": 1000
                 }
               ]
             }
@@ -1674,6 +1696,14 @@
                   },
                   "val": {
                     "address": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAMDR4"
+                  }
+                },
+                {
+                  "key": {
+                    "symbol": "interest_rate_bps"
+                  },
+                  "val": {
+                    "u32": 1000
                   }
                 }
               ]

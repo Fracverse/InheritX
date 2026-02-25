@@ -14,7 +14,10 @@ pub struct PoolState {
     pub total_deposits: u64, // Total underlying tokens deposited (net, tracks repayments too)
     pub total_shares: u64,   // Total pool shares outstanding
     pub total_borrowed: u64, // Total principal currently on loan
+    pub interest_rate_bps: u32, // Fixed interest rate in basis points (1/10000)
 }
+
+const SECONDS_IN_YEAR: u64 = 31_536_000;
 
 #[contracttype]
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -22,6 +25,7 @@ pub struct LoanRecord {
     pub borrower: Address,
     pub amount: u64,
     pub borrow_time: u64,
+    pub interest_rate_bps: u32,
 }
 
 // ─────────────────────────────────────────────────
@@ -104,7 +108,12 @@ impl LendingContract {
 
     /// Initialize the lending pool with an admin address and the underlying token.
     /// Can only be called once.
-    pub fn initialize(env: Env, admin: Address, token: Address) -> Result<(), LendingError> {
+    pub fn initialize(
+        env: Env,
+        admin: Address,
+        token: Address,
+        interest_rate_bps: u32,
+    ) -> Result<(), LendingError> {
         admin.require_auth();
         if env.storage().instance().has(&DataKey::Admin) {
             return Err(LendingError::AlreadyInitialized);
@@ -117,6 +126,7 @@ impl LendingContract {
                 total_deposits: 0,
                 total_shares: 0,
                 total_borrowed: 0,
+                interest_rate_bps,
             },
         );
         Ok(())
@@ -201,6 +211,23 @@ impl LendingContract {
                 .and_then(|v| v.checked_div(pool.total_shares as u128))
                 .unwrap_or(0) as u64
         }
+    }
+
+    /// Calculate simple interest for a given principal, rate, and time elapsed.
+    fn calculate_interest(principal: u64, rate_bps: u32, elapsed_seconds: u64) -> u64 {
+        if elapsed_seconds == 0 || rate_bps == 0 {
+            return 0;
+        }
+        // Interest = (Principal * Rate * Time) / (10000 * SecondsPerYear)
+        // Use u128 for intermediate calculation to avoid overflow.
+        let numerator = (principal as u128)
+            .checked_mul(rate_bps as u128)
+            .and_then(|v| v.checked_mul(elapsed_seconds as u128))
+            .unwrap_or(0);
+
+        let denominator = (10000u128).checked_mul(SECONDS_IN_YEAR as u128).unwrap();
+
+        (numerator.checked_div(denominator).unwrap_or(0)) as u64
     }
 
     // ─── Public Functions ────────────────────────────
@@ -324,6 +351,7 @@ impl LendingContract {
                 borrower: borrower.clone(),
                 amount,
                 borrow_time: env.ledger().timestamp(),
+                interest_rate_bps: pool.interest_rate_bps,
             },
         );
 
@@ -354,14 +382,17 @@ impl LendingContract {
             .get(&DataKey::Loan(borrower.clone()))
             .ok_or(LendingError::NoOpenLoan)?;
 
-        let amount = loan.amount;
+        let elapsed = env.ledger().timestamp().saturating_sub(loan.borrow_time);
+        let interest = Self::calculate_interest(loan.amount, loan.interest_rate_bps, elapsed);
+        let total_repayment = loan.amount + interest;
 
         let token = Self::get_token(&env);
         let contract_id = env.current_contract_address();
-        Self::transfer(&env, &token, &borrower, &contract_id, amount)?;
+        Self::transfer(&env, &token, &borrower, &contract_id, total_repayment)?;
 
         let mut pool = Self::get_pool(&env);
-        pool.total_borrowed -= amount;
+        pool.total_borrowed -= loan.amount;
+        pool.total_deposits += interest; // Interest increases pool value for share holders
         Self::set_pool(&env, &pool);
 
         env.storage()
@@ -372,11 +403,31 @@ impl LendingContract {
             (symbol_short!("POOL"), symbol_short!("REPAY")),
             RepayEvent {
                 borrower: borrower.clone(),
-                amount,
+                amount: total_repayment,
             },
         );
-        log!(&env, "Repaid {} tokens", amount);
-        Ok(amount)
+        log!(
+            &env,
+            "Repaid {} tokens ({} interest)",
+            total_repayment,
+            interest
+        );
+        Ok(total_repayment)
+    }
+
+    /// Calculate the total amount (principal + interest) required to repay the loan.
+    pub fn get_repayment_amount(env: Env, borrower: Address) -> Result<u64, LendingError> {
+        let loan_opt: Option<LoanRecord> = env.storage().persistent().get(&DataKey::Loan(borrower));
+
+        match loan_opt {
+            Some(loan) => {
+                let elapsed = env.ledger().timestamp().saturating_sub(loan.borrow_time);
+                let interest =
+                    Self::calculate_interest(loan.amount, loan.interest_rate_bps, elapsed);
+                Ok(loan.amount + interest)
+            }
+            None => Err(LendingError::NoOpenLoan),
+        }
     }
 
     // ─── Reads ───────────────────────────────────────

@@ -1,7 +1,7 @@
 #![cfg(test)]
 
 use super::*;
-use soroban_sdk::{testutils::Address as _, token, Address, Env};
+use soroban_sdk::{testutils::Address as _, testutils::Ledger, token, Address, Env};
 
 // ─────────────────────────────────────────────────
 // Helpers
@@ -34,7 +34,7 @@ fn setup(env: &Env) -> (LendingContractClient<'_>, Address, Address) {
 
     let contract_id = env.register_contract(None, LendingContract);
     let client = LendingContractClient::new(env, &contract_id);
-    client.initialize(&admin, &token_addr);
+    client.initialize(&admin, &token_addr, &1000u32); // 10% APY
 
     (client, token_addr, admin)
 }
@@ -50,7 +50,7 @@ fn test_initialize_once() {
     let (client, token_addr, admin) = setup(&env);
 
     // Second init must fail
-    let result = client.try_initialize(&admin, &token_addr);
+    let result = client.try_initialize(&admin, &token_addr, &1000u32);
     assert!(result.is_err());
 }
 
@@ -318,4 +318,68 @@ fn test_invalid_amounts_rejected() {
     assert!(client.try_deposit(&depositor, &0u64).is_err());
     assert!(client.try_withdraw(&depositor, &0u64).is_err());
     assert!(client.try_borrow(&admin, &0u64).is_err());
+}
+#[test]
+fn test_interest_accrual() {
+    let env = Env::default();
+    env.mock_all_auths();
+    // 10% APY (1000 bps)
+    let (client, token_addr, _admin) = setup(&env);
+
+    let depositor = Address::generate(&env);
+    let borrower = Address::generate(&env);
+    mint_to(&env, &token_addr, &depositor, 100_000);
+    mint_to(&env, &token_addr, &borrower, 100_000);
+
+    // 1. Deposit 10,000 → 10,000 shares
+    client.deposit(&depositor, &10_000u64);
+
+    // 2. Borrow 5,000
+    client.borrow(&borrower, &5_000u64);
+
+    // 3. Jump time by 1 year (31,536,000 seconds)
+    env.ledger()
+        .set_timestamp(env.ledger().timestamp() + 31_536_000);
+
+    // 4. Expected interest: 5,000 * 0.10 * 1 year = 500
+    let repayment_amount = client.get_repayment_amount(&borrower);
+    assert_eq!(repayment_amount, 5_500u64);
+
+    // 5. Repay
+    client.repay(&borrower);
+
+    // 6. Verify pool state
+    let pool = client.get_pool_state();
+    // total_deposits should be 10,000 (initial) + 500 (interest) = 10,500
+    assert_eq!(pool.total_deposits, 10_500);
+    assert_eq!(pool.total_borrowed, 0);
+
+    // 7. Verify depositor can withdraw more than they put in
+    // shares = 10,000, pool_shares = 10,000, pool_deposits = 10,500
+    // amount = 10,000 * 10,500 / 10,000 = 10,500
+    let withdrawn = client.withdraw(&depositor, &10_000u64);
+    assert_eq!(withdrawn, 10_500);
+}
+
+#[test]
+fn test_interest_precision_short_time() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let (client, token_addr, _admin) = setup(&env);
+
+    let depositor = Address::generate(&env);
+    let borrower = Address::generate(&env);
+    mint_to(&env, &token_addr, &depositor, 100_000);
+    mint_to(&env, &token_addr, &borrower, 100_000);
+
+    client.deposit(&depositor, &10_000u64);
+    client.borrow(&borrower, &5_000u64);
+
+    // 1 hour = 3600 seconds
+    // Interest = (5000 * 1000 * 3600) / (10000 * 31536000) = 18000000000 / 315360000000 ≈ 0.057
+    // Should be 0 due to truncation in simple implementation
+    env.ledger().set_timestamp(env.ledger().timestamp() + 3600);
+
+    let repayment_amount = client.get_repayment_amount(&borrower);
+    assert_eq!(repayment_amount, 5_000u64);
 }
