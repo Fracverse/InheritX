@@ -69,6 +69,8 @@ pub async fn web3_login(
     State(state): State<Arc<AppState>>,
     Json(payload): Json<Web3LoginRequest>,
 ) -> Result<Json<LoginResponse>, ApiError> {
+    let mut tx = state.db.begin().await?;
+
     // 1. Verify wallet address is valid Stellar G-address
     // If it's hex (from incoming tests), we'll try to handle it or skip strict validation if it's just tests
     // But for production, we want strict Stellar.
@@ -98,11 +100,12 @@ pub async fn web3_login(
         };
 
     // 2. Retrieve nonce
-    let row: Option<(String, chrono::DateTime<Utc>)> =
-        sqlx::query_as("SELECT nonce, expires_at FROM nonces WHERE wallet_address = $1")
-            .bind(&payload.wallet_address)
-            .fetch_optional(&state.db)
-            .await?;
+    let row: Option<(String, chrono::DateTime<Utc>)> = sqlx::query_as(
+        "SELECT nonce, expires_at FROM nonces WHERE wallet_address = $1 FOR UPDATE",
+    )
+    .bind(&payload.wallet_address)
+    .fetch_optional(&mut *tx)
+    .await?;
 
     let (nonce_val, expires_at) = row.ok_or_else(|| ApiError::Unauthorized)?;
 
@@ -164,10 +167,17 @@ pub async fn web3_login(
     .map_err(|e| ApiError::Internal(anyhow::anyhow!(e)))?;
 
     // 6. Invalidate nonce
-    sqlx::query("DELETE FROM nonces WHERE wallet_address = $1")
+    let delete_result = sqlx::query("DELETE FROM nonces WHERE wallet_address = $1 AND nonce = $2")
         .bind(&payload.wallet_address)
-        .execute(&state.db)
+        .bind(&nonce_val)
+        .execute(&mut *tx)
         .await?;
+
+    if delete_result.rows_affected() != 1 {
+        return Err(ApiError::Unauthorized);
+    }
+
+    tx.commit().await?;
 
     Ok(Json(LoginResponse { token }))
 }

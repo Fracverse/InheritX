@@ -26,6 +26,18 @@ pub struct AppState {
     pub config: Config,
 }
 
+#[derive(serde::Deserialize)]
+pub struct PaginationQuery {
+    pub page: Option<u32>,
+    pub limit: Option<u32>,
+}
+
+fn normalize_pagination(query: &PaginationQuery) -> (u32, u32) {
+    let page = query.page.unwrap_or(1).max(1);
+    let limit = query.limit.unwrap_or(10).clamp(1, 100);
+    (page, limit)
+}
+
 pub async fn create_app(db: PgPool, config: Config) -> Result<Router, ApiError> {
     let state = Arc::new(AppState { db, config });
 
@@ -330,27 +342,63 @@ async fn get_due_for_claim_plan(
 
 async fn get_all_due_for_claim_plans_user(
     State(state): State<Arc<AppState>>,
+    Query(query): Query<PaginationQuery>,
     AuthenticatedUser(user): AuthenticatedUser,
 ) -> Result<Json<Value>, ApiError> {
+    let (page, limit) = normalize_pagination(&query);
     let plans = PlanService::get_all_due_for_claim_plans_for_user(&state.db, user.user_id).await?;
+    let total_count = plans.len() as u64;
+    let start = ((page - 1) as usize) * (limit as usize);
+    let paged_plans = plans
+        .into_iter()
+        .skip(start)
+        .take(limit as usize)
+        .collect::<Vec<_>>();
+    let total_pages = if total_count == 0 {
+        0
+    } else {
+        total_count.div_ceil(limit as u64)
+    };
 
     Ok(Json(json!({
         "status": "success",
-        "data": plans,
-        "count": plans.len()
+        "data": paged_plans,
+        "count": paged_plans.len(),
+        "page": page,
+        "limit": limit,
+        "total_count": total_count,
+        "total_pages": total_pages
     })))
 }
 
 async fn get_all_due_for_claim_plans_admin(
     State(state): State<Arc<AppState>>,
+    Query(query): Query<PaginationQuery>,
     AuthenticatedAdmin(_admin): AuthenticatedAdmin,
 ) -> Result<Json<Value>, ApiError> {
+    let (page, limit) = normalize_pagination(&query);
     let plans = PlanService::get_all_due_for_claim_plans_admin(&state.db).await?;
+    let total_count = plans.len() as u64;
+    let start = ((page - 1) as usize) * (limit as usize);
+    let paged_plans = plans
+        .into_iter()
+        .skip(start)
+        .take(limit as usize)
+        .collect::<Vec<_>>();
+    let total_pages = if total_count == 0 {
+        0
+    } else {
+        total_count.div_ceil(limit as u64)
+    };
 
     Ok(Json(json!({
         "status": "success",
-        "data": plans,
-        "count": plans.len()
+        "data": paged_plans,
+        "count": paged_plans.len(),
+        "page": page,
+        "limit": limit,
+        "total_count": total_count,
+        "total_pages": total_pages
     })))
 }
 
@@ -410,13 +458,27 @@ async fn reject_kyc(
 
 async fn list_notifications(
     State(state): State<Arc<AppState>>,
+    Query(query): Query<PaginationQuery>,
     AuthenticatedUser(user): AuthenticatedUser,
 ) -> Result<Json<Value>, ApiError> {
-    let notifications = NotificationService::list_for_user(&state.db, user.user_id).await?;
+    let (page, limit) = normalize_pagination(&query);
+    let notifications =
+        NotificationService::list_for_user_paginated(&state.db, user.user_id, page, limit).await?;
+    let total_count = NotificationService::count_for_user(&state.db, user.user_id).await? as u64;
+    let total_pages = if total_count == 0 {
+        0
+    } else {
+        total_count.div_ceil(limit as u64)
+    };
+
     Ok(Json(json!({
         "status": "success",
         "data": notifications,
-        "count": notifications.len()
+        "count": notifications.len(),
+        "page": page,
+        "limit": limit,
+        "total_count": total_count,
+        "total_pages": total_pages
     })))
 }
 
@@ -436,13 +498,26 @@ async fn mark_notification_read(
 
 async fn list_audit_logs(
     State(state): State<Arc<AppState>>,
+    Query(query): Query<PaginationQuery>,
     AuthenticatedAdmin(_admin): AuthenticatedAdmin,
 ) -> Result<Json<Value>, ApiError> {
-    let logs = AuditLogService::list_all(&state.db).await?;
+    let (page, limit) = normalize_pagination(&query);
+    let logs = AuditLogService::list_all_paginated(&state.db, page, limit).await?;
+    let total_count = AuditLogService::count_all(&state.db).await? as u64;
+    let total_pages = if total_count == 0 {
+        0
+    } else {
+        total_count.div_ceil(limit as u64)
+    };
+
     Ok(Json(json!({
         "status": "success",
         "data": logs,
-        "count": logs.len()
+        "count": logs.len(),
+        "page": page,
+        "limit": limit,
+        "total_count": total_count,
+        "total_pages": total_pages
     })))
 }
 

@@ -79,6 +79,46 @@ impl NotificationService {
         Ok(rows)
     }
 
+    pub async fn list_for_user_paginated(
+        db: &PgPool,
+        user_id: Uuid,
+        page: u32,
+        limit: u32,
+    ) -> Result<Vec<Notification>, ApiError> {
+        let offset = ((page.saturating_sub(1)) as i64) * (limit as i64);
+        let rows = sqlx::query_as::<_, Notification>(
+            r#"
+            SELECT id, user_id, type, message, is_read, created_at
+            FROM notifications
+            WHERE user_id = $1
+            ORDER BY created_at DESC
+            LIMIT $2 OFFSET $3
+            "#,
+        )
+        .bind(user_id)
+        .bind(limit as i64)
+        .bind(offset)
+        .fetch_all(db)
+        .await?;
+
+        Ok(rows)
+    }
+
+    pub async fn count_for_user(db: &PgPool, user_id: Uuid) -> Result<i64, ApiError> {
+        let count = sqlx::query_scalar::<_, i64>(
+            r#"
+            SELECT COUNT(*)
+            FROM notifications
+            WHERE user_id = $1
+            "#,
+        )
+        .bind(user_id)
+        .fetch_one(db)
+        .await?;
+
+        Ok(count)
+    }
+
     /// Mark a single notification as read.
     pub async fn mark_read(
         db: &PgPool,
@@ -170,6 +210,41 @@ impl AuditLogService {
         .await?;
 
         Ok(rows)
+    }
+
+    pub async fn list_all_paginated(
+        db: &PgPool,
+        page: u32,
+        limit: u32,
+    ) -> Result<Vec<ActionLog>, ApiError> {
+        let offset = ((page.saturating_sub(1)) as i64) * (limit as i64);
+        let rows = sqlx::query_as::<_, ActionLog>(
+            r#"
+            SELECT id, user_id, action, entity_id, entity_type, timestamp
+            FROM action_logs
+            ORDER BY timestamp DESC
+            LIMIT $1 OFFSET $2
+            "#,
+        )
+        .bind(limit as i64)
+        .bind(offset)
+        .fetch_all(db)
+        .await?;
+
+        Ok(rows)
+    }
+
+    pub async fn count_all(db: &PgPool) -> Result<i64, ApiError> {
+        let count = sqlx::query_scalar::<_, i64>(
+            r#"
+            SELECT COUNT(*)
+            FROM action_logs
+            "#,
+        )
+        .fetch_one(db)
+        .await?;
+
+        Ok(count)
     }
 
     /// Return audit log entries for a specific user, newest first.
