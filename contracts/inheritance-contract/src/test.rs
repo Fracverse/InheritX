@@ -64,6 +64,7 @@ fn plan_params(
         total_amount,
         distribution_method,
         beneficiaries_data: beneficiaries_data.clone(),
+        is_lendable: true,
     }
 }
 
@@ -1896,4 +1897,122 @@ fn test_get_all_pending_plans_admin_only() {
     let not_admin = create_test_address(&env, 999);
     let unauthorized = client.try_get_all_pending_plans(&not_admin);
     assert!(unauthorized.is_err());
+}
+
+// ───────────────────────────────────────────────────
+// Lending Features Tests
+// ───────────────────────────────────────────────────
+
+#[test]
+fn test_set_lendable() {
+    let env = Env::default();
+    let (client, token, _admin, owner) = setup_with_token_and_admin(&env);
+
+    let plan_id = client.create_inheritance_plan(&plan_params(
+        &env,
+        &owner,
+        &token,
+        "Lend",
+        "Test Lend",
+        1000u64,
+        DistributionMethod::LumpSum,
+        &one_beneficiary(&env, "B", "b@example.com", 666666),
+    ));
+
+    // Initially lendable defaults to true based on our plan_params modification
+    let plan = client.get_plan_details(&plan_id).unwrap();
+    assert!(plan.is_lendable);
+
+    // Toggle off
+    client.set_lendable(&owner, &plan_id, &false);
+    let plan = client.get_plan_details(&plan_id).unwrap();
+    assert!(!plan.is_lendable);
+
+    // Unauthorized fails
+    let not_owner = create_test_address(&env, 999);
+    let result = client.try_set_lendable(&not_owner, &plan_id, &true);
+    assert!(result.is_err());
+}
+
+#[test]
+fn test_vault_deposit_and_withdraw() {
+    let env = Env::default();
+    let (client, token, _admin, owner) = setup_with_token_and_admin(&env);
+    TestTokenHelper::new(&env, &token).mint(&owner, &10_000_000i128);
+
+    let plan_id = client.create_inheritance_plan(&plan_params(
+        &env,
+        &owner,
+        &token,
+        "Lend",
+        "Test Lend",
+        1000u64,
+        DistributionMethod::LumpSum,
+        &one_beneficiary(&env, "B", "b@example.com", 666666),
+    ));
+
+    let plan = client.get_plan_details(&plan_id).unwrap();
+    assert_eq!(plan.total_amount, 980); // 1000 - 2% fee
+
+    // Deposit more
+    client.deposit(&owner, &token, &plan_id, &500u64);
+    let plan = client.get_plan_details(&plan_id).unwrap();
+    assert_eq!(plan.total_amount, 1480);
+
+    // Withdraw some
+    client.withdraw(&owner, &token, &plan_id, &300u64);
+    let plan = client.get_plan_details(&plan_id).unwrap();
+    assert_eq!(plan.total_amount, 1180);
+    assert_eq!(plan.total_loaned, 0);
+
+    // Unauthorized fails
+    let not_owner = create_test_address(&env, 999);
+    let result = client.try_deposit(&not_owner, &token, &plan_id, &100u64);
+    assert!(result.is_err());
+    let result = client.try_withdraw(&not_owner, &token, &plan_id, &100u64);
+    assert!(result.is_err());
+}
+
+#[test]
+fn test_vault_withdraw_prevents_over_withdrawal() {
+    let env = Env::default();
+    let (client, token, _admin, owner) = setup_with_token_and_admin(&env);
+    TestTokenHelper::new(&env, &token).mint(&owner, &10_000_000i128);
+
+    let plan_id = client.create_inheritance_plan(&plan_params(
+        &env,
+        &owner,
+        &token,
+        "Lend",
+        "Test Lend",
+        1000u64,
+        DistributionMethod::LumpSum,
+        &one_beneficiary(&env, "B", "b@example.com", 666666),
+    ));
+
+    client.deposit(&owner, &token, &plan_id, &500u64);
+
+    // We don't have a public function to change total_loaned from the client (since
+    // it's for external protocols), so we simulate it by setting it in storage.
+    let mut plan = client.get_plan_details(&plan_id).unwrap();
+    plan.total_loaned = 1000;
+
+    env.as_contract(&client.address, || {
+        env.storage()
+            .persistent()
+            .set(&DataKey::Plan(plan_id), &plan);
+    });
+
+    let modified_plan = client.get_plan_details(&plan_id).unwrap();
+    assert_eq!(modified_plan.total_amount, 1480);
+    assert_eq!(modified_plan.total_loaned, 1000);
+
+    // Withdraw 400 OK (1480 - 1000 = 480 available)
+    assert!(client
+        .try_withdraw(&owner, &token, &plan_id, &400u64)
+        .is_ok());
+
+    // Another 100 FAILS (480 - 400 = 80 available)
+    let err = client.try_withdraw(&owner, &token, &plan_id, &100u64);
+    assert!(err.is_err());
 }

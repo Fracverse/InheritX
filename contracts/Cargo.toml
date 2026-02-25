@@ -2,7 +2,7 @@
 resolver = "2"
 members = [
   "example-contract",
-  "inheritance-contract",
+  "inheritance-contract", "lending-contract",
   "mock-token",
 ]
 

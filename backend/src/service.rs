@@ -997,6 +997,71 @@ impl AdminService {
     }
 }
 
+// ── Claim Metrics ────────────────────────────────────────────────────────────
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ClaimStatistics {
+    pub total_claims: i64,
+    pub pending_claims: i64,
+    pub approved_claims: i64,
+    pub rejected_claims: i64,
+    pub average_claim_processing_time_seconds: f64,
+}
+
+pub struct ClaimMetricsService;
+
+impl ClaimMetricsService {
+    pub async fn get_claim_statistics(db: &PgPool) -> Result<ClaimStatistics, ApiError> {
+        #[derive(sqlx::FromRow)]
+        struct Row {
+            total_claims: i64,
+            pending_claims: i64,
+            approved_claims: i64,
+            rejected_claims: i64,
+            average_claim_processing_time_seconds: Option<f64>,
+        }
+
+        let row = sqlx::query_as::<_, Row>(
+            r#"
+            SELECT
+                COUNT(c.id)::BIGINT AS total_claims,
+                COUNT(c.id) FILTER (
+                    WHERE p.status IN ('pending', 'due-for-claim')
+                )::BIGINT AS pending_claims,
+                COUNT(c.id) FILTER (
+                    WHERE p.status = 'claimed'
+                )::BIGINT AS approved_claims,
+                COUNT(c.id) FILTER (
+                    WHERE p.status IN ('rejected', 'deactivated')
+                )::BIGINT AS rejected_claims,
+                AVG(
+                    CASE
+                        WHEN p.status IN ('claimed', 'rejected', 'deactivated')
+                         AND p.updated_at >= c.claimed_at
+                        THEN EXTRACT(EPOCH FROM (p.updated_at - c.claimed_at))
+                        ELSE NULL
+                    END
+                )::FLOAT8 AS average_claim_processing_time_seconds
+            FROM claims c
+            INNER JOIN plans p ON p.id = c.plan_id
+            "#,
+        )
+        .fetch_one(db)
+        .await?;
+
+        Ok(ClaimStatistics {
+            total_claims: row.total_claims,
+            pending_claims: row.pending_claims,
+            approved_claims: row.approved_claims,
+            rejected_claims: row.rejected_claims,
+            average_claim_processing_time_seconds: row
+                .average_claim_processing_time_seconds
+                .unwrap_or(0.0),
+        })
+    }
+}
+
 // ── User Growth Metrics ──────────────────────────────────────────────────────
 
 #[derive(Debug, Serialize)]

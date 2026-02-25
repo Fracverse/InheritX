@@ -16,9 +16,9 @@ use crate::auth::{AuthenticatedAdmin, AuthenticatedUser};
 use crate::config::Config;
 use crate::notifications::{AuditLogService, NotificationService};
 use crate::service::{
-    AdminMetrics, AdminService, ClaimPlanRequest, CreatePlanRequest, KycRecord, KycService,
-    KycStatus, PlanService, PlanStatisticsService, RevenueMetricsResponse, RevenueMetricsService,
-    UserMetricsService,
+    AdminMetrics, AdminService, ClaimMetricsService, ClaimPlanRequest, CreatePlanRequest,
+    KycRecord, KycService, KycStatus, PlanService, PlanStatisticsService, RevenueMetricsResponse,
+    RevenueMetricsService, UserMetricsService,
 };
 
 pub struct AppState {
@@ -95,6 +95,7 @@ pub async fn create_app(db: PgPool, config: Config) -> Result<Router, ApiError> 
         .route("/api/admin/logs", get(list_audit_logs))
         // ── Admin Metrics ────────────────────────────────────────────────
         .route("/api/admin/metrics/plans", get(get_plan_statistics))
+        .route("/admin/metrics/claims", get(get_claim_statistics))
         .route("/admin/metrics/users", get(get_user_growth_metrics))
         .route("/admin/metrics/revenue", get(get_revenue_metrics))
         .with_state(state);
@@ -490,4 +491,15 @@ async fn get_revenue_metrics(
     let range = query.range.unwrap_or_else(|| "daily".to_string());
     let metrics = RevenueMetricsService::get_revenue_breakdown(&state.db, &range).await?;
     Ok(Json(metrics))
+}
+
+async fn get_claim_statistics(
+    State(state): State<Arc<AppState>>,
+    AuthenticatedAdmin(_admin): AuthenticatedAdmin,
+) -> Result<Json<Value>, ApiError> {
+    let metrics = ClaimMetricsService::get_claim_statistics(&state.db).await?;
+    Ok(Json(json!({
+        "status": "success",
+        "data": metrics
+    })))
 }

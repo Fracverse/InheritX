@@ -663,6 +663,13 @@ dependencies = [
 ]
 
 [[package]]
+name = "lending-contract"
+version = "0.0.0"
+dependencies = [
+ "soroban-sdk",
+]
+
+[[package]]
 name = "libc"
 version = "0.2.180"
 source = "registry+https://github.com/rust-lang/crates.io-index"
