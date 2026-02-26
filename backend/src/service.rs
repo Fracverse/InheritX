@@ -205,7 +205,11 @@ impl PlanService {
         user_id: Uuid,
         req: &CreatePlanRequest,
     ) -> Result<PlanWithBeneficiary, ApiError> {
-        // 1. Start Transaction
+        // 1. Validate input amounts
+        crate::safe_math::SafeMath::ensure_non_negative(req.fee, "fee")?;
+        crate::safe_math::SafeMath::ensure_non_negative(req.net_amount, "net_amount")?;
+
+        // 2. Start Transaction
         let mut tx = pool.begin().await?;
 
         let currency = CurrencyPreference::from_str(req.currency_preference.trim())?;

@@ -166,10 +166,14 @@ async fn create_plan(
     //     return Err(ApiError::Forbidden("2FA verification failed".to_string()));
     // }
 
-    // Deduct 2% fee
-    let amount = req.net_amount + req.fee;
-    let fee = amount * rust_decimal::Decimal::new(2, 2) / rust_decimal::Decimal::new(100, 0);
-    let net_amount = amount - fee;
+    // Validate input amounts
+    crate::safe_math::SafeMath::ensure_non_negative(req.net_amount, "net_amount")?;
+    crate::safe_math::SafeMath::ensure_non_negative(req.fee, "fee")?;
+
+    // Deduct 2% fee using safe arithmetic
+    let amount = crate::safe_math::SafeMath::add(req.net_amount, req.fee)?;
+    let (fee, net_amount) =
+        crate::safe_math::SafeMath::calculate_fee(amount, rust_decimal::Decimal::new(2, 0))?;
 
     let mut req_mut = req.clone();
     req_mut.fee = fee;
