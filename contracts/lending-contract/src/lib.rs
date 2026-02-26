@@ -779,13 +779,13 @@ impl LendingContract {
     }
 
     /// Calculate and emit an interest accrual event for a specific loan
-    pub fn emit_interest_accrual(
-        env: Env,
-        borrower: Address,
-    ) -> Result<u64, LendingError> {
+    pub fn emit_interest_accrual(env: Env, borrower: Address) -> Result<u64, LendingError> {
         Self::require_initialized(&env)?;
 
-        let loan_opt: Option<LoanRecord> = env.storage().persistent().get(&DataKey::Loan(borrower.clone()));
+        let loan_opt: Option<LoanRecord> = env
+            .storage()
+            .persistent()
+            .get(&DataKey::Loan(borrower.clone()));
 
         match loan_opt {
             Some(loan) => {

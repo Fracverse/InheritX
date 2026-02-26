@@ -1,5 +1,7 @@
 #![no_std]
-use soroban_sdk::{contract, contracterror, contractimpl, contracttype, symbol_short, token, Address, Env};
+use soroban_sdk::{
+    contract, contracterror, contractimpl, contracttype, symbol_short, token, Address, Env,
+};
 
 mod test;
 
@@ -234,7 +236,11 @@ impl BorrowingContract {
                 amount_repaid: amount,
                 principal: loan.principal,
                 interest_paid: 0, // Interest calculation would be needed based on contract logic
-                collateral_returned: if loan.is_active { 0 } else { loan.collateral_amount },
+                collateral_returned: if loan.is_active {
+                    0
+                } else {
+                    loan.collateral_amount
+                },
                 timestamp: env.ledger().timestamp(),
             },
         );
