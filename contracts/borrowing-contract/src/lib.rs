@@ -1,5 +1,7 @@
 #![no_std]
-use soroban_sdk::{contract, contracterror, contractimpl, contracttype, token, Address, Env};
+use soroban_sdk::{
+    contract, contracterror, contractimpl, contracttype, symbol_short, token, Address, Env,
+};
 
 mod test;
 
@@ -14,6 +16,59 @@ pub struct Loan {
     pub collateral_amount: i128,
     pub collateral_token: Address,
     pub is_active: bool,
+}
+
+// ─────────────────────────────────────────────────
+// Events
+// ─────────────────────────────────────────────────
+
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct BorrowEvent {
+    pub loan_id: u64,
+    pub borrower: Address,
+    pub principal: i128,
+    pub collateral_amount: i128,
+    pub collateral_token: Address,
+    pub interest_rate: u32,
+    pub due_date: u64,
+    pub timestamp: u64,
+}
+
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct RepayEvent {
+    pub loan_id: u64,
+    pub borrower: Address,
+    pub amount_repaid: i128,
+    pub principal: i128,
+    pub interest_paid: i128,
+    pub collateral_returned: i128,
+    pub timestamp: u64,
+}
+
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct LiquidationEvent {
+    pub loan_id: u64,
+    pub borrower: Address,
+    pub liquidator: Address,
+    pub amount_liquidated: i128,
+    pub collateral_seized: i128,
+    pub health_factor: u32,
+    pub timestamp: u64,
+}
+
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct InterestAccrualEvent {
+    pub loan_id: u64,
+    pub borrower: Address,
+    pub principal: i128,
+    pub interest_accrued: i128,
+    pub interest_rate: u32,
+    pub elapsed_seconds: u64,
+    pub timestamp: u64,
 }
 
 #[contracttype]
@@ -117,19 +172,34 @@ impl BorrowingContract {
         let loan_id = Self::get_next_loan_id(&env);
 
         let loan = Loan {
-            borrower,
+            borrower: borrower.clone(),
             principal,
             interest_rate,
             due_date,
             amount_repaid: 0,
             collateral_amount,
-            collateral_token,
+            collateral_token: collateral_token.clone(),
             is_active: true,
         };
 
         env.storage()
             .persistent()
             .set(&DataKey::Loan(loan_id), &loan);
+
+        // Emit borrow event
+        env.events().publish(
+            (symbol_short!("LOAN"), symbol_short!("BORROW")),
+            BorrowEvent {
+                loan_id,
+                borrower: borrower.clone(),
+                principal,
+                collateral_amount,
+                collateral_token,
+                interest_rate,
+                due_date,
+                timestamp: env.ledger().timestamp(),
+            },
+        );
 
         Ok(loan_id)
     }
@@ -156,6 +226,24 @@ impl BorrowingContract {
                 &loan.collateral_amount,
             );
         }
+
+        // Emit repay event
+        env.events().publish(
+            (symbol_short!("LOAN"), symbol_short!("REPAY")),
+            RepayEvent {
+                loan_id,
+                borrower: loan.borrower.clone(),
+                amount_repaid: amount,
+                principal: loan.principal,
+                interest_paid: 0, // Interest calculation would be needed based on contract logic
+                collateral_returned: if loan.is_active {
+                    0
+                } else {
+                    loan.collateral_amount
+                },
+                timestamp: env.ledger().timestamp(),
+            },
+        );
 
         env.storage()
             .persistent()
@@ -312,6 +400,20 @@ impl BorrowingContract {
         env.storage()
             .persistent()
             .set(&DataKey::Loan(loan_id), &loan);
+
+        // Emit liquidation event
+        env.events().publish(
+            (symbol_short!("LOAN"), symbol_short!("LIQUIDATE")),
+            LiquidationEvent {
+                loan_id,
+                borrower: loan.borrower.clone(),
+                liquidator: liquidator.clone(),
+                amount_liquidated: liquidate_amount,
+                collateral_seized: liquidator_reward,
+                health_factor,
+                timestamp: env.ledger().timestamp(),
+            },
+        );
 
         Ok(())
     }
