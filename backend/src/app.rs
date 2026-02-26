@@ -17,8 +17,8 @@ use crate::config::Config;
 use crate::notifications::{AuditLogService, NotificationService};
 use crate::service::{
     AdminMetrics, AdminService, ClaimMetricsService, ClaimPlanRequest, CreatePlanRequest,
-    KycRecord, KycService, KycStatus, PlanService, PlanStatisticsService, RevenueMetricsResponse,
-    RevenueMetricsService, UserMetricsService, LendingMetrics, LendingMonitoringService,
+    KycRecord, KycService, KycStatus, LendingMetrics, LendingMonitoringService, PlanService,
+    PlanStatisticsService, RevenueMetricsResponse, RevenueMetricsService, UserMetricsService,
 };
 
 pub struct AppState {
