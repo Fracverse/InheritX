@@ -113,6 +113,16 @@ pub async fn create_app(db: PgPool, config: Config) -> Result<Router, ApiError> 
         .route("/admin/metrics/claims", get(get_claim_statistics))
         .route("/admin/metrics/users", get(get_user_growth_metrics))
         .route("/admin/metrics/revenue", get(get_revenue_metrics))
+        // ── Lending Events ───────────────────────────────────────────────
+        .route("/api/events", get(crate::event_handlers::get_user_events))
+        .route(
+            "/api/events/plan/:plan_id",
+            get(crate::event_handlers::get_plan_events),
+        )
+        .route(
+            "/api/events/transaction/:transaction_hash",
+            get(crate::event_handlers::get_events_by_transaction),
+        )
         .with_state(state);
 
     Ok(app)
