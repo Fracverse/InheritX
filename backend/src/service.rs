@@ -1371,6 +1371,7 @@ impl LendingMonitoringService {
         let tvl = row.total_deposited; // Simplified TVL as total deposits
 
 
+
         let utilization_rate = if tvl > 0.0 {
             (current_debt / tvl) * 100.0
         } else {
