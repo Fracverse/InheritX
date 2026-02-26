@@ -65,6 +65,8 @@ pub async fn create_app(db: PgPool, config: Config) -> Result<Router, ApiError> 
         )
         .route("/api/auth/web3-login", post(crate::auth::web3_login))
         .route("/api/auth/wallet-login", post(crate::auth::web3_login))
+        .route("/user/send-2fa", post(crate::auth::send_2fa))
+        .route("/user/verify-2fa", post(crate::auth::verify_2fa))
         .layer(
             ServiceBuilder::new()
                 .layer(axum::middleware::from_fn_with_state(

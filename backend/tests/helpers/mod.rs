@@ -38,6 +38,11 @@ impl TestContext {
             jwt_secret: env::var("JWT_SECRET").unwrap_or_else(|_| "test-jwt-secret".to_string()),
         };
 
+        // Run migrations
+        inheritx_backend::db::run_migrations(&pool)
+            .await
+            .expect("failed to run migrations");
+
         let app = create_app(pool.clone(), config)
             .await
             .expect("failed to create app");
