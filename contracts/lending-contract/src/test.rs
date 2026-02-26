@@ -866,3 +866,48 @@ fn test_utilization_cap_enforced() {
     );
     assert!(loan_id > 0);
 }
+#[test]
+fn test_nft_minting_and_burning() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let (client, token_addr, collateral_addr, admin) = setup(&env);
+
+    // Register NFT contract
+    let nft_id = env.register_contract_wasm(None, loan_nft::WASM);
+    let nft_client = loan_nft::Client::new(&env, &nft_id);
+    nft_client.initialize(&client.address);
+
+    // Set NFT token in lending contract
+    client.set_nft_token(&admin, &nft_id);
+
+    let depositor = Address::generate(&env);
+    let borrower = Address::generate(&env);
+    mint_to(&env, &collateral_addr, &borrower, 100_000);
+    mint_to(&env, &token_addr, &depositor, 100_000);
+    mint_to(&env, &token_addr, &borrower, 100_000);
+
+    client.deposit(&depositor, &10_000u64);
+
+    // Borrow 1000
+    let loan_id = client.borrow(
+        &borrower,
+        &1_000u64,
+        &collateral_addr,
+        &1_500u64,
+        &(30 * 24 * 60 * 60),
+    );
+
+    // Verify NFT is minted
+    assert_eq!(nft_client.owner_of(&loan_id), Some(borrower.clone()));
+    let metadata = nft_client.get_metadata(&loan_id).unwrap();
+    assert_eq!(metadata.loan_id, loan_id);
+    assert_eq!(metadata.borrower, borrower);
+    assert_eq!(metadata.principal, 1_000u64);
+
+    // Repay
+    client.repay(&borrower);
+
+    // Verify NFT is burned
+    assert_eq!(nft_client.owner_of(&loan_id), None);
+    assert_eq!(nft_client.get_metadata(&loan_id), None);
+}

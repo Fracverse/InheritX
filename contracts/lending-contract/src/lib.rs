@@ -44,6 +44,21 @@ pub struct LoanRecord {
     pub interest_rate_bps: u32,
 }
 
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct LoanMetadata {
+    pub loan_id: u64,
+    pub borrower: Address,
+    pub principal: u64,
+    pub collateral_amount: u64,
+    pub collateral_token: Address,
+    pub due_date: u64,
+}
+
+mod loan_nft {
+    soroban_sdk::contractimport!(file = "../target/wasm32-unknown-unknown/release/loan_nft.wasm");
+}
+
 // ─────────────────────────────────────────────────
 // Events
 // ─────────────────────────────────────────────────
@@ -139,6 +154,7 @@ pub enum DataKey {
     LoanById(u64),
     CollateralRatio,
     WhitelistedCollateral(Address),
+    NFTToken,
 }
 
 // ─────────────────────────────────────────────────
@@ -186,6 +202,16 @@ impl LendingContract {
             },
         );
         Ok(())
+    }
+
+    pub fn set_nft_token(env: Env, admin: Address, nft_token: Address) -> Result<(), LendingError> {
+        Self::require_admin(&env, &admin)?;
+        env.storage().instance().set(&DataKey::NFTToken, &nft_token);
+        Ok(())
+    }
+
+    fn get_nft_token(env: &Env) -> Option<Address> {
+        env.storage().instance().get(&DataKey::NFTToken)
     }
 
     fn require_initialized(env: &Env) -> Result<(), LendingError> {
@@ -551,6 +577,22 @@ impl LendingContract {
             .persistent()
             .set(&DataKey::LoanById(loan_id), &loan);
 
+        // Mint NFT if token is set
+        if let Some(nft_token) = Self::get_nft_token(&env) {
+            let nft_client = loan_nft::Client::new(&env, &nft_token);
+            nft_client.mint(
+                &borrower,
+                &loan_nft::LoanMetadata {
+                    borrower: borrower.clone(),
+                    collateral_amount,
+                    collateral_token: collateral_token.clone(),
+                    due_date,
+                    loan_id,
+                    principal: amount,
+                },
+            );
+        }
+
         let token = Self::get_token(&env);
         Self::transfer(&env, &token, &contract_id, &borrower, amount)?;
 
@@ -639,6 +681,12 @@ impl LendingContract {
         env.storage()
             .persistent()
             .remove(&DataKey::LoanById(loan.loan_id));
+
+        // Burn NFT if token is set
+        if let Some(nft_token) = Self::get_nft_token(&env) {
+            let nft_client = loan_nft::Client::new(&env, &nft_token);
+            nft_client.burn(&loan.loan_id);
+        }
 
         env.events().publish(
             (symbol_short!("POOL"), symbol_short!("REPAY")),
