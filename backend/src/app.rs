@@ -65,6 +65,8 @@ pub async fn create_app(db: PgPool, config: Config) -> Result<Router, ApiError> 
         )
         .route("/api/auth/web3-login", post(crate::auth::web3_login))
         .route("/api/auth/wallet-login", post(crate::auth::web3_login))
+        .route("/user/send-2fa", post(crate::auth::send_2fa))
+        .route("/user/verify-2fa", post(crate::auth::verify_2fa))
         .layer(
             ServiceBuilder::new()
                 .layer(axum::middleware::from_fn_with_state(
@@ -162,10 +164,8 @@ async fn create_plan(
         return Err(ApiError::Forbidden("KYC not approved".to_string()));
     }
 
-    // Require 2FA verification (stub, replace with actual logic)
-    // if !verify_2fa(user.user_id, req.2fa_code) {
-    //     return Err(ApiError::Forbidden("2FA verification failed".to_string()));
-    // }
+    // Require 2FA verification
+    crate::auth::verify_2fa_internal(&state.db, user.user_id, &req.two_fa_code).await?;
 
     // Validate input amounts
     crate::safe_math::SafeMath::ensure_non_negative(req.net_amount, "net_amount")?;
@@ -295,10 +295,8 @@ async fn claim_plan(
         return Err(ApiError::Forbidden("KYC not approved".to_string()));
     }
 
-    // Require 2FA verification (stub, replace with actual logic)
-    // if !verify_2fa(user.user_id, req.2fa_code) {
-    //     return Err(ApiError::Forbidden("2FA verification failed".to_string()));
-    // }
+    // Require 2FA verification
+    crate::auth::verify_2fa_internal(&state.db, user.user_id, &req.two_fa_code).await?;
 
     let plan = PlanService::claim_plan(&state.db, plan_id, user.user_id, &req).await?;
 

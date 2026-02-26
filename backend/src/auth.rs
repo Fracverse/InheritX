@@ -1,9 +1,10 @@
 use crate::api_error::ApiError;
 use crate::app::AppState;
 use crate::config::Config;
+use crate::notifications::AuditLogService;
 use axum::{extract::State, Json};
 use bcrypt::verify;
-use chrono::{Duration, Utc};
+use chrono::{DateTime, Duration, Utc};
 use hex;
 use jsonwebtoken::{encode, EncodingKey, Header};
 use ring::signature;
@@ -39,6 +40,22 @@ pub struct LoginRequest {
 #[derive(Debug, Serialize, Deserialize)]
 pub struct LoginResponse {
     pub token: String,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+pub struct Send2faRequest {
+    pub user_id: Uuid,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+pub struct Verify2faRequest {
+    pub user_id: Uuid,
+    pub otp: String,
+}
+
+#[derive(Debug, Serialize)]
+pub struct TwoFaResponse {
+    pub message: String,
 }
 
 pub async fn get_nonce(
@@ -306,6 +323,142 @@ pub async fn wallet_login(
     Json(payload): Json<WalletLoginRequest>,
 ) -> Result<Json<LoginResponse>, ApiError> {
     web3_login(State(state), Json(payload)).await
+}
+
+pub async fn send_2fa(
+    State(state): State<Arc<AppState>>,
+    Json(payload): Json<Send2faRequest>,
+) -> Result<Json<TwoFaResponse>, ApiError> {
+    // 1. Check if user exists
+    let user_exists =
+        sqlx::query_scalar::<_, bool>("SELECT EXISTS(SELECT 1 FROM users WHERE id = $1)")
+            .bind(payload.user_id)
+            .fetch_one(&state.db)
+            .await?;
+
+    if !user_exists {
+        return Err(ApiError::NotFound("User not found".to_string()));
+    }
+
+    // 2. Generate 6-digit OTP
+    use ring::rand::SecureRandom;
+    let rng = ring::rand::SystemRandom::new();
+    let mut bytes = [0u8; 4];
+    rng.fill(&mut bytes)
+        .map_err(|_| ApiError::Internal(anyhow::anyhow!("Failed to generate random bytes")))?;
+
+    // Generate a number between 100,000 and 999,999
+    let otp_num = (u32::from_be_bytes(bytes) % 900_000) + 100_000;
+    let otp = otp_num.to_string();
+
+    // 3. Hash OTP
+    let otp_hash = bcrypt::hash(&otp, bcrypt::DEFAULT_COST)
+        .map_err(|e| ApiError::Internal(anyhow::anyhow!("Failed to hash OTP: {}", e)))?;
+
+    let expires_at = Utc::now() + Duration::minutes(5);
+
+    // 4. Store/Update OTP in user_2fa
+    sqlx::query(
+        r#"
+        INSERT INTO user_2fa (user_id, otp_hash, expires_at, attempts)
+        VALUES ($1, $2, $3, 0)
+        ON CONFLICT (user_id) DO UPDATE
+        SET otp_hash = EXCLUDED.otp_hash, 
+            expires_at = EXCLUDED.expires_at, 
+            attempts = 0,
+            updated_at = NOW()
+        "#,
+    )
+    .bind(payload.user_id)
+    .bind(&otp_hash)
+    .bind(expires_at)
+    .execute(&state.db)
+    .await?;
+
+    // 5. Mock Email Notification
+    tracing::info!("--- [2FA OTP] ---");
+    tracing::info!("User ID: {}", payload.user_id);
+    tracing::info!("OTP Code: {}", otp);
+    tracing::info!("-----------------");
+
+    // Optional: Log to audit logs and notifications
+    AuditLogService::log(
+        &state.db,
+        Some(payload.user_id),
+        "2fa_sent",
+        Some(payload.user_id),
+        Some("user"),
+    )
+    .await?;
+
+    Ok(Json(TwoFaResponse {
+        message: "OTP sent successfully".to_string(),
+    }))
+}
+
+pub async fn verify_2fa(
+    State(state): State<Arc<AppState>>,
+    Json(payload): Json<Verify2faRequest>,
+) -> Result<Json<TwoFaResponse>, ApiError> {
+    verify_2fa_internal(&state.db, payload.user_id, &payload.otp).await?;
+
+    Ok(Json(TwoFaResponse {
+        message: "OTP verified successfully".to_string(),
+    }))
+}
+
+pub async fn verify_2fa_internal(db: &PgPool, user_id: Uuid, otp: &str) -> Result<(), ApiError> {
+    let mut tx = db.begin().await?;
+
+    // 1. Retrieve OTP record
+    let row: Option<(String, DateTime<Utc>, i32)> = sqlx::query_as(
+        "SELECT otp_hash, expires_at, attempts FROM user_2fa WHERE user_id = $1 FOR UPDATE",
+    )
+    .bind(user_id)
+    .fetch_optional(&mut *tx)
+    .await?;
+
+    let (otp_hash, expires_at, attempts) =
+        row.ok_or_else(|| ApiError::BadRequest("No pending OTP found".to_string()))?;
+
+    // 2. Check attempts
+    if attempts >= 3 {
+        return Err(ApiError::BadRequest(
+            "Too many verification attempts. Please request a new OTP.".to_string(),
+        ));
+    }
+
+    // 3. Check expiry
+    if expires_at < Utc::now() {
+        return Err(ApiError::BadRequest("OTP has expired".to_string()));
+    }
+
+    // 4. Verify OTP
+    let valid = bcrypt::verify(otp, &otp_hash)
+        .map_err(|e| ApiError::Internal(anyhow::anyhow!("Failed to verify OTP: {}", e)))?;
+
+    if !valid {
+        // Increment attempts
+        sqlx::query(
+            "UPDATE user_2fa SET attempts = attempts + 1, updated_at = NOW() WHERE user_id = $1",
+        )
+        .bind(user_id)
+        .execute(&mut *tx)
+        .await?;
+
+        tx.commit().await?;
+        return Err(ApiError::Unauthorized);
+    }
+
+    // 5. Successful verification - Clear OTP
+    sqlx::query("DELETE FROM user_2fa WHERE user_id = $1")
+        .bind(user_id)
+        .execute(&mut *tx)
+        .await?;
+
+    tx.commit().await?;
+
+    Ok(())
 }
 
 use axum::extract::FromRequestParts;

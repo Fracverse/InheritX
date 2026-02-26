@@ -38,10 +38,32 @@ impl TestContext {
             jwt_secret: env::var("JWT_SECRET").unwrap_or_else(|_| "test-jwt-secret".to_string()),
         };
 
+        // Run migrations
+        inheritx_backend::db::run_migrations(&pool)
+            .await
+            .expect("failed to run migrations");
+
         let app = create_app(pool.clone(), config)
             .await
             .expect("failed to create app");
-
         Some(Self { app, pool })
+    }
+
+    #[allow(dead_code)]
+    pub async fn prepare_2fa(&self, user_id: uuid::Uuid, otp: &str) -> String {
+        let otp_hash = bcrypt::hash(otp, bcrypt::DEFAULT_COST).unwrap();
+        let expires_at = chrono::Utc::now() + chrono::Duration::minutes(5);
+
+        sqlx::query(
+            "INSERT INTO user_2fa (user_id, otp_hash, expires_at) VALUES ($1, $2, $3) ON CONFLICT (user_id) DO UPDATE SET otp_hash = $2, expires_at = $3"
+        )
+        .bind(user_id)
+        .bind(otp_hash)
+        .bind(expires_at)
+        .execute(&self.pool)
+        .await
+        .unwrap();
+
+        otp.to_string()
     }
 }

@@ -108,7 +108,7 @@ async fn test_claim_before_maturity_returns_400() {
     };
 
     let pool = test_context.pool.clone();
-    let app = test_context.app;
+    let app = test_context.app.clone();
 
     let user_id = Uuid::new_v4();
     let email = format!("test_{}@example.com", user_id);
@@ -165,12 +165,16 @@ async fn test_claim_before_maturity_returns_400() {
         .expect("Server failed");
     });
 
+    let otp = test_context.prepare_2fa(user_id, "123456").await;
     let token = generate_test_token(user_id, &email);
     let client = reqwest::Client::new();
     let response = client
         .post(format!("http://{}/api/plans/{}/claim", addr, plan_id))
         .header("Authorization", format!("Bearer {}", token))
-        .json(&json!({ "beneficiary_email": "beneficiary@example.com" }))
+        .json(&json!({
+            "beneficiary_email": "beneficiary@example.com",
+            "two_fa_code": otp
+        }))
         .send()
         .await
         .expect("Failed to send request");
@@ -198,9 +202,14 @@ async fn test_claim_plan_is_due() {
     approve_kyc_direct(&ctx.pool, user_id).await;
     let plan_id = insert_due_plan(&ctx.pool, user_id).await;
 
-    let body = serde_json::json!({ "beneficiary_email": "beneficiary@example.com" });
+    let otp = ctx.prepare_2fa(user_id, "123456").await;
+    let body = serde_json::json!({
+        "beneficiary_email": "beneficiary@example.com",
+        "two_fa_code": otp
+    });
     let response = ctx
         .app
+        .clone()
         .oneshot(
             Request::builder()
                 .method("POST")
@@ -233,9 +242,14 @@ async fn test_claim_requires_kyc_approved() {
     let token = generate_user_token(user_id);
     let plan_id = insert_due_plan(&ctx.pool, user_id).await;
 
-    let body = serde_json::json!({ "beneficiary_email": "beneficiary@example.com" });
+    let otp = ctx.prepare_2fa(user_id, "111111").await;
+    let body = serde_json::json!({
+        "beneficiary_email": "beneficiary@example.com",
+        "two_fa_code": otp
+    });
     let response = ctx
         .app
+        .clone()
         .oneshot(
             Request::builder()
                 .method("POST")
@@ -265,9 +279,14 @@ async fn test_claim_recorded_on_success() {
     approve_kyc_direct(&ctx.pool, user_id).await;
     let plan_id = insert_due_plan(&ctx.pool, user_id).await;
 
-    let body = serde_json::json!({ "beneficiary_email": "claim-record@example.com" });
+    let otp = ctx.prepare_2fa(user_id, "123456").await;
+    let body = serde_json::json!({
+        "beneficiary_email": "claim-record@example.com",
+        "two_fa_code": otp
+    });
     let response = ctx
         .app
+        .clone()
         .oneshot(
             Request::builder()
                 .method("POST")
@@ -311,9 +330,14 @@ async fn test_claim_audit_log_inserted() {
     approve_kyc_direct(&ctx.pool, user_id).await;
     let plan_id = insert_due_plan(&ctx.pool, user_id).await;
 
-    let body = serde_json::json!({ "beneficiary_email": "audit-test@example.com" });
+    let otp = ctx.prepare_2fa(user_id, "123456").await;
+    let body = serde_json::json!({
+        "beneficiary_email": "audit-test@example.com",
+        "two_fa_code": otp
+    });
     let response = ctx
         .app
+        .clone()
         .oneshot(
             Request::builder()
                 .method("POST")
@@ -368,9 +392,14 @@ async fn test_claim_notification_created() {
     .await
     .expect("Failed to count notifications before claim");
 
-    let body = serde_json::json!({ "beneficiary_email": "notify-test@example.com" });
+    let otp = ctx.prepare_2fa(user_id, "123456").await;
+    let body = serde_json::json!({
+        "beneficiary_email": "notify-test@example.com",
+        "two_fa_code": otp
+    });
     let response = ctx
         .app
+        .clone()
         .oneshot(
             Request::builder()
                 .method("POST")
