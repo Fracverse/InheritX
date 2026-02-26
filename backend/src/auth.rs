@@ -332,7 +332,7 @@ pub async fn send_2fa(
     // 1. Check if user exists
     let user_exists =
         sqlx::query_scalar::<_, bool>("SELECT EXISTS(SELECT 1 FROM users WHERE id = $1)")
-            .bind(&payload.user_id)
+            .bind(payload.user_id)
             .fetch_one(&state.db)
             .await?;
 
@@ -369,7 +369,7 @@ pub async fn send_2fa(
             updated_at = NOW()
         "#,
     )
-    .bind(&payload.user_id)
+    .bind(payload.user_id)
     .bind(&otp_hash)
     .bind(expires_at)
     .execute(&state.db)

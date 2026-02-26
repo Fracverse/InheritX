@@ -49,6 +49,7 @@ impl TestContext {
         Some(Self { app, pool })
     }
 
+    #[allow(dead_code)]
     pub async fn prepare_2fa(&self, user_id: uuid::Uuid, otp: &str) -> String {
         let otp_hash = bcrypt::hash(otp, bcrypt::DEFAULT_COST).unwrap();
         let expires_at = chrono::Utc::now() + chrono::Duration::minutes(5);
