@@ -1322,6 +1322,69 @@ impl RevenueMetricsService {
     }
 }
 
+// ── Lending Pool Metrics ──────────────────────────────────────────────────────
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct LendingMetrics {
+    pub total_value_locked: f64,
+    pub total_borrowed: f64,
+    pub utilization_rate: f64,
+    pub active_loans_count: i64,
+}
+
+pub struct LendingMonitoringService;
+
+impl LendingMonitoringService {
+    pub async fn get_lending_metrics(db: &PgPool) -> Result<LendingMetrics, ApiError> {
+        #[derive(sqlx::FromRow)]
+        struct MetricsRow {
+            total_deposited: f64,
+            total_borrowed: f64,
+            total_repaid_principal: f64,
+            active_loans_count: i64,
+        }
+
+        let row = sqlx::query_as::<_, MetricsRow>(
+            r#"
+            SELECT
+                (SELECT COALESCE(SUM(CAST(amount AS DECIMAL)), 0)::FLOAT8 FROM lending_events WHERE event_type = 'deposit') as total_deposited,
+                (SELECT COALESCE(SUM(CAST(amount AS DECIMAL)), 0)::FLOAT8 FROM lending_events WHERE event_type = 'borrow') as total_borrowed,
+                (SELECT COALESCE(SUM(CAST(metadata->>'principal_amount' AS DECIMAL)), 0)::FLOAT8 FROM lending_events WHERE event_type = 'repay') as total_repaid_principal,
+                (SELECT COUNT(*)::BIGINT FROM (
+                    SELECT plan_id, 
+                           SUM(CASE 
+                                WHEN event_type = 'borrow' THEN CAST(amount AS DECIMAL) 
+                                WHEN event_type = 'repay' THEN -CAST(metadata->>'principal_amount' AS DECIMAL)
+                                ELSE 0 
+                           END) as balance
+                    FROM lending_events 
+                    WHERE plan_id IS NOT NULL 
+                    GROUP BY plan_id
+                ) t WHERE balance > 0) as active_loans_count
+            "#,
+        )
+        .fetch_one(db)
+        .await?;
+
+        let current_debt = row.total_borrowed - row.total_repaid_principal;
+        let tvl = row.total_deposited; // Simplified TVL as total deposits
+        
+        let utilization_rate = if tvl > 0.0 {
+            (current_debt / tvl) * 100.0
+        } else {
+            0.0
+        };
+
+        Ok(LendingMetrics {
+            total_value_locked: tvl,
+            total_borrowed: current_debt,
+            utilization_rate,
+            active_loans_count: row.active_loans_count,
+        })
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::{CurrencyPreference, PlanService};

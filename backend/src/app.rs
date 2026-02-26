@@ -18,7 +18,7 @@ use crate::notifications::{AuditLogService, NotificationService};
 use crate::service::{
     AdminMetrics, AdminService, ClaimMetricsService, ClaimPlanRequest, CreatePlanRequest,
     KycRecord, KycService, KycStatus, PlanService, PlanStatisticsService, RevenueMetricsResponse,
-    RevenueMetricsService, UserMetricsService,
+    RevenueMetricsService, UserMetricsService, LendingMetrics, LendingMonitoringService,
 };
 
 pub struct AppState {
@@ -113,6 +113,7 @@ pub async fn create_app(db: PgPool, config: Config) -> Result<Router, ApiError> 
         .route("/admin/metrics/claims", get(get_claim_statistics))
         .route("/admin/metrics/users", get(get_user_growth_metrics))
         .route("/admin/metrics/revenue", get(get_revenue_metrics))
+        .route("/api/admin/metrics/lending", get(get_lending_metrics))
         // ── Lending Events ───────────────────────────────────────────────
         .route("/api/events", get(crate::event_handlers::get_user_events))
         .route(
@@ -594,4 +595,12 @@ async fn get_claim_statistics(
         "status": "success",
         "data": metrics
     })))
+}
+
+async fn get_lending_metrics(
+    State(state): State<Arc<AppState>>,
+    AuthenticatedAdmin(_admin): AuthenticatedAdmin,
+) -> Result<Json<LendingMetrics>, ApiError> {
+    let metrics = LendingMonitoringService::get_lending_metrics(&state.db).await?;
+    Ok(Json(metrics))
 }
