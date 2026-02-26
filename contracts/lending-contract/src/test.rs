@@ -911,3 +911,85 @@ fn test_nft_minting_and_burning() {
     assert_eq!(nft_client.owner_of(&loan_id), None);
     assert_eq!(nft_client.get_metadata(&loan_id), None);
 }
+
+// ─────────────────────────────────────────────────
+// Reentrancy Mock & Test
+// ─────────────────────────────────────────────────
+
+#[contract]
+pub struct MaliciousNFT;
+
+#[contractimpl]
+impl MaliciousNFT {
+    pub fn initialize(env: Env, admin: Address) {}
+    pub fn mint(env: Env, to: Address, metadata: LoanMetadata) {
+        let lending_contract = env
+            .storage()
+            .instance()
+            .get::<_, Address>(&symbol_short!("LEND"))
+            .unwrap();
+        let client = LendingContractClient::new(&env, &lending_contract);
+        // Attempt reentrant call to borrow
+        let _ = client.try_borrow(&to, &100, &metadata.collateral_token, &150, &3600);
+    }
+    pub fn burn(env: Env, loan_id: u64) {}
+    pub fn get_metadata(env: Env, loan_id: u64) -> Option<LoanMetadata> {
+        None
+    }
+    pub fn owner_of(env: Env, loan_id: u64) -> Option<Address> {
+        None
+    }
+}
+
+#[test]
+fn test_reentrancy_attack_fails() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let (client, token_addr, collateral_addr, admin) = setup(&env);
+
+    // Register Malicious NFT contract
+    let mal_nft_id = env.register_contract(None, MaliciousNFT);
+
+    // MaliciousNFT needs to know the lending contract address to call back
+    // We update its internal state directly in the test environment if needed,
+    // but here we just used instance storage of the mock.
+    // Wait, MaliciousNFT is a separate contract, it doesn't share instance storage with the test setup.
+    // I need to set it in MaliciousNFT's storage.
+    env.as_contract(&mal_nft_id, || {
+        env.storage()
+            .instance()
+            .set(&symbol_short!("LEND"), &client.address);
+    });
+
+    // Set Malicious NFT token in lending contract
+    client.set_nft_token(&admin, &mal_nft_id);
+
+    let depositor = Address::generate(&env);
+    let borrower = Address::generate(&env);
+    mint_to(&env, &collateral_addr, &borrower, 100_000);
+    mint_to(&env, &token_addr, &depositor, 100_000);
+
+    client.deposit(&depositor, &10_000u64);
+
+    // This borrow will trigger MaliciousNFT::mint, which calls client.borrow again.
+    // The inner borrow should return ReentrantCall error.
+    // However, the outer borrow will continue if MaliciousNFT suppresses the error (which it does with `let _ = ...`).
+    // BUT we want to verify that the inner call actually failed.
+
+    // Let's modify MaliciousNFT to panic on reentrancy failure if we want to catch it specifically,
+    // or just check that NO second loan was created.
+
+    client.borrow(
+        &borrower,
+        &1_000u64,
+        &collateral_addr,
+        &1_500u64,
+        &(30 * 24 * 60 * 60),
+    );
+
+    // If reentrancy was successful, next loan ID would be 3 (1 from first successful, 1 from reentrant).
+    // If blocked, next loan ID should be 2.
+    // Actually, in our implementation, pool.total_borrowed would be double if successful.
+    let pool = client.get_pool_state();
+    assert_eq!(pool.total_borrowed, 1000); // Only the first borrow succeeded
+}

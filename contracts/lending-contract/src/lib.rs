@@ -141,6 +141,7 @@ pub enum LendingError {
     InsufficientCollateral = 11,
     CollateralNotWhitelisted = 12,
     UtilizationCapExceeded = 13,
+    ReentrantCall = 14,
 }
 
 // ─────────────────────────────────────────────────
@@ -160,6 +161,7 @@ pub enum DataKey {
     CollateralRatio,
     WhitelistedCollateral(Address),
     NFTToken,
+    ReentrancyGuard,
 }
 
 // ─────────────────────────────────────────────────
@@ -213,6 +215,20 @@ impl LendingContract {
         Self::require_admin(&env, &admin)?;
         env.storage().instance().set(&DataKey::NFTToken, &nft_token);
         Ok(())
+    }
+
+    fn enter_reentrancy_guard(env: &Env) -> Result<(), LendingError> {
+        if env.storage().instance().has(&DataKey::ReentrancyGuard) {
+            return Err(LendingError::ReentrantCall);
+        }
+        env.storage()
+            .instance()
+            .set(&DataKey::ReentrancyGuard, &true);
+        Ok(())
+    }
+
+    fn exit_reentrancy_guard(env: &Env) {
+        env.storage().instance().remove(&DataKey::ReentrancyGuard);
     }
 
     fn get_nft_token(env: &Env) -> Option<Address> {
@@ -390,6 +406,7 @@ impl LendingContract {
     /// Mints proportional pool shares to the depositor.
     pub fn deposit(env: Env, depositor: Address, amount: u64) -> Result<u64, LendingError> {
         Self::require_initialized(&env)?;
+        Self::enter_reentrancy_guard(&env)?;
         depositor.require_auth();
 
         if amount == 0 {
@@ -436,6 +453,7 @@ impl LendingContract {
             amount,
             shares
         );
+        Self::exit_reentrancy_guard(&env);
         Ok(shares)
     }
 
@@ -443,6 +461,7 @@ impl LendingContract {
     /// Reverts if insufficient liquidity (i.e., tokens are loaned out).
     pub fn withdraw(env: Env, depositor: Address, shares: u64) -> Result<u64, LendingError> {
         Self::require_initialized(&env)?;
+        Self::enter_reentrancy_guard(&env)?;
         depositor.require_auth();
 
         if shares == 0 {
@@ -484,6 +503,7 @@ impl LendingContract {
             },
         );
         log!(&env, "Withdrew {} tokens, burned {} shares", amount, shares);
+        Self::exit_reentrancy_guard(&env);
         Ok(amount)
     }
 
@@ -499,6 +519,7 @@ impl LendingContract {
         duration_seconds: u64,
     ) -> Result<u64, LendingError> {
         Self::require_initialized(&env)?;
+        Self::enter_reentrancy_guard(&env)?;
         borrower.require_auth();
 
         if amount == 0 || collateral_amount == 0 {
@@ -627,6 +648,7 @@ impl LendingContract {
             amount,
             collateral_amount
         );
+        Self::exit_reentrancy_guard(&env);
         Ok(loan_id)
     }
 
@@ -635,6 +657,7 @@ impl LendingContract {
     /// Returns the total amount repaid (principal + interest).
     pub fn repay(env: Env, borrower: Address) -> Result<u64, LendingError> {
         Self::require_initialized(&env)?;
+        Self::enter_reentrancy_guard(&env)?;
         borrower.require_auth();
 
         let loan: LoanRecord = env
@@ -713,6 +736,7 @@ impl LendingContract {
             interest,
             loan.collateral_amount
         );
+        Self::exit_reentrancy_guard(&env);
         Ok(total_repayment)
     }
 
@@ -735,6 +759,7 @@ impl LendingContract {
     /// Used by authorized contracts (like InheritanceContract) to fulfill priority claims.
     pub fn withdraw_priority(env: Env, caller: Address, amount: u64) -> Result<u64, LendingError> {
         Self::require_initialized(&env)?;
+        Self::enter_reentrancy_guard(&env)?;
         caller.require_auth();
 
         // In a real implementation, we should restrict this to authorized contracts only.
@@ -765,6 +790,7 @@ impl LendingContract {
             },
         );
         log!(&env, "Priority withdrawal {} tokens by {}", amount, caller);
+        Self::exit_reentrancy_guard(&env);
         Ok(amount)
     }
 
