@@ -4,8 +4,8 @@ use axum::{
     body::Body,
     http::{Request, StatusCode},
 };
-use inheritx_backend::auth::{Send2faRequest, Verify2faRequest};
 use chrono::{Duration, Utc};
+use inheritx_backend::auth::{Send2faRequest, Verify2faRequest};
 use serde_json::Value;
 use tower::ServiceExt;
 use uuid::Uuid;
@@ -28,13 +28,17 @@ async fn test_2fa_full_flow() {
         .unwrap();
 
     // 2. Request 2FA
-    let response = ctx.app.clone()
+    let response = ctx
+        .app
+        .clone()
         .oneshot(
             Request::builder()
                 .method("POST")
                 .uri("/user/send-2fa")
                 .header("Content-Type", "application/json")
-                .body(Body::from(serde_json::to_vec(&Send2faRequest { user_id }).unwrap()))
+                .body(Body::from(
+                    serde_json::to_vec(&Send2faRequest { user_id }).unwrap(),
+                ))
                 .unwrap(),
         )
         .await
@@ -53,16 +57,21 @@ async fn test_2fa_full_flow() {
         .unwrap();
 
     // 4. Verify 2FA
-    let response = ctx.app.clone()
+    let response = ctx
+        .app
+        .clone()
         .oneshot(
             Request::builder()
                 .method("POST")
                 .uri("/user/verify-2fa")
                 .header("Content-Type", "application/json")
-                .body(Body::from(serde_json::to_vec(&Verify2faRequest { 
-                    user_id, 
-                    otp: otp.to_string() 
-                }).unwrap()))
+                .body(Body::from(
+                    serde_json::to_vec(&Verify2faRequest {
+                        user_id,
+                        otp: otp.to_string(),
+                    })
+                    .unwrap(),
+                ))
                 .unwrap(),
         )
         .await
@@ -71,11 +80,12 @@ async fn test_2fa_full_flow() {
     assert_eq!(response.status(), StatusCode::OK);
 
     // 5. Verify record is deleted
-    let exists: bool = sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM user_2fa WHERE user_id = $1)")
-        .bind(user_id)
-        .fetch_one(&ctx.pool)
-        .await
-        .unwrap();
+    let exists: bool =
+        sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM user_2fa WHERE user_id = $1)")
+            .bind(user_id)
+            .fetch_one(&ctx.pool)
+            .await
+            .unwrap();
     assert!(!exists);
 }
 
@@ -95,29 +105,37 @@ async fn test_verify_2fa_invalid_otp() {
         .unwrap();
 
     // Send 2FA
-    ctx.app.clone()
+    ctx.app
+        .clone()
         .oneshot(
             Request::builder()
                 .method("POST")
                 .uri("/user/send-2fa")
                 .header("Content-Type", "application/json")
-                .body(Body::from(serde_json::to_vec(&Send2faRequest { user_id }).unwrap()))
+                .body(Body::from(
+                    serde_json::to_vec(&Send2faRequest { user_id }).unwrap(),
+                ))
                 .unwrap(),
         )
         .await
         .unwrap();
 
     // Verify with WRONG OTP
-    let response = ctx.app.clone()
+    let response = ctx
+        .app
+        .clone()
         .oneshot(
             Request::builder()
                 .method("POST")
                 .uri("/user/verify-2fa")
                 .header("Content-Type", "application/json")
-                .body(Body::from(serde_json::to_vec(&Verify2faRequest { 
-                    user_id, 
-                    otp: "000000".to_string() 
-                }).unwrap()))
+                .body(Body::from(
+                    serde_json::to_vec(&Verify2faRequest {
+                        user_id,
+                        otp: "000000".to_string(),
+                    })
+                    .unwrap(),
+                ))
                 .unwrap(),
         )
         .await
@@ -151,34 +169,46 @@ async fn test_verify_2fa_too_many_attempts() {
 
     // Set 3 attempts in DB
     let expires_at = Utc::now() + Duration::minutes(5);
-    sqlx::query("INSERT INTO user_2fa (user_id, otp_hash, expires_at, attempts) VALUES ($1, $2, $3, 3)")
-        .bind(user_id)
-        .bind("some-hash")
-        .bind(expires_at)
-        .execute(&ctx.pool)
-        .await
-        .unwrap();
+    sqlx::query(
+        "INSERT INTO user_2fa (user_id, otp_hash, expires_at, attempts) VALUES ($1, $2, $3, 3)",
+    )
+    .bind(user_id)
+    .bind("some-hash")
+    .bind(expires_at)
+    .execute(&ctx.pool)
+    .await
+    .unwrap();
 
-    let response = ctx.app.clone()
+    let response = ctx
+        .app
+        .clone()
         .oneshot(
             Request::builder()
                 .method("POST")
                 .uri("/user/verify-2fa")
                 .header("Content-Type", "application/json")
-                .body(Body::from(serde_json::to_vec(&Verify2faRequest { 
-                    user_id, 
-                    otp: "123456".to_string() 
-                }).unwrap()))
+                .body(Body::from(
+                    serde_json::to_vec(&Verify2faRequest {
+                        user_id,
+                        otp: "123456".to_string(),
+                    })
+                    .unwrap(),
+                ))
                 .unwrap(),
         )
         .await
         .unwrap();
 
     assert_eq!(response.status(), StatusCode::BAD_REQUEST);
-    
-    let body = axum::body::to_bytes(response.into_body(), usize::MAX).await.unwrap();
+
+    let body = axum::body::to_bytes(response.into_body(), usize::MAX)
+        .await
+        .unwrap();
     let body: Value = serde_json::from_slice(&body).unwrap();
-    assert!(body["message"].as_str().unwrap().contains("Too many verification attempts"));
+    assert!(body["message"]
+        .as_str()
+        .unwrap()
+        .contains("Too many verification attempts"));
 }
 
 #[tokio::test]
@@ -198,32 +228,41 @@ async fn test_verify_2fa_expired() {
 
     // Set expired OTP in DB
     let expires_at = Utc::now() - Duration::minutes(1);
-    sqlx::query("INSERT INTO user_2fa (user_id, otp_hash, expires_at, attempts) VALUES ($1, $2, $3, 0)")
-        .bind(user_id)
-        .bind("some-hash")
-        .bind(expires_at)
-        .execute(&ctx.pool)
-        .await
-        .unwrap();
+    sqlx::query(
+        "INSERT INTO user_2fa (user_id, otp_hash, expires_at, attempts) VALUES ($1, $2, $3, 0)",
+    )
+    .bind(user_id)
+    .bind("some-hash")
+    .bind(expires_at)
+    .execute(&ctx.pool)
+    .await
+    .unwrap();
 
-    let response = ctx.app.clone()
+    let response = ctx
+        .app
+        .clone()
         .oneshot(
             Request::builder()
                 .method("POST")
                 .uri("/user/verify-2fa")
                 .header("Content-Type", "application/json")
-                .body(Body::from(serde_json::to_vec(&Verify2faRequest { 
-                    user_id, 
-                    otp: "123456".to_string() 
-                }).unwrap()))
+                .body(Body::from(
+                    serde_json::to_vec(&Verify2faRequest {
+                        user_id,
+                        otp: "123456".to_string(),
+                    })
+                    .unwrap(),
+                ))
                 .unwrap(),
         )
         .await
         .unwrap();
 
     assert_eq!(response.status(), StatusCode::BAD_REQUEST);
-    
-    let body = axum::body::to_bytes(response.into_body(), usize::MAX).await.unwrap();
+
+    let body = axum::body::to_bytes(response.into_body(), usize::MAX)
+        .await
+        .unwrap();
     let body: Value = serde_json::from_slice(&body).unwrap();
     assert!(body["message"].as_str().unwrap().contains("expired"));
 }

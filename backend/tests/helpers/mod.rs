@@ -50,7 +50,6 @@ impl TestContext {
     }
 
     pub async fn prepare_2fa(&self, user_id: uuid::Uuid, otp: &str) -> String {
-
         let otp_hash = bcrypt::hash(otp, bcrypt::DEFAULT_COST).unwrap();
         let expires_at = chrono::Utc::now() + chrono::Duration::minutes(5);
 
@@ -67,4 +66,3 @@ impl TestContext {
         otp.to_string()
     }
 }
-

@@ -112,13 +112,11 @@ pub struct CreatePlanRequest {
     pub two_fa_code: String,
 }
 
-
 #[derive(Debug, Deserialize)]
 pub struct ClaimPlanRequest {
     pub beneficiary_email: String,
     pub two_fa_code: String,
 }
-
 
 #[derive(sqlx::FromRow)]
 struct PlanRowFull {

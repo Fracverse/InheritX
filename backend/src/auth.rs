@@ -330,10 +330,11 @@ pub async fn send_2fa(
     Json(payload): Json<Send2faRequest>,
 ) -> Result<Json<TwoFaResponse>, ApiError> {
     // 1. Check if user exists
-    let user_exists = sqlx::query_scalar::<_, bool>("SELECT EXISTS(SELECT 1 FROM users WHERE id = $1)")
-        .bind(&payload.user_id)
-        .fetch_one(&state.db)
-        .await?;
+    let user_exists =
+        sqlx::query_scalar::<_, bool>("SELECT EXISTS(SELECT 1 FROM users WHERE id = $1)")
+            .bind(&payload.user_id)
+            .fetch_one(&state.db)
+            .await?;
 
     if !user_exists {
         return Err(ApiError::NotFound("User not found".to_string()));
@@ -343,8 +344,9 @@ pub async fn send_2fa(
     use ring::rand::SecureRandom;
     let rng = ring::rand::SystemRandom::new();
     let mut bytes = [0u8; 4];
-    rng.fill(&mut bytes).map_err(|_| ApiError::Internal(anyhow::anyhow!("Failed to generate random bytes")))?;
-    
+    rng.fill(&mut bytes)
+        .map_err(|_| ApiError::Internal(anyhow::anyhow!("Failed to generate random bytes")))?;
+
     // Generate a number between 100,000 and 999,999
     let otp_num = (u32::from_be_bytes(bytes) % 900_000) + 100_000;
     let otp = otp_num.to_string();
@@ -405,25 +407,25 @@ pub async fn verify_2fa(
     }))
 }
 
-pub async fn verify_2fa_internal(
-    db: &PgPool,
-    user_id: Uuid,
-    otp: &str,
-) -> Result<(), ApiError> {
+pub async fn verify_2fa_internal(db: &PgPool, user_id: Uuid, otp: &str) -> Result<(), ApiError> {
     let mut tx = db.begin().await?;
 
     // 1. Retrieve OTP record
-    let row: Option<(String, DateTime<Utc>, i32)> =
-        sqlx::query_as("SELECT otp_hash, expires_at, attempts FROM user_2fa WHERE user_id = $1 FOR UPDATE")
-            .bind(user_id)
-            .fetch_optional(&mut *tx)
-            .await?;
+    let row: Option<(String, DateTime<Utc>, i32)> = sqlx::query_as(
+        "SELECT otp_hash, expires_at, attempts FROM user_2fa WHERE user_id = $1 FOR UPDATE",
+    )
+    .bind(user_id)
+    .fetch_optional(&mut *tx)
+    .await?;
 
-    let (otp_hash, expires_at, attempts) = row.ok_or_else(|| ApiError::BadRequest("No pending OTP found".to_string()))?;
+    let (otp_hash, expires_at, attempts) =
+        row.ok_or_else(|| ApiError::BadRequest("No pending OTP found".to_string()))?;
 
     // 2. Check attempts
     if attempts >= 3 {
-        return Err(ApiError::BadRequest("Too many verification attempts. Please request a new OTP.".to_string()));
+        return Err(ApiError::BadRequest(
+            "Too many verification attempts. Please request a new OTP.".to_string(),
+        ));
     }
 
     // 3. Check expiry
@@ -437,11 +439,13 @@ pub async fn verify_2fa_internal(
 
     if !valid {
         // Increment attempts
-        sqlx::query("UPDATE user_2fa SET attempts = attempts + 1, updated_at = NOW() WHERE user_id = $1")
-            .bind(user_id)
-            .execute(&mut *tx)
-            .await?;
-        
+        sqlx::query(
+            "UPDATE user_2fa SET attempts = attempts + 1, updated_at = NOW() WHERE user_id = $1",
+        )
+        .bind(user_id)
+        .execute(&mut *tx)
+        .await?;
+
         tx.commit().await?;
         return Err(ApiError::Unauthorized);
     }
@@ -456,7 +460,6 @@ pub async fn verify_2fa_internal(
 
     Ok(())
 }
-
 
 use axum::extract::FromRequestParts;
 use axum::http::request::Parts;

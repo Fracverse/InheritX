@@ -171,11 +171,10 @@ async fn test_claim_before_maturity_returns_400() {
     let response = client
         .post(format!("http://{}/api/plans/{}/claim", addr, plan_id))
         .header("Authorization", format!("Bearer {}", token))
-        .json(&json!({ 
+        .json(&json!({
             "beneficiary_email": "beneficiary@example.com",
             "two_fa_code": otp
         }))
-
         .send()
         .await
         .expect("Failed to send request");
@@ -204,7 +203,7 @@ async fn test_claim_plan_is_due() {
     let plan_id = insert_due_plan(&ctx.pool, user_id).await;
 
     let otp = ctx.prepare_2fa(user_id, "123456").await;
-    let body = serde_json::json!({ 
+    let body = serde_json::json!({
         "beneficiary_email": "beneficiary@example.com",
         "two_fa_code": otp
     });
@@ -220,7 +219,6 @@ async fn test_claim_plan_is_due() {
                 .body(Body::from(
                     serde_json::to_string(&body).expect("Failed to serialize request body"),
                 ))
-
                 .expect("Failed to build request"),
         )
         .await
@@ -245,7 +243,7 @@ async fn test_claim_requires_kyc_approved() {
     let plan_id = insert_due_plan(&ctx.pool, user_id).await;
 
     let otp = ctx.prepare_2fa(user_id, "111111").await;
-    let body = serde_json::json!({ 
+    let body = serde_json::json!({
         "beneficiary_email": "beneficiary@example.com",
         "two_fa_code": otp
     });
@@ -261,7 +259,6 @@ async fn test_claim_requires_kyc_approved() {
                 .body(Body::from(
                     serde_json::to_string(&body).expect("Failed to serialize request body"),
                 ))
-
                 .expect("Failed to build request"),
         )
         .await
@@ -283,9 +280,9 @@ async fn test_claim_recorded_on_success() {
     let plan_id = insert_due_plan(&ctx.pool, user_id).await;
 
     let otp = ctx.prepare_2fa(user_id, "123456").await;
-    let body = serde_json::json!({ 
+    let body = serde_json::json!({
         "beneficiary_email": "claim-record@example.com",
-        "two_fa_code": otp 
+        "two_fa_code": otp
     });
     let response = ctx
         .app
@@ -299,7 +296,6 @@ async fn test_claim_recorded_on_success() {
                 .body(Body::from(
                     serde_json::to_string(&body).expect("Failed to serialize request body"),
                 ))
-
                 .expect("Failed to build request"),
         )
         .await
@@ -335,9 +331,9 @@ async fn test_claim_audit_log_inserted() {
     let plan_id = insert_due_plan(&ctx.pool, user_id).await;
 
     let otp = ctx.prepare_2fa(user_id, "123456").await;
-    let body = serde_json::json!({ 
+    let body = serde_json::json!({
         "beneficiary_email": "audit-test@example.com",
-        "two_fa_code": otp 
+        "two_fa_code": otp
     });
     let response = ctx
         .app
@@ -351,7 +347,6 @@ async fn test_claim_audit_log_inserted() {
                 .body(Body::from(
                     serde_json::to_string(&body).expect("Failed to serialize request body"),
                 ))
-
                 .expect("Failed to build request"),
         )
         .await
@@ -398,9 +393,9 @@ async fn test_claim_notification_created() {
     .expect("Failed to count notifications before claim");
 
     let otp = ctx.prepare_2fa(user_id, "123456").await;
-    let body = serde_json::json!({ 
+    let body = serde_json::json!({
         "beneficiary_email": "notify-test@example.com",
-        "two_fa_code": otp 
+        "two_fa_code": otp
     });
     let response = ctx
         .app
@@ -414,7 +409,6 @@ async fn test_claim_notification_created() {
                 .body(Body::from(
                     serde_json::to_string(&body).expect("Failed to serialize request body"),
                 ))
-
                 .expect("Failed to build request"),
         )
         .await

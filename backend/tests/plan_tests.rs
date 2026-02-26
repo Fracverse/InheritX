@@ -380,7 +380,6 @@ async fn test_create_plan_wallet_balance_check() {
         "two_fa_code": otp
     });
 
-
     let response = test_context
         .app
         .oneshot(
@@ -437,7 +436,6 @@ async fn test_create_plan_audit_log_inserted() {
         "currency_preference": "USDC",
         "two_fa_code": otp
     });
-
 
     let response = test_context
         .app
@@ -525,7 +523,6 @@ async fn test_create_plan_notification_created() {
         "two_fa_code": otp
     });
 
-
     let response = test_context
         .app
         .oneshot(
@@ -608,4 +605,3 @@ async fn test_create_plan_invalid_2fa() {
     // verify_2fa_internal returns Unauthorized on wrong OTP
     assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
 }
-
