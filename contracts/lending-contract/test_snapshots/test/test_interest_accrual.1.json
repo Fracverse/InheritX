@@ -801,6 +801,14 @@
                           "map": [
                             {
                               "key": {
+                                "symbol": "bad_debt_reserve"
+                              },
+                              "val": {
+                                "u64": 37
+                              }
+                            },
+                            {
+                              "key": {
                                 "symbol": "base_rate_bps"
                               },
                               "val": {
@@ -817,6 +825,14 @@
                             },
                             {
                               "key": {
+                                "symbol": "retained_yield"
+                              },
+                              "val": {
+                                "u64": 38
+                              }
+                            },
+                            {
+                              "key": {
                                 "symbol": "total_borrowed"
                               },
                               "val": {
@@ -828,7 +844,7 @@
                                 "symbol": "total_deposits"
                               },
                               "val": {
-                                "u64": 1075
+                                "u64": 1068
                               }
                             },
                             {
@@ -1048,7 +1064,7 @@
                       "val": {
                         "i128": {
                           "hi": 0,
-                          "lo": 1075
+                          "lo": 1143
                         }
                       }
                     },
@@ -1121,7 +1137,7 @@
                       "val": {
                         "i128": {
                           "hi": 0,
-                          "lo": 99675
+                          "lo": 99607
                         }
                       }
                     },
@@ -3355,6 +3371,14 @@
               "map": [
                 {
                   "key": {
+                    "symbol": "bad_debt_reserve"
+                  },
+                  "val": {
+                    "u64": 37
+                  }
+                },
+                {
+                  "key": {
                     "symbol": "base_rate_bps"
                   },
                   "val": {
@@ -3371,6 +3395,14 @@
                 },
                 {
                   "key": {
+                    "symbol": "retained_yield"
+                  },
+                  "val": {
+                    "u64": 38
+                  }
+                },
+                {
+                  "key": {
                     "symbol": "total_borrowed"
                   },
                   "val": {
@@ -3382,7 +3414,7 @@
                     "symbol": "total_deposits"
                   },
                   "val": {
-                    "u64": 10750
+                    "u64": 10675
                   }
                 },
                 {
@@ -3470,7 +3502,7 @@
                 {
                   "i128": {
                     "hi": 0,
-                    "lo": 9675
+                    "lo": 9607
                   }
                 }
               ]
@@ -3504,7 +3536,7 @@
             "data": {
               "i128": {
                 "hi": 0,
-                "lo": 9675
+                "lo": 9607
               }
             }
           }
@@ -3555,7 +3587,7 @@
                     "symbol": "amount"
                   },
                   "val": {
-                    "u64": 9675
+                    "u64": 9607
                   }
                 },
                 {
@@ -3599,7 +3631,7 @@
                   "string": "Withdrew {} tokens, burned {} shares"
                 },
                 {
-                  "u64": 9675
+                  "u64": 9607
                 },
                 {
                   "u64": 9000
@@ -3627,7 +3659,7 @@
               }
             ],
             "data": {
-              "u64": 9675
+              "u64": 9607
             }
           }
         }

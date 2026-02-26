@@ -9,6 +9,8 @@ use soroban_sdk::{
 // ─────────────────────────────────────────────────
 
 const MINIMUM_LIQUIDITY: u64 = 1000;
+const PROTOCOL_INTEREST_BPS: u32 = 1000; // 10% of interest retained by protocol
+const BAD_DEBT_RESERVE_BPS: u32 = 5000; // 50% of protocol share routed to reserve
 
 // ─────────────────────────────────────────────────
 // Data Types
@@ -24,6 +26,7 @@ pub struct PoolState {
     pub multiplier_bps: u32, // Multiplier applied to utilization to get variable rate
     pub utilization_cap_bps: u32, // Maximum utilization allowed in basis points (e.g., 8000 = 80%)
     pub retained_yield: u64, // Yield reserved for protocol/priority payouts
+    pub bad_debt_reserve: u64, // Reserve bucket for bad debt coverage
 }
 
 const SECONDS_IN_YEAR: u64 = 31_536_000;
@@ -179,6 +182,7 @@ impl LendingContract {
                 multiplier_bps,
                 utilization_cap_bps,
                 retained_yield: 0,
+                bad_debt_reserve: 0,
             },
         );
         Ok(())
@@ -612,12 +616,21 @@ impl LendingContract {
         let mut pool = Self::get_pool(&env);
         pool.total_borrowed -= loan.principal;
 
-        // Retain 10% of interest for protocol priority payouts
-        let protocol_share = interest / 10;
+        // Retain 10% of interest for protocol buckets, with part routed to bad-debt reserve.
+        let protocol_share = ((interest as u128)
+            .checked_mul(PROTOCOL_INTEREST_BPS as u128)
+            .and_then(|v| v.checked_div(10000))
+            .unwrap_or(0)) as u64;
+        let reserve_share = ((protocol_share as u128)
+            .checked_mul(BAD_DEBT_RESERVE_BPS as u128)
+            .and_then(|v| v.checked_div(10000))
+            .unwrap_or(0)) as u64;
+        let retained_share = protocol_share.saturating_sub(reserve_share);
         let pool_share = interest - protocol_share;
 
         pool.total_deposits += pool_share; // Interest increases pool value for share holders
-        pool.retained_yield += protocol_share;
+        pool.retained_yield += retained_share;
+        pool.bad_debt_reserve += reserve_share;
         Self::set_pool(&env, &pool);
 
         env.storage()

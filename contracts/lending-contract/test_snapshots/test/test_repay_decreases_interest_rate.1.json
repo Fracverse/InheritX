@@ -836,6 +836,14 @@
                           "map": [
                             {
                               "key": {
+                                "symbol": "bad_debt_reserve"
+                              },
+                              "val": {
+                                "u64": 0
+                              }
+                            },
+                            {
+                              "key": {
                                 "symbol": "base_rate_bps"
                               },
                               "val": {
@@ -848,6 +856,14 @@
                               },
                               "val": {
                                 "u32": 2000
+                              }
+                            },
+                            {
+                              "key": {
+                                "symbol": "retained_yield"
+                              },
+                              "val": {
+                                "u64": 0
                               }
                             },
                             {

@@ -458,7 +458,8 @@ fn test_interest_accrual() {
     // total_deposits should be 10,000 (initial) + 675 (90% of 750 interest) = 10,675
     assert_eq!(pool.total_deposits, 10_675);
     assert_eq!(pool.total_borrowed, 0);
-    assert_eq!(pool.retained_yield, 75); // 10% of 750
+    assert_eq!(pool.retained_yield, 38); // Remaining protocol yield after reserve split
+    assert_eq!(pool.bad_debt_reserve, 37); // Portion of protocol share routed to reserve
 
     // 7. Verify depositor can withdraw more than they put in
     // shares = 9,000, pool_shares = 10,000, pool_deposits = 10,675
@@ -650,7 +651,8 @@ fn test_repayment_updates_state_correctly() {
     let pool_after = client.get_pool_state();
     assert_eq!(pool_after.total_borrowed, 0);
     assert_eq!(pool_after.total_deposits, 10_675); // Original + 90% interest
-    assert_eq!(pool_after.retained_yield, 75); // 10% interest
+    assert_eq!(pool_after.retained_yield, 38);
+    assert_eq!(pool_after.bad_debt_reserve, 37);
 
     // Verify loan is removed
     assert!(client.get_loan(&borrower).is_none());

@@ -780,6 +780,14 @@
                           "map": [
                             {
                               "key": {
+                                "symbol": "bad_debt_reserve"
+                              },
+                              "val": {
+                                "u64": 37
+                              }
+                            },
+                            {
+                              "key": {
                                 "symbol": "base_rate_bps"
                               },
                               "val": {
@@ -796,6 +804,14 @@
                             },
                             {
                               "key": {
+                                "symbol": "retained_yield"
+                              },
+                              "val": {
+                                "u64": 38
+                              }
+                            },
+                            {
+                              "key": {
                                 "symbol": "total_borrowed"
                               },
                               "val": {
@@ -807,7 +823,7 @@
                                 "symbol": "total_deposits"
                               },
                               "val": {
-                                "u64": 10750
+                                "u64": 10675
                               }
                             },
                             {
@@ -2861,6 +2877,14 @@
               "map": [
                 {
                   "key": {
+                    "symbol": "bad_debt_reserve"
+                  },
+                  "val": {
+                    "u64": 0
+                  }
+                },
+                {
+                  "key": {
                     "symbol": "base_rate_bps"
                   },
                   "val": {
@@ -2873,6 +2897,14 @@
                   },
                   "val": {
                     "u32": 2000
+                  }
+                },
+                {
+                  "key": {
+                    "symbol": "retained_yield"
+                  },
+                  "val": {
+                    "u64": 0
                   }
                 },
                 {
@@ -3301,6 +3333,14 @@
               "map": [
                 {
                   "key": {
+                    "symbol": "bad_debt_reserve"
+                  },
+                  "val": {
+                    "u64": 37
+                  }
+                },
+                {
+                  "key": {
                     "symbol": "base_rate_bps"
                   },
                   "val": {
@@ -3317,6 +3357,14 @@
                 },
                 {
                   "key": {
+                    "symbol": "retained_yield"
+                  },
+                  "val": {
+                    "u64": 38
+                  }
+                },
+                {
+                  "key": {
                     "symbol": "total_borrowed"
                   },
                   "val": {
@@ -3328,7 +3376,7 @@
                     "symbol": "total_deposits"
                   },
                   "val": {
-                    "u64": 10750
+                    "u64": 10675
                   }
                 },
                 {
