@@ -15,6 +15,14 @@ pub enum DistributionMethod {
 
 #[contracttype]
 #[derive(Clone, Debug, Eq, PartialEq)]
+pub enum KycStatus {
+    Pending,
+    Approved,
+    Rejected,
+}
+
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
 pub struct Beneficiary {
     pub hashed_full_name: BytesN<32>,
     pub hashed_email: BytesN<32>,
@@ -54,6 +62,7 @@ pub enum InheritanceError {
     AllocationExceedsLimit = 12,
     InvalidAllocation = 13,
     InvalidClaimCodeRange = 14,
+    KycNotApproved = 15,
 }
 
 #[contracttype]
@@ -61,6 +70,7 @@ pub enum InheritanceError {
 pub enum DataKey {
     NextPlanId,
     Plan(u64),
+    KycStatus(Address),
 }
 
 // Events for beneficiary operations
@@ -227,6 +237,49 @@ impl InheritanceContract {
     fn get_plan(env: &Env, plan_id: u64) -> Option<InheritancePlan> {
         let key = DataKey::Plan(plan_id);
         env.storage().persistent().get(&key)
+    }
+
+    // KYC status management functions
+    /// Set KYC status for a user address
+    ///
+    /// # Arguments
+    /// * `env` - The environment
+    /// * `user` - The user address
+    /// * `status` - The KYC status to set
+    pub fn set_kyc_status(env: Env, user: Address, status: KycStatus) {
+        user.require_auth();
+        let key = DataKey::KycStatus(user.clone());
+        env.storage().persistent().set(&key, &status);
+        log!(&env, "KYC status set for user: {:?}", user);
+    }
+
+    /// Get KYC status for a user address
+    ///
+    /// # Arguments
+    /// * `env` - The environment
+    /// * `user` - The user address
+    ///
+    /// # Returns
+    /// The KYC status of the user, or Pending if not set
+    pub fn get_kyc_status(env: &Env, user: &Address) -> KycStatus {
+        let key = DataKey::KycStatus(user.clone());
+        env.storage().persistent().get(&key).unwrap_or(KycStatus::Pending)
+    }
+
+    /// Check if user's KYC status is approved
+    ///
+    /// # Arguments
+    /// * `env` - The environment
+    /// * `user` - The user address
+    ///
+    /// # Returns
+    /// Ok(()) if approved, Err(KycNotApproved) otherwise
+    fn check_kyc_approved(env: &Env, user: &Address) -> Result<(), InheritanceError> {
+        let status = Self::get_kyc_status(env, user);
+        match status {
+            KycStatus::Approved => Ok(()),
+            _ => Err(InheritanceError::KycNotApproved),
+        }
     }
 
     /// Add a beneficiary to an existing inheritance plan
@@ -414,6 +467,10 @@ impl InheritanceContract {
         // Require owner authorization
         owner.require_auth();
 
+        // Pre-check: Verify that the user's KYC status is approved
+        Self::check_kyc_approved(&env, &owner)
+            .map_err(|_| InheritanceError::KycNotApproved)?;
+
         // Validate plan inputs (asset type is hardcoded to USDC)
         let usdc_symbol = Symbol::new(&env, "USDC");
         Self::validate_plan_inputs(
@@ -463,6 +520,61 @@ impl InheritanceContract {
         log!(&env, "Inheritance plan created with ID: {}", plan_id);
 
         Ok(plan_id)
+    }
+
+    /// Claim an inheritance plan as a beneficiary
+    ///
+    /// # Arguments
+    /// * `env` - The environment
+    /// * `claimant` - The address claiming the plan (must authorize this call)
+    /// * `plan_id` - The ID of the plan to claim
+    /// * `email` - Email address of the beneficiary (will be hashed for verification)
+    /// * `claim_code` - 6-digit numeric claim code (0-999999, will be hashed for verification)
+    ///
+    /// # Returns
+    /// Ok(()) on success
+    ///
+    /// # Errors
+    /// - KycNotApproved: If claimant's KYC status is not approved
+    /// - PlanNotFound: If plan_id doesn't exist
+    /// - InvalidClaimCode: If claim code doesn't match any beneficiary
+    pub fn claim_plan(
+        env: Env,
+        claimant: Address,
+        plan_id: u64,
+        email: String,
+        claim_code: u32,
+    ) -> Result<(), InheritanceError> {
+        // Require claimant authorization
+        claimant.require_auth();
+
+        // Pre-check: Verify that the user's KYC status is approved
+        Self::check_kyc_approved(&env, &claimant)
+            .map_err(|_| InheritanceError::KycNotApproved)?;
+
+        // Get the plan
+        let plan = Self::get_plan(&env, plan_id).ok_or(InheritanceError::PlanNotFound)?;
+
+        // Hash the provided email and claim code for verification
+        let hashed_email = Self::hash_string(&env, email);
+        let hashed_claim_code = Self::hash_claim_code(&env, claim_code)?;
+
+        // Verify that the claimant matches a beneficiary in the plan
+        let mut found = false;
+        for beneficiary in plan.beneficiaries.iter() {
+            if beneficiary.hashed_email == hashed_email && beneficiary.hashed_claim_code == hashed_claim_code {
+                found = true;
+                break;
+            }
+        }
+
+        if !found {
+            return Err(InheritanceError::InvalidClaimCode);
+        }
+
+        log!(&env, "Plan {} claimed by beneficiary", plan_id);
+
+        Ok(())
     }
 }
 
