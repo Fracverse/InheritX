@@ -106,7 +106,7 @@ pub enum DataKey {
     Admin,
     Kyc(Address),
     Version,
-    InheritanceTrigger(u64),   // per-plan inheritance trigger info
+    InheritanceTrigger(u64), // per-plan inheritance trigger info
 }
 
 #[contracttype]
@@ -1584,8 +1584,8 @@ impl InheritanceContract {
 
         let mut plan = Self::get_plan(&env, plan_id).ok_or(InheritanceError::PlanNotFound)?;
 
-        let mut trigger_info =
-            Self::get_trigger_info(&env, plan_id).ok_or(InheritanceError::InheritanceNotTriggered)?;
+        let mut trigger_info = Self::get_trigger_info(&env, plan_id)
+            .ok_or(InheritanceError::InheritanceNotTriggered)?;
 
         if plan.total_loaned == 0 {
             return Err(InheritanceError::NoOutstandingLoans);
@@ -1651,8 +1651,8 @@ impl InheritanceContract {
 
         let mut plan = Self::get_plan(&env, plan_id).ok_or(InheritanceError::PlanNotFound)?;
 
-        let mut trigger_info =
-            Self::get_trigger_info(&env, plan_id).ok_or(InheritanceError::InheritanceNotTriggered)?;
+        let mut trigger_info = Self::get_trigger_info(&env, plan_id)
+            .ok_or(InheritanceError::InheritanceNotTriggered)?;
 
         if plan.total_loaned == 0 {
             return Err(InheritanceError::NoOutstandingLoans);
@@ -1691,10 +1691,7 @@ impl InheritanceContract {
     }
 
     /// Query the inheritance trigger status for a plan.
-    pub fn get_inheritance_trigger(
-        env: Env,
-        plan_id: u64,
-    ) -> Option<InheritanceTriggerInfo> {
+    pub fn get_inheritance_trigger(env: Env, plan_id: u64) -> Option<InheritanceTriggerInfo> {
         Self::get_trigger_info(&env, plan_id)
     }
 
