@@ -121,6 +121,29 @@ pub struct CollateralDepositEvent {
     pub amount: u64,
 }
 
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct LiquidationEvent {
+    pub loan_id: u64,
+    pub borrower: Address,
+    pub liquidator: Address,
+    pub amount_repaid: u64,
+    pub collateral_seized: u64,
+    pub health_factor: u32,
+}
+
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct InterestAccrualEvent {
+    pub loan_id: u64,
+    pub borrower: Address,
+    pub principal: u64,
+    pub interest_accrued: u64,
+    pub interest_rate_bps: u32,
+    pub elapsed_seconds: u64,
+    pub timestamp: u64,
+}
+
 // ─────────────────────────────────────────────────
 // Errors
 // ─────────────────────────────────────────────────
@@ -755,6 +778,48 @@ impl LendingContract {
         }
     }
 
+    /// Calculate and emit an interest accrual event for a specific loan
+    pub fn emit_interest_accrual(
+        env: Env,
+        borrower: Address,
+    ) -> Result<u64, LendingError> {
+        Self::require_initialized(&env)?;
+
+        let loan_opt: Option<LoanRecord> = env.storage().persistent().get(&DataKey::Loan(borrower.clone()));
+
+        match loan_opt {
+            Some(loan) => {
+                let elapsed = env.ledger().timestamp().saturating_sub(loan.borrow_time);
+                let interest =
+                    Self::calculate_interest(loan.principal, loan.interest_rate_bps, elapsed);
+
+                env.events().publish(
+                    (symbol_short!("POOL"), symbol_short!("INTEREST")),
+                    InterestAccrualEvent {
+                        loan_id: loan.loan_id,
+                        borrower: borrower.clone(),
+                        principal: loan.principal,
+                        interest_accrued: interest,
+                        interest_rate_bps: loan.interest_rate_bps,
+                        elapsed_seconds: elapsed,
+                        timestamp: env.ledger().timestamp(),
+                    },
+                );
+
+                log!(
+                    &env,
+                    "Interest accrued for loan {}: {} interest on {} principal",
+                    loan.loan_id,
+                    interest,
+                    loan.principal
+                );
+
+                Ok(interest)
+            }
+            None => Err(LendingError::NoOpenLoan),
+        }
+    }
+
     /// Withdraw prioritized funds from the retained yield.
     /// Used by authorized contracts (like InheritanceContract) to fulfill priority claims.
     pub fn withdraw_priority(env: Env, caller: Address, amount: u64) -> Result<u64, LendingError> {
@@ -868,6 +933,95 @@ impl LendingContract {
     /// Get the current collateral ratio in basis points
     pub fn get_collateral_ratio_bps(env: Env) -> u32 {
         Self::get_collateral_ratio(&env)
+    }
+
+    /// Liquidate an underwater loan by paying part of the debt and seizing collateral
+    /// Only callable if the loan's health factor is below a safe threshold
+    pub fn liquidate(
+        env: Env,
+        liquidator: Address,
+        borrower: Address,
+        amount: u64,
+    ) -> Result<u64, LendingError> {
+        Self::require_initialized(&env)?;
+        Self::enter_reentrancy_guard(&env)?;
+        liquidator.require_auth();
+
+        let loan: LoanRecord = env
+            .storage()
+            .persistent()
+            .get(&DataKey::Loan(borrower.clone()))
+            .ok_or(LendingError::NoOpenLoan)?;
+
+        if amount == 0 || amount > loan.principal {
+            return Err(LendingError::InvalidAmount);
+        }
+
+        // Calculate health factor (collateral / debt ratio)
+        let health_factor = (loan.collateral_amount as u128)
+            .checked_mul(10000)
+            .and_then(|v| v.checked_div(loan.principal as u128))
+            .unwrap_or(0) as u32;
+
+        // Allow liquidation if health factor is below 150% (15000 basis points)
+        let liquidation_threshold_bps = 15000u32;
+        if health_factor >= liquidation_threshold_bps {
+            return Err(LendingError::InvalidAmount);
+        }
+
+        // Calculate collateral to seize (with small penalty/bonus to liquidator)
+        let collateral_to_seize = (amount as u128)
+            .checked_mul(15000) // 150% of the amount repaid
+            .and_then(|v| v.checked_div(10000))
+            .unwrap_or(amount as u128) as u64;
+
+        if collateral_to_seize > loan.collateral_amount {
+            return Err(LendingError::InvalidAmount);
+        }
+
+        let token = Self::get_token(&env);
+        let contract_id = env.current_contract_address();
+
+        // Transfer debt payment from liquidator to contract
+        Self::transfer(&env, &token, &liquidator, &contract_id, amount)?;
+
+        // Transfer collateral from contract to liquidator
+        Self::transfer(
+            &env,
+            &loan.collateral_token,
+            &contract_id,
+            &liquidator,
+            collateral_to_seize,
+        )?;
+
+        let mut pool = Self::get_pool(&env);
+        pool.total_borrowed = pool.total_borrowed.saturating_sub(amount);
+        pool.total_deposits += amount;
+        Self::set_pool(&env, &pool);
+
+        // Emit liquidation event
+        env.events().publish(
+            (symbol_short!("POOL"), symbol_short!("LIQUIDATE")),
+            LiquidationEvent {
+                loan_id: loan.loan_id,
+                borrower: borrower.clone(),
+                liquidator: liquidator.clone(),
+                amount_repaid: amount,
+                collateral_seized: collateral_to_seize,
+                health_factor,
+            },
+        );
+
+        log!(
+            &env,
+            "Loan {} liquidated: {} repaid, {} collateral seized",
+            loan.loan_id,
+            amount,
+            collateral_to_seize
+        );
+
+        Self::exit_reentrancy_guard(&env);
+        Ok(collateral_to_seize)
     }
 }
 
