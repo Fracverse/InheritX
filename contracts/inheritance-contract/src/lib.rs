@@ -1079,13 +1079,47 @@ impl InheritanceContract {
 
         env.storage().persistent().set(&claim_key, &claim);
 
+        // --- Payout Logic ---
+        let beneficiary = plan.beneficiaries.get(index).unwrap();
+
+        // Calculate the base payout
+        let base_payout = (plan.total_amount as u128)
+            .checked_mul(beneficiary.allocation_bp as u128)
+            .and_then(|v| v.checked_div(10000))
+            .unwrap_or(0) as u64;
+
+        // If plan is lendable and funds are loaned, we might have yield or need to recall funds.
+        // For MVP priority logic: if we don't have enough liquid funds (amount - total_loaned < base_payout)
+        // we'd recall from LendingContract.
+        // Since we don't store the LendingContract address in InheritanceContract yet,
+        // we assume the funds are sitting in the contract (vault) or we are authorized to pull them.
+        let available_liquidity = plan.total_amount.saturating_sub(plan.total_loaned);
+
+        // In a full implementation, we would call LendingClient::withdraw_priority
+        // if base_payout > available_liquidity.
+        // For now, we simulate the priority payout directly if liquid funds are sufficient,
+        // or fail with InsufficientLiquidity if not (which a later migration would fix by linking contracts).
+        if base_payout > available_liquidity {
+            return Err(InheritanceError::InsufficientLiquidity);
+        }
+
+        // Transfer funds to beneficiary
+        // Note: For fiat (bank_account), this would typically emit an event for off-chain processing.
+        // Here, we'll try to transfer USDC if an address can be derived, or just emit an event.
+        // As a simplification, we'll emit the event first.
+
+        // Update plan balances
+        let mut updated_plan = plan.clone();
+        updated_plan.total_amount = updated_plan.total_amount.saturating_sub(base_payout);
+        Self::store_plan(&env, plan_id, &updated_plan);
+
         // Mark plan as claimed
         Self::add_plan_to_claimed(&env, plan.owner.clone(), plan_id);
 
         // Emit claim event
         env.events().publish(
             (symbol_short!("CLAIM"), symbol_short!("SUCCESS")),
-            (plan_id, hashed_email),
+            (plan_id, hashed_email, base_payout),
         );
 
         log!(

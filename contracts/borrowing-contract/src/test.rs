@@ -116,3 +116,62 @@ fn test_partial_liquidation() {
     let hf = client.get_health_factor(&loan_id);
     assert_eq!(hf, 13500); // 675 * 10000 / 500
 }
+
+#[test]
+fn test_global_pause() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let (client, collateral_addr, admin) = setup(&env);
+    let borrower = Address::generate(&env);
+
+    // Create an initial loan before pause to test repayment
+    sac_client(&env, &collateral_addr).mint(&borrower, &3000);
+    let loan_id = client.create_loan(&borrower, &1000, &5, &1000000, &collateral_addr, &1500);
+
+    // Admin pauses globally
+    client.set_global_pause(&admin, &true);
+    assert!(client.is_global_paused());
+
+    // New borrowing should fail
+    let result = client.try_create_loan(&borrower, &1000, &5, &1000000, &collateral_addr, &1500);
+    assert_eq!(result, Err(Ok(BorrowingError::Paused)));
+
+    // Repayment should still work
+    client.repay_loan(&loan_id, &500);
+    let loan = client.get_loan(&loan_id);
+    assert_eq!(loan.amount_repaid, 500);
+
+    // Unpause
+    client.set_global_pause(&admin, &false);
+    assert!(!client.is_global_paused());
+
+    // Borrowing works again
+    let new_loan_id = client.create_loan(&borrower, &1000, &5, &1000000, &collateral_addr, &1500);
+    assert_eq!(new_loan_id, 2);
+}
+
+#[test]
+fn test_vault_pause() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let (client, collateral_addr, admin) = setup(&env);
+    let borrower = Address::generate(&env);
+
+    sac_client(&env, &collateral_addr).mint(&borrower, &3000);
+
+    // Admin pauses specific vault (collateral token)
+    client.set_vault_pause(&admin, &collateral_addr, &true);
+    assert!(client.is_vault_paused(&collateral_addr));
+
+    // New borrowing should fail for this vault
+    let result = client.try_create_loan(&borrower, &1000, &5, &1000000, &collateral_addr, &1500);
+    assert_eq!(result, Err(Ok(BorrowingError::Paused)));
+
+    // Unpause vault
+    client.set_vault_pause(&admin, &collateral_addr, &false);
+    assert!(!client.is_vault_paused(&collateral_addr));
+
+    // Borrowing works again
+    let new_loan_id = client.create_loan(&borrower, &1000, &5, &1000000, &collateral_addr, &1500);
+    assert_eq!(new_loan_id, 1);
+}

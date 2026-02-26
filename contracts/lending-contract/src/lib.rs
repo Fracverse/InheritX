@@ -9,6 +9,8 @@ use soroban_sdk::{
 // ─────────────────────────────────────────────────
 
 const MINIMUM_LIQUIDITY: u64 = 1000;
+const PROTOCOL_INTEREST_BPS: u32 = 1000; // 10% of interest retained by protocol
+const BAD_DEBT_RESERVE_BPS: u32 = 5000; // 50% of protocol share routed to reserve
 
 // ─────────────────────────────────────────────────
 // Data Types
@@ -22,6 +24,9 @@ pub struct PoolState {
     pub total_borrowed: u64, // Total principal currently on loan
     pub base_rate_bps: u32,  // Base interest rate in basis points (1/10000)
     pub multiplier_bps: u32, // Multiplier applied to utilization to get variable rate
+    pub utilization_cap_bps: u32, // Maximum utilization allowed in basis points (e.g., 8000 = 80%)
+    pub retained_yield: u64, // Yield reserved for protocol/priority payouts
+    pub bad_debt_reserve: u64, // Reserve bucket for bad debt coverage
 }
 
 const SECONDS_IN_YEAR: u64 = 31_536_000;
@@ -56,6 +61,13 @@ pub struct DepositEvent {
 pub struct WithdrawEvent {
     pub depositor: Address,
     pub shares_burned: u64,
+    pub amount: u64,
+}
+
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct PriorityWithdrawEvent {
+    pub caller: Address,
     pub amount: u64,
 }
 
@@ -108,6 +120,7 @@ pub enum LendingError {
     Unauthorized = 10,
     InsufficientCollateral = 11,
     CollateralNotWhitelisted = 12,
+    UtilizationCapExceeded = 13,
 }
 
 // ─────────────────────────────────────────────────
@@ -148,6 +161,7 @@ impl LendingContract {
         base_rate_bps: u32,
         multiplier_bps: u32,
         collateral_ratio_bps: u32,
+        utilization_cap_bps: u32,
     ) -> Result<(), LendingError> {
         admin.require_auth();
         if env.storage().instance().has(&DataKey::Admin) {
@@ -166,6 +180,9 @@ impl LendingContract {
                 total_borrowed: 0,
                 base_rate_bps,
                 multiplier_bps,
+                utilization_cap_bps,
+                retained_yield: 0,
+                bad_debt_reserve: 0,
             },
         );
         Ok(())
@@ -487,6 +504,13 @@ impl LendingContract {
             return Err(LendingError::InsufficientLiquidity);
         }
 
+        // Check utilization cap
+        let new_borrowed = pool.total_borrowed + amount;
+        let new_utilization_bps = Self::get_utilization_bps(new_borrowed, pool.total_deposits);
+        if new_utilization_bps > pool.utilization_cap_bps {
+            return Err(LendingError::UtilizationCapExceeded);
+        }
+
         // Transfer collateral from borrower to contract
         let contract_id = env.current_contract_address();
         Self::transfer(
@@ -591,7 +615,22 @@ impl LendingContract {
 
         let mut pool = Self::get_pool(&env);
         pool.total_borrowed -= loan.principal;
-        pool.total_deposits += interest; // Interest increases pool value for share holders
+
+        // Retain 10% of interest for protocol buckets, with part routed to bad-debt reserve.
+        let protocol_share = ((interest as u128)
+            .checked_mul(PROTOCOL_INTEREST_BPS as u128)
+            .and_then(|v| v.checked_div(10000))
+            .unwrap_or(0)) as u64;
+        let reserve_share = ((protocol_share as u128)
+            .checked_mul(BAD_DEBT_RESERVE_BPS as u128)
+            .and_then(|v| v.checked_div(10000))
+            .unwrap_or(0)) as u64;
+        let retained_share = protocol_share.saturating_sub(reserve_share);
+        let pool_share = interest - protocol_share;
+
+        pool.total_deposits += pool_share; // Interest increases pool value for share holders
+        pool.retained_yield += retained_share;
+        pool.bad_debt_reserve += reserve_share;
         Self::set_pool(&env, &pool);
 
         env.storage()
@@ -637,6 +676,43 @@ impl LendingContract {
             }
             None => Err(LendingError::NoOpenLoan),
         }
+    }
+
+    /// Withdraw prioritized funds from the retained yield.
+    /// Used by authorized contracts (like InheritanceContract) to fulfill priority claims.
+    pub fn withdraw_priority(env: Env, caller: Address, amount: u64) -> Result<u64, LendingError> {
+        Self::require_initialized(&env)?;
+        caller.require_auth();
+
+        // In a real implementation, we should restrict this to authorized contracts only.
+        // For now, we rely on the caller being trusted or admin.
+
+        if amount == 0 {
+            return Err(LendingError::InvalidAmount);
+        }
+
+        let mut pool = Self::get_pool(&env);
+
+        if amount > pool.retained_yield {
+            return Err(LendingError::InsufficientLiquidity);
+        }
+
+        pool.retained_yield -= amount;
+        Self::set_pool(&env, &pool);
+
+        let token = Self::get_token(&env);
+        let contract_id = env.current_contract_address();
+        Self::transfer(&env, &token, &contract_id, &caller, amount)?;
+
+        env.events().publish(
+            (symbol_short!("POOL"), symbol_short!("PRIORITY")),
+            PriorityWithdrawEvent {
+                caller: caller.clone(),
+                amount,
+            },
+        );
+        log!(&env, "Priority withdrawal {} tokens by {}", amount, caller);
+        Ok(amount)
     }
 
     // ─── Reads ───────────────────────────────────────

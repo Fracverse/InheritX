@@ -23,6 +23,8 @@ pub enum DataKey {
     LiquidationThreshold,
     LiquidationBonus,
     WhitelistedCollateral(Address),
+    GlobalPause,
+    VaultPause(Address),
     LoanCounter,
     Loan(u64),
 }
@@ -38,6 +40,7 @@ pub enum BorrowingError {
     LoanHealthy = 6,
     LoanNotActive = 7,
     InvalidAmount = 8,
+    Paused = 9,
 }
 
 #[contract]
@@ -83,6 +86,13 @@ impl BorrowingContract {
         // Check collateral is whitelisted
         if !Self::is_whitelisted(env.clone(), collateral_token.clone()) {
             return Err(BorrowingError::CollateralNotWhitelisted);
+        }
+
+        // Check if paused
+        if Self::is_global_paused(env.clone())
+            || Self::is_vault_paused(env.clone(), collateral_token.clone())
+        {
+            return Err(BorrowingError::Paused);
         }
 
         // Check collateral ratio
@@ -179,6 +189,47 @@ impl BorrowingContract {
         env.storage()
             .persistent()
             .get(&DataKey::WhitelistedCollateral(token))
+            .unwrap_or(false)
+    }
+
+    pub fn set_global_pause(env: Env, admin: Address, paused: bool) -> Result<(), BorrowingError> {
+        let stored_admin: Address = env.storage().instance().get(&DataKey::Admin).unwrap();
+        if admin != stored_admin {
+            return Err(BorrowingError::Unauthorized);
+        }
+        admin.require_auth();
+        env.storage().instance().set(&DataKey::GlobalPause, &paused);
+        Ok(())
+    }
+
+    pub fn is_global_paused(env: Env) -> bool {
+        env.storage()
+            .instance()
+            .get(&DataKey::GlobalPause)
+            .unwrap_or(false)
+    }
+
+    pub fn set_vault_pause(
+        env: Env,
+        admin: Address,
+        token: Address,
+        paused: bool,
+    ) -> Result<(), BorrowingError> {
+        let stored_admin: Address = env.storage().instance().get(&DataKey::Admin).unwrap();
+        if admin != stored_admin {
+            return Err(BorrowingError::Unauthorized);
+        }
+        admin.require_auth();
+        env.storage()
+            .persistent()
+            .set(&DataKey::VaultPause(token), &paused);
+        Ok(())
+    }
+
+    pub fn is_vault_paused(env: Env, token: Address) -> bool {
+        env.storage()
+            .persistent()
+            .get(&DataKey::VaultPause(token))
             .unwrap_or(false)
     }
 

@@ -5,6 +5,7 @@ members = [
   "inheritance-contract", "lending-contract",
   "borrowing-contract",
   "mock-token",
+  "governance-contract",
 ]
 
 [workspace.dependencies]

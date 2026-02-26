@@ -36,7 +36,7 @@ fn setup(env: &Env) -> (LendingContractClient<'_>, Address, Address, Address) {
 
     let contract_id = env.register_contract(None, LendingContract);
     let client = LendingContractClient::new(env, &contract_id);
-    client.initialize(&admin, &token_addr, &500u32, &2000u32, &15000u32); // 5% base, 20% multiplier, 150% collateral
+    client.initialize(&admin, &token_addr, &500u32, &2000u32, &15000u32, &10000u32); // 5% base, 20% multiplier, 150% collateral, 100% cap
 
     // Whitelist collateral token
     client.whitelist_collateral(&admin, &collateral_addr);
@@ -55,7 +55,8 @@ fn test_initialize_once() {
     let (client, token_addr, collateral_addr, admin) = setup(&env);
 
     // Second init must fail
-    let result = client.try_initialize(&admin, &token_addr, &500u32, &2000u32, &15000u32);
+    let result =
+        client.try_initialize(&admin, &token_addr, &500u32, &2000u32, &15000u32, &10000u32);
     assert!(result.is_err());
 }
 
@@ -454,15 +455,17 @@ fn test_interest_accrual() {
 
     // 6. Verify pool state
     let pool = client.get_pool_state();
-    // total_deposits should be 10,000 (initial) + 750 (interest) = 10,750
-    assert_eq!(pool.total_deposits, 10_750);
+    // total_deposits should be 10,000 (initial) + 675 (90% of 750 interest) = 10,675
+    assert_eq!(pool.total_deposits, 10_675);
     assert_eq!(pool.total_borrowed, 0);
+    assert_eq!(pool.retained_yield, 38); // Remaining protocol yield after reserve split
+    assert_eq!(pool.bad_debt_reserve, 37); // Portion of protocol share routed to reserve
 
     // 7. Verify depositor can withdraw more than they put in
-    // shares = 9,000, pool_shares = 10,000, pool_deposits = 10,750
-    // amount = 9,000 * 10,750 / 10,000 = 9,675
+    // shares = 9,000, pool_shares = 10,000, pool_deposits = 10,675
+    // amount = 9,000 * 10,675 / 10,000 = 9,607
     let withdrawn = client.withdraw(&depositor, &9_000u64);
-    assert_eq!(withdrawn, 9_675u64);
+    assert_eq!(withdrawn, 9_607u64);
 }
 
 #[test]
@@ -647,7 +650,9 @@ fn test_repayment_updates_state_correctly() {
     // Verify state updates
     let pool_after = client.get_pool_state();
     assert_eq!(pool_after.total_borrowed, 0);
-    assert_eq!(pool_after.total_deposits, 10_750); // Original + interest
+    assert_eq!(pool_after.total_deposits, 10_675); // Original + 90% interest
+    assert_eq!(pool_after.retained_yield, 38);
+    assert_eq!(pool_after.bad_debt_reserve, 37);
 
     // Verify loan is removed
     assert!(client.get_loan(&borrower).is_none());
@@ -819,4 +824,45 @@ fn test_collateral_ratio() {
 
     // Should be 150% (15000 bps)
     assert_eq!(client.get_collateral_ratio_bps(), 15000u32);
+}
+
+#[test]
+fn test_utilization_cap_enforced() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let admin = Address::generate(&env);
+    let token_addr = create_token_addr(&env);
+    let collateral_addr = create_token_addr(&env);
+
+    let contract_id = env.register_contract(None, LendingContract);
+    let client = LendingContractClient::new(&env, &contract_id);
+    client.initialize(&admin, &token_addr, &500u32, &2000u32, &15000u32, &8000u32); // 80% cap
+    client.whitelist_collateral(&admin, &collateral_addr);
+
+    let depositor = Address::generate(&env);
+    let borrower = Address::generate(&env);
+    mint_to(&env, &token_addr, &depositor, 100_000);
+    mint_to(&env, &collateral_addr, &borrower, 100_000);
+
+    client.deposit(&depositor, &10_000u64);
+
+    // Try to borrow 8,001 (80.01% utilization) - should fail
+    let result = client.try_borrow(
+        &borrower,
+        &8_001u64,
+        &collateral_addr,
+        &12_002u64,
+        &(30 * 24 * 60 * 60),
+    );
+    assert_eq!(result, Err(Ok(LendingError::UtilizationCapExceeded)));
+
+    // Borrow exactly 8,000 (80% utilization) - should succeed
+    let loan_id = client.borrow(
+        &borrower,
+        &8_000u64,
+        &collateral_addr,
+        &12_000u64,
+        &(30 * 24 * 60 * 60),
+    );
+    assert!(loan_id > 0);
 }
