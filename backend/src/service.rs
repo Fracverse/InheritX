@@ -109,14 +109,16 @@ pub struct CreatePlanRequest {
     pub bank_account_number: Option<String>,
     pub bank_name: Option<String>,
     pub currency_preference: String,
+    pub two_fa_code: String,
 }
+
 
 #[derive(Debug, Deserialize)]
 pub struct ClaimPlanRequest {
     pub beneficiary_email: String,
-    #[allow(dead_code)]
-    pub claim_code: Option<u32>,
+    pub two_fa_code: String,
 }
+
 
 #[derive(sqlx::FromRow)]
 struct PlanRowFull {

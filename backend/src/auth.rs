@@ -42,12 +42,12 @@ pub struct LoginResponse {
     pub token: String,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Serialize, Deserialize)]
 pub struct Send2faRequest {
     pub user_id: Uuid,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Serialize, Deserialize)]
 pub struct Verify2faRequest {
     pub user_id: Uuid,
     pub otp: String,
@@ -398,12 +398,24 @@ pub async fn verify_2fa(
     State(state): State<Arc<AppState>>,
     Json(payload): Json<Verify2faRequest>,
 ) -> Result<Json<TwoFaResponse>, ApiError> {
-    let mut tx = state.db.begin().await?;
+    verify_2fa_internal(&state.db, payload.user_id, &payload.otp).await?;
+
+    Ok(Json(TwoFaResponse {
+        message: "OTP verified successfully".to_string(),
+    }))
+}
+
+pub async fn verify_2fa_internal(
+    db: &PgPool,
+    user_id: Uuid,
+    otp: &str,
+) -> Result<(), ApiError> {
+    let mut tx = db.begin().await?;
 
     // 1. Retrieve OTP record
     let row: Option<(String, DateTime<Utc>, i32)> =
         sqlx::query_as("SELECT otp_hash, expires_at, attempts FROM user_2fa WHERE user_id = $1 FOR UPDATE")
-            .bind(&payload.user_id)
+            .bind(user_id)
             .fetch_optional(&mut *tx)
             .await?;
 
@@ -420,13 +432,13 @@ pub async fn verify_2fa(
     }
 
     // 4. Verify OTP
-    let valid = bcrypt::verify(&payload.otp, &otp_hash)
+    let valid = bcrypt::verify(otp, &otp_hash)
         .map_err(|e| ApiError::Internal(anyhow::anyhow!("Failed to verify OTP: {}", e)))?;
 
     if !valid {
         // Increment attempts
         sqlx::query("UPDATE user_2fa SET attempts = attempts + 1, updated_at = NOW() WHERE user_id = $1")
-            .bind(&payload.user_id)
+            .bind(user_id)
             .execute(&mut *tx)
             .await?;
         
@@ -436,16 +448,15 @@ pub async fn verify_2fa(
 
     // 5. Successful verification - Clear OTP
     sqlx::query("DELETE FROM user_2fa WHERE user_id = $1")
-        .bind(&payload.user_id)
+        .bind(user_id)
         .execute(&mut *tx)
         .await?;
 
     tx.commit().await?;
 
-    Ok(Json(TwoFaResponse {
-        message: "OTP verified successfully".to_string(),
-    }))
+    Ok(())
 }
+
 
 use axum::extract::FromRequestParts;
 use axum::http::request::Parts;

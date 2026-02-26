@@ -364,6 +364,9 @@ async fn test_create_plan_wallet_balance_check() {
         .await
         .expect("Failed to approve KYC");
 
+    // Prepare 2FA
+    let otp = test_context.prepare_2fa(user_id, "123456").await;
+
     // Create a plan via API
     let create_request = serde_json::json!({
         "title": "New Plan",
@@ -373,8 +376,10 @@ async fn test_create_plan_wallet_balance_check() {
         "beneficiary_name": "Jane Doe",
         "bank_account_number": "9876543210",
         "bank_name": "Test Bank",
-        "currency_preference": "USDC"
+        "currency_preference": "USDC",
+        "two_fa_code": otp
     });
+
 
     let response = test_context
         .app
@@ -417,6 +422,9 @@ async fn test_create_plan_audit_log_inserted() {
         .await
         .expect("Failed to approve KYC");
 
+    // Prepare 2FA
+    let otp = test_context.prepare_2fa(user_id, "654321").await;
+
     // Create a plan via API
     let create_request = serde_json::json!({
         "title": "Plan for Audit Test",
@@ -426,8 +434,10 @@ async fn test_create_plan_audit_log_inserted() {
         "beneficiary_name": "Audit Beneficiary",
         "bank_account_number": "1111111111",
         "bank_name": "Audit Bank",
-        "currency_preference": "USDC"
+        "currency_preference": "USDC",
+        "two_fa_code": otp
     });
+
 
     let response = test_context
         .app
@@ -499,6 +509,9 @@ async fn test_create_plan_notification_created() {
     .await
     .expect("Failed to query notifications");
 
+    // Prepare 2FA
+    let otp = test_context.prepare_2fa(user_id, "112233").await;
+
     // Create a plan via API
     let create_request = serde_json::json!({
         "title": "Plan for Notification Test",
@@ -508,8 +521,10 @@ async fn test_create_plan_notification_created() {
         "beneficiary_name": "Notification Beneficiary",
         "bank_account_number": "2222222222",
         "bank_name": "Notification Bank",
-        "currency_preference": "USDC"
+        "currency_preference": "USDC",
+        "two_fa_code": otp
     });
+
 
     let response = test_context
         .app
@@ -547,3 +562,50 @@ async fn test_create_plan_notification_created() {
         "Expected notification count to increase or stay the same"
     );
 }
+
+#[tokio::test]
+async fn test_create_plan_invalid_2fa() {
+    let Some(test_context) = helpers::TestContext::from_env().await else {
+        return;
+    };
+
+    let user_id = Uuid::new_v4();
+    let token = generate_user_token(user_id);
+
+    // Approve KYC
+    approve_kyc(&test_context.pool, user_id)
+        .await
+        .expect("Failed to approve KYC");
+
+    // Try to create a plan with WRONG 2FA
+    let create_request = serde_json::json!({
+        "title": "Invalid 2FA Plan",
+        "description": "Testing rejection",
+        "fee": "10.00",
+        "net_amount": "490.00",
+        "beneficiary_name": "Jane Doe",
+        "bank_account_number": "9876543210",
+        "bank_name": "Test Bank",
+        "currency_preference": "USDC",
+        "two_fa_code": "000000"
+    });
+
+    let response = test_context
+        .app
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/api/plans")
+                .header("Authorization", format!("Bearer {}", token))
+                .header("Content-Type", "application/json")
+                .body(Body::from(serde_json::to_string(&create_request).unwrap()))
+                .unwrap(),
+        )
+        .await
+        .expect("request failed");
+
+    // It should be UNAUTHORIZED or BAD REQUEST depending on the error
+    // verify_2fa_internal returns Unauthorized on wrong OTP
+    assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
+}
+
