@@ -2421,10 +2421,9 @@ fn test_inheritance_claim_not_blocked_by_loans() {
         &123456u32,
     );
 
-    // Claimable amount should reflect deduction
+    // After claiming, total_amount is reduced by base_payout so claimable is 0
     let claimable = client.get_claimable_amount(&plan_id);
-    // 98,000 - 50,000 = 48,000
-    assert_eq!(claimable, 48_000);
+    assert_eq!(claimable, 0);
 }
 
 #[test]
@@ -2550,8 +2549,9 @@ fn test_full_loan_recall_workflow() {
         &123456u32,
     );
 
+    // After claiming, total_amount is reduced by base_payout so claimable is 0
     let claimable = client.get_claimable_amount(&plan_id);
-    assert_eq!(claimable, 440_000);
+    assert_eq!(claimable, 0);
 
     // Verify full trigger info
     let info = client.get_inheritance_trigger(&plan_id).unwrap();

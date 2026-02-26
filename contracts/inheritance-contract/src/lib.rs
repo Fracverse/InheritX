@@ -1099,7 +1099,9 @@ impl InheritanceContract {
         // if base_payout > available_liquidity.
         // For now, we simulate the priority payout directly if liquid funds are sufficient,
         // or fail with InsufficientLiquidity if not (which a later migration would fix by linking contracts).
-        if base_payout > available_liquidity {
+        // When inheritance is triggered, bypass the liquidity check so that
+        // beneficiary claims are never blocked by outstanding loans.
+        if !triggered && base_payout > available_liquidity {
             return Err(InheritanceError::InsufficientLiquidity);
         }
 
