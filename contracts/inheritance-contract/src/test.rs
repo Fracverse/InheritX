@@ -1,7 +1,10 @@
 #![cfg(test)]
 
 use super::*;
-use soroban_sdk::{testutils::{Address as _, Events}, vec, Address, Bytes, Env, String, Symbol, Vec};
+use soroban_sdk::{
+    testutils::{Address as _, Events},
+    vec, Address, Bytes, Env, String, Symbol, Vec,
+};
 
 // Helper function to create test address
 fn create_test_address(env: &Env, _seed: u64) -> Address {
@@ -574,7 +577,7 @@ fn test_max_10_beneficiaries() {
 
     // Try to add 11th - should fail
     client.remove_beneficiary(&owner, &plan_id, &0u32);
-    
+
     // Add back to get to 10
     client.add_beneficiary(
         &owner,
@@ -653,4 +656,125 @@ fn test_events_emitted() {
     // Events should be in the event log
     let events = env.events().all();
     assert!(events.len() > 0);
+}
+
+#[test]
+fn test_create_plan_requires_approved_kyc() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let contract_id = env.register_contract(None, InheritanceContract);
+    let client = InheritanceContractClient::new(&env, &contract_id);
+
+    let admin = create_test_address(&env, 0);
+    let approved_user = create_test_address(&env, 1);
+    let pending_user = create_test_address(&env, 2);
+    let rejected_user = create_test_address(&env, 3);
+
+    // Initialize KYC admin and statuses
+    client.initialize_kyc_admin(&admin);
+    client.set_kyc_status(&admin, &approved_user, &KycStatus::Approved);
+    client.set_kyc_status(&admin, &rejected_user, &KycStatus::Rejected);
+    // pending_user stays at the default Pending state
+
+    let beneficiaries_data = vec![
+        &env,
+        (
+            String::from_str(&env, "Alice"),
+            String::from_str(&env, "alice@example.com"),
+            111111u32,
+            create_test_bytes(&env, "1111111111111111"),
+            10000u32,
+        ),
+    ];
+
+    // Approved user can create a plan
+    let _plan_id = client.create_inheritance_plan(
+        &approved_user,
+        &String::from_str(&env, "KYC Approved Plan"),
+        &String::from_str(&env, "Plan for approved user"),
+        &1000000u64,
+        &DistributionMethod::LumpSum,
+        &beneficiaries_data,
+    );
+
+    // Pending user should be blocked
+    let result_pending = client.try_create_inheritance_plan(
+        &pending_user,
+        &String::from_str(&env, "Pending Plan"),
+        &String::from_str(&env, "Plan for pending user"),
+        &1000000u64,
+        &DistributionMethod::LumpSum,
+        &beneficiaries_data,
+    );
+    assert!(result_pending.is_err());
+
+    // Rejected user should be blocked
+    let result_rejected = client.try_create_inheritance_plan(
+        &rejected_user,
+        &String::from_str(&env, "Rejected Plan"),
+        &String::from_str(&env, "Plan for rejected user"),
+        &1000000u64,
+        &DistributionMethod::LumpSum,
+        &beneficiaries_data,
+    );
+    assert!(result_rejected.is_err());
+}
+
+#[test]
+fn test_claim_plan_requires_approved_kyc() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let contract_id = env.register_contract(None, InheritanceContract);
+    let client = InheritanceContractClient::new(&env, &contract_id);
+
+    let admin = create_test_address(&env, 0);
+    let owner = create_test_address(&env, 1);
+    let approved_beneficiary = create_test_address(&env, 2);
+    let pending_beneficiary = create_test_address(&env, 3);
+    let rejected_beneficiary = create_test_address(&env, 4);
+
+    // Initialize KYC admin and statuses
+    client.initialize_kyc_admin(&admin);
+    client.set_kyc_status(&admin, &owner, &KycStatus::Approved);
+    client.set_kyc_status(&admin, &approved_beneficiary, &KycStatus::Approved);
+    client.set_kyc_status(&admin, &rejected_beneficiary, &KycStatus::Rejected);
+    // pending_beneficiary left as default Pending
+
+    let claim_code = 123456u32;
+
+    let beneficiaries_data = vec![
+        &env,
+        (
+            String::from_str(&env, "Alice"),
+            String::from_str(&env, "alice@example.com"),
+            claim_code,
+            create_test_bytes(&env, "1111111111111111"),
+            10000u32,
+        ),
+    ];
+
+    let plan_id = client.create_inheritance_plan(
+        &owner,
+        &String::from_str(&env, "Claimable Plan"),
+        &String::from_str(&env, "Plan for claim tests"),
+        &1000000u64,
+        &DistributionMethod::LumpSum,
+        &beneficiaries_data,
+    );
+
+    // Approved beneficiary can claim
+    let ok = client.try_claim_inheritance_plan(&approved_beneficiary, &plan_id, &claim_code);
+    assert!(ok.is_ok());
+
+    // Pending beneficiary should be blocked
+    let res_pending =
+        client.try_claim_inheritance_plan(&pending_beneficiary, &plan_id, &claim_code);
+    assert!(res_pending.is_err());
+
+    // Rejected beneficiary should be blocked
+    let res_rejected =
+        client.try_claim_inheritance_plan(&rejected_beneficiary, &plan_id, &claim_code);
+    assert!(res_rejected.is_err());
 }
