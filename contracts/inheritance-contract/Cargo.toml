@@ -9,6 +9,8 @@ crate-type = ["cdylib"]
 doctest = false
 
 [dependencies]
+mock_token = { path = "../mock-token" }
+kyc_contract = { path = "../kyc-contract" }
 soroban-sdk = { workspace = true }
 
 [dev-dependencies]
