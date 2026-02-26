@@ -3,13 +3,19 @@ pub mod app;
 pub mod auth;
 pub mod config;
 pub mod db;
-pub mod http;
+pub mod event_handlers;
+pub mod events;
 pub mod middleware;
-pub mod models;
-// pub mod realtime; // TODO: Implement when needed
+pub mod notifications;
+pub mod price_feed;
+pub mod price_feed_handlers;
+pub mod safe_math;
 pub mod service;
 pub mod telemetry;
 
 pub use api_error::ApiError;
 pub use app::create_app;
 pub use config::Config;
+pub use events::{EventService, EventType, LendingEvent};
+pub use price_feed::{DefaultPriceFeedService, PriceFeedService, PriceFeedSource};
+pub use safe_math::SafeMath;

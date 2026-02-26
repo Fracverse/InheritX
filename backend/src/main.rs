@@ -1,6 +1,6 @@
+use inheritx_backend::{create_app, db, telemetry, Config};
 use std::net::SocketAddr;
-use tracing::{info, Level};
-use zaps_backend::{app::create_app, config::Config, db, telemetry};
+use tracing::info;
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
@@ -21,10 +21,14 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     // Start server
     let addr = SocketAddr::from(([0, 0, 0, 0], config.port));
-    info!("Starting ZAPS backend server on {}", addr);
+    info!("Starting INHERITX backend server on {}", addr);
 
     let listener = tokio::net::TcpListener::bind(addr).await?;
-    axum::serve(listener, app).await?;
+    axum::serve(
+        listener,
+        app.into_make_service_with_connect_info::<SocketAddr>(),
+    )
+    .await?;
 
     Ok(())
 }

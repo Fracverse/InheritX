@@ -2,6 +2,7 @@ import React, { useState, useEffect } from "react";
 import Image from "next/image";
 import { ArrowDownRight, Globe, Shield, Zap, Menu, X } from "lucide-react";
 import Link from "next/link";
+import { ConnectButton } from "@/components/ConnectButton";
 
 const Navbar = () => {
   const [isMobileMenuOpen, setIsMobileMenuOpen] = useState(false);
@@ -56,13 +57,13 @@ const Navbar = () => {
               How it Works
             </Link>
             <Link
-              href="#"
+              href="/faqs"
               className="hover:text-cyan-400 transition-colors focus-visible:outline-offset-2 focus-visible:outline-2 focus-visible:outline-cyan-400 rounded-sm px-1"
             >
               FAQs
             </Link>
             <Link
-              href="/#footer"
+              href="/contact"
               className="hover:text-cyan-400 transition-colors focus-visible:outline-offset-2 focus-visible:outline-2 focus-visible:outline-cyan-400 rounded-sm px-1"
             >
               Contact
@@ -101,19 +102,20 @@ const Navbar = () => {
               How it Works
             </Link>
             <Link
-              href="#"
+              href="/faqs"
               onClick={closeMenu}
               className="text-slate-300 hover:text-cyan-400 py-2 focus-visible:outline-offset-2 focus-visible:outline-2 focus-visible:outline-cyan-400 rounded-sm px-2 uppercase"
             >
               FAQs
             </Link>
             <Link
-              href="/#footer"
+              href="/contact"
               onClick={closeMenu}
               className="text-slate-300 hover:text-cyan-400 py-2 focus-visible:outline-offset-2 focus-visible:outline-2 focus-visible:outline-cyan-400 rounded-sm px-2 uppercase"
             >
               Contact
             </Link>
+
             <button
               className="flex justify-center items-center gap-4 text-[14px] border-[0.5px] border-[#33C5E03D] bg-[#161E22] px-4 py-3 rounded-lg text-slate-300 hover:border-cyan-400 transition-all w-full focus-visible:outline-offset-2 focus-visible:outline-2 focus-visible:outline-cyan-400 active:scale-95"
               aria-label="Connect wallet"
@@ -123,12 +125,7 @@ const Navbar = () => {
           </div>
         )}
 
-        <button
-          className="hidden md:flex justify-center items-center gap-4 text-[14px] border-[0.5px] border-[#33C5E03D] bg-[#161E22] px-4 py-3 rounded-l-xl rounded-r-md text-slate-300 hover:border-cyan-400 transition-all cursor-pointer focus-visible:outline-offset-2 focus-visible:outline-2 focus-visible:outline-cyan-400 active:scale-95 relative z-10"
-          aria-label="Connect wallet"
-        >
-          Connect Wallet <ArrowDownRight size={16} aria-hidden={true} />
-        </button>
+        <ConnectButton />
       </nav>
     </header>
   );
