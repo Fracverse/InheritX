@@ -2562,3 +2562,373 @@ fn test_full_loan_recall_workflow() {
     assert_eq!(info.recalled_amount, 150_000);
     assert_eq!(info.settled_amount, 50_000);
 }
+
+// KYC Tests
+#[test]
+fn test_set_and_get_kyc_status() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let contract_id = env.register_contract(None, InheritanceContract);
+    let client = InheritanceContractClient::new(&env, &contract_id);
+
+    let user = create_test_address(&env, 1);
+
+    // Test default status is Pending
+    let status = client.get_kyc_status(&user);
+    assert_eq!(status, KycStatus::Pending);
+
+    // Set to Approved
+    client.set_kyc_status(&user, &KycStatus::Approved);
+    let status = client.get_kyc_status(&user);
+    assert_eq!(status, KycStatus::Approved);
+
+    // Set to Rejected
+    client.set_kyc_status(&user, &KycStatus::Rejected);
+    let status = client.get_kyc_status(&user);
+    assert_eq!(status, KycStatus::Rejected);
+
+    // Set back to Pending
+    client.set_kyc_status(&user, &KycStatus::Pending);
+    let status = client.get_kyc_status(&user);
+    assert_eq!(status, KycStatus::Pending);
+}
+
+#[test]
+fn test_create_plan_with_approved_kyc() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let contract_id = env.register_contract(None, InheritanceContract);
+    let client = InheritanceContractClient::new(&env, &contract_id);
+
+    let owner = create_test_address(&env, 1);
+
+    // Set KYC status to Approved
+    client.set_kyc_status(&owner, &KycStatus::Approved);
+
+    // Create plan should succeed
+    let beneficiaries_data = vec![
+        &env,
+        (
+            String::from_str(&env, "Alice"),
+            String::from_str(&env, "alice@example.com"),
+            111111u32,
+            create_test_bytes(&env, "1111111111111111"),
+            10000u32,
+        ),
+    ];
+
+    let result = client.try_create_inheritance_plan(
+        &owner,
+        &String::from_str(&env, "Test Plan"),
+        &String::from_str(&env, "Test Description"),
+        &1000000u64,
+        &DistributionMethod::LumpSum,
+        &beneficiaries_data,
+    );
+
+    assert!(result.is_ok());
+    let plan_id = result.unwrap();
+    assert!(plan_id > 0);
+}
+
+#[test]
+fn test_create_plan_with_pending_kyc() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let contract_id = env.register_contract(None, InheritanceContract);
+    let client = InheritanceContractClient::new(&env, &contract_id);
+
+    let owner = create_test_address(&env, 1);
+
+    // KYC status is Pending by default, so no need to set it
+
+    // Create plan should fail with KycNotApproved
+    let beneficiaries_data = vec![
+        &env,
+        (
+            String::from_str(&env, "Alice"),
+            String::from_str(&env, "alice@example.com"),
+            111111u32,
+            create_test_bytes(&env, "1111111111111111"),
+            10000u32,
+        ),
+    ];
+
+    let result = client.try_create_inheritance_plan(
+        &owner,
+        &String::from_str(&env, "Test Plan"),
+        &String::from_str(&env, "Test Description"),
+        &1000000u64,
+        &DistributionMethod::LumpSum,
+        &beneficiaries_data,
+    );
+
+    assert!(result.is_err());
+    assert_eq!(
+        result.err().unwrap().error,
+        soroban_sdk::Error::Contract(InheritanceError::KycNotApproved as u32)
+    );
+}
+
+#[test]
+fn test_create_plan_with_rejected_kyc() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let contract_id = env.register_contract(None, InheritanceContract);
+    let client = InheritanceContractClient::new(&env, &contract_id);
+
+    let owner = create_test_address(&env, 1);
+
+    // Set KYC status to Rejected
+    client.set_kyc_status(&owner, &KycStatus::Rejected);
+
+    // Create plan should fail with KycNotApproved
+    let beneficiaries_data = vec![
+        &env,
+        (
+            String::from_str(&env, "Alice"),
+            String::from_str(&env, "alice@example.com"),
+            111111u32,
+            create_test_bytes(&env, "1111111111111111"),
+            10000u32,
+        ),
+    ];
+
+    let result = client.try_create_inheritance_plan(
+        &owner,
+        &String::from_str(&env, "Test Plan"),
+        &String::from_str(&env, "Test Description"),
+        &1000000u64,
+        &DistributionMethod::LumpSum,
+        &beneficiaries_data,
+    );
+
+    assert!(result.is_err());
+    assert_eq!(
+        result.err().unwrap().error,
+        soroban_sdk::Error::Contract(InheritanceError::KycNotApproved as u32)
+    );
+}
+
+#[test]
+fn test_claim_plan_with_approved_kyc() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let contract_id = env.register_contract(None, InheritanceContract);
+    let client = InheritanceContractClient::new(&env, &contract_id);
+
+    let owner = create_test_address(&env, 1);
+    let beneficiary = create_test_address(&env, 2);
+
+    // Set owner KYC to Approved
+    client.set_kyc_status(&owner, &KycStatus::Approved);
+
+    // Create plan
+    let beneficiary_email = String::from_str(&env, "beneficiary@example.com");
+    let claim_code = 123456u32;
+    let beneficiaries_data = vec![
+        &env,
+        (
+            String::from_str(&env, "Beneficiary Name"),
+            beneficiary_email.clone(),
+            claim_code,
+            create_test_bytes(&env, "1111111111111111"),
+            10000u32,
+        ),
+    ];
+
+    let plan_id = client.create_inheritance_plan(
+        &owner,
+        &String::from_str(&env, "Test Plan"),
+        &String::from_str(&env, "Test Description"),
+        &1000000u64,
+        &DistributionMethod::LumpSum,
+        &beneficiaries_data,
+    );
+
+    // Set beneficiary KYC to Approved
+    client.set_kyc_status(&beneficiary, &KycStatus::Approved);
+
+    // Claim plan should succeed
+    let result = client.try_claim_plan(
+        &beneficiary,
+        &plan_id,
+        &beneficiary_email,
+        &claim_code,
+    );
+
+    assert!(result.is_ok());
+}
+
+#[test]
+fn test_claim_plan_with_pending_kyc() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let contract_id = env.register_contract(None, InheritanceContract);
+    let client = InheritanceContractClient::new(&env, &contract_id);
+
+    let owner = create_test_address(&env, 1);
+    let beneficiary = create_test_address(&env, 2);
+
+    // Set owner KYC to Approved
+    client.set_kyc_status(&owner, &KycStatus::Approved);
+
+    // Create plan
+    let beneficiary_email = String::from_str(&env, "beneficiary@example.com");
+    let claim_code = 123456u32;
+    let beneficiaries_data = vec![
+        &env,
+        (
+            String::from_str(&env, "Beneficiary Name"),
+            beneficiary_email.clone(),
+            claim_code,
+            create_test_bytes(&env, "1111111111111111"),
+            10000u32,
+        ),
+    ];
+
+    let plan_id = client.create_inheritance_plan(
+        &owner,
+        &String::from_str(&env, "Test Plan"),
+        &String::from_str(&env, "Test Description"),
+        &1000000u64,
+        &DistributionMethod::LumpSum,
+        &beneficiaries_data,
+    );
+
+    // Beneficiary KYC is Pending by default
+
+    // Claim plan should fail with KycNotApproved
+    let result = client.try_claim_plan(
+        &beneficiary,
+        &plan_id,
+        &beneficiary_email,
+        &claim_code,
+    );
+
+    assert!(result.is_err());
+    assert_eq!(
+        result.err().unwrap().error,
+        soroban_sdk::Error::Contract(InheritanceError::KycNotApproved as u32)
+    );
+}
+
+#[test]
+fn test_claim_plan_with_rejected_kyc() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let contract_id = env.register_contract(None, InheritanceContract);
+    let client = InheritanceContractClient::new(&env, &contract_id);
+
+    let owner = create_test_address(&env, 1);
+    let beneficiary = create_test_address(&env, 2);
+
+    // Set owner KYC to Approved
+    client.set_kyc_status(&owner, &KycStatus::Approved);
+
+    // Create plan
+    let beneficiary_email = String::from_str(&env, "beneficiary@example.com");
+    let claim_code = 123456u32;
+    let beneficiaries_data = vec![
+        &env,
+        (
+            String::from_str(&env, "Beneficiary Name"),
+            beneficiary_email.clone(),
+            claim_code,
+            create_test_bytes(&env, "1111111111111111"),
+            10000u32,
+        ),
+    ];
+
+    let plan_id = client.create_inheritance_plan(
+        &owner,
+        &String::from_str(&env, "Test Plan"),
+        &String::from_str(&env, "Test Description"),
+        &1000000u64,
+        &DistributionMethod::LumpSum,
+        &beneficiaries_data,
+    );
+
+    // Set beneficiary KYC to Rejected
+    client.set_kyc_status(&beneficiary, &KycStatus::Rejected);
+
+    // Claim plan should fail with KycNotApproved
+    let result = client.try_claim_plan(
+        &beneficiary,
+        &plan_id,
+        &beneficiary_email,
+        &claim_code,
+    );
+
+    assert!(result.is_err());
+    assert_eq!(
+        result.err().unwrap().error,
+        soroban_sdk::Error::Contract(InheritanceError::KycNotApproved as u32)
+    );
+}
+
+#[test]
+fn test_claim_plan_invalid_credentials() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let contract_id = env.register_contract(None, InheritanceContract);
+    let client = InheritanceContractClient::new(&env, &contract_id);
+
+    let owner = create_test_address(&env, 1);
+    let beneficiary = create_test_address(&env, 2);
+
+    // Set KYC to Approved for both
+    client.set_kyc_status(&owner, &KycStatus::Approved);
+    client.set_kyc_status(&beneficiary, &KycStatus::Approved);
+
+    // Create plan
+    let beneficiary_email = String::from_str(&env, "beneficiary@example.com");
+    let claim_code = 123456u32;
+    let beneficiaries_data = vec![
+        &env,
+        (
+            String::from_str(&env, "Beneficiary Name"),
+            beneficiary_email.clone(),
+            claim_code,
+            create_test_bytes(&env, "1111111111111111"),
+            10000u32,
+        ),
+    ];
+
+    let plan_id = client.create_inheritance_plan(
+        &owner,
+        &String::from_str(&env, "Test Plan"),
+        &String::from_str(&env, "Test Description"),
+        &1000000u64,
+        &DistributionMethod::LumpSum,
+        &beneficiaries_data,
+    );
+
+    // Try to claim with wrong email
+    let result = client.try_claim_plan(
+        &beneficiary,
+        &plan_id,
+        &String::from_str(&env, "wrong@example.com"),
+        &claim_code,
+    );
+
+    assert!(result.is_err());
+    assert_eq!(
+        result.err().unwrap().error,
+        soroban_sdk::Error::Contract(InheritanceError::InvalidClaimCode as u32)
+    );
+
+    // Try to claim with wrong claim code
+    let result = client.try_claim_plan(
+        &beneficiary,
+        &plan_id,
+        &beneficiary_email,
+        &999999u32,
+    );
+
+    assert!(result.is_err());
+    assert_eq!(
+        result.err().unwrap().error,
+        soroban_sdk::Error::Contract(InheritanceError::InvalidClaimCode as u32)
+    );
+}
