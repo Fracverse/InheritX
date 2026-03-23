@@ -3,7 +3,9 @@
 use super::*;
 use mock_token::MockToken;
 use mock_token::MockTokenClient;
-use soroban_sdk::{testutils::Address as _, token, vec, Address, Bytes, Env, String, Vec};
+use soroban_sdk::{
+    testutils::Address as _, testutils::Ledger, token, vec, Address, Bytes, Env, String, Vec,
+};
 
 /// Test helper for balance and mint (uses mock-token crate client).
 struct TestTokenHelper<'a> {
@@ -2561,4 +2563,38 @@ fn test_full_loan_recall_workflow() {
     assert_eq!(info.original_loaned, 200_000);
     assert_eq!(info.recalled_amount, 150_000);
     assert_eq!(info.settled_amount, 50_000);
+}
+
+#[test]
+fn test_emergency_access_cooldown() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let admin = Address::generate(&env);
+    let user = Address::generate(&env);
+
+    let contract_id = env.register_contract(None, InheritanceContract);
+    let client = InheritanceContractClient::new(&env, &contract_id);
+
+    client.initialize_admin(&admin);
+
+    // Initial activation should succeed
+    env.ledger().set_timestamp(1000);
+    client.activate_emergency_access(&user);
+
+    // Immediate second activation should fail with EmergencyCooldownActive
+    env.ledger().set_timestamp(1001);
+    client.deactivate_emergency_access(&user);
+    let result = client.try_activate_emergency_access(&user);
+    assert_eq!(result, Err(Ok(InheritanceError::EmergencyCooldownActive)));
+
+    // Activation after 24 hours should succeed
+    // 86400 (cooldown) + 1000 (start) = 87400
+    env.ledger().set_timestamp(87400);
+    client.activate_emergency_access(&user);
+
+    // After successful re-activation, it should fail again for another 24 hours
+    env.ledger().set_timestamp(87401);
+    let result = client.try_activate_emergency_access(&user);
+    assert_eq!(result, Err(Ok(InheritanceError::EmergencyCooldownActive)));
 }

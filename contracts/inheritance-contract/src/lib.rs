@@ -92,6 +92,7 @@ pub enum InheritanceError {
     LoanRecallFailed = 34,
     NoOutstandingLoans = 35,
     EmergencyAccessAlreadyActive = 36,
+    EmergencyCooldownActive = 36,
 }
 
 #[contracttype]
@@ -109,6 +110,8 @@ pub enum DataKey {
     Version,
     InheritanceTrigger(u64), // per-plan inheritance trigger info
     EmergencyAccess(u64),    // per-plan emergency access record
+    EmergencyActive(Address),
+    EmergencyLastActivated(Address),
 }
 
 #[contracttype]
@@ -1661,6 +1664,47 @@ impl InheritanceContract {
         );
 
         Ok(())
+    }
+
+    const EMERGENCY_COOLDOWN_PERIOD: u64 = 86400; // 24 hours in seconds
+
+    pub fn activate_emergency_access(env: Env, user: Address) -> Result<(), InheritanceError> {
+        let now = env.ledger().timestamp();
+        let last_activated: u64 = env
+            .storage()
+            .instance()
+            .get(&DataKey::EmergencyLastActivated(user.clone()))
+            .unwrap_or(0);
+
+        if last_activated > 0 && now < last_activated + Self::EMERGENCY_COOLDOWN_PERIOD {
+            return Err(InheritanceError::EmergencyCooldownActive);
+        }
+
+        let is_active: bool = env
+            .storage()
+            .instance()
+            .get(&DataKey::EmergencyActive(user.clone()))
+            .unwrap_or(false);
+
+        if is_active {
+            return Ok(());
+        }
+
+        env.storage()
+            .instance()
+            .set(&DataKey::EmergencyActive(user.clone()), &true);
+        env.storage()
+            .instance()
+            .set(&DataKey::EmergencyLastActivated(user), &now);
+
+        Ok(())
+    }
+
+    pub fn deactivate_emergency_access(env: Env, user: Address) {
+        user.require_auth();
+        env.storage()
+            .instance()
+            .set(&DataKey::EmergencyActive(user), &false);
     }
 
     /// Attempt to recall loaned funds back to the plan.
