@@ -106,7 +106,7 @@ pub enum DataKey {
     Admin,
     Kyc(Address),
     Version,
-    InheritanceTrigger(u64), // per-plan inheritance trigger info
+    InheritanceTrigger(u64),         // per-plan inheritance trigger info
     EmergencyActive(Address),        // bool, keyed by Address
     EmergencyLastActivated(Address), // u64, keyed by Address
 }
@@ -533,14 +533,18 @@ impl InheritanceContract {
         Ok(plan)
     }
 
-
     /// Activate emergency access for the authenticated user.
     /// Emits EmergencyAccessActivationEvent.
     pub fn activate_emergency_access(env: Env, user: Address) {
         user.require_auth();
-        env.storage().persistent().set(&DataKey::EmergencyActive(user.clone()), &true);
-        env.storage().persistent().set(&DataKey::EmergencyLastActivated(user.clone()), &env.ledger().timestamp());
-        
+        env.storage()
+            .persistent()
+            .set(&DataKey::EmergencyActive(user.clone()), &true);
+        env.storage().persistent().set(
+            &DataKey::EmergencyLastActivated(user.clone()),
+            &env.ledger().timestamp(),
+        );
+
         env.events().publish(
             (symbol_short!("EMERGENCY"), symbol_short!("ACTIVATE")),
             EmergencyAccessActivationEvent {
@@ -554,8 +558,10 @@ impl InheritanceContract {
     /// Emits EmergencyAccessRevocationEvent.
     pub fn deactivate_emergency_access(env: Env, user: Address) {
         user.require_auth();
-        env.storage().persistent().set(&DataKey::EmergencyActive(user.clone()), &false);
-        
+        env.storage()
+            .persistent()
+            .set(&DataKey::EmergencyActive(user.clone()), &false);
+
         env.events().publish(
             (symbol_short!("EMERGENCY"), symbol_short!("REVOKE")),
             EmergencyAccessRevocationEvent {
@@ -590,8 +596,10 @@ impl InheritanceContract {
 
         if env.ledger().timestamp() > last_activated + Self::EMERGENCY_EXPIRATION_PERIOD {
             // Expired
-            env.storage().persistent().set(&DataKey::EmergencyActive(user.clone()), &false);
-            
+            env.storage()
+                .persistent()
+                .set(&DataKey::EmergencyActive(user.clone()), &false);
+
             env.events().publish(
                 (symbol_short!("EMERGENCY"), symbol_short!("EXPIRE")),
                 EmergencyAccessExpirationEvent {
@@ -1599,7 +1607,7 @@ impl InheritanceContract {
 
         // Check if plan owner has active emergency access
         if !Self::check_and_expire_emergency_access(&env, &plan.owner) {
-             return Err(InheritanceError::Unauthorized);
+            return Err(InheritanceError::Unauthorized);
         }
 
         if !plan.is_active {

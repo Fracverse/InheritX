@@ -3,7 +3,10 @@
 use super::*;
 use mock_token::MockToken;
 use mock_token::MockTokenClient;
-use soroban_sdk::{testutils::Address as _, testutils::Events, token, vec, Address, Bytes, Env, String, Vec};
+use soroban_sdk::{
+    testutils::Address as _, testutils::Events, testutils::Ledger, token, vec, Address, Bytes, Env,
+    String, Vec,
+};
 
 /// Test helper for balance and mint (uses mock-token crate client).
 struct TestTokenHelper<'a> {
@@ -2572,16 +2575,16 @@ fn test_emergency_access_events() {
 
     // 1. Test Activation Event
     client.activate_emergency_access(&user);
-    
+
     let events = env.events().all();
     let activation_event = events.get(events.len() - 1).unwrap();
-    
+
     assert_eq!(activation_event.0, contract_id);
     assert_eq!(
         activation_event.1,
         (symbol_short!("EMERGENCY"), symbol_short!("ACTIVATE")).into_val(&env)
     );
-    
+
     // 2. Test Revocation Event
     client.deactivate_emergency_access(&user);
     let events = env.events().all();
