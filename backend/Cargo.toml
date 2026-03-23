@@ -73,5 +73,6 @@ stellar-strkey = "0.0.16"
 [dev-dependencies]
 tokio-test = "0.4"
 httpmock = "0.7"
+rust_decimal_macros = "1.33"
 
 
