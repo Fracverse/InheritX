@@ -540,12 +540,23 @@ impl InheritanceContract {
 
     pub fn get_user_plan(
         env: Env,
-        user: Address,
+        caller: Address,
         plan_id: u64,
     ) -> Result<InheritancePlan, InheritanceError> {
-        user.require_auth();
+        caller.require_auth();
         let plan = Self::get_plan(&env, plan_id).ok_or(InheritanceError::PlanNotFound)?;
-        if plan.owner != user {
+
+        // Authorization check: owner or active emergency contact
+        let mut is_authorized = plan.owner == caller;
+        if !is_authorized {
+            if let Some(record) = Self::get_emergency_access(env.clone(), plan_id) {
+                if record.trusted_contact == caller {
+                    is_authorized = true;
+                }
+            }
+        }
+
+        if !is_authorized {
             return Err(InheritanceError::Unauthorized);
         }
         Ok(plan)
@@ -1711,10 +1722,37 @@ impl InheritanceContract {
     /// - `InheritanceAlreadyTriggered` if inheritance was already triggered
     pub fn trigger_inheritance(
         env: Env,
-        admin: Address,
+        caller: Address,
         plan_id: u64,
     ) -> Result<(), InheritanceError> {
-        Self::require_admin(&env, &admin)?;
+        // Authorization check: Admin OR Owner OR Trusted Contact with active emergency access
+        let mut is_authorized = false;
+
+        // 1. Admin check
+        if let Some(admin) = Self::get_admin(&env) {
+            if admin == caller {
+                caller.require_auth();
+                is_authorized = true;
+            }
+        }
+
+        // 2. Plan check (Owner or Generic Emergency Access)
+        if !is_authorized {
+            let plan = Self::get_plan(&env, plan_id).ok_or(InheritanceError::PlanNotFound)?;
+            if plan.owner == caller {
+                caller.require_auth();
+                is_authorized = true;
+            } else if let Some(record) = Self::get_emergency_access(env.clone(), plan_id) {
+                if record.trusted_contact == caller {
+                    caller.require_auth();
+                    is_authorized = true;
+                }
+            }
+        }
+
+        if !is_authorized {
+            return Err(InheritanceError::Unauthorized);
+        }
 
         let mut plan = Self::get_plan(&env, plan_id).ok_or(InheritanceError::PlanNotFound)?;
 

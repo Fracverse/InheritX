@@ -2760,3 +2760,89 @@ fn test_emergency_deposit_success() {
     assert_eq!(plan.total_amount, 10300);
     assert_eq!(token_helper.balance(&trusted_contact), 500);
 }
+
+#[test]
+fn test_emergency_view_plan_success() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let (client, token_id, _admin, user) = setup_with_token_and_admin(&env);
+    let trusted_contact = create_test_address(&env, 99);
+
+    let params = plan_params(
+        &env,
+        &user,
+        &token_id,
+        "Plan",
+        "Desc",
+        10000,
+        DistributionMethod::LumpSum,
+        &default_beneficiaries(&env),
+    );
+    client.create_inheritance_plan(&params);
+    let plan_id = 1u64;
+
+    // Activate emergency access
+    client.activate_emergency_access(&user, &plan_id, &trusted_contact);
+
+    // Trusted contact can view plan
+    let plan = client.get_user_plan(&trusted_contact, &plan_id);
+    assert_eq!(plan.owner, user);
+}
+
+#[test]
+fn test_emergency_trigger_inheritance_success() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let (client, token_id, admin, user) = setup_with_token_and_admin(&env);
+    let trusted_contact = create_test_address(&env, 99);
+
+    let params = plan_params(
+        &env,
+        &user,
+        &token_id,
+        "Plan",
+        "Desc",
+        10000,
+        DistributionMethod::LumpSum,
+        &default_beneficiaries(&env),
+    );
+    client.create_inheritance_plan(&params);
+    let plan_id = 1u64;
+
+    // Activate emergency access
+    client.activate_emergency_access(&user, &plan_id, &trusted_contact);
+
+    // Trusted contact can trigger inheritance
+    client.trigger_inheritance(&trusted_contact, &plan_id);
+
+    // Verify it's triggered (is_lendable should be false)
+    let plan = client.get_plan_details(&plan_id).unwrap();
+    assert!(!plan.is_lendable);
+}
+
+#[test]
+fn test_owner_trigger_inheritance_success() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let (client, token_id, _admin, user) = setup_with_token_and_admin(&env);
+
+    let params = plan_params(
+        &env,
+        &user,
+        &token_id,
+        "Plan",
+        "Desc",
+        10000,
+        DistributionMethod::LumpSum,
+        &default_beneficiaries(&env),
+    );
+    client.create_inheritance_plan(&params);
+    let plan_id = 1u64;
+
+    // Owner can trigger inheritance
+    client.trigger_inheritance(&user, &plan_id);
+
+    // Verify it's triggered (is_lendable should be false)
+    let plan = client.get_plan_details(&plan_id).unwrap();
+    assert!(!plan.is_lendable);
+}
