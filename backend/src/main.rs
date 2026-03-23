@@ -20,7 +20,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let app = create_app(db_pool.clone(), config.clone()).await?;
 
     // Initialize Price Feed and Risk Engine
-    let price_feed = std::sync::Arc::new(inheritx_backend::DefaultPriceFeedService::new(db_pool.clone(), 3600));
+    let price_feed = std::sync::Arc::new(inheritx_backend::DefaultPriceFeedService::new(
+        db_pool.clone(),
+        3600,
+    ));
     if let Err(e) = price_feed.initialize_defaults().await {
         tracing::warn!("Failed to initialize default price feeds: {}", e);
     }
@@ -28,7 +31,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let risk_engine = std::sync::Arc::new(inheritx_backend::RiskEngine::new(
         db_pool.clone(),
         price_feed,
-        rust_decimal::Decimal::new(12, 1) // 1.2 health factor liquidation threshold
+        rust_decimal::Decimal::new(12, 1), // 1.2 health factor liquidation threshold
     ));
     risk_engine.start();
 

@@ -9,15 +9,15 @@ pub mod middleware;
 pub mod notifications;
 pub mod price_feed;
 pub mod price_feed_handlers;
+pub mod risk_engine;
 pub mod safe_math;
 pub mod service;
 pub mod telemetry;
-pub mod risk_engine;
 
 pub use api_error::ApiError;
 pub use app::create_app;
 pub use config::Config;
 pub use events::{EventService, EventType, LendingEvent};
 pub use price_feed::{DefaultPriceFeedService, PriceFeedService, PriceFeedSource};
-pub use safe_math::SafeMath;
 pub use risk_engine::RiskEngine;
+pub use safe_math::SafeMath;

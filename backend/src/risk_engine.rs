@@ -1,5 +1,7 @@
 use crate::api_error::ApiError;
-use crate::notifications::{audit_action, entity_type, notif_type, AuditLogService, NotificationService};
+use crate::notifications::{
+    audit_action, entity_type, notif_type, AuditLogService, NotificationService,
+};
 use crate::price_feed::PriceFeedService;
 use rust_decimal::Decimal;
 use sqlx::PgPool;
@@ -14,7 +16,11 @@ pub struct RiskEngine {
 }
 
 impl RiskEngine {
-    pub fn new(db: PgPool, price_feed: Arc<dyn PriceFeedService>, liquidation_threshold: Decimal) -> Self {
+    pub fn new(
+        db: PgPool,
+        price_feed: Arc<dyn PriceFeedService>,
+        liquidation_threshold: Decimal,
+    ) -> Self {
         Self {
             db,
             price_feed,
@@ -74,7 +80,10 @@ impl RiskEngine {
             let borrow_price = match self.price_feed.get_price(&loan.borrow_asset).await {
                 Ok(p) => p.price,
                 Err(e) => {
-                    warn!("Risk Engine: Could not get price for borrow asset {}: {}", loan.borrow_asset, e);
+                    warn!(
+                        "Risk Engine: Could not get price for borrow asset {}: {}",
+                        loan.borrow_asset, e
+                    );
                     continue;
                 }
             };
@@ -83,7 +92,10 @@ impl RiskEngine {
             let collat_price = match self.price_feed.get_price(&collat_asset).await {
                 Ok(p) => p.price,
                 Err(e) => {
-                    warn!("Risk Engine: Could not get price for collateral asset {}: {}", collat_asset, e);
+                    warn!(
+                        "Risk Engine: Could not get price for collateral asset {}: {}",
+                        collat_asset, e
+                    );
                     continue;
                 }
             };
@@ -113,10 +125,15 @@ impl RiskEngine {
 
                 // Notify if transitioned to risky
                 if is_now_risky && !loan.is_risky.unwrap_or(false) {
-                    info!("Plan {} for User {} flagged as risky. HF: {}", loan.plan_id, loan.user_id, health_factor);
-                    
-                    let mut tx = self.db.begin().await.map_err(|e| ApiError::Internal(anyhow::anyhow!("Tx start error: {}", e)))?;
-                    
+                    info!(
+                        "Plan {} for User {} flagged as risky. HF: {}",
+                        loan.plan_id, loan.user_id, health_factor
+                    );
+
+                    let mut tx = self.db.begin().await.map_err(|e| {
+                        ApiError::Internal(anyhow::anyhow!("Tx start error: {}", e))
+                    })?;
+
                     NotificationService::create(
                         &mut tx,
                         loan.user_id,
@@ -130,11 +147,17 @@ impl RiskEngine {
                         audit_action::LIQUIDATION_WARNING,
                         Some(loan.plan_id),
                         Some(entity_type::PLAN),
-                    ).await?;
+                    )
+                    .await?;
 
-                    tx.commit().await.map_err(|e| ApiError::Internal(anyhow::anyhow!("Tx commit error: {}", e)))?;
+                    tx.commit().await.map_err(|e| {
+                        ApiError::Internal(anyhow::anyhow!("Tx commit error: {}", e))
+                    })?;
                 } else if !is_now_risky && loan.is_risky.unwrap_or(false) {
-                    info!("Plan {} for User {} is no longer risky. HF: {}", loan.plan_id, loan.user_id, health_factor);
+                    info!(
+                        "Plan {} for User {} is no longer risky. HF: {}",
+                        loan.plan_id, loan.user_id, health_factor
+                    );
                 }
             }
         }
