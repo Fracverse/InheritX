@@ -50,9 +50,11 @@ impl RiskEngine {
             collateral_asset: Option<String>,
             collateral_amount: Option<rust_decimal::Decimal>,
             is_risky: Option<bool>,
+            risk_override_enabled: Option<bool>,
         }
 
         // Find plans that have borrowing activity by aggregating lending events.
+        // Exclude paused plans from risk monitoring
         let loans_health = sqlx::query_as::<_, LoanHealthRow>(
             r#"
             WITH loan_balances AS (
@@ -65,10 +67,12 @@ impl RiskEngine {
                 GROUP BY plan_id, user_id, asset_code
             )
             SELECT lb.plan_id, lb.user_id, lb.borrow_asset, lb.total_debt,
-                   p.asset_code as collateral_asset, CAST(p.net_amount AS numeric) as collateral_amount, p.is_risky
+                   p.asset_code as collateral_asset, CAST(p.net_amount AS numeric) as collateral_amount, 
+                   p.is_risky, p.risk_override_enabled
             FROM loan_balances lb
             JOIN plans p ON p.id = lb.plan_id
             WHERE lb.total_debt > 0
+              AND (p.is_paused IS NULL OR p.is_paused = false)
             "#
         )
         .fetch_all(&self.db)
@@ -106,7 +110,15 @@ impl RiskEngine {
 
             if debt_value > Decimal::ZERO {
                 let health_factor = collat_value / debt_value;
-                let is_now_risky = health_factor < self.liquidation_threshold;
+                
+                // Skip risk flagging if risk override is enabled
+                let should_skip_risk_check = loan.risk_override_enabled.unwrap_or(false);
+                
+                let is_now_risky = if should_skip_risk_check {
+                    false // Override: never mark as risky
+                } else {
+                    health_factor < self.liquidation_threshold
+                };
 
                 // Update database state
                 sqlx::query(
@@ -123,8 +135,8 @@ impl RiskEngine {
                 .await
                 .map_err(|e| ApiError::Internal(anyhow::anyhow!("DB error updating plan risk status: {}", e)))?;
 
-                // Notify if transitioned to risky
-                if is_now_risky && !loan.is_risky.unwrap_or(false) {
+                // Notify if transitioned to risky (and not overridden)
+                if is_now_risky && !loan.is_risky.unwrap_or(false) && !should_skip_risk_check {
                     info!(
                         "Plan {} for User {} flagged as risky. HF: {}",
                         loan.plan_id, loan.user_id, health_factor
