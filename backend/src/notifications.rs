@@ -14,6 +14,7 @@ pub mod notif_type {
     pub const PLAN_CLAIMED: &str = "plan_claimed";
     pub const PLAN_DEACTIVATED: &str = "plan_deactivated";
     pub const TWO_FA_SENT: &str = "2fa_sent";
+    pub const LIQUIDATION_WARNING: &str = "liquidation_warning";
 }
 
 // ─── Notification ────────────────────────────────────────────────────────────
@@ -152,6 +153,7 @@ pub mod audit_action {
     pub const PLAN_CLAIMED: &str = "plan_claimed";
     pub const PLAN_DEACTIVATED: &str = "plan_deactivated";
     pub const TWO_FA_SENT: &str = "2fa_sent";
+    pub const LIQUIDATION_WARNING: &str = "liquidation_warning";
 }
 
 /// Entity type constants — stored in `entity_type` column of `action_logs`.
