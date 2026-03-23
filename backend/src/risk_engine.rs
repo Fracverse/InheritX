@@ -110,10 +110,10 @@ impl RiskEngine {
 
             if debt_value > Decimal::ZERO {
                 let health_factor = collat_value / debt_value;
-                
+
                 // Skip risk flagging if risk override is enabled
                 let should_skip_risk_check = loan.risk_override_enabled.unwrap_or(false);
-                
+
                 let is_now_risky = if should_skip_risk_check {
                     false // Override: never mark as risky
                 } else {

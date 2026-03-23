@@ -18,9 +18,9 @@ use crate::notifications::{AuditLogService, NotificationService};
 use crate::service::{
     AdminMetrics, AdminService, ClaimMetricsService, ClaimPlanRequest, CreatePlanRequest,
     EmergencyActionResponse, EmergencyAdminService, KycRecord, KycService, KycStatus,
-    LendingMetrics, LendingMonitoringService, PausePlanRequest, PlanService,
-    PlanStatisticsService, RevenueMetricsResponse, RevenueMetricsService, RiskOverrideRequest,
-    UnpausePlanRequest, UserMetricsService,
+    LendingMetrics, LendingMonitoringService, PausePlanRequest, PlanService, PlanStatisticsService,
+    RevenueMetricsResponse, RevenueMetricsService, RiskOverrideRequest, UnpausePlanRequest,
+    UserMetricsService,
 };
 
 pub struct AppState {
@@ -121,9 +121,15 @@ pub async fn create_app(db: PgPool, config: Config) -> Result<Router, ApiError> 
         // ── Emergency Admin Controls ─────────────────────────────────────
         .route("/api/admin/emergency/pause", post(pause_plan))
         .route("/api/admin/emergency/unpause", post(unpause_plan))
-        .route("/api/admin/emergency/risk-override", post(set_risk_override))
+        .route(
+            "/api/admin/emergency/risk-override",
+            post(set_risk_override),
+        )
         .route("/api/admin/emergency/paused-plans", get(get_paused_plans))
-        .route("/api/admin/emergency/risk-override-plans", get(get_risk_override_plans))
+        .route(
+            "/api/admin/emergency/risk-override-plans",
+            get(get_risk_override_plans),
+        )
         // ── Lending Events ───────────────────────────────────────────────
         .route("/api/events", get(crate::event_handlers::get_user_events))
         .route(
@@ -636,7 +642,8 @@ async fn set_risk_override(
     AuthenticatedAdmin(admin): AuthenticatedAdmin,
     Json(req): Json<RiskOverrideRequest>,
 ) -> Result<Json<EmergencyActionResponse>, ApiError> {
-    let response = EmergencyAdminService::set_risk_override(&state.db, admin.admin_id, &req).await?;
+    let response =
+        EmergencyAdminService::set_risk_override(&state.db, admin.admin_id, &req).await?;
     Ok(Json(response))
 }
 

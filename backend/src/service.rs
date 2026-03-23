@@ -361,16 +361,16 @@ impl PlanService {
         };
 
         // Check if plan is paused
-        let is_paused: Option<bool> = sqlx::query_scalar(
-            "SELECT is_paused FROM plans WHERE id = $1"
-        )
-        .bind(plan_id)
-        .fetch_one(&mut *tx)
-        .await?;
+        let is_paused: Option<bool> =
+            sqlx::query_scalar("SELECT is_paused FROM plans WHERE id = $1")
+                .bind(plan_id)
+                .fetch_one(&mut *tx)
+                .await?;
 
         if is_paused == Some(true) {
             return Err(ApiError::BadRequest(
-                "This plan is currently paused by an administrator and cannot be claimed".to_string(),
+                "This plan is currently paused by an administrator and cannot be claimed"
+                    .to_string(),
             ));
         }
 
@@ -1544,12 +1544,11 @@ impl EmergencyAdminService {
             .ok_or_else(|| ApiError::NotFound(format!("Plan {} not found", req.plan_id)))?;
 
         // Check if already paused
-        let is_paused: Option<bool> = sqlx::query_scalar(
-            "SELECT is_paused FROM plans WHERE id = $1"
-        )
-        .bind(req.plan_id)
-        .fetch_one(&mut *tx)
-        .await?;
+        let is_paused: Option<bool> =
+            sqlx::query_scalar("SELECT is_paused FROM plans WHERE id = $1")
+                .bind(req.plan_id)
+                .fetch_one(&mut *tx)
+                .await?;
 
         if is_paused == Some(true) {
             return Err(ApiError::BadRequest("Plan is already paused".to_string()));
@@ -1588,7 +1587,10 @@ impl EmergencyAdminService {
             &mut tx,
             plan.user_id,
             notif_type::PLAN_PAUSED,
-            format!("Your plan '{}' has been temporarily paused by an administrator. Reason: {}", plan.title, req.reason),
+            format!(
+                "Your plan '{}' has been temporarily paused by an administrator. Reason: {}",
+                plan.title, req.reason
+            ),
         )
         .await?;
 
@@ -1615,12 +1617,11 @@ impl EmergencyAdminService {
             .ok_or_else(|| ApiError::NotFound(format!("Plan {} not found", req.plan_id)))?;
 
         // Check if actually paused
-        let is_paused: Option<bool> = sqlx::query_scalar(
-            "SELECT is_paused FROM plans WHERE id = $1"
-        )
-        .bind(req.plan_id)
-        .fetch_one(&mut *tx)
-        .await?;
+        let is_paused: Option<bool> =
+            sqlx::query_scalar("SELECT is_paused FROM plans WHERE id = $1")
+                .bind(req.plan_id)
+                .fetch_one(&mut *tx)
+                .await?;
 
         if is_paused != Some(true) {
             return Err(ApiError::BadRequest("Plan is not paused".to_string()));
@@ -1657,7 +1658,10 @@ impl EmergencyAdminService {
             &mut tx,
             plan.user_id,
             notif_type::PLAN_UNPAUSED,
-            format!("Your plan '{}' has been unpaused and is now active again", plan.title),
+            format!(
+                "Your plan '{}' has been unpaused and is now active again",
+                plan.title
+            ),
         )
         .await?;
 
@@ -1742,18 +1746,18 @@ impl EmergencyAdminService {
 
         // Notify user
         let message = if req.enabled {
-            format!("Risk monitoring override has been applied to your plan '{}'. Reason: {}", plan.title, req.reason)
+            format!(
+                "Risk monitoring override has been applied to your plan '{}'. Reason: {}",
+                plan.title, req.reason
+            )
         } else {
-            format!("Risk monitoring override has been removed from your plan '{}'", plan.title)
+            format!(
+                "Risk monitoring override has been removed from your plan '{}'",
+                plan.title
+            )
         };
 
-        NotificationService::create(
-            &mut tx,
-            plan.user_id,
-            notif_type,
-            message,
-        )
-        .await?;
+        NotificationService::create(&mut tx, plan.user_id, notif_type, message).await?;
 
         tx.commit().await?;
 
@@ -1786,13 +1790,13 @@ impl EmergencyAdminService {
         .fetch_all(db)
         .await?;
 
-        rows.iter()
-            .map(plan_row_to_plan_with_beneficiary)
-            .collect()
+        rows.iter().map(plan_row_to_plan_with_beneficiary).collect()
     }
 
     /// Get all plans with risk override
-    pub async fn get_risk_override_plans(db: &PgPool) -> Result<Vec<PlanWithBeneficiary>, ApiError> {
+    pub async fn get_risk_override_plans(
+        db: &PgPool,
+    ) -> Result<Vec<PlanWithBeneficiary>, ApiError> {
         let rows = sqlx::query_as::<_, PlanRowFull>(
             r#"
             SELECT id, user_id, title, description, fee, net_amount, status,
@@ -1807,8 +1811,6 @@ impl EmergencyAdminService {
         .fetch_all(db)
         .await?;
 
-        rows.iter()
-            .map(plan_row_to_plan_with_beneficiary)
-            .collect()
+        rows.iter().map(plan_row_to_plan_with_beneficiary).collect()
     }
 }
