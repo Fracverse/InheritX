@@ -2570,11 +2570,25 @@ fn test_full_loan_recall_workflow() {
 fn test_emergency_access_events() {
     let env = Env::default();
     env.mock_all_auths();
-    let (client, _, _admin, user) = setup_with_token_and_admin(&env);
+    let (client, token_id, _admin, user) = setup_with_token_and_admin(&env);
     let contract_id = client.address.clone();
+    let trusted_contact = create_test_address(&env, 99);
+
+    let params = plan_params(
+        &env,
+        &user,
+        &token_id,
+        "Plan",
+        "Desc",
+        10000,
+        DistributionMethod::LumpSum,
+        &default_beneficiaries(&env),
+    );
+    client.create_inheritance_plan(&params);
+    let plan_id = 1u64;
 
     // 1. Test Activation Event
-    client.activate_emergency_access(&user);
+    client.activate_emergency_access(&user, &plan_id, &trusted_contact);
 
     let events = env.events().all();
     let activation_event = events.get(events.len() - 1).unwrap();
@@ -2582,17 +2596,17 @@ fn test_emergency_access_events() {
     assert_eq!(activation_event.0, contract_id);
     assert_eq!(
         activation_event.1,
-        (symbol_short!("EMERGENCY"), symbol_short!("ACTIVATE")).into_val(&env)
+        (symbol_short!("EMERG"), symbol_short!("ACTIV")).into_val(&env)
     );
 
     // 2. Test Revocation Event
-    client.deactivate_emergency_access(&user);
+    client.deactivate_emergency_access(&user, &plan_id);
     let events = env.events().all();
     let revocation_event = events.get(events.len() - 1).unwrap();
     assert_eq!(revocation_event.0, contract_id);
     assert_eq!(
         revocation_event.1,
-        (symbol_short!("EMERGENCY"), symbol_short!("REVOKE")).into_val(&env)
+        (symbol_short!("EMERG"), symbol_short!("REVOK")).into_val(&env)
     );
 }
 
@@ -2600,18 +2614,32 @@ fn test_emergency_access_events() {
 fn test_emergency_access_expiration() {
     let env = Env::default();
     env.mock_all_auths();
-    let (client, _, _admin, user) = setup_with_token_and_admin(&env);
+    let (client, token_id, _admin, user) = setup_with_token_and_admin(&env);
     let contract_id = client.address.clone();
+    let trusted_contact = create_test_address(&env, 99);
+
+    let params = plan_params(
+        &env,
+        &user,
+        &token_id,
+        "Plan",
+        "Desc",
+        10000,
+        DistributionMethod::LumpSum,
+        &default_beneficiaries(&env),
+    );
+    client.create_inheritance_plan(&params);
+    let plan_id = 1u64;
 
     // Activate
-    client.activate_emergency_access(&user);
-    assert!(client.get_emergency_access_status(&user));
+    client.activate_emergency_access(&user, &plan_id, &trusted_contact);
+    assert!(client.get_emergency_access(&plan_id).is_some());
 
     // Fast forward 604801 seconds (7 days + 1s)
     env.ledger().set_timestamp(604801);
 
-    // Call any function that triggers the check (e.g. get_status)
-    assert!(!client.get_emergency_access_status(&user));
+    // Call any function that triggers the check (e.g. get_emergency_access)
+    assert!(client.get_emergency_access(&plan_id).is_none());
 
     // Verify Expiration Event
     let events = env.events().all();
@@ -2619,6 +2647,6 @@ fn test_emergency_access_expiration() {
     assert_eq!(expiration_event.0, contract_id);
     assert_eq!(
         expiration_event.1,
-        (symbol_short!("EMERGENCY"), symbol_short!("EXPIRE")).into_val(&env)
+        (symbol_short!("EMERG"), symbol_short!("EXPIR")).into_val(&env)
     );
 }

@@ -1,6 +1,6 @@
 use axum::{
-    extract::{Path, Query, State},
-    routing::{get, patch, post},
+    extract::{Path, State},
+    routing::{get, post},
     Json, Router,
 };
 use serde_json::{json, Value};
@@ -14,13 +14,9 @@ use uuid::Uuid;
 use crate::api_error::ApiError;
 use crate::auth::{AuthenticatedAdmin, AuthenticatedUser};
 use crate::config::Config;
-use crate::notifications::{AuditLogService, NotificationService};
 use crate::service::{
-    AdminMetrics, AdminService, ClaimMetricsService, ClaimPlanRequest, CreatePlanRequest,
-    EmergencyActionResponse, EmergencyAdminService, KycRecord, KycService, KycStatus,
-    LendingMetrics, LendingMonitoringService, PausePlanRequest, PlanService, PlanStatisticsService,
-    RevenueMetricsResponse, RevenueMetricsService, RiskOverrideRequest, UnpausePlanRequest,
-    UserMetricsService,
+    ClaimPlanRequest, CreatePlanRequest, KycRecord, KycService, KycStatus, LoanSimulationRequest,
+    LoanSimulationService, PlanService,
 };
 
 pub struct AppState {
@@ -28,23 +24,8 @@ pub struct AppState {
     pub config: Config,
 }
 
-#[derive(serde::Deserialize)]
-pub struct PaginationQuery {
-    pub page: Option<u32>,
-    pub limit: Option<u32>,
-}
-
-fn normalize_pagination(query: &PaginationQuery) -> (u32, u32) {
-    let page = query.page.unwrap_or(1).max(1);
-    let limit = query.limit.unwrap_or(10).clamp(1, 100);
-    (page, limit)
-}
-
 pub async fn create_app(db: PgPool, config: Config) -> Result<Router, ApiError> {
-    let state = Arc::new(AppState {
-        db: db.clone(),
-        config,
-    });
+    let state = Arc::new(AppState { db, config });
 
     // Rate limiting configuration
     let governor_conf = Arc::new(
@@ -58,28 +39,9 @@ pub async fn create_app(db: PgPool, config: Config) -> Result<Router, ApiError> 
     let app = Router::new()
         .route("/health", get(health_check))
         .route("/health/db", get(db_health_check))
-        .route("/login", post(crate::auth::login_user))
         .route("/admin/login", post(crate::auth::login_admin))
-        .route("/api/auth/nonce", post(crate::auth::get_nonce))
-        .route(
-            "/api/auth/nonce/:wallet_address",
-            get(crate::auth::generate_nonce),
-        )
-        .route("/api/auth/web3-login", post(crate::auth::web3_login))
-        .route("/api/auth/wallet-login", post(crate::auth::web3_login))
-        .route("/user/send-2fa", post(crate::auth::send_2fa))
-        .route("/user/verify-2fa", post(crate::auth::verify_2fa))
         .layer(
             ServiceBuilder::new()
-                .layer(axum::middleware::from_fn_with_state(
-                    state.clone(),
-                    |State(state): State<Arc<AppState>>,
-                     mut req: axum::http::Request<axum::body::Body>,
-                     next: axum::middleware::Next| async move {
-                        req.extensions_mut().insert(state.config.clone());
-                        next.run(req).await
-                    },
-                ))
                 .layer(TraceLayer::new_for_http())
                 .layer(GovernorLayer {
                     config: governor_conf,
@@ -95,9 +57,11 @@ pub async fn create_app(db: PgPool, config: Config) -> Result<Router, ApiError> 
         )
         .route("/api/plans/:plan_id/claim", post(claim_plan))
         .route("/api/plans/:plan_id", get(get_plan))
-        .route("/api/plans/:plan_id", axum::routing::delete(cancel_plan))
         .route("/api/plans", post(create_plan))
-        .route("/api/kyc/submit", post(submit_kyc))
+        // Loan Simulation endpoints
+        .route("/api/loans/simulate", post(simulate_loan))
+        .route("/api/loans/simulations", get(get_user_simulations))
+        .route("/api/loans/simulations/:simulation_id", get(get_simulation))
         .route(
             "/api/admin/plans/due-for-claim",
             get(get_all_due_for_claim_plans_admin),
@@ -105,41 +69,6 @@ pub async fn create_app(db: PgPool, config: Config) -> Result<Router, ApiError> 
         .route("/api/admin/kyc/:user_id", get(get_kyc_status))
         .route("/api/admin/kyc/approve", post(approve_kyc))
         .route("/api/admin/kyc/reject", post(reject_kyc))
-        .route("/admin/metrics/overview", get(get_admin_metrics_overview))
-        .route("/api/kyc", get(get_user_kyc))
-        // ── Notifications ────────────────────────────────────────────────
-        .route("/api/notifications", get(list_notifications))
-        .route("/api/notifications/:id/read", patch(mark_notification_read))
-        // ── Admin Audit Logs ─────────────────────────────────────────────
-        .route("/api/admin/logs", get(list_audit_logs))
-        // ── Admin Metrics ────────────────────────────────────────────────
-        .route("/api/admin/metrics/plans", get(get_plan_statistics))
-        .route("/admin/metrics/claims", get(get_claim_statistics))
-        .route("/admin/metrics/users", get(get_user_growth_metrics))
-        .route("/admin/metrics/revenue", get(get_revenue_metrics))
-        .route("/api/admin/metrics/lending", get(get_lending_metrics))
-        // ── Emergency Admin Controls ─────────────────────────────────────
-        .route("/api/admin/emergency/pause", post(pause_plan))
-        .route("/api/admin/emergency/unpause", post(unpause_plan))
-        .route(
-            "/api/admin/emergency/risk-override",
-            post(set_risk_override),
-        )
-        .route("/api/admin/emergency/paused-plans", get(get_paused_plans))
-        .route(
-            "/api/admin/emergency/risk-override-plans",
-            get(get_risk_override_plans),
-        )
-        // ── Lending Events ───────────────────────────────────────────────
-        .route("/api/events", get(crate::event_handlers::get_user_events))
-        .route(
-            "/api/events/plan/:plan_id",
-            get(crate::event_handlers::get_plan_events),
-        )
-        .route(
-            "/api/events/transaction/:transaction_hash",
-            get(crate::event_handlers::get_events_by_transaction),
-        )
         .with_state(state);
 
     Ok(app)
@@ -158,116 +87,12 @@ async fn db_health_check(
     ))
 }
 
-async fn submit_kyc(
-    State(state): State<Arc<AppState>>,
-    AuthenticatedUser(user): AuthenticatedUser,
-) -> Result<Json<KycRecord>, ApiError> {
-    let status = KycService::submit_kyc(&state.db, user.user_id).await?;
-    Ok(Json(status))
-}
-
 async fn create_plan(
     State(state): State<Arc<AppState>>,
     AuthenticatedUser(user): AuthenticatedUser,
-    headers: axum::http::HeaderMap,
     Json(req): Json<CreatePlanRequest>,
 ) -> Result<Json<Value>, ApiError> {
-    // Validate KYC approved
-    let kyc_record = KycService::get_kyc_status(&state.db, user.user_id).await?;
-    if kyc_record.status != "approved" {
-        return Err(ApiError::Forbidden("KYC not approved".to_string()));
-    }
-
-    // Require 2FA verification
-    crate::auth::verify_2fa_internal(&state.db, user.user_id, &req.two_fa_code).await?;
-
-    // Validate input amounts
-    crate::safe_math::SafeMath::ensure_non_negative(req.net_amount, "net_amount")?;
-    crate::safe_math::SafeMath::ensure_non_negative(req.fee, "fee")?;
-
-    // Deduct 2% fee using safe arithmetic
-    let amount = crate::safe_math::SafeMath::add(req.net_amount, req.fee)?;
-    let (fee, net_amount) =
-        crate::safe_math::SafeMath::calculate_fee(amount, rust_decimal::Decimal::new(2, 0))?;
-
-    let mut req_mut = req.clone();
-    req_mut.fee = fee;
-    req_mut.net_amount = net_amount;
-
-    let mut tx = state.db.begin().await?;
-    let beneficiary_name = req_mut
-        .beneficiary_name
-        .as_deref()
-        .map(|s| s.trim().to_string());
-    let bank_name = req_mut.bank_name.as_deref().map(|s| s.trim().to_string());
-    let bank_account_number = req_mut
-        .bank_account_number
-        .as_deref()
-        .map(|s| s.trim().to_string());
-    let currency_preference = Some(req_mut.currency_preference.trim().to_uppercase());
-
-    let inserted_id: Uuid = sqlx::query_scalar(
-        r#"
-        INSERT INTO plans (
-            user_id, title, description, fee, net_amount, status,
-            beneficiary_name, bank_account_number, bank_name, currency_preference
-        )
-        VALUES ($1, $2, $3, $4, $5, 'pending', $6, $7, $8, $9)
-        RETURNING id
-        "#,
-    )
-    .bind(user.user_id)
-    .bind(&req_mut.title)
-    .bind(&req_mut.description)
-    .bind(req_mut.fee.to_string())
-    .bind(req_mut.net_amount.to_string())
-    .bind(&beneficiary_name)
-    .bind(&bank_account_number)
-    .bind(&bank_name)
-    .bind(&currency_preference)
-    .fetch_one(&mut *tx)
-    .await?;
-
-    sqlx::query(
-        r#"
-        INSERT INTO action_logs (user_id, action, entity_id, entity_type)
-        VALUES ($1, $2, $3, $4)
-        "#,
-    )
-    .bind(Some(user.user_id))
-    .bind(crate::notifications::audit_action::PLAN_CREATED)
-    .bind(Some(inserted_id))
-    .bind(Some(crate::notifications::entity_type::PLAN))
-    .execute(&mut *tx)
-    .await?;
-
-    let should_revert = headers
-        .get("X-Simulate-Revert")
-        .and_then(|v| v.to_str().ok())
-        .map(|v| v.eq_ignore_ascii_case("true") || v == "1")
-        .unwrap_or(false);
-    if should_revert {
-        tx.rollback().await?;
-        return Err(ApiError::Internal(anyhow::anyhow!(
-            "Token transfer reverted"
-        )));
-    }
-    tx.commit().await?;
-    let plan = PlanService::get_plan_by_id(&state.db, inserted_id, user.user_id)
-        .await?
-        .expect("plan must exist after commit");
-
-    // Audit log
-    sqlx::query("INSERT INTO plan_logs (plan_id, action, performed_by) VALUES ($1, $2, $3)")
-        .bind(inserted_id)
-        .bind("create")
-        .bind(user.user_id)
-        .execute(&state.db)
-        .await?;
-
-    // Notification (stub)
-    // notify_plan_created(user.user_id, plan.id);
-
+    let plan = PlanService::create_plan(&state.db, user.user_id, &req).await?;
     Ok(Json(json!({
         "status": "success",
         "data": plan
@@ -279,20 +104,12 @@ async fn get_plan(
     Path(plan_id): Path<Uuid>,
     AuthenticatedUser(user): AuthenticatedUser,
 ) -> Result<Json<Value>, ApiError> {
-    let plan = PlanService::get_plan_by_id_any_user(&state.db, plan_id).await?;
+    let plan = PlanService::get_plan_by_id(&state.db, plan_id, user.user_id).await?;
     match plan {
-        Some(p) => {
-            if p.user_id != user.user_id {
-                return Err(ApiError::Forbidden(format!(
-                    "You do not have permission to access plan {}",
-                    plan_id
-                )));
-            }
-            Ok(Json(json!({
-                "status": "success",
-                "data": p
-            })))
-        }
+        Some(p) => Ok(Json(json!({
+            "status": "success",
+            "data": p
+        }))),
         None => Err(ApiError::NotFound(format!("Plan {} not found", plan_id))),
     }
 }
@@ -303,50 +120,10 @@ async fn claim_plan(
     AuthenticatedUser(user): AuthenticatedUser,
     Json(req): Json<ClaimPlanRequest>,
 ) -> Result<Json<Value>, ApiError> {
-    // Validate KYC approved
-    let kyc_record = KycService::get_kyc_status(&state.db, user.user_id).await?;
-    if kyc_record.status != "approved" {
-        return Err(ApiError::Forbidden("KYC not approved".to_string()));
-    }
-
-    // Require 2FA verification
-    crate::auth::verify_2fa_internal(&state.db, user.user_id, &req.two_fa_code).await?;
-
     let plan = PlanService::claim_plan(&state.db, plan_id, user.user_id, &req).await?;
-
-    // Transfer USDC to user wallet (stub)
-    // transfer_usdc_to_wallet(user.user_id, plan.net_amount);
-
-    // Audit log
-    sqlx::query("INSERT INTO plan_logs (plan_id, action, performed_by) VALUES ($1, $2, $3)")
-        .bind(plan.id)
-        .bind("claim")
-        .bind(user.user_id)
-        .execute(&state.db)
-        .await?;
-
-    // Notification (stub)
-    // notify_plan_claimed(user.user_id, plan.id);
-
     Ok(Json(json!({
         "status": "success",
         "message": "Claim recorded",
-        "data": plan
-    })))
-}
-
-async fn cancel_plan(
-    State(state): State<Arc<AppState>>,
-    Path(plan_id): Path<Uuid>,
-    AuthenticatedUser(user): AuthenticatedUser,
-) -> Result<Json<Value>, ApiError> {
-    // Pass only the pool (&state.db) as the service now handles
-    // its own internal transaction orchestration.
-    let plan = PlanService::cancel_plan(&state.db, plan_id, user.user_id).await?;
-
-    Ok(Json(json!({
-        "status": "success",
-        "message": "Plan cancelled successfully",
         "data": plan
     })))
 }
@@ -372,72 +149,28 @@ async fn get_due_for_claim_plan(
 
 async fn get_all_due_for_claim_plans_user(
     State(state): State<Arc<AppState>>,
-    Query(query): Query<PaginationQuery>,
     AuthenticatedUser(user): AuthenticatedUser,
 ) -> Result<Json<Value>, ApiError> {
-    let (page, limit) = normalize_pagination(&query);
     let plans = PlanService::get_all_due_for_claim_plans_for_user(&state.db, user.user_id).await?;
-    let total_count = plans.len() as u64;
-    let start = ((page - 1) as usize) * (limit as usize);
-    let paged_plans = plans
-        .into_iter()
-        .skip(start)
-        .take(limit as usize)
-        .collect::<Vec<_>>();
-    let total_pages = if total_count == 0 {
-        0
-    } else {
-        total_count.div_ceil(limit as u64)
-    };
 
     Ok(Json(json!({
         "status": "success",
-        "data": paged_plans,
-        "count": paged_plans.len(),
-        "page": page,
-        "limit": limit,
-        "total_count": total_count,
-        "total_pages": total_pages
+        "data": plans,
+        "count": plans.len()
     })))
 }
 
 async fn get_all_due_for_claim_plans_admin(
     State(state): State<Arc<AppState>>,
-    Query(query): Query<PaginationQuery>,
     AuthenticatedAdmin(_admin): AuthenticatedAdmin,
 ) -> Result<Json<Value>, ApiError> {
-    let (page, limit) = normalize_pagination(&query);
     let plans = PlanService::get_all_due_for_claim_plans_admin(&state.db).await?;
-    let total_count = plans.len() as u64;
-    let start = ((page - 1) as usize) * (limit as usize);
-    let paged_plans = plans
-        .into_iter()
-        .skip(start)
-        .take(limit as usize)
-        .collect::<Vec<_>>();
-    let total_pages = if total_count == 0 {
-        0
-    } else {
-        total_count.div_ceil(limit as u64)
-    };
 
     Ok(Json(json!({
         "status": "success",
-        "data": paged_plans,
-        "count": paged_plans.len(),
-        "page": page,
-        "limit": limit,
-        "total_count": total_count,
-        "total_pages": total_pages
+        "data": plans,
+        "count": plans.len()
     })))
-}
-
-async fn get_user_kyc(
-    State(state): State<Arc<AppState>>,
-    AuthenticatedUser(user): AuthenticatedUser,
-) -> Result<Json<KycRecord>, ApiError> {
-    let status = KycService::get_kyc_status(&state.db, user.user_id).await?;
-    Ok(Json(status))
 }
 
 #[derive(serde::Deserialize)]
@@ -484,189 +217,54 @@ async fn reject_kyc(
     Ok(Json(status))
 }
 
-// ── Notification Handlers ─────────────────────────────────────────────────────
+// =============================================================================
+// Loan Simulation Endpoints
+// =============================================================================
 
-async fn list_notifications(
+/// Preview loan simulation without saving
+async fn simulate_loan(
     State(state): State<Arc<AppState>>,
-    Query(query): Query<PaginationQuery>,
+    AuthenticatedUser(user): AuthenticatedUser,
+    Json(req): Json<LoanSimulationRequest>,
+) -> Result<Json<Value>, ApiError> {
+    let result = LoanSimulationService::create_simulation(&state.db, user.user_id, &req).await?;
+    Ok(Json(json!({
+        "status": "success",
+        "data": result
+    })))
+}
+
+/// Get all loan simulations for the current user
+async fn get_user_simulations(
+    State(state): State<Arc<AppState>>,
     AuthenticatedUser(user): AuthenticatedUser,
 ) -> Result<Json<Value>, ApiError> {
-    let (page, limit) = normalize_pagination(&query);
-    let notifications =
-        NotificationService::list_for_user_paginated(&state.db, user.user_id, page, limit).await?;
-    let total_count = NotificationService::count_for_user(&state.db, user.user_id).await? as u64;
-    let total_pages = if total_count == 0 {
-        0
-    } else {
-        total_count.div_ceil(limit as u64)
-    };
-
+    let limit = 50; // Default limit
+    let simulations =
+        LoanSimulationService::get_user_simulations(&state.db, user.user_id, limit).await?;
     Ok(Json(json!({
         "status": "success",
-        "data": notifications,
-        "count": notifications.len(),
-        "page": page,
-        "limit": limit,
-        "total_count": total_count,
-        "total_pages": total_pages
+        "data": simulations,
+        "count": simulations.len()
     })))
 }
 
-async fn mark_notification_read(
+/// Get a specific loan simulation by ID
+async fn get_simulation(
     State(state): State<Arc<AppState>>,
-    Path(notif_id): Path<Uuid>,
+    Path(simulation_id): Path<Uuid>,
     AuthenticatedUser(user): AuthenticatedUser,
 ) -> Result<Json<Value>, ApiError> {
-    let notification = NotificationService::mark_read(&state.db, notif_id, user.user_id).await?;
-    Ok(Json(json!({
-        "status": "success",
-        "data": notification
-    })))
-}
-
-// ── Admin Audit Log Handler ───────────────────────────────────────────────────
-
-async fn list_audit_logs(
-    State(state): State<Arc<AppState>>,
-    Query(query): Query<PaginationQuery>,
-    AuthenticatedAdmin(_admin): AuthenticatedAdmin,
-) -> Result<Json<Value>, ApiError> {
-    let (page, limit) = normalize_pagination(&query);
-    let logs = AuditLogService::list_all_paginated(&state.db, page, limit).await?;
-    let total_count = AuditLogService::count_all(&state.db).await? as u64;
-    let total_pages = if total_count == 0 {
-        0
-    } else {
-        total_count.div_ceil(limit as u64)
-    };
-
-    Ok(Json(json!({
-        "status": "success",
-        "data": logs,
-        "count": logs.len(),
-        "page": page,
-        "limit": limit,
-        "total_count": total_count,
-        "total_pages": total_pages
-    })))
-}
-
-async fn get_admin_metrics_overview(
-    State(state): State<Arc<AppState>>,
-    AuthenticatedAdmin(_admin): AuthenticatedAdmin,
-) -> Result<Json<AdminMetrics>, ApiError> {
-    let metrics = AdminService::get_metrics_overview(&state.db).await?;
-    Ok(Json(metrics))
-}
-
-// ── Admin Metrics Handler ─────────────────────────────────────────────────────
-
-async fn get_plan_statistics(
-    State(state): State<Arc<AppState>>,
-    AuthenticatedAdmin(_admin): AuthenticatedAdmin,
-) -> Result<Json<Value>, ApiError> {
-    let stats = PlanStatisticsService::get_plan_statistics(&state.db).await?;
-    Ok(Json(json!({
-        "status": "success",
-        "data": stats
-    })))
-}
-
-async fn get_user_growth_metrics(
-    State(state): State<Arc<AppState>>,
-    AuthenticatedAdmin(_admin): AuthenticatedAdmin,
-) -> Result<Json<Value>, ApiError> {
-    let metrics = UserMetricsService::get_user_growth_metrics(&state.db).await?;
-    Ok(Json(json!({
-        "status": "success",
-        "data": metrics
-    })))
-}
-
-#[derive(serde::Deserialize)]
-pub struct RevenueMetricsQuery {
-    pub range: Option<String>,
-}
-
-async fn get_revenue_metrics(
-    State(state): State<Arc<AppState>>,
-    AuthenticatedAdmin(_admin): AuthenticatedAdmin,
-    Query(query): Query<RevenueMetricsQuery>,
-) -> Result<Json<RevenueMetricsResponse>, ApiError> {
-    let range = query.range.unwrap_or_else(|| "daily".to_string());
-    let metrics = RevenueMetricsService::get_revenue_breakdown(&state.db, &range).await?;
-    Ok(Json(metrics))
-}
-
-async fn get_claim_statistics(
-    State(state): State<Arc<AppState>>,
-    AuthenticatedAdmin(_admin): AuthenticatedAdmin,
-) -> Result<Json<Value>, ApiError> {
-    let metrics = ClaimMetricsService::get_claim_statistics(&state.db).await?;
-    Ok(Json(json!({
-        "status": "success",
-        "data": metrics
-    })))
-}
-
-async fn get_lending_metrics(
-    State(state): State<Arc<AppState>>,
-    AuthenticatedAdmin(_admin): AuthenticatedAdmin,
-) -> Result<Json<LendingMetrics>, ApiError> {
-    let metrics = LendingMonitoringService::get_lending_metrics(&state.db).await?;
-    Ok(Json(metrics))
-}
-
-// ── Emergency Admin Control Handlers ──────────────────────────────────────────
-
-async fn pause_plan(
-    State(state): State<Arc<AppState>>,
-    AuthenticatedAdmin(admin): AuthenticatedAdmin,
-    Json(req): Json<PausePlanRequest>,
-) -> Result<Json<EmergencyActionResponse>, ApiError> {
-    let response = EmergencyAdminService::pause_plan(&state.db, admin.admin_id, &req).await?;
-    Ok(Json(response))
-}
-
-async fn unpause_plan(
-    State(state): State<Arc<AppState>>,
-    AuthenticatedAdmin(admin): AuthenticatedAdmin,
-    Json(req): Json<UnpausePlanRequest>,
-) -> Result<Json<EmergencyActionResponse>, ApiError> {
-    let response = EmergencyAdminService::unpause_plan(&state.db, admin.admin_id, &req).await?;
-    Ok(Json(response))
-}
-
-async fn set_risk_override(
-    State(state): State<Arc<AppState>>,
-    AuthenticatedAdmin(admin): AuthenticatedAdmin,
-    Json(req): Json<RiskOverrideRequest>,
-) -> Result<Json<EmergencyActionResponse>, ApiError> {
-    let response =
-        EmergencyAdminService::set_risk_override(&state.db, admin.admin_id, &req).await?;
-    Ok(Json(response))
-}
-
-async fn get_paused_plans(
-    State(state): State<Arc<AppState>>,
-    AuthenticatedAdmin(_admin): AuthenticatedAdmin,
-) -> Result<Json<Value>, ApiError> {
-    let plans = EmergencyAdminService::get_paused_plans(&state.db).await?;
-    Ok(Json(json!({
-        "status": "success",
-        "data": plans,
-        "count": plans.len()
-    })))
-}
-
-async fn get_risk_override_plans(
-    State(state): State<Arc<AppState>>,
-    AuthenticatedAdmin(_admin): AuthenticatedAdmin,
-) -> Result<Json<Value>, ApiError> {
-    let plans = EmergencyAdminService::get_risk_override_plans(&state.db).await?;
-    Ok(Json(json!({
-        "status": "success",
-        "data": plans,
-        "count": plans.len()
-    })))
+    let simulation =
+        LoanSimulationService::get_simulation_by_id(&state.db, simulation_id, user.user_id).await?;
+    match simulation {
+        Some(sim) => Ok(Json(json!({
+            "status": "success",
+            "data": sim
+        }))),
+        None => Err(ApiError::NotFound(format!(
+            "Simulation {} not found",
+            simulation_id
+        ))),
+    }
 }

@@ -91,6 +91,8 @@ pub enum InheritanceError {
     InheritanceNotTriggered = 33,
     LoanRecallFailed = 34,
     NoOutstandingLoans = 35,
+    EmergencyAccessAlreadyActive = 36,
+    EmergencyCooldownActive = 37,
 }
 
 #[contracttype]
@@ -109,6 +111,7 @@ pub enum DataKey {
     InheritanceTrigger(u64),         // per-plan inheritance trigger info
     EmergencyActive(Address),        // bool, keyed by Address
     EmergencyLastActivated(Address), // u64, keyed by Address
+    EmergencyAccess(u64),            // per-plan emergency access record
 }
 
 #[contracttype]
@@ -140,6 +143,14 @@ pub struct InheritanceTriggerInfo {
     pub original_loaned: u64,
     pub recalled_amount: u64,
     pub settled_amount: u64,
+}
+
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct EmergencyAccessRecord {
+    pub plan_id: u64,
+    pub trusted_contact: Address,
+    pub activated_at: u64,
 }
 
 // Events for beneficiary operations
@@ -254,17 +265,24 @@ pub struct EmergencyAccessActivationEvent {
 #[contracttype]
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct EmergencyAccessRevocationEvent {
-    pub user: Address,
+    pub plan_id: u64,
     pub revoked_at: u64,
 }
 
 #[contracttype]
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct EmergencyAccessExpirationEvent {
-    pub user: Address,
+    pub plan_id: u64,
     pub expired_at: u64,
 }
 
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct EmergencyAccessActivatedEvent {
+    pub plan_id: u64,
+    pub trusted_contact: Address,
+    pub activated_at: u64,
+}
 /// Parameters for creating an inheritance plan (groups args to satisfy Clippy).
 #[contracttype]
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -532,85 +550,63 @@ impl InheritanceContract {
         }
         Ok(plan)
     }
-
-    /// Activate emergency access for the authenticated user.
-    /// Emits EmergencyAccessActivationEvent.
-    pub fn activate_emergency_access(env: Env, user: Address) {
-        user.require_auth();
-        env.storage()
-            .persistent()
-            .set(&DataKey::EmergencyActive(user.clone()), &true);
-        env.storage().persistent().set(
-            &DataKey::EmergencyLastActivated(user.clone()),
-            &env.ledger().timestamp(),
-        );
-
-        env.events().publish(
-            (symbol_short!("EMERGENCY"), symbol_short!("ACTIVATE")),
-            EmergencyAccessActivationEvent {
-                user,
-                activated_at: env.ledger().timestamp(),
-            },
-        );
-    }
-
-    /// Deactivate emergency access for the authenticated user.
+    /// Deactivate emergency access for a specific plan.
     /// Emits EmergencyAccessRevocationEvent.
-    pub fn deactivate_emergency_access(env: Env, user: Address) {
-        user.require_auth();
-        env.storage()
-            .persistent()
-            .set(&DataKey::EmergencyActive(user.clone()), &false);
+    pub fn deactivate_emergency_access(
+        env: Env,
+        owner: Address,
+        plan_id: u64,
+    ) -> Result<(), InheritanceError> {
+        owner.require_auth();
+
+        let plan = Self::get_plan(&env, plan_id).ok_or(InheritanceError::PlanNotFound)?;
+
+        if plan.owner != owner {
+            return Err(InheritanceError::Unauthorized);
+        }
+
+        let key = DataKey::EmergencyAccess(plan_id);
+        if env.storage().persistent().has(&key) {
+            env.storage().persistent().remove(&key);
+        } else {
+            return Err(InheritanceError::Unauthorized); // Or perhaps a specific error
+        }
 
         env.events().publish(
-            (symbol_short!("EMERGENCY"), symbol_short!("REVOKE")),
+            (symbol_short!("EMERG"), symbol_short!("REVOK")),
             EmergencyAccessRevocationEvent {
-                user,
+                plan_id,
                 revoked_at: env.ledger().timestamp(),
             },
         );
-    }
 
-    /// Check if emergency access is active for the given user, considering the 7-day expiration.
-    pub fn get_emergency_access_status(env: Env, user: Address) -> bool {
-        Self::check_and_expire_emergency_access(&env, &user)
+        Ok(())
     }
 
     /// Internal helper to check and potentially expire emergency access based on the 7-day period.
-    fn check_and_expire_emergency_access(env: &Env, user: &Address) -> bool {
-        let is_active = env
+    fn check_and_expire_emergency_access(env: &Env, plan_id: u64) -> bool {
+        let key = DataKey::EmergencyAccess(plan_id);
+        if let Some(record) = env
             .storage()
             .persistent()
-            .get(&DataKey::EmergencyActive(user.clone()))
-            .unwrap_or(false);
+            .get::<_, EmergencyAccessRecord>(&key)
+        {
+            if env.ledger().timestamp() > record.activated_at + Self::EMERGENCY_EXPIRATION_PERIOD {
+                // Expired
+                env.storage().persistent().remove(&key);
 
-        if !is_active {
-            return false;
+                env.events().publish(
+                    (symbol_short!("EMERG"), symbol_short!("EXPIR")),
+                    EmergencyAccessExpirationEvent {
+                        plan_id,
+                        expired_at: env.ledger().timestamp(),
+                    },
+                );
+                return false;
+            }
+            return true;
         }
-
-        let last_activated = env
-            .storage()
-            .persistent()
-            .get(&DataKey::EmergencyLastActivated(user.clone()))
-            .unwrap_or(0);
-
-        if env.ledger().timestamp() > last_activated + Self::EMERGENCY_EXPIRATION_PERIOD {
-            // Expired
-            env.storage()
-                .persistent()
-                .set(&DataKey::EmergencyActive(user.clone()), &false);
-
-            env.events().publish(
-                (symbol_short!("EMERGENCY"), symbol_short!("EXPIRE")),
-                EmergencyAccessExpirationEvent {
-                    user: user.clone(),
-                    expired_at: env.ledger().timestamp(),
-                },
-            );
-            return false;
-        }
-
-        true
+        false
     }
 
     pub fn get_user_plans(env: Env, user: Address) -> Vec<InheritancePlan> {
@@ -1405,6 +1401,100 @@ impl InheritanceContract {
         Ok(())
     }
 
+    /// Activate emergency access for a trusted contact on a vault/plan.
+    /// Only the plan owner can activate emergency access.
+    ///
+    /// # Arguments
+    /// * `env` - The environment
+    /// * `owner` - The plan owner (must authorize this call)
+    /// * `plan_id` - The ID of the plan to activate emergency access for
+    /// * `trusted_contact` - The address of the trusted contact who will have emergency access
+    ///
+    /// # Returns
+    /// Ok(()) on success
+    ///
+    /// # Errors
+    /// - Unauthorized: If caller is not the plan owner
+    /// - PlanNotFound: If plan_id doesn't exist
+    /// - EmergencyAccessAlreadyActive: If emergency access is already activated for this plan
+    ///
+    /// # Effects
+    /// - Records the emergency access activation with timestamp
+    /// - Emits `EMERG/ACTIV` event with plan_id, trusted_contact, and activation timestamp
+    /// - Logs the activation for audit trail
+    pub fn activate_emergency_access(
+        env: Env,
+        owner: Address,
+        plan_id: u64,
+        trusted_contact: Address,
+    ) -> Result<(), InheritanceError> {
+        // Require owner authorization
+        owner.require_auth();
+
+        // Get the plan
+        let plan = Self::get_plan(&env, plan_id).ok_or(InheritanceError::PlanNotFound)?;
+
+        // Verify caller is the plan owner
+        if plan.owner != owner {
+            return Err(InheritanceError::Unauthorized);
+        }
+
+        // Check if emergency access is already activated
+        let key = DataKey::EmergencyAccess(plan_id);
+        if env.storage().persistent().has(&key) {
+            return Err(InheritanceError::EmergencyAccessAlreadyActive);
+        }
+
+        // Record the activation timestamp
+        let now = env.ledger().timestamp();
+
+        // Create emergency access record
+        let emergency_access = EmergencyAccessRecord {
+            plan_id,
+            trusted_contact: trusted_contact.clone(),
+            activated_at: now,
+        };
+
+        // Store the emergency access record
+        env.storage().persistent().set(&key, &emergency_access);
+
+        // Emit event
+        env.events().publish(
+            (symbol_short!("EMERG"), symbol_short!("ACTIV")),
+            EmergencyAccessActivatedEvent {
+                plan_id,
+                trusted_contact,
+                activated_at: now,
+            },
+        );
+
+        log!(
+            &env,
+            "Emergency access activated for plan {} at timestamp {}",
+            plan_id,
+            now
+        );
+
+        Ok(())
+    }
+
+    /// Query the emergency access record for a plan.
+    ///
+    /// # Arguments
+    /// * `env` - The environment
+    /// * `plan_id` - The ID of the plan
+    ///
+    /// # Returns
+    /// The EmergencyAccessRecord if emergency access is active, None otherwise
+    pub fn get_emergency_access(env: Env, plan_id: u64) -> Option<EmergencyAccessRecord> {
+        if Self::check_and_expire_emergency_access(&env, plan_id) {
+            let key = DataKey::EmergencyAccess(plan_id);
+            env.storage().persistent().get(&key)
+        } else {
+            None
+        }
+    }
+
     /// Retrieve a specific deactivated plan (User)
     ///
     /// # Arguments
@@ -1604,11 +1694,6 @@ impl InheritanceContract {
         Self::require_admin(&env, &admin)?;
 
         let mut plan = Self::get_plan(&env, plan_id).ok_or(InheritanceError::PlanNotFound)?;
-
-        // Check if plan owner has active emergency access
-        if !Self::check_and_expire_emergency_access(&env, &plan.owner) {
-            return Err(InheritanceError::Unauthorized);
-        }
 
         if !plan.is_active {
             return Err(InheritanceError::PlanNotActive);
