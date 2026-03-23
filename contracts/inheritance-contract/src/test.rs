@@ -3,7 +3,7 @@
 use super::*;
 use mock_token::MockToken;
 use mock_token::MockTokenClient;
-use soroban_sdk::{testutils::Address as _, token, vec, Address, Bytes, Env, String, Vec};
+use soroban_sdk::{testutils::Address as _, testutils::Events, token, vec, Address, Bytes, Env, String, Vec};
 
 /// Test helper for balance and mint (uses mock-token crate client).
 struct TestTokenHelper<'a> {
@@ -2561,4 +2561,61 @@ fn test_full_loan_recall_workflow() {
     assert_eq!(info.original_loaned, 200_000);
     assert_eq!(info.recalled_amount, 150_000);
     assert_eq!(info.settled_amount, 50_000);
+}
+
+#[test]
+fn test_emergency_access_events() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let (client, _, _admin, user) = setup_with_token_and_admin(&env);
+    let contract_id = client.address.clone();
+
+    // 1. Test Activation Event
+    client.activate_emergency_access(&user);
+    
+    let events = env.events().all();
+    let activation_event = events.get(events.len() - 1).unwrap();
+    
+    assert_eq!(activation_event.0, contract_id);
+    assert_eq!(
+        activation_event.1,
+        (symbol_short!("EMERGENCY"), symbol_short!("ACTIVATE")).into_val(&env)
+    );
+    
+    // 2. Test Revocation Event
+    client.deactivate_emergency_access(&user);
+    let events = env.events().all();
+    let revocation_event = events.get(events.len() - 1).unwrap();
+    assert_eq!(revocation_event.0, contract_id);
+    assert_eq!(
+        revocation_event.1,
+        (symbol_short!("EMERGENCY"), symbol_short!("REVOKE")).into_val(&env)
+    );
+}
+
+#[test]
+fn test_emergency_access_expiration() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let (client, _, _admin, user) = setup_with_token_and_admin(&env);
+    let contract_id = client.address.clone();
+
+    // Activate
+    client.activate_emergency_access(&user);
+    assert!(client.get_emergency_access_status(&user));
+
+    // Fast forward 604801 seconds (7 days + 1s)
+    env.ledger().set_timestamp(604801);
+
+    // Call any function that triggers the check (e.g. get_status)
+    assert!(!client.get_emergency_access_status(&user));
+
+    // Verify Expiration Event
+    let events = env.events().all();
+    let expiration_event = events.get(events.len() - 1).unwrap();
+    assert_eq!(expiration_event.0, contract_id);
+    assert_eq!(
+        expiration_event.1,
+        (symbol_short!("EMERGENCY"), symbol_short!("EXPIRE")).into_val(&env)
+    );
 }
