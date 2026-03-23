@@ -15,6 +15,10 @@ pub mod notif_type {
     pub const PLAN_DEACTIVATED: &str = "plan_deactivated";
     pub const TWO_FA_SENT: &str = "2fa_sent";
     pub const LIQUIDATION_WARNING: &str = "liquidation_warning";
+    pub const PLAN_PAUSED: &str = "plan_paused";
+    pub const PLAN_UNPAUSED: &str = "plan_unpaused";
+    pub const RISK_OVERRIDE_APPLIED: &str = "risk_override_applied";
+    pub const RISK_OVERRIDE_REMOVED: &str = "risk_override_removed";
 }
 
 // ─── Notification ────────────────────────────────────────────────────────────
@@ -154,6 +158,10 @@ pub mod audit_action {
     pub const PLAN_DEACTIVATED: &str = "plan_deactivated";
     pub const TWO_FA_SENT: &str = "2fa_sent";
     pub const LIQUIDATION_WARNING: &str = "liquidation_warning";
+    pub const PLAN_PAUSED: &str = "plan_paused";
+    pub const PLAN_UNPAUSED: &str = "plan_unpaused";
+    pub const RISK_OVERRIDE_APPLIED: &str = "risk_override_applied";
+    pub const RISK_OVERRIDE_REMOVED: &str = "risk_override_removed";
 }
 
 /// Entity type constants — stored in `entity_type` column of `action_logs`.
