@@ -107,8 +107,8 @@ pub enum DataKey {
     Admin,
     Kyc(Address),
     Version,
-    InheritanceTrigger(u64),   // per-plan inheritance trigger info
-    EmergencyAccess(u64),      // per-plan emergency access record
+    InheritanceTrigger(u64), // per-plan inheritance trigger info
+    EmergencyAccess(u64),    // per-plan emergency access record
 }
 
 #[contracttype]
