@@ -7,6 +7,7 @@ pub trait OnChainYieldService: Send + Sync {
     async fn get_total_on_chain_yield_amount(&self, asset_code: &str) -> Result<Decimal, ApiError>;
 }
 
+#[derive(Default)]
 pub struct DefaultOnChainYieldService;
 
 impl DefaultOnChainYieldService {
