@@ -360,6 +360,20 @@ impl PlanService {
             None => return Err(ApiError::NotFound(format!("Plan {} not found", plan_id))),
         };
 
+        // Check if plan is paused
+        let is_paused: Option<bool> = sqlx::query_scalar(
+            "SELECT is_paused FROM plans WHERE id = $1"
+        )
+        .bind(plan_id)
+        .fetch_one(&mut *tx)
+        .await?;
+
+        if is_paused == Some(true) {
+            return Err(ApiError::BadRequest(
+                "This plan is currently paused by an administrator and cannot be claimed".to_string(),
+            ));
+        }
+
         // Check if plan is already claimed - this prevents concurrent claims
         if plan.status == "claimed" {
             return Err(ApiError::BadRequest(
@@ -1483,5 +1497,318 @@ mod tests {
             Some("12345678")
         )
         .is_err());
+    }
+}
+
+// ── Emergency Admin Controls ──────────────────────────────────────────────────
+
+#[derive(Debug, Deserialize)]
+pub struct PausePlanRequest {
+    pub plan_id: Uuid,
+    pub reason: String,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct UnpausePlanRequest {
+    pub plan_id: Uuid,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct RiskOverrideRequest {
+    pub plan_id: Uuid,
+    pub enabled: bool,
+    pub reason: String,
+}
+
+#[derive(Debug, Serialize)]
+pub struct EmergencyActionResponse {
+    pub success: bool,
+    pub plan_id: Uuid,
+    pub message: String,
+}
+
+pub struct EmergencyAdminService;
+
+impl EmergencyAdminService {
+    /// Pause a plan - prevents claims and other operations
+    pub async fn pause_plan(
+        pool: &PgPool,
+        admin_id: Uuid,
+        req: &PausePlanRequest,
+    ) -> Result<EmergencyActionResponse, ApiError> {
+        let mut tx = pool.begin().await?;
+
+        // Verify plan exists
+        let plan = PlanService::get_plan_by_id_any_user(&mut *tx, req.plan_id)
+            .await?
+            .ok_or_else(|| ApiError::NotFound(format!("Plan {} not found", req.plan_id)))?;
+
+        // Check if already paused
+        let is_paused: Option<bool> = sqlx::query_scalar(
+            "SELECT is_paused FROM plans WHERE id = $1"
+        )
+        .bind(req.plan_id)
+        .fetch_one(&mut *tx)
+        .await?;
+
+        if is_paused == Some(true) {
+            return Err(ApiError::BadRequest("Plan is already paused".to_string()));
+        }
+
+        // Update plan to paused state
+        sqlx::query(
+            r#"
+            UPDATE plans
+            SET is_paused = true,
+                paused_by = $1,
+                paused_at = NOW(),
+                pause_reason = $2,
+                updated_at = NOW()
+            WHERE id = $3
+            "#,
+        )
+        .bind(admin_id)
+        .bind(&req.reason)
+        .bind(req.plan_id)
+        .execute(&mut *tx)
+        .await?;
+
+        // Audit log
+        AuditLogService::log(
+            &mut *tx,
+            Some(admin_id),
+            audit_action::PLAN_PAUSED,
+            Some(req.plan_id),
+            Some(entity_type::PLAN),
+        )
+        .await?;
+
+        // Notify user
+        NotificationService::create(
+            &mut tx,
+            plan.user_id,
+            notif_type::PLAN_PAUSED,
+            format!("Your plan '{}' has been temporarily paused by an administrator. Reason: {}", plan.title, req.reason),
+        )
+        .await?;
+
+        tx.commit().await?;
+
+        Ok(EmergencyActionResponse {
+            success: true,
+            plan_id: req.plan_id,
+            message: "Plan paused successfully".to_string(),
+        })
+    }
+
+    /// Unpause a plan - restores normal operations
+    pub async fn unpause_plan(
+        pool: &PgPool,
+        admin_id: Uuid,
+        req: &UnpausePlanRequest,
+    ) -> Result<EmergencyActionResponse, ApiError> {
+        let mut tx = pool.begin().await?;
+
+        // Verify plan exists
+        let plan = PlanService::get_plan_by_id_any_user(&mut *tx, req.plan_id)
+            .await?
+            .ok_or_else(|| ApiError::NotFound(format!("Plan {} not found", req.plan_id)))?;
+
+        // Check if actually paused
+        let is_paused: Option<bool> = sqlx::query_scalar(
+            "SELECT is_paused FROM plans WHERE id = $1"
+        )
+        .bind(req.plan_id)
+        .fetch_one(&mut *tx)
+        .await?;
+
+        if is_paused != Some(true) {
+            return Err(ApiError::BadRequest("Plan is not paused".to_string()));
+        }
+
+        // Update plan to unpaused state
+        sqlx::query(
+            r#"
+            UPDATE plans
+            SET is_paused = false,
+                paused_by = NULL,
+                paused_at = NULL,
+                pause_reason = NULL,
+                updated_at = NOW()
+            WHERE id = $1
+            "#,
+        )
+        .bind(req.plan_id)
+        .execute(&mut *tx)
+        .await?;
+
+        // Audit log
+        AuditLogService::log(
+            &mut *tx,
+            Some(admin_id),
+            audit_action::PLAN_UNPAUSED,
+            Some(req.plan_id),
+            Some(entity_type::PLAN),
+        )
+        .await?;
+
+        // Notify user
+        NotificationService::create(
+            &mut tx,
+            plan.user_id,
+            notif_type::PLAN_UNPAUSED,
+            format!("Your plan '{}' has been unpaused and is now active again", plan.title),
+        )
+        .await?;
+
+        tx.commit().await?;
+
+        Ok(EmergencyActionResponse {
+            success: true,
+            plan_id: req.plan_id,
+            message: "Plan unpaused successfully".to_string(),
+        })
+    }
+
+    /// Apply or remove risk override for a plan
+    pub async fn set_risk_override(
+        pool: &PgPool,
+        admin_id: Uuid,
+        req: &RiskOverrideRequest,
+    ) -> Result<EmergencyActionResponse, ApiError> {
+        let mut tx = pool.begin().await?;
+
+        // Verify plan exists
+        let plan = PlanService::get_plan_by_id_any_user(&mut *tx, req.plan_id)
+            .await?
+            .ok_or_else(|| ApiError::NotFound(format!("Plan {} not found", req.plan_id)))?;
+
+        let action_type = if req.enabled {
+            audit_action::RISK_OVERRIDE_APPLIED
+        } else {
+            audit_action::RISK_OVERRIDE_REMOVED
+        };
+
+        let notif_type = if req.enabled {
+            notif_type::RISK_OVERRIDE_APPLIED
+        } else {
+            notif_type::RISK_OVERRIDE_REMOVED
+        };
+
+        // Update risk override settings
+        if req.enabled {
+            sqlx::query(
+                r#"
+                UPDATE plans
+                SET risk_override_enabled = true,
+                    risk_override_by = $1,
+                    risk_override_at = NOW(),
+                    risk_override_reason = $2,
+                    updated_at = NOW()
+                WHERE id = $3
+                "#,
+            )
+            .bind(admin_id)
+            .bind(&req.reason)
+            .bind(req.plan_id)
+            .execute(&mut *tx)
+            .await?;
+        } else {
+            sqlx::query(
+                r#"
+                UPDATE plans
+                SET risk_override_enabled = false,
+                    risk_override_by = NULL,
+                    risk_override_at = NULL,
+                    risk_override_reason = NULL,
+                    updated_at = NOW()
+                WHERE id = $1
+                "#,
+            )
+            .bind(req.plan_id)
+            .execute(&mut *tx)
+            .await?;
+        }
+
+        // Audit log
+        AuditLogService::log(
+            &mut *tx,
+            Some(admin_id),
+            action_type,
+            Some(req.plan_id),
+            Some(entity_type::PLAN),
+        )
+        .await?;
+
+        // Notify user
+        let message = if req.enabled {
+            format!("Risk monitoring override has been applied to your plan '{}'. Reason: {}", plan.title, req.reason)
+        } else {
+            format!("Risk monitoring override has been removed from your plan '{}'", plan.title)
+        };
+
+        NotificationService::create(
+            &mut tx,
+            plan.user_id,
+            notif_type,
+            message,
+        )
+        .await?;
+
+        tx.commit().await?;
+
+        let action_msg = if req.enabled {
+            "Risk override applied successfully"
+        } else {
+            "Risk override removed successfully"
+        };
+
+        Ok(EmergencyActionResponse {
+            success: true,
+            plan_id: req.plan_id,
+            message: action_msg.to_string(),
+        })
+    }
+
+    /// Get all paused plans
+    pub async fn get_paused_plans(db: &PgPool) -> Result<Vec<PlanWithBeneficiary>, ApiError> {
+        let rows = sqlx::query_as::<_, PlanRowFull>(
+            r#"
+            SELECT id, user_id, title, description, fee, net_amount, status,
+                   contract_plan_id, distribution_method, is_active, contract_created_at,
+                   beneficiary_name, bank_account_number, bank_name, currency_preference,
+                   created_at, updated_at
+            FROM plans
+            WHERE is_paused = true
+            ORDER BY paused_at DESC
+            "#,
+        )
+        .fetch_all(db)
+        .await?;
+
+        rows.iter()
+            .map(plan_row_to_plan_with_beneficiary)
+            .collect()
+    }
+
+    /// Get all plans with risk override
+    pub async fn get_risk_override_plans(db: &PgPool) -> Result<Vec<PlanWithBeneficiary>, ApiError> {
+        let rows = sqlx::query_as::<_, PlanRowFull>(
+            r#"
+            SELECT id, user_id, title, description, fee, net_amount, status,
+                   contract_plan_id, distribution_method, is_active, contract_created_at,
+                   beneficiary_name, bank_account_number, bank_name, currency_preference,
+                   created_at, updated_at
+            FROM plans
+            WHERE risk_override_enabled = true
+            ORDER BY risk_override_at DESC
+            "#,
+        )
+        .fetch_all(db)
+        .await?;
+
+        rows.iter()
+            .map(plan_row_to_plan_with_beneficiary)
+            .collect()
     }
 }
