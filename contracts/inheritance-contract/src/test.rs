@@ -2887,5 +2887,8 @@ fn test_instant_revocation_by_owner() {
     // 5. Verify withdrawals also fail
     let withdraw_result = client.try_withdraw(&trusted_contact, &token_id, &plan_id, &100);
     assert!(withdraw_result.is_err());
-    assert_eq!(withdraw_result.err().unwrap(), Ok(InheritanceError::Unauthorized));
+    assert_eq!(
+        withdraw_result.err().unwrap(),
+        Ok(InheritanceError::Unauthorized)
+    );
 }
