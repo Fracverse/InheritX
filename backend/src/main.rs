@@ -35,6 +35,16 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     ));
     risk_engine.start();
 
+    // Initialize Interest Reconciliation Service
+    let yield_service = std::sync::Arc::new(inheritx_backend::DefaultOnChainYieldService::new());
+    let interest_reconciliation =
+        std::sync::Arc::new(inheritx_backend::InterestReconciliationService::new(
+            db_pool.clone(),
+            yield_service,
+            rust_decimal::Decimal::new(1, 2), // 0.01 discrepancy threshold
+        ));
+    interest_reconciliation.start();
+
     // Start server
     let addr = SocketAddr::from(([0, 0, 0, 0], config.port));
     info!("Starting INHERITX backend server on {}", addr);
