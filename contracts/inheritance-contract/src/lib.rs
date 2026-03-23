@@ -111,11 +111,11 @@ pub enum DataKey {
     Admin,
     Kyc(Address),
     Version,
-    InheritanceTrigger(u64),         // per-plan inheritance trigger info
-    EmergencyActive(Address),        // bool, keyed by Address
-    EmergencyLastActivated(Address), // u64, keyed by Address
-    EmergencyAccess(u64),            // per-plan emergency access record
-    Guardians(u64),                  // per-plan guardian configuration
+    InheritanceTrigger(u64),          // per-plan inheritance trigger info
+    EmergencyActive(Address),         // bool, keyed by Address
+    EmergencyLastActivated(Address),  // u64, keyed by Address
+    EmergencyAccess(u64),             // per-plan emergency access record
+    Guardians(u64),                   // per-plan guardian configuration
     EmergencyApprovals(u64, Address), // (plan_id, trusted_contact) -> Vec<Address>
 }
 
@@ -1472,8 +1472,13 @@ impl InheritanceContract {
         if threshold == 0 || guardians.len() < threshold {
             return Err(InheritanceError::InvalidGuardianThreshold);
         }
-        let config = GuardianConfig { guardians, threshold };
-        env.storage().persistent().set(&DataKey::Guardians(plan_id), &config);
+        let config = GuardianConfig {
+            guardians,
+            threshold,
+        };
+        env.storage()
+            .persistent()
+            .set(&DataKey::Guardians(plan_id), &config);
         Ok(())
     }
 
@@ -1485,18 +1490,18 @@ impl InheritanceContract {
     ) -> Result<(), InheritanceError> {
         guardian.require_auth();
         let _plan = Self::get_plan(&env, plan_id).ok_or(InheritanceError::PlanNotFound)?;
-        
+
         let key_access = DataKey::EmergencyAccess(plan_id);
         if env.storage().persistent().has(&key_access) {
             return Err(InheritanceError::EmergencyAccessAlreadyActive);
         }
-        
+
         let config: GuardianConfig = env
             .storage()
             .persistent()
             .get(&DataKey::Guardians(plan_id))
             .ok_or(InheritanceError::GuardianNotFound)?;
-            
+
         // Check if guardian is in the list
         let mut is_guardian = false;
         for g in config.guardians.iter() {
@@ -1508,14 +1513,14 @@ impl InheritanceContract {
         if !is_guardian {
             return Err(InheritanceError::Unauthorized);
         }
-        
+
         let key_approvals = DataKey::EmergencyApprovals(plan_id, trusted_contact.clone());
         let mut approvals: Vec<Address> = env
             .storage()
             .persistent()
             .get(&key_approvals)
             .unwrap_or(Vec::new(&env));
-            
+
         let mut already_approved = false;
         for a in approvals.iter() {
             if a == guardian {
@@ -1526,10 +1531,10 @@ impl InheritanceContract {
         if already_approved {
             return Err(InheritanceError::AlreadyApproved);
         }
-        
+
         approvals.push_back(guardian.clone());
         env.storage().persistent().set(&key_approvals, &approvals);
-        
+
         env.events().publish(
             (symbol_short!("EMERG"), symbol_short!("APPROVE")),
             EmergencyAccessApprovedEvent {
@@ -1539,7 +1544,7 @@ impl InheritanceContract {
                 approvals_count: approvals.len(),
             },
         );
-        
+
         if approvals.len() >= config.threshold {
             let now = env.ledger().timestamp();
             let emergency_access = EmergencyAccessRecord {
@@ -1547,8 +1552,10 @@ impl InheritanceContract {
                 trusted_contact: trusted_contact.clone(),
                 activated_at: now,
             };
-            env.storage().persistent().set(&key_access, &emergency_access);
-            
+            env.storage()
+                .persistent()
+                .set(&key_access, &emergency_access);
+
             env.events().publish(
                 (symbol_short!("EMERG"), symbol_short!("ACTIV")),
                 EmergencyAccessActivatedEvent {
@@ -1557,9 +1564,14 @@ impl InheritanceContract {
                     activated_at: now,
                 },
             );
-            log!(&env, "Emergency access activated for plan {} at timestamp {}", plan_id, now);
+            log!(
+                &env,
+                "Emergency access activated for plan {} at timestamp {}",
+                plan_id,
+                now
+            );
         }
-        
+
         Ok(())
     }
 
