@@ -15,7 +15,8 @@ use crate::api_error::ApiError;
 use crate::auth::{AuthenticatedAdmin, AuthenticatedUser};
 use crate::config::Config;
 use crate::service::{
-    ClaimPlanRequest, CreatePlanRequest, KycRecord, KycService, KycStatus, PlanService,
+    ClaimPlanRequest, CreatePlanRequest, KycRecord, KycService, KycStatus, LoanSimulationRequest,
+    LoanSimulationService, PlanService,
 };
 
 pub struct AppState {
@@ -57,6 +58,10 @@ pub async fn create_app(db: PgPool, config: Config) -> Result<Router, ApiError> 
         .route("/api/plans/:plan_id/claim", post(claim_plan))
         .route("/api/plans/:plan_id", get(get_plan))
         .route("/api/plans", post(create_plan))
+        // Loan Simulation endpoints
+        .route("/api/loans/simulate", post(simulate_loan))
+        .route("/api/loans/simulations", get(get_user_simulations))
+        .route("/api/loans/simulations/:simulation_id", get(get_simulation))
         .route(
             "/api/admin/plans/due-for-claim",
             get(get_all_due_for_claim_plans_admin),
@@ -210,4 +215,57 @@ async fn reject_kyc(
     )
     .await?;
     Ok(Json(status))
+}
+
+// =============================================================================
+// Loan Simulation Endpoints
+// =============================================================================
+
+/// Preview loan simulation without saving
+async fn simulate_loan(
+    State(state): State<Arc<AppState>>,
+    AuthenticatedUser(user): AuthenticatedUser,
+    Json(req): Json<LoanSimulationRequest>,
+) -> Result<Json<Value>, ApiError> {
+    let result = LoanSimulationService::create_simulation(&state.db, user.user_id, &req).await?;
+    Ok(Json(json!({
+        "status": "success",
+        "data": result
+    })))
+}
+
+/// Get all loan simulations for the current user
+async fn get_user_simulations(
+    State(state): State<Arc<AppState>>,
+    AuthenticatedUser(user): AuthenticatedUser,
+) -> Result<Json<Value>, ApiError> {
+    let limit = 50; // Default limit
+    let simulations =
+        LoanSimulationService::get_user_simulations(&state.db, user.user_id, limit).await?;
+    Ok(Json(json!({
+        "status": "success",
+        "data": simulations,
+        "count": simulations.len()
+    })))
+}
+
+/// Get a specific loan simulation by ID
+async fn get_simulation(
+    State(state): State<Arc<AppState>>,
+    Path(simulation_id): Path<Uuid>,
+    AuthenticatedUser(user): AuthenticatedUser,
+) -> Result<Json<Value>, ApiError> {
+    let simulation =
+        LoanSimulationService::get_simulation_by_id(&state.db, simulation_id, user.user_id)
+            .await?;
+    match simulation {
+        Some(sim) => Ok(Json(json!({
+            "status": "success",
+            "data": sim
+        }))),
+        None => Err(ApiError::NotFound(format!(
+            "Simulation {} not found",
+            simulation_id
+        ))),
+    }
 }
