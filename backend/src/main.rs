@@ -45,13 +45,6 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         ));
     interest_reconciliation.start();
 
-    // Initialize Liquidation Bot Service
-    let liquidation_bot = std::sync::Arc::new(inheritx_backend::LiquidationBotService::new(
-        db_pool.clone(),
-        rust_decimal::Decimal::new(5, 2), // 0.05 (5%) liquidation penalty rate
-    ));
-    liquidation_bot.start();
-
     // Start server
     let addr = SocketAddr::from(([0, 0, 0, 0], config.port));
     info!("Starting INHERITX backend server on {}", addr);
