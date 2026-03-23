@@ -2588,7 +2588,9 @@ fn test_emergency_access_events() {
     let plan_id = 1u64;
 
     // 1. Test Activation Event
-    client.activate_emergency_access(&user, &plan_id, &trusted_contact);
+    let guardians: soroban_sdk::Vec<soroban_sdk::Address> = soroban_sdk::vec![&env, user.clone()];
+    client.set_guardians(&user, &plan_id, &guardians, &1);
+    client.approve_emergency_access(&user, &plan_id, &trusted_contact);
 
     let events = env.events().all();
     let activation_event = events.get(events.len() - 1).unwrap();
@@ -2632,7 +2634,9 @@ fn test_emergency_access_expiration() {
     let plan_id = 1u64;
 
     // Activate
-    client.activate_emergency_access(&user, &plan_id, &trusted_contact);
+    let guardians: soroban_sdk::Vec<soroban_sdk::Address> = soroban_sdk::vec![&env, user.clone()];
+    client.set_guardians(&user, &plan_id, &guardians, &1);
+    client.approve_emergency_access(&user, &plan_id, &trusted_contact);
     assert!(client.get_emergency_access(&plan_id).is_some());
 
     // Fast forward 604801 seconds (7 days + 1s)
@@ -2677,7 +2681,9 @@ fn test_emergency_withdrawal_success() {
     assert_eq!(token_helper.balance(&user), 10_000_000 - 10000 - 5000);
 
     // Activate emergency access
-    client.activate_emergency_access(&user, &plan_id, &trusted_contact);
+    let guardians: soroban_sdk::Vec<soroban_sdk::Address> = soroban_sdk::vec![&env, user.clone()];
+    client.set_guardians(&user, &plan_id, &guardians, &1);
+    client.approve_emergency_access(&user, &plan_id, &trusted_contact);
 
     // Trusted contact withdraws
     client.withdraw(&trusted_contact, &token_id, &plan_id, &2000);
@@ -2712,7 +2718,9 @@ fn test_emergency_withdrawal_fails_after_expiration() {
     client.deposit(&user, &token_id, &plan_id, &5000);
 
     // Activate
-    client.activate_emergency_access(&user, &plan_id, &trusted_contact);
+    let guardians: soroban_sdk::Vec<soroban_sdk::Address> = soroban_sdk::vec![&env, user.clone()];
+    client.set_guardians(&user, &plan_id, &guardians, &1);
+    client.approve_emergency_access(&user, &plan_id, &trusted_contact);
 
     // Fast forward 7 days + 1s
     env.ledger().set_timestamp(604801);
@@ -2749,7 +2757,9 @@ fn test_emergency_deposit_success() {
     let plan_id = 1u64;
 
     // Activate
-    client.activate_emergency_access(&user, &plan_id, &trusted_contact);
+    let guardians: soroban_sdk::Vec<soroban_sdk::Address> = soroban_sdk::vec![&env, user.clone()];
+    client.set_guardians(&user, &plan_id, &guardians, &1);
+    client.approve_emergency_access(&user, &plan_id, &trusted_contact);
 
     // Trusted contact deposits
     client.deposit(&trusted_contact, &token_id, &plan_id, &500);
@@ -2782,7 +2792,9 @@ fn test_emergency_view_plan_success() {
     let plan_id = 1u64;
 
     // Activate emergency access
-    client.activate_emergency_access(&user, &plan_id, &trusted_contact);
+    let guardians: soroban_sdk::Vec<soroban_sdk::Address> = soroban_sdk::vec![&env, user.clone()];
+    client.set_guardians(&user, &plan_id, &guardians, &1);
+    client.approve_emergency_access(&user, &plan_id, &trusted_contact);
 
     // Trusted contact can view plan
     let plan = client.get_user_plan(&trusted_contact, &plan_id);
@@ -2810,7 +2822,9 @@ fn test_emergency_trigger_inheritance_success() {
     let plan_id = 1u64;
 
     // Activate emergency access
-    client.activate_emergency_access(&user, &plan_id, &trusted_contact);
+    let guardians: soroban_sdk::Vec<soroban_sdk::Address> = soroban_sdk::vec![&env, user.clone()];
+    client.set_guardians(&user, &plan_id, &guardians, &1);
+    client.approve_emergency_access(&user, &plan_id, &trusted_contact);
 
     // Trusted contact can trigger inheritance
     client.trigger_inheritance(&trusted_contact, &plan_id);
@@ -2868,7 +2882,9 @@ fn test_instant_revocation_by_owner() {
     let plan_id = 1u64;
 
     // 1. Activate emergency access
-    client.activate_emergency_access(&user, &plan_id, &trusted_contact);
+    let guardians: soroban_sdk::Vec<soroban_sdk::Address> = soroban_sdk::vec![&env, user.clone()];
+    client.set_guardians(&user, &plan_id, &guardians, &1);
+    client.approve_emergency_access(&user, &plan_id, &trusted_contact);
 
     // 2. Verify it's active
     assert!(client.get_emergency_access(&plan_id).is_some());
@@ -2891,4 +2907,99 @@ fn test_instant_revocation_by_owner() {
         withdraw_result.err().unwrap(),
         Ok(InheritanceError::Unauthorized)
     );
+}
+
+#[test]
+fn test_multi_guardian_approval_success() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let (client, token_id, _admin, user) = setup_with_token_and_admin(&env);
+    let guardian_1 = create_test_address(&env, 101);
+    let guardian_2 = create_test_address(&env, 102);
+    let trusted_contact = create_test_address(&env, 99);
+
+    let params = plan_params(
+        &env,
+        &user,
+        &token_id,
+        "Plan",
+        "Desc",
+        10000,
+        DistributionMethod::LumpSum,
+        &default_beneficiaries(&env),
+    );
+    client.create_inheritance_plan(&params);
+    let plan_id = 1u64;
+
+    let guardians = soroban_sdk::vec![&env, guardian_1.clone(), guardian_2.clone()];
+    client.set_guardians(&user, &plan_id, &guardians, &2);
+
+    // First guardian approves
+    client.approve_emergency_access(&guardian_1, &plan_id, &trusted_contact);
+    assert!(client.get_emergency_access(&plan_id).is_none());
+
+    // Second guardian approves
+    client.approve_emergency_access(&guardian_2, &plan_id, &trusted_contact);
+    assert!(client.get_emergency_access(&plan_id).is_some());
+}
+
+#[test]
+fn test_invalid_guardian_rejection() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let (client, token_id, _admin, user) = setup_with_token_and_admin(&env);
+    let guardian = create_test_address(&env, 101);
+    let random_user = create_test_address(&env, 102);
+    let trusted_contact = create_test_address(&env, 99);
+
+    let params = plan_params(
+        &env,
+        &user,
+        &token_id,
+        "Plan",
+        "Desc",
+        10000,
+        DistributionMethod::LumpSum,
+        &default_beneficiaries(&env),
+    );
+    client.create_inheritance_plan(&params);
+    let plan_id = 1u64;
+
+    let guardians = soroban_sdk::vec![&env, guardian.clone()];
+    client.set_guardians(&user, &plan_id, &guardians, &1);
+
+    let res = client.try_approve_emergency_access(&random_user, &plan_id, &trusted_contact);
+    assert!(res.is_err());
+    assert_eq!(res.err().unwrap(), Ok(InheritanceError::Unauthorized));
+}
+
+#[test]
+fn test_double_approval_rejection() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let (client, token_id, _admin, user) = setup_with_token_and_admin(&env);
+    let guardian_1 = create_test_address(&env, 101);
+    let guardian_2 = create_test_address(&env, 102);
+    let trusted_contact = create_test_address(&env, 99);
+
+    let params = plan_params(
+        &env,
+        &user,
+        &token_id,
+        "Plan",
+        "Desc",
+        10000,
+        DistributionMethod::LumpSum,
+        &default_beneficiaries(&env),
+    );
+    client.create_inheritance_plan(&params);
+    let plan_id = 1u64;
+
+    let guardians = soroban_sdk::vec![&env, guardian_1.clone(), guardian_2.clone()];
+    client.set_guardians(&user, &plan_id, &guardians, &2);
+
+    client.approve_emergency_access(&guardian_1, &plan_id, &trusted_contact);
+    let res = client.try_approve_emergency_access(&guardian_1, &plan_id, &trusted_contact);
+    assert!(res.is_err());
+    assert_eq!(res.err().unwrap(), Ok(InheritanceError::AlreadyApproved));
 }

@@ -93,6 +93,9 @@ pub enum InheritanceError {
     NoOutstandingLoans = 35,
     EmergencyAccessAlreadyActive = 36,
     EmergencyCooldownActive = 37,
+    InvalidGuardianThreshold = 38,
+    GuardianNotFound = 39,
+    AlreadyApproved = 40,
 }
 
 #[contracttype]
@@ -112,6 +115,15 @@ pub enum DataKey {
     EmergencyActive(Address),        // bool, keyed by Address
     EmergencyLastActivated(Address), // u64, keyed by Address
     EmergencyAccess(u64),            // per-plan emergency access record
+    Guardians(u64),                  // per-plan guardian configuration
+    EmergencyApprovals(u64, Address), // (plan_id, trusted_contact) -> Vec<Address>
+}
+
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct GuardianConfig {
+    pub guardians: Vec<Address>,
+    pub threshold: u32,
 }
 
 #[contracttype]
@@ -267,6 +279,15 @@ pub struct EmergencyAccessActivationEvent {
 pub struct EmergencyAccessRevocationEvent {
     pub plan_id: u64,
     pub revoked_at: u64,
+}
+
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct EmergencyAccessApprovedEvent {
+    pub plan_id: u64,
+    pub trusted_contact: Address,
+    pub guardian: Address,
+    pub approvals_count: u32,
 }
 
 #[contracttype]
@@ -1436,79 +1457,109 @@ impl InheritanceContract {
     }
 
     /// Activate emergency access for a trusted contact on a vault/plan.
-    /// Only the plan owner can activate emergency access.
-    ///
-    /// # Arguments
-    /// * `env` - The environment
-    /// * `owner` - The plan owner (must authorize this call)
-    /// * `plan_id` - The ID of the plan to activate emergency access for
-    /// * `trusted_contact` - The address of the trusted contact who will have emergency access
-    ///
-    /// # Returns
-    /// Ok(()) on success
-    ///
-    /// # Errors
-    /// - Unauthorized: If caller is not the plan owner
-    /// - PlanNotFound: If plan_id doesn't exist
-    /// - EmergencyAccessAlreadyActive: If emergency access is already activated for this plan
-    ///
-    /// # Effects
-    /// - Records the emergency access activation with timestamp
-    /// - Emits `EMERG/ACTIV` event with plan_id, trusted_contact, and activation timestamp
-    /// - Logs the activation for audit trail
-    pub fn activate_emergency_access(
+    pub fn set_guardians(
         env: Env,
         owner: Address,
         plan_id: u64,
-        trusted_contact: Address,
+        guardians: Vec<Address>,
+        threshold: u32,
     ) -> Result<(), InheritanceError> {
-        // Require owner authorization
         owner.require_auth();
-
-        // Get the plan
         let plan = Self::get_plan(&env, plan_id).ok_or(InheritanceError::PlanNotFound)?;
-
-        // Verify caller is the plan owner
         if plan.owner != owner {
             return Err(InheritanceError::Unauthorized);
         }
+        if threshold == 0 || guardians.len() < threshold {
+            return Err(InheritanceError::InvalidGuardianThreshold);
+        }
+        let config = GuardianConfig { guardians, threshold };
+        env.storage().persistent().set(&DataKey::Guardians(plan_id), &config);
+        Ok(())
+    }
 
-        // Check if emergency access is already activated
-        let key = DataKey::EmergencyAccess(plan_id);
-        if env.storage().persistent().has(&key) {
+    pub fn approve_emergency_access(
+        env: Env,
+        guardian: Address,
+        plan_id: u64,
+        trusted_contact: Address,
+    ) -> Result<(), InheritanceError> {
+        guardian.require_auth();
+        let _plan = Self::get_plan(&env, plan_id).ok_or(InheritanceError::PlanNotFound)?;
+        
+        let key_access = DataKey::EmergencyAccess(plan_id);
+        if env.storage().persistent().has(&key_access) {
             return Err(InheritanceError::EmergencyAccessAlreadyActive);
         }
-
-        // Record the activation timestamp
-        let now = env.ledger().timestamp();
-
-        // Create emergency access record
-        let emergency_access = EmergencyAccessRecord {
-            plan_id,
-            trusted_contact: trusted_contact.clone(),
-            activated_at: now,
-        };
-
-        // Store the emergency access record
-        env.storage().persistent().set(&key, &emergency_access);
-
-        // Emit event
+        
+        let config: GuardianConfig = env
+            .storage()
+            .persistent()
+            .get(&DataKey::Guardians(plan_id))
+            .ok_or(InheritanceError::GuardianNotFound)?;
+            
+        // Check if guardian is in the list
+        let mut is_guardian = false;
+        for g in config.guardians.iter() {
+            if g == guardian {
+                is_guardian = true;
+                break;
+            }
+        }
+        if !is_guardian {
+            return Err(InheritanceError::Unauthorized);
+        }
+        
+        let key_approvals = DataKey::EmergencyApprovals(plan_id, trusted_contact.clone());
+        let mut approvals: Vec<Address> = env
+            .storage()
+            .persistent()
+            .get(&key_approvals)
+            .unwrap_or(Vec::new(&env));
+            
+        let mut already_approved = false;
+        for a in approvals.iter() {
+            if a == guardian {
+                already_approved = true;
+                break;
+            }
+        }
+        if already_approved {
+            return Err(InheritanceError::AlreadyApproved);
+        }
+        
+        approvals.push_back(guardian.clone());
+        env.storage().persistent().set(&key_approvals, &approvals);
+        
         env.events().publish(
-            (symbol_short!("EMERG"), symbol_short!("ACTIV")),
-            EmergencyAccessActivatedEvent {
+            (symbol_short!("EMERG"), symbol_short!("APPROVE")),
+            EmergencyAccessApprovedEvent {
                 plan_id,
-                trusted_contact,
-                activated_at: now,
+                trusted_contact: trusted_contact.clone(),
+                guardian,
+                approvals_count: approvals.len(),
             },
         );
-
-        log!(
-            &env,
-            "Emergency access activated for plan {} at timestamp {}",
-            plan_id,
-            now
-        );
-
+        
+        if approvals.len() >= config.threshold {
+            let now = env.ledger().timestamp();
+            let emergency_access = EmergencyAccessRecord {
+                plan_id,
+                trusted_contact: trusted_contact.clone(),
+                activated_at: now,
+            };
+            env.storage().persistent().set(&key_access, &emergency_access);
+            
+            env.events().publish(
+                (symbol_short!("EMERG"), symbol_short!("ACTIV")),
+                EmergencyAccessActivatedEvent {
+                    plan_id,
+                    trusted_contact,
+                    activated_at: now,
+                },
+            );
+            log!(&env, "Emergency access activated for plan {} at timestamp {}", plan_id, now);
+        }
+        
         Ok(())
     }
 
