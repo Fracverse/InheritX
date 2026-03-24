@@ -3003,3 +3003,266 @@ fn test_double_approval_rejection() {
     assert!(res.is_err());
     assert_eq!(res.err().unwrap(), Ok(InheritanceError::AlreadyApproved));
 }
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Emergency Contact Registration Tests
+// ─────────────────────────────────────────────────────────────────────────────
+
+#[test]
+fn test_add_emergency_contact_success() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let (client, token_id, _admin, user) = setup_with_token_and_admin(&env);
+    let contact = create_test_address(&env, 50);
+
+    let params = plan_params(
+        &env,
+        &user,
+        &token_id,
+        "Plan",
+        "Desc",
+        10000,
+        DistributionMethod::LumpSum,
+        &default_beneficiaries(&env),
+    );
+    client.create_inheritance_plan(&params);
+    let plan_id = 1u64;
+
+    client.add_emergency_contact(&user, &plan_id, &contact);
+
+    let contacts = client.get_emergency_contacts(&plan_id);
+    assert_eq!(contacts.len(), 1);
+    assert_eq!(contacts.get(0).unwrap(), contact);
+}
+
+#[test]
+fn test_add_multiple_emergency_contacts() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let (client, token_id, _admin, user) = setup_with_token_and_admin(&env);
+    let contact_1 = create_test_address(&env, 50);
+    let contact_2 = create_test_address(&env, 51);
+    let contact_3 = create_test_address(&env, 52);
+
+    let params = plan_params(
+        &env,
+        &user,
+        &token_id,
+        "Plan",
+        "Desc",
+        10000,
+        DistributionMethod::LumpSum,
+        &default_beneficiaries(&env),
+    );
+    client.create_inheritance_plan(&params);
+    let plan_id = 1u64;
+
+    client.add_emergency_contact(&user, &plan_id, &contact_1);
+    client.add_emergency_contact(&user, &plan_id, &contact_2);
+    client.add_emergency_contact(&user, &plan_id, &contact_3);
+
+    let contacts = client.get_emergency_contacts(&plan_id);
+    assert_eq!(contacts.len(), 3);
+}
+
+#[test]
+fn test_add_emergency_contact_duplicate_fails() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let (client, token_id, _admin, user) = setup_with_token_and_admin(&env);
+    let contact = create_test_address(&env, 50);
+
+    let params = plan_params(
+        &env,
+        &user,
+        &token_id,
+        "Plan",
+        "Desc",
+        10000,
+        DistributionMethod::LumpSum,
+        &default_beneficiaries(&env),
+    );
+    client.create_inheritance_plan(&params);
+    let plan_id = 1u64;
+
+    client.add_emergency_contact(&user, &plan_id, &contact);
+    let res = client.try_add_emergency_contact(&user, &plan_id, &contact);
+    assert!(res.is_err());
+    assert_eq!(
+        res.err().unwrap(),
+        Ok(InheritanceError::EmergencyContactAlreadyExists)
+    );
+}
+
+#[test]
+fn test_add_emergency_contact_unauthorized() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let (client, token_id, _admin, user) = setup_with_token_and_admin(&env);
+    let other_user = create_test_address(&env, 99);
+    let contact = create_test_address(&env, 50);
+
+    let params = plan_params(
+        &env,
+        &user,
+        &token_id,
+        "Plan",
+        "Desc",
+        10000,
+        DistributionMethod::LumpSum,
+        &default_beneficiaries(&env),
+    );
+    client.create_inheritance_plan(&params);
+    let plan_id = 1u64;
+
+    let res = client.try_add_emergency_contact(&other_user, &plan_id, &contact);
+    assert!(res.is_err());
+    assert_eq!(res.err().unwrap(), Ok(InheritanceError::Unauthorized));
+}
+
+#[test]
+fn test_remove_emergency_contact_success() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let (client, token_id, _admin, user) = setup_with_token_and_admin(&env);
+    let contact = create_test_address(&env, 50);
+
+    let params = plan_params(
+        &env,
+        &user,
+        &token_id,
+        "Plan",
+        "Desc",
+        10000,
+        DistributionMethod::LumpSum,
+        &default_beneficiaries(&env),
+    );
+    client.create_inheritance_plan(&params);
+    let plan_id = 1u64;
+
+    client.add_emergency_contact(&user, &plan_id, &contact);
+    assert_eq!(client.get_emergency_contacts(&plan_id).len(), 1);
+
+    client.remove_emergency_contact(&user, &plan_id, &contact);
+    assert_eq!(client.get_emergency_contacts(&plan_id).len(), 0);
+}
+
+#[test]
+fn test_remove_emergency_contact_not_found() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let (client, token_id, _admin, user) = setup_with_token_and_admin(&env);
+    let contact = create_test_address(&env, 50);
+
+    let params = plan_params(
+        &env,
+        &user,
+        &token_id,
+        "Plan",
+        "Desc",
+        10000,
+        DistributionMethod::LumpSum,
+        &default_beneficiaries(&env),
+    );
+    client.create_inheritance_plan(&params);
+    let plan_id = 1u64;
+
+    let res = client.try_remove_emergency_contact(&user, &plan_id, &contact);
+    assert!(res.is_err());
+    assert_eq!(
+        res.err().unwrap(),
+        Ok(InheritanceError::EmergencyContactNotFound)
+    );
+}
+
+#[test]
+fn test_remove_emergency_contact_unauthorized() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let (client, token_id, _admin, user) = setup_with_token_and_admin(&env);
+    let other_user = create_test_address(&env, 99);
+    let contact = create_test_address(&env, 50);
+
+    let params = plan_params(
+        &env,
+        &user,
+        &token_id,
+        "Plan",
+        "Desc",
+        10000,
+        DistributionMethod::LumpSum,
+        &default_beneficiaries(&env),
+    );
+    client.create_inheritance_plan(&params);
+    let plan_id = 1u64;
+
+    client.add_emergency_contact(&user, &plan_id, &contact);
+
+    let res = client.try_remove_emergency_contact(&other_user, &plan_id, &contact);
+    assert!(res.is_err());
+    assert_eq!(res.err().unwrap(), Ok(InheritanceError::Unauthorized));
+}
+
+#[test]
+fn test_emergency_contact_events() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let (client, token_id, _admin, user) = setup_with_token_and_admin(&env);
+    let contact = create_test_address(&env, 50);
+
+    let params = plan_params(
+        &env,
+        &user,
+        &token_id,
+        "Plan",
+        "Desc",
+        10000,
+        DistributionMethod::LumpSum,
+        &default_beneficiaries(&env),
+    );
+    client.create_inheritance_plan(&params);
+    let plan_id = 1u64;
+
+    client.add_emergency_contact(&user, &plan_id, &contact);
+
+    let events = env.events().all();
+    let add_event = events.get(events.len() - 1).unwrap();
+    assert_eq!(add_event.0, client.address.clone());
+    assert_eq!(
+        add_event.1,
+        (symbol_short!("EMERG"), symbol_short!("CON_ADD")).into_val(&env)
+    );
+
+    client.remove_emergency_contact(&user, &plan_id, &contact);
+
+    let events = env.events().all();
+    let remove_event = events.get(events.len() - 1).unwrap();
+    assert_eq!(remove_event.0, client.address.clone());
+    assert_eq!(
+        remove_event.1,
+        (symbol_short!("EMERG"), symbol_short!("CON_REM")).into_val(&env)
+    );
+}
+
+#[test]
+fn test_get_emergency_contacts_empty() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let (client, token_id, _admin, user) = setup_with_token_and_admin(&env);
+
+    let params = plan_params(
+        &env,
+        &user,
+        &token_id,
+        "Plan",
+        "Desc",
+        10000,
+        DistributionMethod::LumpSum,
+        &default_beneficiaries(&env),
+    );
+    client.create_inheritance_plan(&params);
+    let plan_id = 1u64;
+
+    let contacts = client.get_emergency_contacts(&plan_id);
+    assert_eq!(contacts.len(), 0);
+}

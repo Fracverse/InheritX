@@ -96,6 +96,9 @@ pub enum InheritanceError {
     InvalidGuardianThreshold = 38,
     GuardianNotFound = 39,
     AlreadyApproved = 40,
+    EmergencyContactNotFound = 41,
+    EmergencyContactAlreadyExists = 42,
+    TooManyEmergencyContacts = 43,
 }
 
 #[contracttype]
@@ -117,6 +120,7 @@ pub enum DataKey {
     EmergencyAccess(u64),             // per-plan emergency access record
     Guardians(u64),                   // per-plan guardian configuration
     EmergencyApprovals(u64, Address), // (plan_id, trusted_contact) -> Vec<Address>
+    EmergencyContacts(u64),           // per-plan emergency contacts list
 }
 
 #[contracttype]
@@ -303,6 +307,20 @@ pub struct EmergencyAccessActivatedEvent {
     pub plan_id: u64,
     pub trusted_contact: Address,
     pub activated_at: u64,
+}
+
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct EmergencyContactAddedEvent {
+    pub plan_id: u64,
+    pub contact: Address,
+}
+
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct EmergencyContactRemovedEvent {
+    pub plan_id: u64,
+    pub contact: Address,
 }
 /// Parameters for creating an inheritance plan (groups args to satisfy Clippy).
 #[contracttype]
@@ -1480,6 +1498,120 @@ impl InheritanceContract {
             .persistent()
             .set(&DataKey::Guardians(plan_id), &config);
         Ok(())
+    }
+
+    /// Add an emergency contact to a vault/plan.
+    /// Emergency contacts can later request emergency access with guardian approval.
+    pub fn add_emergency_contact(
+        env: Env,
+        owner: Address,
+        plan_id: u64,
+        contact: Address,
+    ) -> Result<(), InheritanceError> {
+        owner.require_auth();
+
+        let plan = Self::get_plan(&env, plan_id).ok_or(InheritanceError::PlanNotFound)?;
+        if plan.owner != owner {
+            return Err(InheritanceError::Unauthorized);
+        }
+
+        let key = DataKey::EmergencyContacts(plan_id);
+        let mut contacts: Vec<Address> = env
+            .storage()
+            .persistent()
+            .get(&key)
+            .unwrap_or(Vec::new(&env));
+
+        // Check for duplicates
+        for c in contacts.iter() {
+            if c == contact {
+                return Err(InheritanceError::EmergencyContactAlreadyExists);
+            }
+        }
+
+        // Limit to 10 emergency contacts per plan
+        if contacts.len() >= 10 {
+            return Err(InheritanceError::TooManyEmergencyContacts);
+        }
+
+        contacts.push_back(contact.clone());
+        env.storage().persistent().set(&key, &contacts);
+
+        env.events().publish(
+            (symbol_short!("EMERG"), symbol_short!("CON_ADD")),
+            EmergencyContactAddedEvent {
+                plan_id,
+                contact: contact.clone(),
+            },
+        );
+
+        log!(&env, "Emergency contact added to plan {}", plan_id);
+
+        Ok(())
+    }
+
+    /// Remove an emergency contact from a vault/plan.
+    pub fn remove_emergency_contact(
+        env: Env,
+        owner: Address,
+        plan_id: u64,
+        contact: Address,
+    ) -> Result<(), InheritanceError> {
+        owner.require_auth();
+
+        let plan = Self::get_plan(&env, plan_id).ok_or(InheritanceError::PlanNotFound)?;
+        if plan.owner != owner {
+            return Err(InheritanceError::Unauthorized);
+        }
+
+        let key = DataKey::EmergencyContacts(plan_id);
+        let mut contacts: Vec<Address> = env
+            .storage()
+            .persistent()
+            .get(&key)
+            .unwrap_or(Vec::new(&env));
+
+        // Find and remove the contact
+        let mut found_index: Option<u32> = None;
+        for i in 0..contacts.len() {
+            if contacts.get(i).unwrap() == contact {
+                found_index = Some(i);
+                break;
+            }
+        }
+
+        let index = found_index.ok_or(InheritanceError::EmergencyContactNotFound)?;
+
+        // Swap-remove for efficiency
+        let last_index = contacts.len() - 1;
+        if index != last_index {
+            let last = contacts.get(last_index).unwrap();
+            contacts.set(index, last);
+        }
+        contacts.pop_back();
+
+        env.storage().persistent().set(&key, &contacts);
+
+        env.events().publish(
+            (symbol_short!("EMERG"), symbol_short!("CON_REM")),
+            EmergencyContactRemovedEvent {
+                plan_id,
+                contact: contact.clone(),
+            },
+        );
+
+        log!(&env, "Emergency contact removed from plan {}", plan_id);
+
+        Ok(())
+    }
+
+    /// Get all emergency contacts for a vault/plan.
+    pub fn get_emergency_contacts(env: Env, plan_id: u64) -> Vec<Address> {
+        let key = DataKey::EmergencyContacts(plan_id);
+        env.storage()
+            .persistent()
+            .get(&key)
+            .unwrap_or(Vec::new(&env))
     }
 
     pub fn approve_emergency_access(
