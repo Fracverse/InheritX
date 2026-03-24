@@ -66,6 +66,7 @@ async fn seed_plan(ctx: &helpers::TestContext, user_id: Uuid, asset_code: &str) 
     plan_id
 }
 
+#[allow(clippy::too_many_arguments)]
 async fn seed_interest_accrual(
     ctx: &helpers::TestContext,
     user_id: Uuid,
