@@ -6,7 +6,6 @@ use axum::{
 };
 use inheritx_backend::auth::UserClaims;
 use jsonwebtoken::{encode, EncodingKey, Header};
-use rust_decimal::Decimal;
 use serde_json::{json, Value};
 use std::str::FromStr;
 use tower::ServiceExt;
@@ -34,6 +33,7 @@ fn generate_admin_token(admin_id: Uuid) -> String {
     let claims = inheritx_backend::auth::AdminClaims {
         admin_id,
         email: "admin@inheritx.test".to_string(),
+        role: "admin".to_string(),
         exp,
     };
     encode(
