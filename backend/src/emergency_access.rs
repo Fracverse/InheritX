@@ -4,7 +4,7 @@ use crate::notifications::{
 };
 use chrono::{DateTime, Duration, Utc};
 use serde::{Deserialize, Serialize};
-use sqlx::{PgPool, Postgres, Transaction};
+use sqlx::PgPool;
 use uuid::Uuid;
 
 // ─── Types ───────────────────────────────────────────────────────────────────
@@ -264,7 +264,7 @@ impl EmergencyAccessService {
 
         let mut count = 0;
 
-        for (access_id, plan_id, expires_at) in expiring_access {
+        for (_access_id, plan_id, expires_at) in expiring_access {
             // Get plan user
             if let Ok(plan_user_id) = sqlx::query_scalar::<_, Uuid>(
                 "SELECT user_id FROM plans WHERE id = $1"
@@ -293,7 +293,7 @@ impl EmergencyAccessService {
 
                 // Audit log
                 if let Err(e) = AuditLogService::log(
-                    &mut tx,
+                    &mut *tx,
                     None,
                     audit_action::EMERGENCY_ACCESS_EXPIRED,
                     Some(plan_id),
