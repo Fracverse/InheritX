@@ -17,10 +17,11 @@ use crate::auth::{AuthenticatedAdmin, AuthenticatedUser};
 use crate::config::Config;
 use crate::loan_lifecycle::{CreateLoanRequest, LoanLifecycleService, LoanListFilters};
 use crate::service::{
-    ClaimPlanRequest, CreateEmergencyContactRequest, CreatePlanRequest, EmergencyAdminService,
-    EmergencyContactService, KycRecord, KycService, KycStatus, LoanSimulationRequest,
-    LoanSimulationService, PausePlanRequest, PlanService, RiskOverrideRequest, UnpausePlanRequest,
-    UpdateEmergencyContactRequest,
+    ClaimPlanRequest, CreateEmergencyAccessGrantRequest, CreateEmergencyContactRequest,
+    CreatePlanRequest, EmergencyAccessService, EmergencyAdminService, EmergencyContactService,
+    KycRecord, KycService, KycStatus, LoanSimulationRequest, LoanSimulationService,
+    PausePlanRequest, PlanService, RevokeEmergencyAccessGrantRequest, RiskOverrideRequest,
+    UnpausePlanRequest, UpdateEmergencyContactRequest,
 };
 use crate::yield_service::{DefaultOnChainYieldService, OnChainYieldService};
 
@@ -75,6 +76,18 @@ pub async fn create_app(db: PgPool, config: Config) -> Result<Router, ApiError> 
         .route(
             "/api/emergency/contacts/:contact_id",
             put(update_emergency_contact).delete(delete_emergency_contact),
+        )
+        .route(
+            "/api/emergency/access/grants",
+            post(create_emergency_access_grant),
+        )
+        .route(
+            "/api/emergency/access/grants/:grant_id/revoke",
+            post(revoke_emergency_access_grant),
+        )
+        .route(
+            "/api/emergency/access/audit-logs",
+            get(list_emergency_access_audit_logs),
         )
         // Loan Simulation endpoints
         .route("/api/loans/simulate", post(simulate_loan))
@@ -274,6 +287,36 @@ async fn delete_emergency_contact(
     let result =
         EmergencyContactService::delete_contact(&state.db, user.user_id, contact_id).await?;
     Ok(Json(json!({ "status": "success", "data": result })))
+}
+
+async fn create_emergency_access_grant(
+    State(state): State<Arc<AppState>>,
+    AuthenticatedUser(user): AuthenticatedUser,
+    Json(req): Json<CreateEmergencyAccessGrantRequest>,
+) -> Result<Json<Value>, ApiError> {
+    let result = EmergencyAccessService::grant_access(&state.db, user.user_id, &req).await?;
+    Ok(Json(json!({ "status": "success", "data": result })))
+}
+
+async fn revoke_emergency_access_grant(
+    State(state): State<Arc<AppState>>,
+    Path(grant_id): Path<Uuid>,
+    AuthenticatedUser(user): AuthenticatedUser,
+    Json(req): Json<RevokeEmergencyAccessGrantRequest>,
+) -> Result<Json<Value>, ApiError> {
+    let result =
+        EmergencyAccessService::revoke_access(&state.db, user.user_id, grant_id, &req).await?;
+    Ok(Json(json!({ "status": "success", "data": result })))
+}
+
+async fn list_emergency_access_audit_logs(
+    State(state): State<Arc<AppState>>,
+    AuthenticatedUser(user): AuthenticatedUser,
+) -> Result<Json<Value>, ApiError> {
+    let logs = EmergencyAccessService::list_audit_logs(&state.db, user.user_id).await?;
+    Ok(Json(
+        json!({ "status": "success", "data": logs, "count": logs.len() }),
+    ))
 }
 
 #[derive(serde::Deserialize)]

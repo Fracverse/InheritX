@@ -2474,6 +2474,49 @@ pub struct EmergencyContactDeleteResponse {
     pub message: String,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize, sqlx::FromRow)]
+pub struct EmergencyAccessGrant {
+    pub id: Uuid,
+    pub user_id: Uuid,
+    pub emergency_contact_id: Uuid,
+    pub permissions: Vec<String>,
+    pub expires_at: DateTime<Utc>,
+    pub is_active: bool,
+    pub revoked_at: Option<DateTime<Utc>>,
+    pub created_at: DateTime<Utc>,
+    pub updated_at: DateTime<Utc>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, sqlx::FromRow)]
+pub struct EmergencyAccessAuditLog {
+    pub id: Uuid,
+    pub grant_id: Uuid,
+    pub user_id: Uuid,
+    pub emergency_contact_id: Uuid,
+    pub action: String,
+    pub metadata: serde_json::Value,
+    pub created_at: DateTime<Utc>,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct CreateEmergencyAccessGrantRequest {
+    pub emergency_contact_id: Uuid,
+    pub permissions: Vec<String>,
+    pub expires_at: DateTime<Utc>,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct RevokeEmergencyAccessGrantRequest {
+    pub reason: Option<String>,
+}
+
+#[derive(Debug, Serialize)]
+pub struct EmergencyAccessActionResponse {
+    pub success: bool,
+    pub grant: EmergencyAccessGrant,
+    pub message: String,
+}
+
 #[derive(Debug, Serialize)]
 pub struct EmergencyActionResponse {
     pub success: bool,
@@ -2651,6 +2694,262 @@ impl EmergencyContactService {
                 contact_id
             ))),
         }
+    }
+}
+
+pub struct EmergencyAccessService;
+
+impl EmergencyAccessService {
+    fn normalize_permissions(permissions: &[String]) -> Vec<String> {
+        permissions
+            .iter()
+            .filter_map(|permission| {
+                let trimmed = permission.trim().to_lowercase();
+                if trimmed.is_empty() {
+                    None
+                } else {
+                    Some(trimmed)
+                }
+            })
+            .collect()
+    }
+
+    fn validate_grant_input(
+        permissions: &[String],
+        expires_at: DateTime<Utc>,
+    ) -> Result<(), ApiError> {
+        if permissions.is_empty() {
+            return Err(ApiError::BadRequest(
+                "permissions must contain at least one emergency access capability".to_string(),
+            ));
+        }
+
+        if expires_at <= Utc::now() {
+            return Err(ApiError::BadRequest(
+                "expires_at must be set to a future time".to_string(),
+            ));
+        }
+
+        Ok(())
+    }
+
+    async fn assert_contact_belongs_to_user(
+        executor: impl sqlx::PgExecutor<'_>,
+        user_id: Uuid,
+        contact_id: Uuid,
+    ) -> Result<(), ApiError> {
+        let exists = sqlx::query_scalar::<_, bool>(
+            r#"
+            SELECT EXISTS(
+                SELECT 1
+                FROM emergency_contacts
+                WHERE id = $1 AND user_id = $2
+            )
+            "#,
+        )
+        .bind(contact_id)
+        .bind(user_id)
+        .fetch_one(executor)
+        .await?;
+
+        if exists {
+            Ok(())
+        } else {
+            Err(ApiError::NotFound(format!(
+                "Emergency contact {} not found",
+                contact_id
+            )))
+        }
+    }
+
+    async fn log_action(
+        executor: impl sqlx::PgExecutor<'_>,
+        grant_id: Uuid,
+        user_id: Uuid,
+        contact_id: Uuid,
+        action: &str,
+        metadata: serde_json::Value,
+    ) -> Result<(), ApiError> {
+        sqlx::query(
+            r#"
+            INSERT INTO emergency_access_audit_logs (
+                grant_id, user_id, emergency_contact_id, action, metadata
+            )
+            VALUES ($1, $2, $3, $4, $5)
+            "#,
+        )
+        .bind(grant_id)
+        .bind(user_id)
+        .bind(contact_id)
+        .bind(action)
+        .bind(metadata)
+        .execute(executor)
+        .await?;
+
+        Ok(())
+    }
+
+    pub async fn grant_access(
+        pool: &PgPool,
+        user_id: Uuid,
+        req: &CreateEmergencyAccessGrantRequest,
+    ) -> Result<EmergencyAccessActionResponse, ApiError> {
+        let permissions = Self::normalize_permissions(&req.permissions);
+        Self::validate_grant_input(&permissions, req.expires_at)?;
+
+        let mut tx = pool.begin().await?;
+        Self::assert_contact_belongs_to_user(&mut *tx, user_id, req.emergency_contact_id).await?;
+
+        let grant = sqlx::query_as::<_, EmergencyAccessGrant>(
+            r#"
+            INSERT INTO emergency_access_grants (
+                user_id, emergency_contact_id, permissions, expires_at
+            )
+            VALUES ($1, $2, $3, $4)
+            RETURNING id, user_id, emergency_contact_id, permissions, expires_at, is_active,
+                      revoked_at, created_at, updated_at
+            "#,
+        )
+        .bind(user_id)
+        .bind(req.emergency_contact_id)
+        .bind(&permissions)
+        .bind(req.expires_at)
+        .fetch_one(&mut *tx)
+        .await?;
+
+        Self::log_action(
+            &mut *tx,
+            grant.id,
+            user_id,
+            grant.emergency_contact_id,
+            audit_action::EMERGENCY_ACCESS_GRANTED,
+            serde_json::json!({
+                "permissions": grant.permissions,
+                "expires_at": grant.expires_at
+            }),
+        )
+        .await?;
+
+        AuditLogService::log(
+            &mut *tx,
+            Some(user_id),
+            audit_action::EMERGENCY_ACCESS_GRANTED,
+            Some(grant.id),
+            Some(entity_type::USER),
+        )
+        .await?;
+
+        tx.commit().await?;
+
+        Ok(EmergencyAccessActionResponse {
+            success: true,
+            grant,
+            message: "Emergency access granted successfully".to_string(),
+        })
+    }
+
+    pub async fn revoke_access(
+        pool: &PgPool,
+        user_id: Uuid,
+        grant_id: Uuid,
+        req: &RevokeEmergencyAccessGrantRequest,
+    ) -> Result<EmergencyAccessActionResponse, ApiError> {
+        let reason = req.reason.as_ref().and_then(|value| {
+            let trimmed = value.trim();
+            if trimmed.is_empty() {
+                None
+            } else {
+                Some(trimmed.to_string())
+            }
+        });
+
+        let mut tx = pool.begin().await?;
+
+        let grant = sqlx::query_as::<_, EmergencyAccessGrant>(
+            r#"
+            SELECT id, user_id, emergency_contact_id, permissions, expires_at, is_active,
+                   revoked_at, created_at, updated_at
+            FROM emergency_access_grants
+            WHERE id = $1 AND user_id = $2
+            "#,
+        )
+        .bind(grant_id)
+        .bind(user_id)
+        .fetch_optional(&mut *tx)
+        .await?
+        .ok_or_else(|| {
+            ApiError::NotFound(format!("Emergency access grant {} not found", grant_id))
+        })?;
+
+        if !grant.is_active {
+            return Err(ApiError::BadRequest(
+                "Emergency access grant is already inactive".to_string(),
+            ));
+        }
+
+        let updated = sqlx::query_as::<_, EmergencyAccessGrant>(
+            r#"
+            UPDATE emergency_access_grants
+            SET is_active = false,
+                revoked_at = NOW(),
+                updated_at = NOW()
+            WHERE id = $1
+            RETURNING id, user_id, emergency_contact_id, permissions, expires_at, is_active,
+                      revoked_at, created_at, updated_at
+            "#,
+        )
+        .bind(grant_id)
+        .fetch_one(&mut *tx)
+        .await?;
+
+        Self::log_action(
+            &mut *tx,
+            updated.id,
+            user_id,
+            updated.emergency_contact_id,
+            audit_action::EMERGENCY_ACCESS_REVOKED,
+            serde_json::json!({
+                "reason": reason,
+                "revoked_at": updated.revoked_at
+            }),
+        )
+        .await?;
+
+        AuditLogService::log(
+            &mut *tx,
+            Some(user_id),
+            audit_action::EMERGENCY_ACCESS_REVOKED,
+            Some(updated.id),
+            Some(entity_type::USER),
+        )
+        .await?;
+
+        tx.commit().await?;
+
+        Ok(EmergencyAccessActionResponse {
+            success: true,
+            grant: updated,
+            message: "Emergency access revoked successfully".to_string(),
+        })
+    }
+
+    pub async fn list_audit_logs(
+        pool: &PgPool,
+        user_id: Uuid,
+    ) -> Result<Vec<EmergencyAccessAuditLog>, ApiError> {
+        let logs = sqlx::query_as::<_, EmergencyAccessAuditLog>(
+            r#"
+            SELECT id, grant_id, user_id, emergency_contact_id, action, metadata, created_at
+            FROM emergency_access_audit_logs
+            WHERE user_id = $1
+            ORDER BY created_at DESC
+            "#,
+        )
+        .bind(user_id)
+        .fetch_all(pool)
+        .await?;
+
+        Ok(logs)
     }
 }
 
