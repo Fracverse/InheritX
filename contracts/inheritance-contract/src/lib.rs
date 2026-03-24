@@ -7,6 +7,12 @@ use soroban_sdk::{
 /// Current contract version - bump this on each upgrade
 const CONTRACT_VERSION: u32 = 1;
 
+/// Emergency transfer limit in basis points (10% = 1000 bp)
+const EMERGENCY_TRANSFER_LIMIT_BP: u32 = 1000;
+
+/// Emergency cooldown period in seconds (24 hours)
+const EMERGENCY_COOLDOWN_PERIOD: u64 = 86400;
+
 #[contracttype]
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum DistributionMethod {
@@ -997,6 +1003,18 @@ impl InheritanceContract {
             return Err(InheritanceError::Unauthorized);
         }
 
+        // Emergency Guard: Limit withdrawal if emergency access was recently activated
+        if Self::is_emergency_active(&env, plan_id) {
+            let limit = (plan.total_amount as u128)
+                .checked_mul(EMERGENCY_TRANSFER_LIMIT_BP as u128)
+                .and_then(|v| v.checked_div(10000))
+                .unwrap_or(0) as u64;
+
+            if amount > limit {
+                return Err(InheritanceError::EmergencyCooldownActive);
+            }
+        }
+
         let available = plan.total_amount.saturating_sub(plan.total_loaned);
         if amount > available {
             return Err(InheritanceError::InsufficientLiquidity);
@@ -1106,6 +1124,18 @@ impl InheritanceContract {
             .checked_mul(beneficiary.allocation_bp as u128)
             .and_then(|v| v.checked_div(10000))
             .unwrap_or(0) as u64;
+
+        // Emergency Guard: Limit claim if emergency access was recently activated
+        if Self::is_emergency_active(&env, plan_id) {
+            let limit = (plan.total_amount as u128)
+                .checked_mul(EMERGENCY_TRANSFER_LIMIT_BP as u128)
+                .and_then(|v| v.checked_div(10000))
+                .unwrap_or(0) as u64;
+
+            if base_payout > limit {
+                return Err(InheritanceError::EmergencyCooldownActive);
+            }
+        }
 
         // If plan is lendable and funds are loaned, we might have yield or need to recall funds.
         // For MVP priority logic: if we don't have enough liquid funds (amount - total_loaned < base_payout)
@@ -1407,6 +1437,66 @@ impl InheritanceContract {
     pub fn get_emergency_access(env: Env, plan_id: u64) -> Option<EmergencyAccessRecord> {
         let key = DataKey::EmergencyAccess(plan_id);
         env.storage().persistent().get(&key)
+    }
+
+    /// Check if emergency access is active and within the cooldown period for a plan.
+    ///
+    /// # Arguments
+    /// * `env` - The environment
+    /// * `plan_id` - The ID of the plan
+    ///
+    /// # Returns
+    /// True if emergency access was activated within the last 24 hours
+    pub fn is_emergency_active(env: &Env, plan_id: u64) -> bool {
+        if let Some(record) = env
+            .storage()
+            .persistent()
+            .get::<DataKey, EmergencyAccessRecord>(&DataKey::EmergencyAccess(plan_id))
+        {
+            let now = env.ledger().timestamp();
+            let elapsed = now.saturating_sub(record.activated_at);
+            return elapsed < EMERGENCY_COOLDOWN_PERIOD;
+        }
+        false
+    }
+
+    /// Deactivate emergency access for a plan.
+    /// Only the plan owner can deactivate emergency access.
+    ///
+    /// # Arguments
+    /// * `env` - The environment
+    /// * `owner` - The plan owner (must authorize this call)
+    /// * `plan_id` - The ID of the plan to deactivate emergency access for
+    ///
+    /// # Returns
+    /// Ok(()) on success
+    ///
+    /// # Errors
+    /// - Unauthorized: If caller is not the plan owner
+    /// - PlanNotFound: If plan_id doesn't exist
+    pub fn deactivate_emergency_access(
+        env: Env,
+        owner: Address,
+        plan_id: u64,
+    ) -> Result<(), InheritanceError> {
+        // Require owner authorization
+        owner.require_auth();
+
+        // Get the plan
+        let plan = Self::get_plan(&env, plan_id).ok_or(InheritanceError::PlanNotFound)?;
+
+        // Verify caller is the plan owner
+        if plan.owner != owner {
+            return Err(InheritanceError::Unauthorized);
+        }
+
+        // Remove the emergency access record
+        let key = DataKey::EmergencyAccess(plan_id);
+        env.storage().persistent().remove(&key);
+
+        log!(&env, "Emergency access deactivated for plan {}", plan_id);
+
+        Ok(())
     }
 
     /// Retrieve a specific deactivated plan (User)
