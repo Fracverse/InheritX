@@ -96,7 +96,10 @@ pub async fn create_app(db: PgPool, config: Config) -> Result<Router, ApiError> 
         // Emergency Admin endpoints
         .route("/api/admin/emergency/pause", post(pause_plan))
         .route("/api/admin/emergency/unpause", post(unpause_plan))
-        .route("/api/admin/emergency/risk-override", post(set_risk_override))
+        .route(
+            "/api/admin/emergency/risk-override",
+            post(set_risk_override),
+        )
         .route("/api/admin/emergency/paused-plans", get(get_paused_plans))
         .route(
             "/api/admin/emergency/risk-override-plans",
@@ -463,7 +466,9 @@ async fn get_paused_plans(
     AuthenticatedAdmin(_admin): AuthenticatedAdmin,
 ) -> Result<Json<Value>, ApiError> {
     let plans = EmergencyAdminService::get_paused_plans(&state.db).await?;
-    Ok(Json(json!({ "status": "success", "data": plans, "count": plans.len() })))
+    Ok(Json(
+        json!({ "status": "success", "data": plans, "count": plans.len() }),
+    ))
 }
 
 async fn get_risk_override_plans(
@@ -471,6 +476,7 @@ async fn get_risk_override_plans(
     AuthenticatedAdmin(_admin): AuthenticatedAdmin,
 ) -> Result<Json<Value>, ApiError> {
     let plans = EmergencyAdminService::get_risk_override_plans(&state.db).await?;
-    Ok(Json(json!({ "status": "success", "data": plans, "count": plans.len() })))
+    Ok(Json(
+        json!({ "status": "success", "data": plans, "count": plans.len() }),
+    ))
 }
-

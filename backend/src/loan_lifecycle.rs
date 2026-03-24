@@ -364,11 +364,12 @@ impl LoanLifecycleService {
 
         // If plan_id is provided, check if the plan is paused
         if let Some(plan_id) = req.plan_id {
-            let is_paused: Option<bool> = sqlx::query_scalar("SELECT is_paused FROM plans WHERE id = $1")
-                .bind(plan_id)
-                .fetch_optional(&mut *tx)
-                .await?
-                .flatten();
+            let is_paused: Option<bool> =
+                sqlx::query_scalar("SELECT is_paused FROM plans WHERE id = $1")
+                    .bind(plan_id)
+                    .fetch_optional(&mut *tx)
+                    .await?
+                    .flatten();
 
             if is_paused == Some(true) {
                 return Err(ApiError::BadRequest(
