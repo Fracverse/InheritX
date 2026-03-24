@@ -1077,19 +1077,11 @@ impl InheritanceContract {
 
         let mut plan = Self::get_plan(&env, plan_id).ok_or(InheritanceError::PlanNotFound)?;
 
-        // Authorization check: owner or active emergency contact
-        let mut is_authorized = plan.owner == caller;
-        if !is_authorized {
-            if let Some(record) = Self::get_emergency_access(env.clone(), plan_id) {
-                if record.trusted_contact == caller {
-                    is_authorized = true;
-                }
-            }
-        }
-
-        if !is_authorized {
+        // Authorization check: owner only
+        if plan.owner != caller {
             return Err(InheritanceError::Unauthorized);
         }
+
         if !plan.is_active {
             return Err(InheritanceError::PlanNotActive);
         }
@@ -1138,17 +1130,8 @@ impl InheritanceContract {
         }
         let mut plan = Self::get_plan(&env, plan_id).ok_or(InheritanceError::PlanNotFound)?;
 
-        // Authorization check: owner or active emergency contact
-        let mut is_authorized = plan.owner == caller;
-        if !is_authorized {
-            if let Some(record) = Self::get_emergency_access(env.clone(), plan_id) {
-                if record.trusted_contact == caller {
-                    is_authorized = true;
-                }
-            }
-        }
-
-        if !is_authorized {
+        // Authorization check: owner only
+        if plan.owner != caller {
             return Err(InheritanceError::Unauthorized);
         }
 
