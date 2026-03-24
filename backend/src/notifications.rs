@@ -162,12 +162,19 @@ pub mod audit_action {
     pub const PLAN_UNPAUSED: &str = "plan_unpaused";
     pub const RISK_OVERRIDE_APPLIED: &str = "risk_override_applied";
     pub const RISK_OVERRIDE_REMOVED: &str = "risk_override_removed";
+    // Loan lifecycle
+    pub const LOAN_CREATED: &str = "loan_created";
+    pub const LOAN_REPAID: &str = "loan_repaid";
+    pub const LOAN_PARTIAL_REPAYMENT: &str = "loan_partial_repayment";
+    pub const LOAN_LIQUIDATED: &str = "loan_liquidated";
+    pub const LOAN_MARKED_OVERDUE: &str = "loan_marked_overdue";
 }
 
 /// Entity type constants — stored in `entity_type` column of `action_logs`.
 pub mod entity_type {
     pub const USER: &str = "user";
     pub const PLAN: &str = "plan";
+    pub const LOAN: &str = "loan";
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, sqlx::FromRow)]

@@ -14,9 +14,12 @@ use crate::api_error::ApiError;
 use crate::notifications::{
     audit_action, entity_type, notif_type, AuditLogService, NotificationService,
 };
+use crate::yield_service::OnChainYieldService;
 use chrono::{DateTime, Utc};
+use rust_decimal::Decimal;
 use serde::{Deserialize, Serialize};
-use sqlx::PgPool;
+use sqlx::{PgPool, Postgres, QueryBuilder};
+use std::collections::{BTreeMap, HashSet};
 use std::fmt;
 use std::str::FromStr;
 use uuid::Uuid;
@@ -1399,6 +1402,627 @@ impl LendingMonitoringService {
     }
 }
 
+// ── Yield Reporting ──────────────────────────────────────────────────────────
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct YieldReportFilters {
+    pub asset_code: Option<String>,
+    pub user_id: Option<Uuid>,
+    pub plan_id: Option<Uuid>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct YieldVaultSummary {
+    pub asset_code: String,
+    pub realized_yield: f64,
+    pub on_chain_yield: Option<f64>,
+    pub apy: f64,
+    pub total_principal_balance: f64,
+    pub accrual_event_count: i64,
+    pub last_accrual_at: Option<DateTime<Utc>>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct YieldSummaryResponse {
+    pub filters: YieldReportFilters,
+    pub total_realized_yield: f64,
+    pub total_on_chain_yield: Option<f64>,
+    pub average_apy: f64,
+    pub vaults: Vec<YieldVaultSummary>,
+    pub generated_at: DateTime<Utc>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct EarningsHistoryPoint {
+    pub period: String,
+    pub asset_code: String,
+    pub earnings: f64,
+    pub event_count: i64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct EarningsHistoryResponse {
+    pub filters: YieldReportFilters,
+    pub range: String,
+    pub total_earnings: f64,
+    pub history: Vec<EarningsHistoryPoint>,
+}
+
+#[derive(sqlx::FromRow)]
+struct YieldAccrualEventRow {
+    asset_code: String,
+    user_id: Uuid,
+    plan_id: Option<Uuid>,
+    amount: String,
+    metadata: serde_json::Value,
+    event_timestamp: DateTime<Utc>,
+}
+
+#[derive(sqlx::FromRow)]
+struct EarningsHistoryRow {
+    period: String,
+    asset_code: String,
+    earnings: f64,
+    event_count: i64,
+}
+
+#[derive(Default)]
+struct YieldVaultAccumulator {
+    total_realized_yield: Decimal,
+    total_principal_balance: Decimal,
+    weighted_rate_numerator: Decimal,
+    accrual_event_count: i64,
+    last_accrual_at: Option<DateTime<Utc>>,
+    seen_positions: HashSet<String>,
+}
+
+pub struct YieldReportingService;
+
+impl YieldReportingService {
+    pub async fn get_yield_summary(
+        db: &PgPool,
+        filters: YieldReportFilters,
+        yield_service: &dyn OnChainYieldService,
+    ) -> Result<YieldSummaryResponse, ApiError> {
+        let events = Self::get_interest_accrual_events(db, &filters).await?;
+        let is_asset_pool_scope = filters.user_id.is_none() && filters.plan_id.is_none();
+        let mut vaults: BTreeMap<String, YieldVaultAccumulator> = BTreeMap::new();
+
+        for event in events {
+            let amount = Self::parse_decimal(&event.amount, "accrual amount")?;
+            let asset_code = event.asset_code.to_uppercase();
+            let position_key = event
+                .plan_id
+                .map(|plan_id| format!("plan:{plan_id}"))
+                .unwrap_or_else(|| format!("user:{}", event.user_id));
+
+            let accumulator = vaults.entry(asset_code).or_default();
+            accumulator.total_realized_yield += amount;
+            accumulator.accrual_event_count += 1;
+            accumulator.last_accrual_at = match accumulator.last_accrual_at {
+                Some(last_seen) if last_seen >= event.event_timestamp => Some(last_seen),
+                _ => Some(event.event_timestamp),
+            };
+
+            if accumulator.seen_positions.insert(position_key) {
+                if let Some(principal_balance) =
+                    Self::decimal_from_metadata(&event.metadata, "principal_balance")
+                {
+                    if principal_balance > Decimal::ZERO {
+                        let normalized_rate = Self::normalize_rate(
+                            Self::decimal_from_metadata(&event.metadata, "interest_rate")
+                                .unwrap_or(Decimal::ZERO),
+                        );
+
+                        accumulator.total_principal_balance += principal_balance;
+                        accumulator.weighted_rate_numerator += normalized_rate * principal_balance;
+                    }
+                }
+            }
+        }
+
+        let mut total_realized_yield = 0.0;
+        let mut total_on_chain_yield = 0.0;
+        let mut any_on_chain_yield = false;
+        let mut aggregate_principal_balance = Decimal::ZERO;
+        let mut aggregate_weighted_rate_numerator = Decimal::ZERO;
+        let mut summaries = Vec::with_capacity(vaults.len());
+
+        for (asset_code, accumulator) in vaults {
+            let apy = if accumulator.total_principal_balance > Decimal::ZERO {
+                Self::annual_rate_to_apy(
+                    accumulator.weighted_rate_numerator / accumulator.total_principal_balance,
+                )
+            } else {
+                0.0
+            };
+
+            let realized_yield = Self::decimal_to_f64(accumulator.total_realized_yield)?;
+            total_realized_yield += realized_yield;
+            aggregate_principal_balance += accumulator.total_principal_balance;
+            aggregate_weighted_rate_numerator += accumulator.weighted_rate_numerator;
+
+            let on_chain_yield = if is_asset_pool_scope {
+                let yield_amount = yield_service
+                    .get_total_on_chain_yield_amount(&asset_code)
+                    .await?;
+                let value = Self::decimal_to_f64(yield_amount)?;
+                total_on_chain_yield += value;
+                any_on_chain_yield = true;
+                Some(value)
+            } else {
+                None
+            };
+
+            summaries.push(YieldVaultSummary {
+                asset_code,
+                realized_yield,
+                on_chain_yield,
+                apy,
+                total_principal_balance: Self::decimal_to_f64(accumulator.total_principal_balance)?,
+                accrual_event_count: accumulator.accrual_event_count,
+                last_accrual_at: accumulator.last_accrual_at,
+            });
+        }
+
+        let average_apy = if aggregate_principal_balance > Decimal::ZERO {
+            Self::annual_rate_to_apy(
+                aggregate_weighted_rate_numerator / aggregate_principal_balance,
+            )
+        } else {
+            0.0
+        };
+
+        Ok(YieldSummaryResponse {
+            filters,
+            total_realized_yield,
+            total_on_chain_yield: any_on_chain_yield.then_some(total_on_chain_yield),
+            average_apy,
+            vaults: summaries,
+            generated_at: Utc::now(),
+        })
+    }
+
+    pub async fn get_earnings_history(
+        db: &PgPool,
+        filters: YieldReportFilters,
+        range: &str,
+    ) -> Result<EarningsHistoryResponse, ApiError> {
+        let (interval, trunc) = match range {
+            "daily" => ("30 days", "day"),
+            "weekly" => ("12 weeks", "week"),
+            "monthly" => ("12 months", "month"),
+            _ => {
+                return Err(ApiError::BadRequest(
+                    "Invalid range. Use daily, weekly, or monthly.".to_string(),
+                ))
+            }
+        };
+
+        let mut query = QueryBuilder::<Postgres>::new("SELECT DATE_TRUNC('");
+        query.push(trunc);
+        query.push("', event_timestamp)::DATE::TEXT AS period,");
+        query.push(" asset_code, COALESCE(SUM(CAST(amount AS NUMERIC)), 0)::FLOAT8 AS earnings,");
+        query.push(" COUNT(*)::BIGINT AS event_count FROM lending_events WHERE event_type = '");
+        query.push("interest_accrual");
+        query.push("' AND event_timestamp >= NOW() - INTERVAL '");
+        query.push(interval);
+        query.push("'");
+
+        Self::push_yield_filters(&mut query, &filters);
+
+        query.push(" GROUP BY 1, 2 ORDER BY 1 ASC, 2 ASC");
+
+        let rows = query
+            .build_query_as::<EarningsHistoryRow>()
+            .fetch_all(db)
+            .await?;
+
+        let history: Vec<EarningsHistoryPoint> = rows
+            .into_iter()
+            .map(|row| EarningsHistoryPoint {
+                period: row.period,
+                asset_code: row.asset_code,
+                earnings: row.earnings,
+                event_count: row.event_count,
+            })
+            .collect();
+
+        let total_earnings = history.iter().map(|point| point.earnings).sum();
+
+        Ok(EarningsHistoryResponse {
+            filters,
+            range: range.to_string(),
+            total_earnings,
+            history,
+        })
+    }
+
+    async fn get_interest_accrual_events(
+        db: &PgPool,
+        filters: &YieldReportFilters,
+    ) -> Result<Vec<YieldAccrualEventRow>, ApiError> {
+        let mut query = QueryBuilder::<Postgres>::new(
+            "SELECT asset_code, user_id, plan_id, amount, metadata, event_timestamp FROM lending_events WHERE event_type = '",
+        );
+        query.push("interest_accrual");
+        query.push("'");
+        Self::push_yield_filters(&mut query, filters);
+        query.push(" ORDER BY asset_code ASC, event_timestamp DESC");
+
+        Ok(query
+            .build_query_as::<YieldAccrualEventRow>()
+            .fetch_all(db)
+            .await?)
+    }
+
+    fn push_yield_filters(query: &mut QueryBuilder<'_, Postgres>, filters: &YieldReportFilters) {
+        if let Some(asset_code) = &filters.asset_code {
+            query.push(" AND UPPER(asset_code) = ");
+            query.push_bind(asset_code.to_uppercase());
+        }
+
+        if let Some(user_id) = filters.user_id {
+            query.push(" AND user_id = ");
+            query.push_bind(user_id);
+        }
+
+        if let Some(plan_id) = filters.plan_id {
+            query.push(" AND plan_id = ");
+            query.push_bind(plan_id);
+        }
+    }
+
+    fn parse_decimal(value: &str, field_name: &str) -> Result<Decimal, ApiError> {
+        Decimal::from_str(value).map_err(|error| {
+            ApiError::Internal(anyhow::anyhow!(
+                "Failed to parse {field_name} from yield reporting query: {error}"
+            ))
+        })
+    }
+
+    fn decimal_from_metadata(metadata: &serde_json::Value, key: &str) -> Option<Decimal> {
+        let value = metadata.get(key)?;
+        match value {
+            serde_json::Value::String(raw) => Decimal::from_str(raw).ok(),
+            serde_json::Value::Number(number) => Decimal::from_str(&number.to_string()).ok(),
+            _ => None,
+        }
+    }
+
+    fn normalize_rate(rate: Decimal) -> Decimal {
+        if rate > Decimal::ONE {
+            rate / Decimal::new(100, 0)
+        } else {
+            rate
+        }
+    }
+
+    fn annual_rate_to_apy(rate: Decimal) -> f64 {
+        let normalized_rate = Self::normalize_rate(rate);
+        let rate_f64 = normalized_rate.to_string().parse::<f64>().unwrap_or(0.0);
+        ((1.0 + (rate_f64 / 365.0)).powf(365.0) - 1.0) * 100.0
+    }
+
+    fn decimal_to_f64(value: Decimal) -> Result<f64, ApiError> {
+        value.to_string().parse::<f64>().map_err(|error| {
+            ApiError::Internal(anyhow::anyhow!(
+                "Failed to convert decimal to f64 for yield reporting: {error}"
+            ))
+        })
+    }
+}
+
+// =============================================================================
+// Loan Simulation Types and Service
+// =============================================================================
+
+/// Collateral type for loan simulations
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "SCREAMING_SNAKE_CASE")]
+pub enum CollateralType {
+    Usdc,
+    Eth,
+    Btc,
+    StellarXlm,
+}
+
+impl CollateralType {
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            CollateralType::Usdc => "USDC",
+            CollateralType::Eth => "ETH",
+            CollateralType::Btc => "BTC",
+            CollateralType::StellarXlm => "STELLAR_XLM",
+        }
+    }
+
+    /// Get the Loan-to-Value ratio for this collateral type
+    /// Higher quality collateral = higher LTV
+    pub fn get_ltv_ratio(&self) -> rust_decimal::Decimal {
+        match self {
+            // Stablecoin - lowest risk
+            CollateralType::Usdc => rust_decimal::Decimal::new(90, 2), // 0.90
+            // Major crypto assets
+            CollateralType::Eth => rust_decimal::Decimal::new(75, 2), // 0.75
+            CollateralType::Btc => rust_decimal::Decimal::new(75, 2), // 0.75
+            // Smaller cap crypto
+            CollateralType::StellarXlm => rust_decimal::Decimal::new(60, 2), // 0.60
+        }
+    }
+
+    /// Get the annual interest rate for loans with this collateral
+    pub fn get_annual_interest_rate(&self) -> rust_decimal::Decimal {
+        match self {
+            // Stablecoin - lower risk = lower rate
+            CollateralType::Usdc => rust_decimal::Decimal::new(5, 2), // 5%
+            // Major crypto
+            CollateralType::Eth => rust_decimal::Decimal::new(8, 2), // 8%
+            CollateralType::Btc => rust_decimal::Decimal::new(8, 2), // 8%
+            // Higher volatility
+            CollateralType::StellarXlm => rust_decimal::Decimal::new(12, 2), // 12%
+        }
+    }
+
+    /// Get the liquidation threshold for this collateral type
+    /// When collateral value drops below this % of loan value, liquidation occurs
+    pub fn get_liquidation_threshold(&self) -> rust_decimal::Decimal {
+        match self {
+            CollateralType::Usdc => rust_decimal::Decimal::new(95, 2), // 0.95
+            CollateralType::Eth => rust_decimal::Decimal::new(85, 2),  // 0.85
+            CollateralType::Btc => rust_decimal::Decimal::new(85, 2),  // 0.85
+            CollateralType::StellarXlm => rust_decimal::Decimal::new(80, 2), // 0.80
+        }
+    }
+}
+
+impl FromStr for CollateralType {
+    type Err = ApiError;
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        match s.trim().to_uppercase().as_str() {
+            "USDC" => Ok(CollateralType::Usdc),
+            "ETH" => Ok(CollateralType::Eth),
+            "BTC" => Ok(CollateralType::Btc),
+            "STELLAR_XLM" | "XLM" => Ok(CollateralType::StellarXlm),
+            _ => Err(ApiError::BadRequest(
+                "collateral_type must be USDC, ETH, BTC, or STELLAR_XLM".to_string(),
+            )),
+        }
+    }
+}
+
+/// Request to simulate a loan
+#[derive(Debug, Deserialize)]
+pub struct LoanSimulationRequest {
+    /// Amount the user wants to borrow in USDC
+    pub loan_amount: rust_decimal::Decimal,
+    /// Duration of the loan in days
+    pub loan_duration_days: u32,
+    /// Type of collateral being used
+    pub collateral_type: String,
+    /// Current price of the collateral in USD
+    pub collateral_price_usd: rust_decimal::Decimal,
+}
+
+/// Response containing loan simulation results
+#[derive(Debug, Serialize, Deserialize)]
+pub struct LoanSimulationResult {
+    /// Input parameters
+    pub loan_amount: rust_decimal::Decimal,
+    pub loan_duration_days: u32,
+    pub collateral_type: String,
+    pub collateral_price_usd: rust_decimal::Decimal,
+
+    /// Calculation results
+    /// Minimum collateral value required (loan_amount / LTV)
+    pub required_collateral_usd: rust_decimal::Decimal,
+    /// Quantity of collateral needed
+    pub collateral_quantity: rust_decimal::Decimal,
+    /// Interest to be paid for this loan duration
+    pub estimated_interest: rust_decimal::Decimal,
+    /// Total amount to repay (principal + interest)
+    pub total_repayment: rust_decimal::Decimal,
+    /// Price at which collateral would be liquidated
+    pub liquidation_price: rust_decimal::Decimal,
+    /// Loan-to-Value ratio used
+    pub loan_to_value_ratio: rust_decimal::Decimal,
+    /// Annual interest rate used
+    pub annual_interest_rate: rust_decimal::Decimal,
+    /// Liquidation threshold percentage
+    pub liquidation_threshold: rust_decimal::Decimal,
+}
+
+/// Record of a simulation stored in the database
+#[derive(Debug, Clone, Serialize, Deserialize, sqlx::FromRow)]
+pub struct LoanSimulationRecord {
+    pub id: Uuid,
+    pub user_id: Uuid,
+    pub loan_amount: rust_decimal::Decimal,
+    pub loan_duration_days: i32,
+    pub collateral_type: String,
+    pub collateral_price_usd: rust_decimal::Decimal,
+    pub required_collateral: rust_decimal::Decimal,
+    pub collateral_quantity: rust_decimal::Decimal,
+    pub estimated_interest: rust_decimal::Decimal,
+    pub total_repayment: rust_decimal::Decimal,
+    pub liquidation_price: rust_decimal::Decimal,
+    pub loan_to_value_ratio: rust_decimal::Decimal,
+    pub interest_rate: rust_decimal::Decimal,
+    pub created_at: DateTime<Utc>,
+}
+
+pub struct LoanSimulationService;
+
+impl LoanSimulationService {
+    /// Calculate loan simulation results
+    pub fn calculate_simulation(
+        req: &LoanSimulationRequest,
+    ) -> Result<LoanSimulationResult, ApiError> {
+        // Validate inputs
+        if req.loan_amount <= rust_decimal::Decimal::ZERO {
+            return Err(ApiError::BadRequest(
+                "loan_amount must be greater than 0".to_string(),
+            ));
+        }
+        if req.loan_duration_days == 0 {
+            return Err(ApiError::BadRequest(
+                "loan_duration_days must be greater than 0".to_string(),
+            ));
+        }
+        if req.collateral_price_usd <= rust_decimal::Decimal::ZERO {
+            return Err(ApiError::BadRequest(
+                "collateral_price_usd must be greater than 0".to_string(),
+            ));
+        }
+
+        // Parse collateral type
+        let collateral_type = CollateralType::from_str(&req.collateral_type)?;
+
+        // Get parameters based on collateral type
+        let ltv_ratio = collateral_type.get_ltv_ratio();
+        let annual_interest_rate = collateral_type.get_annual_interest_rate();
+        let liquidation_threshold = collateral_type.get_liquidation_threshold();
+
+        // Calculate required collateral value
+        // required_collateral = loan_amount / LTV
+        let required_collateral_usd = req.loan_amount / ltv_ratio;
+
+        // Calculate collateral quantity
+        // collateral_quantity = required_collateral_usd / collateral_price_usd
+        let collateral_quantity = required_collateral_usd / req.collateral_price_usd;
+
+        // Calculate interest
+        // interest = loan_amount * annual_rate * (days / 365)
+        let days_fraction = rust_decimal::Decimal::new(req.loan_duration_days as i64, 0)
+            / rust_decimal::Decimal::new(365, 0);
+        let estimated_interest = req.loan_amount * annual_interest_rate * days_fraction;
+
+        // Calculate total repayment
+        let total_repayment = req.loan_amount + estimated_interest;
+
+        // Calculate liquidation price
+        // Liquidation occurs when: collateral_quantity * price < loan_amount / liquidation_threshold
+        // Solving for price: liquidation_price = (loan_amount / liquidation_threshold) / collateral_quantity
+        let liquidation_price = (req.loan_amount / liquidation_threshold) / collateral_quantity;
+
+        Ok(LoanSimulationResult {
+            loan_amount: req.loan_amount,
+            loan_duration_days: req.loan_duration_days,
+            collateral_type: req.collateral_type.clone(),
+            collateral_price_usd: req.collateral_price_usd,
+            required_collateral_usd,
+            collateral_quantity,
+            estimated_interest,
+            total_repayment,
+            liquidation_price,
+            loan_to_value_ratio: ltv_ratio,
+            annual_interest_rate,
+            liquidation_threshold,
+        })
+    }
+
+    /// Create and store a loan simulation
+    pub async fn create_simulation(
+        db: &PgPool,
+        user_id: Uuid,
+        req: &LoanSimulationRequest,
+    ) -> Result<LoanSimulationResult, ApiError> {
+        // Calculate simulation
+        let result = Self::calculate_simulation(req)?;
+
+        // Store in database
+        sqlx::query(
+            r#"
+            INSERT INTO loan_simulations (
+                user_id, loan_amount, loan_duration_days, collateral_type, collateral_price_usd,
+                required_collateral, collateral_quantity, estimated_interest, total_repayment,
+                liquidation_price, loan_to_value_ratio, interest_rate
+            )
+            VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)
+            "#,
+        )
+        .bind(user_id)
+        .bind(result.loan_amount)
+        .bind(result.loan_duration_days as i32)
+        .bind(&result.collateral_type)
+        .bind(result.collateral_price_usd)
+        .bind(result.required_collateral_usd)
+        .bind(result.collateral_quantity)
+        .bind(result.estimated_interest)
+        .bind(result.total_repayment)
+        .bind(result.liquidation_price)
+        .bind(result.loan_to_value_ratio)
+        .bind(result.annual_interest_rate)
+        .execute(db)
+        .await?;
+
+        Ok(result)
+    }
+
+    /// Get simulation without storing (preview only)
+    pub fn preview_simulation(
+        req: &LoanSimulationRequest,
+    ) -> Result<LoanSimulationResult, ApiError> {
+        Self::calculate_simulation(req)
+    }
+
+    /// Get all simulations for a user
+    pub async fn get_user_simulations(
+        db: &PgPool,
+        user_id: Uuid,
+        limit: i64,
+    ) -> Result<Vec<LoanSimulationRecord>, ApiError> {
+        let records = sqlx::query_as::<_, LoanSimulationRecord>(
+            r#"
+            SELECT id, user_id, loan_amount, loan_duration_days, collateral_type,
+                   collateral_price_usd, required_collateral, collateral_quantity,
+                   estimated_interest, total_repayment, liquidation_price,
+                   loan_to_value_ratio, interest_rate, created_at
+            FROM loan_simulations
+            WHERE user_id = $1
+            ORDER BY created_at DESC
+            LIMIT $2
+            "#,
+        )
+        .bind(user_id)
+        .bind(limit)
+        .fetch_all(db)
+        .await?;
+
+        Ok(records)
+    }
+
+    /// Get a specific simulation by ID
+    pub async fn get_simulation_by_id(
+        db: &PgPool,
+        simulation_id: Uuid,
+        user_id: Uuid,
+    ) -> Result<Option<LoanSimulationRecord>, ApiError> {
+        let record = sqlx::query_as::<_, LoanSimulationRecord>(
+            r#"
+            SELECT id, user_id, loan_amount, loan_duration_days, collateral_type,
+                   collateral_price_usd, required_collateral, collateral_quantity,
+                   estimated_interest, total_repayment, liquidation_price,
+                   loan_to_value_ratio, interest_rate, created_at
+            FROM loan_simulations
+            WHERE id = $1 AND user_id = $2
+            "#,
+        )
+        .bind(simulation_id)
+        .bind(user_id)
+        .fetch_optional(db)
+        .await?;
+
+        Ok(record)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::{CurrencyPreference, PlanService};
@@ -1497,6 +2121,295 @@ mod tests {
             Some("12345678")
         )
         .is_err());
+    }
+
+    // ========================================================================
+    // Loan Simulation Tests
+    // ========================================================================
+
+    use super::{CollateralType, LoanSimulationRequest, LoanSimulationService};
+    use rust_decimal_macros::dec;
+
+    #[test]
+    fn collateral_type_parsing_usdc() {
+        assert_eq!(
+            CollateralType::from_str("USDC").unwrap(),
+            CollateralType::Usdc
+        );
+        assert_eq!(
+            CollateralType::from_str("usdc").unwrap(),
+            CollateralType::Usdc
+        );
+    }
+
+    #[test]
+    fn collateral_type_parsing_eth() {
+        assert_eq!(
+            CollateralType::from_str("ETH").unwrap(),
+            CollateralType::Eth
+        );
+        assert_eq!(
+            CollateralType::from_str("eth").unwrap(),
+            CollateralType::Eth
+        );
+    }
+
+    #[test]
+    fn collateral_type_parsing_btc() {
+        assert_eq!(
+            CollateralType::from_str("BTC").unwrap(),
+            CollateralType::Btc
+        );
+        assert_eq!(
+            CollateralType::from_str("btc").unwrap(),
+            CollateralType::Btc
+        );
+    }
+
+    #[test]
+    fn collateral_type_parsing_xlm() {
+        assert_eq!(
+            CollateralType::from_str("STELLAR_XLM").unwrap(),
+            CollateralType::StellarXlm
+        );
+        assert_eq!(
+            CollateralType::from_str("XLM").unwrap(),
+            CollateralType::StellarXlm
+        );
+    }
+
+    #[test]
+    fn collateral_type_parsing_rejects_invalid() {
+        let err = CollateralType::from_str("INVALID").unwrap_err();
+        assert!(matches!(err, ApiError::BadRequest(_)));
+    }
+
+    #[test]
+    fn collateral_type_ltv_ratios() {
+        // USDC should have highest LTV (0.90)
+        assert_eq!(CollateralType::Usdc.get_ltv_ratio(), dec!(0.90));
+        // ETH and BTC should have same LTV (0.75)
+        assert_eq!(CollateralType::Eth.get_ltv_ratio(), dec!(0.75));
+        assert_eq!(CollateralType::Btc.get_ltv_ratio(), dec!(0.75));
+        // XLM should have lowest LTV (0.60)
+        assert_eq!(CollateralType::StellarXlm.get_ltv_ratio(), dec!(0.60));
+    }
+
+    #[test]
+    fn collateral_type_interest_rates() {
+        // USDC should have lowest rate (5%)
+        assert_eq!(CollateralType::Usdc.get_annual_interest_rate(), dec!(0.05));
+        // ETH and BTC should have same rate (8%)
+        assert_eq!(CollateralType::Eth.get_annual_interest_rate(), dec!(0.08));
+        assert_eq!(CollateralType::Btc.get_annual_interest_rate(), dec!(0.08));
+        // XLM should have highest rate (12%)
+        assert_eq!(
+            CollateralType::StellarXlm.get_annual_interest_rate(),
+            dec!(0.12)
+        );
+    }
+
+    #[test]
+    fn collateral_type_liquidation_thresholds() {
+        // USDC should have highest threshold (0.95)
+        assert_eq!(CollateralType::Usdc.get_liquidation_threshold(), dec!(0.95));
+        // ETH and BTC should have same threshold (0.85)
+        assert_eq!(CollateralType::Eth.get_liquidation_threshold(), dec!(0.85));
+        assert_eq!(CollateralType::Btc.get_liquidation_threshold(), dec!(0.85));
+        // XLM should have lowest threshold (0.80)
+        assert_eq!(
+            CollateralType::StellarXlm.get_liquidation_threshold(),
+            dec!(0.80)
+        );
+    }
+
+    #[test]
+    fn loan_simulation_calculation_usdc() {
+        let req = LoanSimulationRequest {
+            loan_amount: dec!(10000),
+            loan_duration_days: 30,
+            collateral_type: "USDC".to_string(),
+            collateral_price_usd: dec!(1),
+        };
+
+        let result = LoanSimulationService::calculate_simulation(&req).unwrap();
+
+        // Required collateral = 10000 / 0.90 = 11111.11...
+        assert!(result.required_collateral_usd > dec!(11111));
+        assert!(result.required_collateral_usd < dec!(11112));
+
+        // Collateral quantity should be roughly same as USD value for USDC (price = 1)
+        assert!(result.collateral_quantity > dec!(11111));
+
+        // Interest = 10000 * 0.05 * (30/365) = ~41.09
+        assert!(result.estimated_interest > dec!(41));
+        assert!(result.estimated_interest < dec!(42));
+
+        // Total repayment = 10000 + interest
+        assert!(result.total_repayment > dec!(10041));
+        assert!(result.total_repayment < dec!(10042));
+
+        // LTV should be 0.90
+        assert_eq!(result.loan_to_value_ratio, dec!(0.90));
+
+        // Annual interest rate should be 0.05
+        assert_eq!(result.annual_interest_rate, dec!(0.05));
+    }
+
+    #[test]
+    fn loan_simulation_calculation_eth() {
+        let eth_price = dec!(2000);
+        let req = LoanSimulationRequest {
+            loan_amount: dec!(10000),
+            loan_duration_days: 90,
+            collateral_type: "ETH".to_string(),
+            collateral_price_usd: eth_price,
+        };
+
+        let result = LoanSimulationService::calculate_simulation(&req).unwrap();
+
+        // Required collateral = 10000 / 0.75 = 13333.33...
+        assert!(result.required_collateral_usd > dec!(13333));
+
+        // Collateral quantity = 13333.33 / 2000 = ~6.67 ETH
+        assert!(result.collateral_quantity > dec!(6));
+        assert!(result.collateral_quantity < dec!(7));
+
+        // Interest = 10000 * 0.08 * (90/365) = ~197.26
+        assert!(result.estimated_interest > dec!(197));
+        assert!(result.estimated_interest < dec!(198));
+
+        // LTV should be 0.75
+        assert_eq!(result.loan_to_value_ratio, dec!(0.75));
+    }
+
+    #[test]
+    fn loan_simulation_calculation_btc() {
+        let btc_price = dec!(50000);
+        let req = LoanSimulationRequest {
+            loan_amount: dec!(25000),
+            loan_duration_days: 180,
+            collateral_type: "BTC".to_string(),
+            collateral_price_usd: btc_price,
+        };
+
+        let result = LoanSimulationService::calculate_simulation(&req).unwrap();
+
+        // Required collateral = 25000 / 0.75 = 33333.33...
+        assert!(result.required_collateral_usd > dec!(33333));
+
+        // Collateral quantity = 33333.33 / 50000 = ~0.667 BTC
+        assert!(result.collateral_quantity > dec!(0.6));
+        assert!(result.collateral_quantity < dec!(0.7));
+
+        // Interest = 25000 * 0.08 * (180/365) = ~986.30
+        assert!(result.estimated_interest > dec!(986));
+        assert!(result.estimated_interest < dec!(987));
+    }
+
+    #[test]
+    fn loan_simulation_calculation_xlm() {
+        let xlm_price = dec!(0.10);
+        let req = LoanSimulationRequest {
+            loan_amount: dec!(1000),
+            loan_duration_days: 60,
+            collateral_type: "XLM".to_string(),
+            collateral_price_usd: xlm_price,
+        };
+
+        let result = LoanSimulationService::calculate_simulation(&req).unwrap();
+
+        // Required collateral = 1000 / 0.60 = 1666.67
+        assert!(result.required_collateral_usd > dec!(1666));
+
+        // Collateral quantity = 1666.67 / 0.10 = 16666.67 XLM
+        assert!(result.collateral_quantity > dec!(16666));
+
+        // Interest = 1000 * 0.12 * (60/365) = ~19.73
+        assert!(result.estimated_interest > dec!(19));
+        assert!(result.estimated_interest < dec!(20));
+
+        // LTV should be 0.60
+        assert_eq!(result.loan_to_value_ratio, dec!(0.60));
+    }
+
+    #[test]
+    fn loan_simulation_rejects_zero_loan_amount() {
+        let req = LoanSimulationRequest {
+            loan_amount: dec!(0),
+            loan_duration_days: 30,
+            collateral_type: "ETH".to_string(),
+            collateral_price_usd: dec!(2000),
+        };
+
+        let result = LoanSimulationService::calculate_simulation(&req);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn loan_simulation_rejects_zero_duration() {
+        let req = LoanSimulationRequest {
+            loan_amount: dec!(1000),
+            loan_duration_days: 0,
+            collateral_type: "ETH".to_string(),
+            collateral_price_usd: dec!(2000),
+        };
+
+        let result = LoanSimulationService::calculate_simulation(&req);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn loan_simulation_rejects_zero_collateral_price() {
+        let req = LoanSimulationRequest {
+            loan_amount: dec!(1000),
+            loan_duration_days: 30,
+            collateral_type: "ETH".to_string(),
+            collateral_price_usd: dec!(0),
+        };
+
+        let result = LoanSimulationService::calculate_simulation(&req);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn loan_simulation_rejects_invalid_collateral_type() {
+        let req = LoanSimulationRequest {
+            loan_amount: dec!(1000),
+            loan_duration_days: 30,
+            collateral_type: "INVALID".to_string(),
+            collateral_price_usd: dec!(2000),
+        };
+
+        let result = LoanSimulationService::calculate_simulation(&req);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn loan_simulation_liquidation_price_logic() {
+        // Test that liquidation price is calculated correctly
+        // For ETH: if ETH price drops below liquidation price, position gets liquidated
+        let eth_price = dec!(2000);
+        let req = LoanSimulationRequest {
+            loan_amount: dec!(10000),
+            loan_duration_days: 30,
+            collateral_type: "ETH".to_string(),
+            collateral_price_usd: eth_price,
+        };
+
+        let result = LoanSimulationService::calculate_simulation(&req).unwrap();
+
+        // Liquidation price should be less than current price
+        // (otherwise liquidation would happen immediately)
+        assert!(result.liquidation_price < eth_price);
+
+        // Liquidation price should be positive
+        assert!(result.liquidation_price > dec!(0));
+
+        // For ETH with 0.85 threshold, liquidation price should be around:
+        // (10000 / 0.85) / 6.67 ≈ 1764
+        assert!(result.liquidation_price > dec!(1500));
+        assert!(result.liquidation_price < dec!(2000));
     }
 }
 

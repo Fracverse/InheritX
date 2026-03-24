@@ -4,8 +4,8 @@ use super::*;
 use mock_token::MockToken;
 use mock_token::MockTokenClient;
 use soroban_sdk::{
-    testutils::{Address as _, Ledger},
-    token, vec, Address, Bytes, Env, String, Vec,
+    testutils::Address as _, testutils::Events, testutils::Ledger, token, vec, Address, Bytes, Env,
+    String, Vec,
 };
 
 /// Test helper for balance and mint (uses mock-token crate client).
@@ -2707,4 +2707,705 @@ fn test_claim_emergency_limit() {
         &123456u32,
     );
     assert!(result.is_ok());
+}
+
+#[test]
+fn test_emergency_access_events() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let (client, token_id, _admin, user) = setup_with_token_and_admin(&env);
+    let contract_id = client.address.clone();
+    let trusted_contact = create_test_address(&env, 99);
+
+    let params = plan_params(
+        &env,
+        &user,
+        &token_id,
+        "Plan",
+        "Desc",
+        10000,
+        DistributionMethod::LumpSum,
+        &default_beneficiaries(&env),
+    );
+    client.create_inheritance_plan(&params);
+    let plan_id = 1u64;
+
+    // 1. Test Activation Event
+    let guardians: soroban_sdk::Vec<soroban_sdk::Address> = soroban_sdk::vec![&env, user.clone()];
+    client.set_guardians(&user, &plan_id, &guardians, &1);
+    client.approve_emergency_access(&user, &plan_id, &trusted_contact);
+
+    let events = env.events().all();
+    let activation_event = events.get(events.len() - 1).unwrap();
+
+    assert_eq!(activation_event.0, contract_id);
+    assert_eq!(
+        activation_event.1,
+        (symbol_short!("EMERG"), symbol_short!("ACTIV")).into_val(&env)
+    );
+
+    // 2. Test Revocation Event
+    client.deactivate_emergency_access(&user, &plan_id);
+    let events = env.events().all();
+    let revocation_event = events.get(events.len() - 1).unwrap();
+    assert_eq!(revocation_event.0, contract_id);
+    assert_eq!(
+        revocation_event.1,
+        (symbol_short!("EMERG"), symbol_short!("REVOK")).into_val(&env)
+    );
+}
+
+#[test]
+fn test_emergency_access_expiration() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let (client, token_id, _admin, user) = setup_with_token_and_admin(&env);
+    let contract_id = client.address.clone();
+    let trusted_contact = create_test_address(&env, 99);
+
+    let params = plan_params(
+        &env,
+        &user,
+        &token_id,
+        "Plan",
+        "Desc",
+        10000,
+        DistributionMethod::LumpSum,
+        &default_beneficiaries(&env),
+    );
+    client.create_inheritance_plan(&params);
+    let plan_id = 1u64;
+
+    // Activate
+    let guardians: soroban_sdk::Vec<soroban_sdk::Address> = soroban_sdk::vec![&env, user.clone()];
+    client.set_guardians(&user, &plan_id, &guardians, &1);
+    client.approve_emergency_access(&user, &plan_id, &trusted_contact);
+    assert!(client.get_emergency_access(&plan_id).is_some());
+
+    // Fast forward 604801 seconds (7 days + 1s)
+    env.ledger().set_timestamp(604801);
+
+    // Call any function that triggers the check (e.g. get_emergency_access)
+    assert!(client.get_emergency_access(&plan_id).is_none());
+
+    // Verify Expiration Event
+    let events = env.events().all();
+    let expiration_event = events.get(events.len() - 1).unwrap();
+    assert_eq!(expiration_event.0, contract_id);
+    assert_eq!(
+        expiration_event.1,
+        (symbol_short!("EMERG"), symbol_short!("EXPIR")).into_val(&env)
+    );
+}
+
+#[test]
+fn test_emergency_withdrawal_success() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let (client, token_id, _admin, user) = setup_with_token_and_admin(&env);
+    let trusted_contact = create_test_address(&env, 99);
+    let token_helper = TestTokenHelper::new(&env, &token_id);
+
+    let params = plan_params(
+        &env,
+        &user,
+        &token_id,
+        "Plan",
+        "Desc",
+        10000,
+        DistributionMethod::LumpSum,
+        &default_beneficiaries(&env),
+    );
+    client.create_inheritance_plan(&params);
+    let plan_id = 1u64;
+
+    // Plan owner deposits
+    client.deposit(&user, &token_id, &plan_id, &5000);
+    assert_eq!(token_helper.balance(&user), 10_000_000 - 10000 - 5000);
+
+    // Activate emergency access
+    let guardians: soroban_sdk::Vec<soroban_sdk::Address> = soroban_sdk::vec![&env, user.clone()];
+    client.set_guardians(&user, &plan_id, &guardians, &1);
+    client.approve_emergency_access(&user, &plan_id, &trusted_contact);
+
+    // Trusted contact withdraws 1000 (within 10% of 12800)
+    client.withdraw(&trusted_contact, &token_id, &plan_id, &1000);
+
+    // Verify balance
+    assert_eq!(token_helper.balance(&trusted_contact), 1000);
+    let plan = client.get_plan_details(&plan_id).unwrap();
+    // Initial 9800 (10000 - 2% fee) + 5000 (deposit) - 1000 (withdraw) = 13800
+    assert_eq!(plan.total_amount, 13800);
+}
+
+#[test]
+fn test_emergency_withdrawal_fails_after_expiration() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let (client, token_id, _admin, user) = setup_with_token_and_admin(&env);
+    let trusted_contact = create_test_address(&env, 99);
+
+    let params = plan_params(
+        &env,
+        &user,
+        &token_id,
+        "Plan",
+        "Desc",
+        10000,
+        DistributionMethod::LumpSum,
+        &default_beneficiaries(&env),
+    );
+    client.create_inheritance_plan(&params);
+    let plan_id = 1u64;
+
+    client.deposit(&user, &token_id, &plan_id, &5000);
+
+    // Activate
+    let guardians: soroban_sdk::Vec<soroban_sdk::Address> = soroban_sdk::vec![&env, user.clone()];
+    client.set_guardians(&user, &plan_id, &guardians, &1);
+    client.approve_emergency_access(&user, &plan_id, &trusted_contact);
+
+    // Fast forward 7 days + 1s
+    env.ledger().set_timestamp(604801);
+
+    // Withdrawal should fail
+    let result = client.try_withdraw(&trusted_contact, &token_id, &plan_id, &2000);
+    assert!(result.is_err());
+    assert_eq!(result.err().unwrap(), Ok(InheritanceError::Unauthorized));
+
+    // Emergency record should be gone
+    assert!(client.get_emergency_access(&plan_id).is_none());
+}
+
+#[test]
+fn test_emergency_deposit_success() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let (client, token_id, _admin, user) = setup_with_token_and_admin(&env);
+    let trusted_contact = create_test_address(&env, 99);
+    let token_helper = TestTokenHelper::new(&env, &token_id);
+    token_helper.mint(&trusted_contact, &1000);
+
+    let params = plan_params(
+        &env,
+        &user,
+        &token_id,
+        "Plan",
+        "Desc",
+        10000,
+        DistributionMethod::LumpSum,
+        &default_beneficiaries(&env),
+    );
+    client.create_inheritance_plan(&params);
+    let plan_id = 1u64;
+
+    // Activate
+    let guardians: soroban_sdk::Vec<soroban_sdk::Address> = soroban_sdk::vec![&env, user.clone()];
+    client.set_guardians(&user, &plan_id, &guardians, &1);
+    client.approve_emergency_access(&user, &plan_id, &trusted_contact);
+
+    // Trusted contact deposits
+    client.deposit(&trusted_contact, &token_id, &plan_id, &500);
+
+    // Verify
+    let plan = client.get_plan_details(&plan_id).unwrap();
+    // Initial 9800 (10000 - 2% fee) + 500 (deposit) = 10300
+    assert_eq!(plan.total_amount, 10300);
+    assert_eq!(token_helper.balance(&trusted_contact), 500);
+}
+
+#[test]
+fn test_emergency_view_plan_success() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let (client, token_id, _admin, user) = setup_with_token_and_admin(&env);
+    let trusted_contact = create_test_address(&env, 99);
+
+    let params = plan_params(
+        &env,
+        &user,
+        &token_id,
+        "Plan",
+        "Desc",
+        10000,
+        DistributionMethod::LumpSum,
+        &default_beneficiaries(&env),
+    );
+    client.create_inheritance_plan(&params);
+    let plan_id = 1u64;
+
+    // Activate emergency access
+    let guardians: soroban_sdk::Vec<soroban_sdk::Address> = soroban_sdk::vec![&env, user.clone()];
+    client.set_guardians(&user, &plan_id, &guardians, &1);
+    client.approve_emergency_access(&user, &plan_id, &trusted_contact);
+
+    // Trusted contact can view plan
+    let plan = client.get_user_plan(&trusted_contact, &plan_id);
+    assert_eq!(plan.owner, user);
+}
+
+#[test]
+fn test_emergency_trigger_inheritance_success() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let (client, token_id, _admin, user) = setup_with_token_and_admin(&env);
+    let trusted_contact = create_test_address(&env, 99);
+
+    let params = plan_params(
+        &env,
+        &user,
+        &token_id,
+        "Plan",
+        "Desc",
+        10000,
+        DistributionMethod::LumpSum,
+        &default_beneficiaries(&env),
+    );
+    client.create_inheritance_plan(&params);
+    let plan_id = 1u64;
+
+    // Activate emergency access
+    let guardians: soroban_sdk::Vec<soroban_sdk::Address> = soroban_sdk::vec![&env, user.clone()];
+    client.set_guardians(&user, &plan_id, &guardians, &1);
+    client.approve_emergency_access(&user, &plan_id, &trusted_contact);
+
+    // Trusted contact can trigger inheritance
+    client.trigger_inheritance(&trusted_contact, &plan_id);
+
+    // Verify it's triggered (is_lendable should be false)
+    let plan = client.get_plan_details(&plan_id).unwrap();
+    assert!(!plan.is_lendable);
+}
+
+#[test]
+fn test_owner_trigger_inheritance_success() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let (client, token_id, _admin, user) = setup_with_token_and_admin(&env);
+
+    let params = plan_params(
+        &env,
+        &user,
+        &token_id,
+        "Plan",
+        "Desc",
+        10000,
+        DistributionMethod::LumpSum,
+        &default_beneficiaries(&env),
+    );
+    client.create_inheritance_plan(&params);
+    let plan_id = 1u64;
+
+    // Owner can trigger inheritance
+    client.trigger_inheritance(&user, &plan_id);
+
+    // Verify it's triggered (is_lendable should be false)
+    let plan = client.get_plan_details(&plan_id).unwrap();
+    assert!(!plan.is_lendable);
+}
+
+#[test]
+fn test_instant_revocation_by_owner() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let (client, token_id, _admin, user) = setup_with_token_and_admin(&env);
+    let trusted_contact = create_test_address(&env, 99);
+
+    let params = plan_params(
+        &env,
+        &user,
+        &token_id,
+        "Plan",
+        "Desc",
+        10000,
+        DistributionMethod::LumpSum,
+        &default_beneficiaries(&env),
+    );
+    client.create_inheritance_plan(&params);
+    let plan_id = 1u64;
+
+    // 1. Activate emergency access
+    let guardians: soroban_sdk::Vec<soroban_sdk::Address> = soroban_sdk::vec![&env, user.clone()];
+    client.set_guardians(&user, &plan_id, &guardians, &1);
+    client.approve_emergency_access(&user, &plan_id, &trusted_contact);
+
+    // 2. Verify it's active
+    assert!(client.get_emergency_access(&plan_id).is_some());
+    let plan = client.get_user_plan(&trusted_contact, &plan_id);
+    assert_eq!(plan.owner, user);
+
+    // 3. Owner revokes instantly
+    client.deactivate_emergency_access(&user, &plan_id);
+
+    // 4. Verify it's gone and subsequent calls fail
+    assert!(client.get_emergency_access(&plan_id).is_none());
+    let result = client.try_get_user_plan(&trusted_contact, &plan_id);
+    assert!(result.is_err());
+    assert_eq!(result.err().unwrap(), Ok(InheritanceError::Unauthorized));
+
+    // 5. Verify withdrawals also fail
+    let withdraw_result = client.try_withdraw(&trusted_contact, &token_id, &plan_id, &100);
+    assert!(withdraw_result.is_err());
+    assert_eq!(
+        withdraw_result.err().unwrap(),
+        Ok(InheritanceError::Unauthorized)
+    );
+}
+
+#[test]
+fn test_multi_guardian_approval_success() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let (client, token_id, _admin, user) = setup_with_token_and_admin(&env);
+    let guardian_1 = create_test_address(&env, 101);
+    let guardian_2 = create_test_address(&env, 102);
+    let trusted_contact = create_test_address(&env, 99);
+
+    let params = plan_params(
+        &env,
+        &user,
+        &token_id,
+        "Plan",
+        "Desc",
+        10000,
+        DistributionMethod::LumpSum,
+        &default_beneficiaries(&env),
+    );
+    client.create_inheritance_plan(&params);
+    let plan_id = 1u64;
+
+    let guardians = soroban_sdk::vec![&env, guardian_1.clone(), guardian_2.clone()];
+    client.set_guardians(&user, &plan_id, &guardians, &2);
+
+    // First guardian approves
+    client.approve_emergency_access(&guardian_1, &plan_id, &trusted_contact);
+    assert!(client.get_emergency_access(&plan_id).is_none());
+
+    // Second guardian approves
+    client.approve_emergency_access(&guardian_2, &plan_id, &trusted_contact);
+    assert!(client.get_emergency_access(&plan_id).is_some());
+}
+
+#[test]
+fn test_invalid_guardian_rejection() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let (client, token_id, _admin, user) = setup_with_token_and_admin(&env);
+    let guardian = create_test_address(&env, 101);
+    let random_user = create_test_address(&env, 102);
+    let trusted_contact = create_test_address(&env, 99);
+
+    let params = plan_params(
+        &env,
+        &user,
+        &token_id,
+        "Plan",
+        "Desc",
+        10000,
+        DistributionMethod::LumpSum,
+        &default_beneficiaries(&env),
+    );
+    client.create_inheritance_plan(&params);
+    let plan_id = 1u64;
+
+    let guardians = soroban_sdk::vec![&env, guardian.clone()];
+    client.set_guardians(&user, &plan_id, &guardians, &1);
+
+    let res = client.try_approve_emergency_access(&random_user, &plan_id, &trusted_contact);
+    assert!(res.is_err());
+    assert_eq!(res.err().unwrap(), Ok(InheritanceError::Unauthorized));
+}
+
+#[test]
+fn test_double_approval_rejection() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let (client, token_id, _admin, user) = setup_with_token_and_admin(&env);
+    let guardian_1 = create_test_address(&env, 101);
+    let guardian_2 = create_test_address(&env, 102);
+    let trusted_contact = create_test_address(&env, 99);
+
+    let params = plan_params(
+        &env,
+        &user,
+        &token_id,
+        "Plan",
+        "Desc",
+        10000,
+        DistributionMethod::LumpSum,
+        &default_beneficiaries(&env),
+    );
+    client.create_inheritance_plan(&params);
+    let plan_id = 1u64;
+
+    let guardians = soroban_sdk::vec![&env, guardian_1.clone(), guardian_2.clone()];
+    client.set_guardians(&user, &plan_id, &guardians, &2);
+
+    client.approve_emergency_access(&guardian_1, &plan_id, &trusted_contact);
+    let res = client.try_approve_emergency_access(&guardian_1, &plan_id, &trusted_contact);
+    assert!(res.is_err());
+    assert_eq!(res.err().unwrap(), Ok(InheritanceError::AlreadyApproved));
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Emergency Contact Registration Tests
+// ─────────────────────────────────────────────────────────────────────────────
+
+#[test]
+fn test_add_emergency_contact_success() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let (client, token_id, _admin, user) = setup_with_token_and_admin(&env);
+    let contact = create_test_address(&env, 50);
+
+    let params = plan_params(
+        &env,
+        &user,
+        &token_id,
+        "Plan",
+        "Desc",
+        10000,
+        DistributionMethod::LumpSum,
+        &default_beneficiaries(&env),
+    );
+    client.create_inheritance_plan(&params);
+    let plan_id = 1u64;
+
+    client.add_emergency_contact(&user, &plan_id, &contact);
+
+    let contacts = client.get_emergency_contacts(&plan_id);
+    assert_eq!(contacts.len(), 1);
+    assert_eq!(contacts.get(0).unwrap(), contact);
+}
+
+#[test]
+fn test_add_multiple_emergency_contacts() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let (client, token_id, _admin, user) = setup_with_token_and_admin(&env);
+    let contact_1 = create_test_address(&env, 50);
+    let contact_2 = create_test_address(&env, 51);
+    let contact_3 = create_test_address(&env, 52);
+
+    let params = plan_params(
+        &env,
+        &user,
+        &token_id,
+        "Plan",
+        "Desc",
+        10000,
+        DistributionMethod::LumpSum,
+        &default_beneficiaries(&env),
+    );
+    client.create_inheritance_plan(&params);
+    let plan_id = 1u64;
+
+    client.add_emergency_contact(&user, &plan_id, &contact_1);
+    client.add_emergency_contact(&user, &plan_id, &contact_2);
+    client.add_emergency_contact(&user, &plan_id, &contact_3);
+
+    let contacts = client.get_emergency_contacts(&plan_id);
+    assert_eq!(contacts.len(), 3);
+}
+
+#[test]
+fn test_add_emergency_contact_duplicate_fails() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let (client, token_id, _admin, user) = setup_with_token_and_admin(&env);
+    let contact = create_test_address(&env, 50);
+
+    let params = plan_params(
+        &env,
+        &user,
+        &token_id,
+        "Plan",
+        "Desc",
+        10000,
+        DistributionMethod::LumpSum,
+        &default_beneficiaries(&env),
+    );
+    client.create_inheritance_plan(&params);
+    let plan_id = 1u64;
+
+    client.add_emergency_contact(&user, &plan_id, &contact);
+    let res = client.try_add_emergency_contact(&user, &plan_id, &contact);
+    assert!(res.is_err());
+    assert_eq!(
+        res.err().unwrap(),
+        Ok(InheritanceError::EmergencyContactAlreadyExists)
+    );
+}
+
+#[test]
+fn test_add_emergency_contact_unauthorized() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let (client, token_id, _admin, user) = setup_with_token_and_admin(&env);
+    let other_user = create_test_address(&env, 99);
+    let contact = create_test_address(&env, 50);
+
+    let params = plan_params(
+        &env,
+        &user,
+        &token_id,
+        "Plan",
+        "Desc",
+        10000,
+        DistributionMethod::LumpSum,
+        &default_beneficiaries(&env),
+    );
+    client.create_inheritance_plan(&params);
+    let plan_id = 1u64;
+
+    let res = client.try_add_emergency_contact(&other_user, &plan_id, &contact);
+    assert!(res.is_err());
+    assert_eq!(res.err().unwrap(), Ok(InheritanceError::Unauthorized));
+}
+
+#[test]
+fn test_remove_emergency_contact_success() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let (client, token_id, _admin, user) = setup_with_token_and_admin(&env);
+    let contact = create_test_address(&env, 50);
+
+    let params = plan_params(
+        &env,
+        &user,
+        &token_id,
+        "Plan",
+        "Desc",
+        10000,
+        DistributionMethod::LumpSum,
+        &default_beneficiaries(&env),
+    );
+    client.create_inheritance_plan(&params);
+    let plan_id = 1u64;
+
+    client.add_emergency_contact(&user, &plan_id, &contact);
+    assert_eq!(client.get_emergency_contacts(&plan_id).len(), 1);
+
+    client.remove_emergency_contact(&user, &plan_id, &contact);
+    assert_eq!(client.get_emergency_contacts(&plan_id).len(), 0);
+}
+
+#[test]
+fn test_remove_emergency_contact_not_found() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let (client, token_id, _admin, user) = setup_with_token_and_admin(&env);
+    let contact = create_test_address(&env, 50);
+
+    let params = plan_params(
+        &env,
+        &user,
+        &token_id,
+        "Plan",
+        "Desc",
+        10000,
+        DistributionMethod::LumpSum,
+        &default_beneficiaries(&env),
+    );
+    client.create_inheritance_plan(&params);
+    let plan_id = 1u64;
+
+    let res = client.try_remove_emergency_contact(&user, &plan_id, &contact);
+    assert!(res.is_err());
+    assert_eq!(
+        res.err().unwrap(),
+        Ok(InheritanceError::EmergencyContactNotFound)
+    );
+}
+
+#[test]
+fn test_remove_emergency_contact_unauthorized() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let (client, token_id, _admin, user) = setup_with_token_and_admin(&env);
+    let other_user = create_test_address(&env, 99);
+    let contact = create_test_address(&env, 50);
+
+    let params = plan_params(
+        &env,
+        &user,
+        &token_id,
+        "Plan",
+        "Desc",
+        10000,
+        DistributionMethod::LumpSum,
+        &default_beneficiaries(&env),
+    );
+    client.create_inheritance_plan(&params);
+    let plan_id = 1u64;
+
+    client.add_emergency_contact(&user, &plan_id, &contact);
+
+    let res = client.try_remove_emergency_contact(&other_user, &plan_id, &contact);
+    assert!(res.is_err());
+    assert_eq!(res.err().unwrap(), Ok(InheritanceError::Unauthorized));
+}
+
+#[test]
+fn test_emergency_contact_events() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let (client, token_id, _admin, user) = setup_with_token_and_admin(&env);
+    let contact = create_test_address(&env, 50);
+
+    let params = plan_params(
+        &env,
+        &user,
+        &token_id,
+        "Plan",
+        "Desc",
+        10000,
+        DistributionMethod::LumpSum,
+        &default_beneficiaries(&env),
+    );
+    client.create_inheritance_plan(&params);
+    let plan_id = 1u64;
+
+    client.add_emergency_contact(&user, &plan_id, &contact);
+
+    let events = env.events().all();
+    let add_event = events.get(events.len() - 1).unwrap();
+    assert_eq!(add_event.0, client.address.clone());
+    assert_eq!(
+        add_event.1,
+        (symbol_short!("EMERG"), symbol_short!("CON_ADD")).into_val(&env)
+    );
+
+    client.remove_emergency_contact(&user, &plan_id, &contact);
+
+    let events = env.events().all();
+    let remove_event = events.get(events.len() - 1).unwrap();
+    assert_eq!(remove_event.0, client.address.clone());
+    assert_eq!(
+        remove_event.1,
+        (symbol_short!("EMERG"), symbol_short!("CON_REM")).into_val(&env)
+    );
+}
+
+#[test]
+fn test_get_emergency_contacts_empty() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let (client, token_id, _admin, user) = setup_with_token_and_admin(&env);
+
+    let params = plan_params(
+        &env,
+        &user,
+        &token_id,
+        "Plan",
+        "Desc",
+        10000,
+        DistributionMethod::LumpSum,
+        &default_beneficiaries(&env),
+    );
+    client.create_inheritance_plan(&params);
+    let plan_id = 1u64;
+
+    let contacts = client.get_emergency_contacts(&plan_id);
+    assert_eq!(contacts.len(), 0);
 }

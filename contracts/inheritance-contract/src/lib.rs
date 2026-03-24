@@ -99,6 +99,12 @@ pub enum InheritanceError {
     NoOutstandingLoans = 35,
     EmergencyAccessAlreadyActive = 36,
     EmergencyCooldownActive = 37,
+    InvalidGuardianThreshold = 38,
+    GuardianNotFound = 39,
+    AlreadyApproved = 40,
+    EmergencyContactNotFound = 41,
+    EmergencyContactAlreadyExists = 42,
+    TooManyEmergencyContacts = 43,
 }
 
 #[contracttype]
@@ -114,8 +120,20 @@ pub enum DataKey {
     Admin,
     Kyc(Address),
     Version,
-    InheritanceTrigger(u64), // per-plan inheritance trigger info
-    EmergencyAccess(u64),    // per-plan emergency access record
+    InheritanceTrigger(u64),          // per-plan inheritance trigger info
+    EmergencyActive(Address),         // bool, keyed by Address
+    EmergencyLastActivated(Address),  // u64, keyed by Address
+    EmergencyAccess(u64),             // per-plan emergency access record
+    Guardians(u64),                   // per-plan guardian configuration
+    EmergencyApprovals(u64, Address), // (plan_id, trusted_contact) -> Vec<Address>
+    EmergencyContacts(u64),           // per-plan emergency contacts list
+}
+
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct GuardianConfig {
+    pub guardians: Vec<Address>,
+    pub threshold: u32,
 }
 
 #[contracttype]
@@ -261,12 +279,55 @@ pub struct LiquidationFallbackEvent {
 
 #[contracttype]
 #[derive(Clone, Debug, Eq, PartialEq)]
+pub struct EmergencyAccessActivationEvent {
+    pub user: Address,
+    pub activated_at: u64,
+}
+
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct EmergencyAccessRevocationEvent {
+    pub plan_id: u64,
+    pub revoked_at: u64,
+}
+
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct EmergencyAccessApprovedEvent {
+    pub plan_id: u64,
+    pub trusted_contact: Address,
+    pub guardian: Address,
+    pub approvals_count: u32,
+}
+
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct EmergencyAccessExpirationEvent {
+    pub plan_id: u64,
+    pub expired_at: u64,
+}
+
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
 pub struct EmergencyAccessActivatedEvent {
     pub plan_id: u64,
     pub trusted_contact: Address,
     pub activated_at: u64,
 }
 
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct EmergencyContactAddedEvent {
+    pub plan_id: u64,
+    pub contact: Address,
+}
+
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct EmergencyContactRemovedEvent {
+    pub plan_id: u64,
+    pub contact: Address,
+}
 /// Parameters for creating an inheritance plan (groups args to satisfy Clippy).
 #[contracttype]
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -286,6 +347,8 @@ pub struct InheritanceContract;
 
 #[contractimpl]
 impl InheritanceContract {
+    const EMERGENCY_EXPIRATION_PERIOD: u64 = 604800; // 7 days in seconds
+
     pub fn hello(env: Env, to: Symbol) -> Vec<Symbol> {
         vec![&env, symbol_short!("Hello"), to]
     }
@@ -522,15 +585,52 @@ impl InheritanceContract {
 
     pub fn get_user_plan(
         env: Env,
-        user: Address,
+        caller: Address,
         plan_id: u64,
     ) -> Result<InheritancePlan, InheritanceError> {
-        user.require_auth();
+        caller.require_auth();
         let plan = Self::get_plan(&env, plan_id).ok_or(InheritanceError::PlanNotFound)?;
-        if plan.owner != user {
+
+        // Authorization check: owner or active emergency contact
+        let mut is_authorized = plan.owner == caller;
+        if !is_authorized {
+            if let Some(record) = Self::get_emergency_access(env.clone(), plan_id) {
+                if record.trusted_contact == caller {
+                    is_authorized = true;
+                }
+            }
+        }
+
+        if !is_authorized {
             return Err(InheritanceError::Unauthorized);
         }
         Ok(plan)
+    }
+
+    /// Internal helper to check and potentially expire emergency access based on the 7-day period.
+    fn check_and_expire_emergency_access(env: &Env, plan_id: u64) -> bool {
+        let key = DataKey::EmergencyAccess(plan_id);
+        if let Some(record) = env
+            .storage()
+            .persistent()
+            .get::<_, EmergencyAccessRecord>(&key)
+        {
+            if env.ledger().timestamp() > record.activated_at + Self::EMERGENCY_EXPIRATION_PERIOD {
+                // Expired
+                env.storage().persistent().remove(&key);
+
+                env.events().publish(
+                    (symbol_short!("EMERG"), symbol_short!("EXPIR")),
+                    EmergencyAccessExpirationEvent {
+                        plan_id,
+                        expired_at: env.ledger().timestamp(),
+                    },
+                );
+                return false;
+            }
+            return true;
+        }
+        false
     }
 
     pub fn get_user_plans(env: Env, user: Address) -> Vec<InheritancePlan> {
@@ -939,17 +1039,29 @@ impl InheritanceContract {
 
     pub fn deposit(
         env: Env,
-        owner: Address,
+        caller: Address,
         token: Address,
         plan_id: u64,
         amount: u64,
     ) -> Result<(), InheritanceError> {
-        owner.require_auth();
+        caller.require_auth();
         if amount == 0 {
             return Err(InheritanceError::InvalidTotalAmount);
         }
+
         let mut plan = Self::get_plan(&env, plan_id).ok_or(InheritanceError::PlanNotFound)?;
-        if plan.owner != owner {
+
+        // Authorization check: owner or active emergency contact
+        let mut is_authorized = plan.owner == caller;
+        if !is_authorized {
+            if let Some(record) = Self::get_emergency_access(env.clone(), plan_id) {
+                if record.trusted_contact == caller {
+                    is_authorized = true;
+                }
+            }
+        }
+
+        if !is_authorized {
             return Err(InheritanceError::Unauthorized);
         }
         if !plan.is_active {
@@ -957,7 +1069,7 @@ impl InheritanceContract {
         }
 
         let token_client = token::Client::new(&env, &token);
-        let balance = token_client.balance(&owner);
+        let balance = token_client.balance(&caller);
         let required = amount as i128;
         if balance < required {
             return Err(InheritanceError::InsufficientBalance);
@@ -966,7 +1078,7 @@ impl InheritanceContract {
         let contract_id = env.current_contract_address();
         let args: Vec<Val> = vec![
             &env,
-            owner.clone().into_val(&env),
+            caller.clone().into_val(&env),
             contract_id.clone().into_val(&env),
             required.into_val(&env),
         ];
@@ -989,17 +1101,28 @@ impl InheritanceContract {
 
     pub fn withdraw(
         env: Env,
-        owner: Address,
+        caller: Address,
         token: Address,
         plan_id: u64,
         amount: u64,
     ) -> Result<(), InheritanceError> {
-        owner.require_auth();
+        caller.require_auth();
         if amount == 0 {
             return Err(InheritanceError::InvalidTotalAmount);
         }
         let mut plan = Self::get_plan(&env, plan_id).ok_or(InheritanceError::PlanNotFound)?;
-        if plan.owner != owner {
+
+        // Authorization check: owner or active emergency contact
+        let mut is_authorized = plan.owner == caller;
+        if !is_authorized {
+            if let Some(record) = Self::get_emergency_access(env.clone(), plan_id) {
+                if record.trusted_contact == caller {
+                    is_authorized = true;
+                }
+            }
+        }
+
+        if !is_authorized {
             return Err(InheritanceError::Unauthorized);
         }
 
@@ -1025,7 +1148,7 @@ impl InheritanceContract {
         let args: Vec<Val> = vec![
             &env,
             contract_id.clone().into_val(&env),
-            owner.clone().into_val(&env),
+            caller.clone().into_val(&env),
             required.into_val(&env),
         ];
         let res =
@@ -1351,25 +1474,6 @@ impl InheritanceContract {
 
     /// Activate emergency access for a trusted contact on a vault/plan.
     /// Only the plan owner can activate emergency access.
-    ///
-    /// # Arguments
-    /// * `env` - The environment
-    /// * `owner` - The plan owner (must authorize this call)
-    /// * `plan_id` - The ID of the plan to activate emergency access for
-    /// * `trusted_contact` - The address of the trusted contact who will have emergency access
-    ///
-    /// # Returns
-    /// Ok(()) on success
-    ///
-    /// # Errors
-    /// - Unauthorized: If caller is not the plan owner
-    /// - PlanNotFound: If plan_id doesn't exist
-    /// - EmergencyAccessAlreadyActive: If emergency access is already activated for this plan
-    ///
-    /// # Effects
-    /// - Records the emergency access activation with timestamp
-    /// - Emits `EMERG/ACTIV` event with plan_id, trusted_contact, and activation timestamp
-    /// - Logs the activation for audit trail
     pub fn activate_emergency_access(
         env: Env,
         owner: Address,
@@ -1426,6 +1530,237 @@ impl InheritanceContract {
         Ok(())
     }
 
+    pub fn set_guardians(
+        env: Env,
+        owner: Address,
+        plan_id: u64,
+        guardians: Vec<Address>,
+        threshold: u32,
+    ) -> Result<(), InheritanceError> {
+        owner.require_auth();
+        let plan = Self::get_plan(&env, plan_id).ok_or(InheritanceError::PlanNotFound)?;
+        if plan.owner != owner {
+            return Err(InheritanceError::Unauthorized);
+        }
+        if threshold == 0 || guardians.len() < threshold {
+            return Err(InheritanceError::InvalidGuardianThreshold);
+        }
+        let config = GuardianConfig {
+            guardians,
+            threshold,
+        };
+        env.storage()
+            .persistent()
+            .set(&DataKey::Guardians(plan_id), &config);
+        Ok(())
+    }
+
+    /// Add an emergency contact to a vault/plan.
+    /// Emergency contacts can later request emergency access with guardian approval.
+    pub fn add_emergency_contact(
+        env: Env,
+        owner: Address,
+        plan_id: u64,
+        contact: Address,
+    ) -> Result<(), InheritanceError> {
+        owner.require_auth();
+
+        let plan = Self::get_plan(&env, plan_id).ok_or(InheritanceError::PlanNotFound)?;
+        if plan.owner != owner {
+            return Err(InheritanceError::Unauthorized);
+        }
+
+        let key = DataKey::EmergencyContacts(plan_id);
+        let mut contacts: Vec<Address> = env
+            .storage()
+            .persistent()
+            .get(&key)
+            .unwrap_or(Vec::new(&env));
+
+        // Check for duplicates
+        for c in contacts.iter() {
+            if c == contact {
+                return Err(InheritanceError::EmergencyContactAlreadyExists);
+            }
+        }
+
+        // Limit to 10 emergency contacts per plan
+        if contacts.len() >= 10 {
+            return Err(InheritanceError::TooManyEmergencyContacts);
+        }
+
+        contacts.push_back(contact.clone());
+        env.storage().persistent().set(&key, &contacts);
+
+        env.events().publish(
+            (symbol_short!("EMERG"), symbol_short!("CON_ADD")),
+            EmergencyContactAddedEvent {
+                plan_id,
+                contact: contact.clone(),
+            },
+        );
+
+        log!(&env, "Emergency contact added to plan {}", plan_id);
+
+        Ok(())
+    }
+
+    /// Remove an emergency contact from a vault/plan.
+    pub fn remove_emergency_contact(
+        env: Env,
+        owner: Address,
+        plan_id: u64,
+        contact: Address,
+    ) -> Result<(), InheritanceError> {
+        owner.require_auth();
+
+        let plan = Self::get_plan(&env, plan_id).ok_or(InheritanceError::PlanNotFound)?;
+        if plan.owner != owner {
+            return Err(InheritanceError::Unauthorized);
+        }
+
+        let key = DataKey::EmergencyContacts(plan_id);
+        let mut contacts: Vec<Address> = env
+            .storage()
+            .persistent()
+            .get(&key)
+            .unwrap_or(Vec::new(&env));
+
+        // Find and remove the contact
+        let mut found_index: Option<u32> = None;
+        for i in 0..contacts.len() {
+            if contacts.get(i).unwrap() == contact {
+                found_index = Some(i);
+                break;
+            }
+        }
+
+        let index = found_index.ok_or(InheritanceError::EmergencyContactNotFound)?;
+
+        // Swap-remove for efficiency
+        let last_index = contacts.len() - 1;
+        if index != last_index {
+            let last = contacts.get(last_index).unwrap();
+            contacts.set(index, last);
+        }
+        contacts.pop_back();
+
+        env.storage().persistent().set(&key, &contacts);
+
+        env.events().publish(
+            (symbol_short!("EMERG"), symbol_short!("CON_REM")),
+            EmergencyContactRemovedEvent {
+                plan_id,
+                contact: contact.clone(),
+            },
+        );
+
+        log!(&env, "Emergency contact removed from plan {}", plan_id);
+
+        Ok(())
+    }
+
+    /// Get all emergency contacts for a vault/plan.
+    pub fn get_emergency_contacts(env: Env, plan_id: u64) -> Vec<Address> {
+        let key = DataKey::EmergencyContacts(plan_id);
+        env.storage()
+            .persistent()
+            .get(&key)
+            .unwrap_or(Vec::new(&env))
+    }
+
+    pub fn approve_emergency_access(
+        env: Env,
+        guardian: Address,
+        plan_id: u64,
+        trusted_contact: Address,
+    ) -> Result<(), InheritanceError> {
+        guardian.require_auth();
+        let _plan = Self::get_plan(&env, plan_id).ok_or(InheritanceError::PlanNotFound)?;
+
+        let key_access = DataKey::EmergencyAccess(plan_id);
+        if env.storage().persistent().has(&key_access) {
+            return Err(InheritanceError::EmergencyAccessAlreadyActive);
+        }
+
+        let config: GuardianConfig = env
+            .storage()
+            .persistent()
+            .get(&DataKey::Guardians(plan_id))
+            .ok_or(InheritanceError::GuardianNotFound)?;
+
+        // Check if guardian is in the list
+        let mut is_guardian = false;
+        for g in config.guardians.iter() {
+            if g == guardian {
+                is_guardian = true;
+                break;
+            }
+        }
+        if !is_guardian {
+            return Err(InheritanceError::Unauthorized);
+        }
+
+        let key_approvals = DataKey::EmergencyApprovals(plan_id, trusted_contact.clone());
+        let mut approvals: Vec<Address> = env
+            .storage()
+            .persistent()
+            .get(&key_approvals)
+            .unwrap_or(Vec::new(&env));
+
+        let mut already_approved = false;
+        for a in approvals.iter() {
+            if a == guardian {
+                already_approved = true;
+                break;
+            }
+        }
+        if already_approved {
+            return Err(InheritanceError::AlreadyApproved);
+        }
+
+        approvals.push_back(guardian.clone());
+        env.storage().persistent().set(&key_approvals, &approvals);
+
+        env.events().publish(
+            (symbol_short!("EMERG"), symbol_short!("APPROVE")),
+            EmergencyAccessApprovedEvent {
+                plan_id,
+                trusted_contact: trusted_contact.clone(),
+                guardian,
+                approvals_count: approvals.len(),
+            },
+        );
+
+        if approvals.len() >= config.threshold {
+            let now = env.ledger().timestamp();
+            let emergency_access = EmergencyAccessRecord {
+                plan_id,
+                trusted_contact: trusted_contact.clone(),
+                activated_at: now,
+            };
+            env.storage()
+                .persistent()
+                .set(&key_access, &emergency_access);
+
+            env.events().publish(
+                (symbol_short!("EMERG"), symbol_short!("ACTIV")),
+                EmergencyAccessActivatedEvent {
+                    plan_id,
+                    trusted_contact,
+                    activated_at: now,
+                },
+            );
+            log!(
+                &env,
+                "Emergency access activated for plan {} at timestamp {}",
+                plan_id,
+                now
+            );
+        }
+        Ok(())
+    }
+
     /// Query the emergency access record for a plan.
     ///
     /// # Arguments
@@ -1435,8 +1770,12 @@ impl InheritanceContract {
     /// # Returns
     /// The EmergencyAccessRecord if emergency access is active, None otherwise
     pub fn get_emergency_access(env: Env, plan_id: u64) -> Option<EmergencyAccessRecord> {
-        let key = DataKey::EmergencyAccess(plan_id);
-        env.storage().persistent().get(&key)
+        if Self::check_and_expire_emergency_access(&env, plan_id) {
+            let key = DataKey::EmergencyAccess(plan_id);
+            env.storage().persistent().get(&key)
+        } else {
+            None
+        }
     }
 
     /// Check if emergency access is active and within the cooldown period for a plan.
@@ -1492,9 +1831,20 @@ impl InheritanceContract {
 
         // Remove the emergency access record
         let key = DataKey::EmergencyAccess(plan_id);
-        env.storage().persistent().remove(&key);
+        if env.storage().persistent().has(&key) {
+            env.storage().persistent().remove(&key);
 
-        log!(&env, "Emergency access deactivated for plan {}", plan_id);
+            // Emit revocation event
+            env.events().publish(
+                (symbol_short!("EMERG"), symbol_short!("REVOK")),
+                EmergencyAccessRevocationEvent {
+                    plan_id,
+                    revoked_at: env.ledger().timestamp(),
+                },
+            );
+
+            log!(&env, "Emergency access deactivated for plan {}", plan_id);
+        }
 
         Ok(())
     }
@@ -1692,10 +2042,37 @@ impl InheritanceContract {
     /// - `InheritanceAlreadyTriggered` if inheritance was already triggered
     pub fn trigger_inheritance(
         env: Env,
-        admin: Address,
+        caller: Address,
         plan_id: u64,
     ) -> Result<(), InheritanceError> {
-        Self::require_admin(&env, &admin)?;
+        // Authorization check: Admin OR Owner OR Trusted Contact with active emergency access
+        let mut is_authorized = false;
+
+        // 1. Admin check
+        if let Some(admin) = Self::get_admin(&env) {
+            if admin == caller {
+                caller.require_auth();
+                is_authorized = true;
+            }
+        }
+
+        // 2. Plan check (Owner or Generic Emergency Access)
+        if !is_authorized {
+            let plan = Self::get_plan(&env, plan_id).ok_or(InheritanceError::PlanNotFound)?;
+            if plan.owner == caller {
+                caller.require_auth();
+                is_authorized = true;
+            } else if let Some(record) = Self::get_emergency_access(env.clone(), plan_id) {
+                if record.trusted_contact == caller {
+                    caller.require_auth();
+                    is_authorized = true;
+                }
+            }
+        }
+
+        if !is_authorized {
+            return Err(InheritanceError::Unauthorized);
+        }
 
         let mut plan = Self::get_plan(&env, plan_id).ok_or(InheritanceError::PlanNotFound)?;
 
