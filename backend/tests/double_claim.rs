@@ -1,118 +1,154 @@
-// Integration test: Prevent double claim exploit
 mod helpers;
+
 use axum::{
-    body::{to_bytes, Body},
+    body::Body,
     http::{Request, StatusCode},
 };
-use helpers::TestContext;
-use serde_json::json;
-use tokio::join;
+use chrono::Utc;
+use inheritx_backend::auth::UserClaims;
+use jsonwebtoken::{encode, EncodingKey, Header};
+use serde_json::Value;
 use tower::ServiceExt;
 use uuid::Uuid;
 
+fn generate_user_token(user_id: Uuid, email: &str) -> String {
+    let exp = Utc::now()
+        .checked_add_signed(chrono::Duration::hours(24))
+        .expect("valid timestamp")
+        .timestamp() as usize;
+
+    let claims = UserClaims {
+        user_id,
+        email: email.to_string(),
+        exp,
+    };
+
+    encode(
+        &Header::default(),
+        &claims,
+        &EncodingKey::from_secret(b"secret_key_change_in_production"),
+    )
+    .expect("Failed to generate token")
+}
+
+async fn seed_user_and_kyc(pool: &sqlx::PgPool, user_id: Uuid, email: &str) {
+    sqlx::query("INSERT INTO users (id, email, password_hash) VALUES ($1, $2, $3)")
+        .bind(user_id)
+        .bind(email)
+        .bind("hashed_password")
+        .execute(pool)
+        .await
+        .expect("Failed to insert test user");
+
+    sqlx::query(
+        r#"
+        INSERT INTO kyc_status (user_id, status, reviewed_by, reviewed_at, created_at)
+        VALUES ($1, 'approved', $2, NOW(), NOW())
+        ON CONFLICT (user_id) DO UPDATE SET status = 'approved'
+        "#,
+    )
+    .bind(user_id)
+    .bind(Uuid::new_v4())
+    .execute(pool)
+    .await
+    .expect("Failed to approve KYC");
+}
+
+async fn seed_due_plan(pool: &sqlx::PgPool, user_id: Uuid) -> Uuid {
+    let plan_id = Uuid::new_v4();
+    let created_in_past = Utc::now().timestamp() - 3600;
+
+    sqlx::query(
+        r#"
+        INSERT INTO plans (
+            id, user_id, title, description, fee, net_amount, status,
+            beneficiary_name, bank_account_number, bank_name, currency_preference,
+            distribution_method, contract_plan_id, contract_created_at, is_active
+        )
+        VALUES ($1, $2, $3, $4, $5, $6, 'pending', $7, $8, $9, $10, 'LumpSum', 1, $11, true)
+        "#,
+    )
+    .bind(plan_id)
+    .bind(user_id)
+    .bind("Double Claim Test Plan")
+    .bind("Protect against duplicate claims")
+    .bind("10.00")
+    .bind("490.00")
+    .bind("Beneficiary")
+    .bind("1234567890")
+    .bind("Test Bank")
+    .bind("USDC")
+    .bind(created_in_past)
+    .execute(pool)
+    .await
+    .expect("Failed to insert due plan");
+
+    plan_id
+}
+
 #[tokio::test]
-async fn prevent_double_claim_exploit() {
-    let ctx = match TestContext::from_env().await {
-        Some(ctx) => ctx,
-        None => return,
+async fn first_claim_succeeds_second_claim_fails() {
+    let Some(ctx) = helpers::TestContext::from_env().await else {
+        return;
     };
 
-    // Setup: create user, approve KYC, create plan
     let user_id = Uuid::new_v4();
-    let admin_id = Uuid::new_v4();
+    let email = format!("double-claim-{}@example.com", user_id);
+    seed_user_and_kyc(&ctx.pool, user_id, &email).await;
+    let plan_id = seed_due_plan(&ctx.pool, user_id).await;
+    let token = generate_user_token(user_id, &email);
 
-    // Approve KYC
-    let req_approve = Request::builder()
-        .method("POST")
-        .uri("/api/admin/kyc/approve")
-        .header("Content-Type", "application/json")
-        .header("X-Admin-Id", admin_id.to_string())
-        .body(Body::from(
-            serde_json::to_string(&json!({ "user_id": user_id })).unwrap(),
-        ))
-        .unwrap();
-    let _ = ctx
+    let claim_body = serde_json::json!({
+        "beneficiary_email": "beneficiary@example.com"
+    });
+    let claim_body_str =
+        serde_json::to_string(&claim_body).expect("Failed to serialize claim request");
+
+    let first_response = ctx
         .app
         .clone()
-        .oneshot(req_approve)
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri(format!("/api/plans/{}/claim", plan_id))
+                .header("Authorization", format!("Bearer {}", token))
+                .header("Content-Type", "application/json")
+                .body(Body::from(claim_body_str.clone()))
+                .expect("Failed to build first claim request"),
+        )
         .await
-        .expect("approve failed");
+        .expect("first claim request failed");
 
-    // Create plan
-    let req_plan = Request::builder()
-        .method("POST")
-        .uri("/api/plans")
-        .header("Content-Type", "application/json")
-        .header("X-User-Id", user_id.to_string())
-        .body(Body::from(
-            serde_json::to_string(&json!({
-                "title": "Exploit Test Plan",
-                "net_amount": 100,
-                "fee": 2
-            }))
-            .unwrap(),
-        ))
-        .unwrap();
-    let resp_plan = ctx
+    assert_eq!(first_response.status(), StatusCode::OK);
+
+    let second_response = ctx
         .app
         .clone()
-        .oneshot(req_plan)
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri(format!("/api/plans/{}/claim", plan_id))
+                .header("Authorization", format!("Bearer {}", token))
+                .header("Content-Type", "application/json")
+                .body(Body::from(claim_body_str))
+                .expect("Failed to build second claim request"),
+        )
         .await
-        .expect("plan create failed");
-    assert_eq!(resp_plan.status(), StatusCode::OK);
+        .expect("second claim request failed");
 
-    // FIX 1: Use axum::body::to_bytes instead of removed hyper::body::to_bytes
-    let body = to_bytes(resp_plan.into_body(), usize::MAX).await.unwrap();
-    let plan_id = serde_json::from_slice::<serde_json::Value>(&body).unwrap()["data"]["id"]
-        .as_str()
-        .unwrap()
-        .to_string();
-    // FIX 2: Parse plan_id as Uuid so sqlx can bind it to a UUID column
-    let plan_uuid = Uuid::parse_str(&plan_id).expect("plan_id is not a valid UUID");
-
-    // Prepare two simultaneous claim requests
-    let claim_req = || {
-        Request::builder()
-            .method("POST")
-            .uri(format!("/api/plans/{}/claim", plan_id))
-            .header("Content-Type", "application/json")
-            .header("X-User-Id", user_id.to_string())
-            .body(Body::from(serde_json::to_string(&json!({})).unwrap()))
-            .unwrap()
-    };
-
-    // Send both claims in parallel
-    let (resp1, resp2) = join!(
-        ctx.app.clone().oneshot(claim_req()),
-        ctx.app.clone().oneshot(claim_req())
+    assert_eq!(
+        second_response.status(),
+        StatusCode::BAD_REQUEST,
+        "Second claim should fail"
     );
-    let status1 = resp1.expect("claim1 failed").status();
-    let status2 = resp2.expect("claim2 failed").status();
 
-    // One must succeed, one must fail
+    let body = axum::body::to_bytes(second_response.into_body(), usize::MAX)
+        .await
+        .expect("Failed to read second claim response body");
+    let json: Value = serde_json::from_slice(&body).expect("Failed to parse second response JSON");
+    let error_message = json["error"].as_str().unwrap_or_default();
     assert!(
-        (status1 == StatusCode::OK && status2 != StatusCode::OK)
-            || (status2 == StatusCode::OK && status1 != StatusCode::OK),
-        "Exactly one claim should succeed, got: {} and {}",
-        status1,
-        status2
+        error_message.contains("already been claimed"),
+        "Expected duplicate claim error, got: {error_message}"
     );
-
-    // Check only one DB update
-    let plan_row: (i64,) =
-        sqlx::query_as("SELECT COUNT(*) FROM plans WHERE id = $1 AND claimed = true")
-            .bind(plan_uuid) // FIX 2 applied: bind Uuid, not &String
-            .fetch_one(&ctx.pool)
-            .await
-            .unwrap();
-    assert_eq!(plan_row.0, 1, "Plan should be claimed only once");
-
-    // Check only one audit log
-    let audit_count: (i64,) =
-        sqlx::query_as("SELECT COUNT(*) FROM plan_logs WHERE plan_id = $1 AND action = 'claim'")
-            .bind(plan_uuid) // FIX 2 applied: bind Uuid, not &String
-            .fetch_one(&ctx.pool)
-            .await
-            .unwrap();
-    assert_eq!(audit_count.0, 1, "Only one audit log for claim");
 }

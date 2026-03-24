@@ -21,7 +21,7 @@ fn generate_user_token(user_id: Uuid) -> String {
     encode(
         &Header::default(),
         &claims,
-        &EncodingKey::from_secret(b"secret_key_change_in_production"),
+        &EncodingKey::from_secret(b"test-jwt-secret"),
     )
     .unwrap()
 }

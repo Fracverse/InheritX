@@ -1,10 +1,10 @@
-// This file contains tests for notification functionality.
 mod helpers;
 
 use axum::{
     body::Body,
     http::{Request, StatusCode},
 };
+use chrono::{Duration, Utc};
 use inheritx_backend::auth::UserClaims;
 use jsonwebtoken::{encode, EncodingKey, Header};
 use tower::ServiceExt;
@@ -55,8 +55,23 @@ async fn mark_notification_read_success() {
     .await
     .expect("Failed to create notification");
 
+    let expiration = Utc::now()
+        .checked_add_signed(Duration::hours(24))
+        .expect("valid timestamp")
+        .timestamp();
+
     // 3. Generate token
-    let token = generate_user_token(user_id, format!("test-{}@example.com", user_id));
+    let claims = UserClaims {
+        user_id,
+        email: format!("test-{}@example.com", user_id),
+        exp: expiration as usize,
+    };
+    let token = encode(
+        &Header::default(),
+        &claims,
+        &EncodingKey::from_secret(b"secret_key_change_in_production"),
+    )
+    .expect("Failed to generate token");
 
     // 4. Call mark read endpoint
     let response = ctx
@@ -408,7 +423,6 @@ async fn cannot_mark_another_user_notification() {
     let user_a_id = Uuid::new_v4();
     let user_b_id = Uuid::new_v4();
 
-    // FIX: destructure with `&id` to avoid double-reference (&&Uuid) from iterating &[...]
     for &id in &[user_a_id, user_b_id] {
         sqlx::query("INSERT INTO users (id, email, password_hash) VALUES ($1, $2, $3)")
             .bind(id)
@@ -432,8 +446,23 @@ async fn cannot_mark_another_user_notification() {
     .await
     .expect("Failed to create notification");
 
+    let expiration = Utc::now()
+        .checked_add_signed(Duration::hours(24))
+        .expect("valid timestamp")
+        .timestamp();
+
     // 3. Generate token for user A
-    let token = generate_user_token(user_a_id, format!("test-{}@example.com", user_a_id));
+    let claims = UserClaims {
+        user_id: user_a_id,
+        email: format!("test-{}@example.com", user_a_id),
+        exp: expiration as usize,
+    };
+    let token = encode(
+        &Header::default(),
+        &claims,
+        &EncodingKey::from_secret(b"secret_key_change_in_production"),
+    )
+    .expect("Failed to generate token");
 
     // 4. Call mark read endpoint for user B's notification using user A's token
     let response = ctx
@@ -491,8 +520,23 @@ async fn mark_already_read_notification_safe_handling() {
     .await
     .expect("Failed to create notification");
 
+    let expiration = Utc::now()
+        .checked_add_signed(Duration::hours(24))
+        .expect("valid timestamp")
+        .timestamp();
+
     // 3. Generate token
-    let token = generate_user_token(user_id, format!("test-{}@example.com", user_id));
+    let claims = UserClaims {
+        user_id,
+        email: format!("test-{}@example.com", user_id),
+        exp: expiration as usize,
+    };
+    let token = encode(
+        &Header::default(),
+        &claims,
+        &EncodingKey::from_secret(b"secret_key_change_in_production"),
+    )
+    .expect("Failed to generate token");
 
     // 4. Call mark read endpoint again — should be idempotent
     let response = ctx

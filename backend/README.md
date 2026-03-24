@@ -136,13 +136,117 @@ Plans store optional beneficiary bank details and payout currency preference:
 
 - **beneficiary_name** – Full name of the beneficiary
 - **bank_account_number** – Account number for fiat transfers
-- **bank_name** – Name of the beneficiary’s bank
+- **bank_name** – Name of the beneficiary's bank
 - **currency_preference** – `USDC` (crypto) or `FIAT` (bank transfer)
 
 **Currency handling:**
 
 - **USDC**: Bank fields are optional; payout is processed as USDC transfer.
 - **FIAT**: `beneficiary_name`, `bank_name`, and `bank_account_number` are required when creating a plan or when claiming with FIAT preference. Missing or invalid bank info returns a 400 error.
+
+## Loan Simulation API
+
+The Loan Simulation API allows borrowers to preview loan terms before committing to a loan. It calculates:
+
+- **Required Collateral**: The minimum collateral value needed based on the collateral type's Loan-to-Value (LTV) ratio
+- **Estimated Interest**: Interest calculated based on the loan amount, duration, and collateral type's annual interest rate
+- **Liquidation Price**: The price at which the collateral would be liquidated if its value drops below the liquidation threshold
+
+### Supported Collateral Types
+
+| Collateral | LTV Ratio | Annual Interest Rate | Liquidation Threshold |
+|------------|-----------|---------------------|----------------------|
+| USDC       | 90%       | 5%                  | 95%                  |
+| ETH        | 75%       | 8%                  | 85%                  |
+| BTC        | 75%       | 8%                  | 85%                  |
+| STELLAR_XLM| 60%       | 12%                 | 80%                  |
+
+### Calculation Formulas
+
+- **Required Collateral (USD)**: `loan_amount / LTV_ratio`
+- **Collateral Quantity**: `required_collateral_usd / collateral_price_usd`
+- **Estimated Interest**: `loan_amount * annual_interest_rate * (duration_days / 365)`
+- **Total Repayment**: `loan_amount + estimated_interest`
+- **Liquidation Price**: `(loan_amount / liquidation_threshold) / collateral_quantity`
+
+### Endpoints
+
+#### POST /api/loans/simulate
+
+Create a loan simulation and store it in the database.
+
+**Authentication**: Required (User JWT)
+
+**Request Body**:
+```json
+{
+  "loan_amount": 10000,
+  "loan_duration_days": 30,
+  "collateral_type": "ETH",
+  "collateral_price_usd": 2000
+}
+```
+
+**Response**:
+```json
+{
+  "status": "success",
+  "data": {
+    "loan_amount": 10000,
+    "loan_duration_days": 30,
+    "collateral_type": "ETH",
+    "collateral_price_usd": 2000,
+    "required_collateral_usd": 13333.33,
+    "collateral_quantity": 6.67,
+    "estimated_interest": 197.26,
+    "total_repayment": 10197.26,
+    "liquidation_price": 1764.71,
+    "loan_to_value_ratio": 0.75,
+    "annual_interest_rate": 0.08,
+    "liquidation_threshold": 0.85
+  }
+}
+```
+
+#### GET /api/loans/simulations
+
+Get all loan simulations for the current user (limited to 50 most recent).
+
+**Authentication**: Required (User JWT)
+
+**Response**:
+```json
+{
+  "status": "success",
+  "data": [...],
+  "count": 5
+}
+```
+
+#### GET /api/loans/simulations/:simulation_id
+
+Get a specific loan simulation by ID.
+
+**Authentication**: Required (User JWT)
+
+**Response**:
+```json
+{
+  "status": "success",
+  "data": {
+    "id": "uuid",
+    "user_id": "uuid",
+    "loan_amount": 10000,
+    ...
+  }
+}
+```
+
+### Error Responses
+
+- **400 Bad Request**: Invalid input parameters (e.g., zero loan amount, invalid collateral type)
+- **404 Not Found**: Simulation not found (for GET by ID)
+- **500 Internal Server Error**: Database or server error
 
 Plans API
 
@@ -160,3 +264,8 @@ Plans API
 ## License
 
 This project is part of the INHERITX ecosystem.
+
+### Admin Metrics API
+
+- **GET /api/admin/metrics/plans** – Get comprehensive plan statistics (admin only)
+  - Returns: total_plans, active_plans, expired_plans, triggered_plans, claimed_plans, and breakdown by status

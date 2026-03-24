@@ -1,7 +1,7 @@
 #![no_std]
 use soroban_sdk::{
-    contract, contracterror, contractimpl, contracttype, log, symbol_short, vec, Address, Bytes,
-    BytesN, Env, String, Symbol, Vec,
+    contract, contracterror, contractimpl, contracttype, log, symbol_short, token, vec, Address,
+    Bytes, BytesN, Env, IntoVal, InvokeError, String, Symbol, Val, Vec,
 };
 
 /// Current contract version - bump this on each upgrade
@@ -49,6 +49,8 @@ pub struct InheritancePlan {
     pub owner: Address,           // Plan owner
     pub created_at: u64,
     pub is_active: bool, // Plan activation status
+    pub is_lendable: bool,
+    pub total_loaned: u64,
 }
 
 #[contracterror]
@@ -82,6 +84,21 @@ pub enum InheritanceError {
     MigrationNotRequired = 26,
     PlanNotClaimed = 27,
     KycAlreadyRejected = 28,
+    InsufficientBalance = 29,
+    FeeTransferFailed = 30,
+    InsufficientLiquidity = 31,
+    InheritanceAlreadyTriggered = 32,
+    InheritanceNotTriggered = 33,
+    LoanRecallFailed = 34,
+    NoOutstandingLoans = 35,
+    EmergencyAccessAlreadyActive = 36,
+    EmergencyCooldownActive = 37,
+    InvalidGuardianThreshold = 38,
+    GuardianNotFound = 39,
+    AlreadyApproved = 40,
+    EmergencyContactNotFound = 41,
+    EmergencyContactAlreadyExists = 42,
+    TooManyEmergencyContacts = 43,
 }
 
 #[contracttype]
@@ -97,6 +114,20 @@ pub enum DataKey {
     Admin,
     Kyc(Address),
     Version,
+    InheritanceTrigger(u64),          // per-plan inheritance trigger info
+    EmergencyActive(Address),         // bool, keyed by Address
+    EmergencyLastActivated(Address),  // u64, keyed by Address
+    EmergencyAccess(u64),             // per-plan emergency access record
+    Guardians(u64),                   // per-plan guardian configuration
+    EmergencyApprovals(u64, Address), // (plan_id, trusted_contact) -> Vec<Address>
+    EmergencyContacts(u64),           // per-plan emergency contacts list
+}
+
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct GuardianConfig {
+    pub guardians: Vec<Address>,
+    pub threshold: u32,
 }
 
 #[contracttype]
@@ -116,6 +147,26 @@ pub struct KycStatus {
     pub submitted_at: u64,
     pub approved_at: u64,
     pub rejected_at: u64,
+}
+
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct InheritanceTriggerInfo {
+    pub triggered_at: u64,
+    pub loan_freeze_active: bool,
+    pub recall_attempted: bool,
+    pub liquidation_triggered: bool,
+    pub original_loaned: u64,
+    pub recalled_amount: u64,
+    pub settled_amount: u64,
+}
+
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct EmergencyAccessRecord {
+    pub plan_id: u64,
+    pub trusted_contact: Address,
+    pub activated_at: u64,
 }
 
 // Events for beneficiary operations
@@ -168,11 +219,130 @@ pub struct ContractUpgradedEvent {
     pub upgraded_at: u64,
 }
 
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct VaultDepositEvent {
+    pub plan_id: u64,
+    pub amount: u64,
+}
+
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct VaultWithdrawEvent {
+    pub plan_id: u64,
+    pub amount: u64,
+}
+
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct VaultLendableChangedEvent {
+    pub plan_id: u64,
+    pub is_lendable: bool,
+}
+
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct InheritanceTriggeredEvent {
+    pub plan_id: u64,
+    pub triggered_at: u64,
+    pub outstanding_loans: u64,
+}
+
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct LoanFreezeEvent {
+    pub plan_id: u64,
+    pub frozen_at: u64,
+}
+
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct LoanRecallEvent {
+    pub plan_id: u64,
+    pub recalled_amount: u64,
+    pub remaining_loaned: u64,
+}
+
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct LiquidationFallbackEvent {
+    pub plan_id: u64,
+    pub settled_amount: u64,
+    pub claimable_amount: u64,
+}
+
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct EmergencyAccessActivationEvent {
+    pub user: Address,
+    pub activated_at: u64,
+}
+
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct EmergencyAccessRevocationEvent {
+    pub plan_id: u64,
+    pub revoked_at: u64,
+}
+
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct EmergencyAccessApprovedEvent {
+    pub plan_id: u64,
+    pub trusted_contact: Address,
+    pub guardian: Address,
+    pub approvals_count: u32,
+}
+
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct EmergencyAccessExpirationEvent {
+    pub plan_id: u64,
+    pub expired_at: u64,
+}
+
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct EmergencyAccessActivatedEvent {
+    pub plan_id: u64,
+    pub trusted_contact: Address,
+    pub activated_at: u64,
+}
+
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct EmergencyContactAddedEvent {
+    pub plan_id: u64,
+    pub contact: Address,
+}
+
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct EmergencyContactRemovedEvent {
+    pub plan_id: u64,
+    pub contact: Address,
+}
+/// Parameters for creating an inheritance plan (groups args to satisfy Clippy).
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct CreateInheritancePlanParams {
+    pub owner: Address,
+    pub token: Address,
+    pub plan_name: String,
+    pub description: String,
+    pub total_amount: u64,
+    pub distribution_method: DistributionMethod,
+    pub beneficiaries_data: Vec<(String, String, u32, Bytes, u32)>,
+    pub is_lendable: bool,
+}
+
 #[contract]
 pub struct InheritanceContract;
 
 #[contractimpl]
 impl InheritanceContract {
+    const EMERGENCY_EXPIRATION_PERIOD: u64 = 604800; // 7 days in seconds
+
     pub fn hello(env: Env, to: Symbol) -> Vec<Symbol> {
         vec![&env, symbol_short!("Hello"), to]
     }
@@ -409,15 +579,84 @@ impl InheritanceContract {
 
     pub fn get_user_plan(
         env: Env,
-        user: Address,
+        caller: Address,
         plan_id: u64,
     ) -> Result<InheritancePlan, InheritanceError> {
-        user.require_auth();
+        caller.require_auth();
         let plan = Self::get_plan(&env, plan_id).ok_or(InheritanceError::PlanNotFound)?;
-        if plan.owner != user {
+
+        // Authorization check: owner or active emergency contact
+        let mut is_authorized = plan.owner == caller;
+        if !is_authorized {
+            if let Some(record) = Self::get_emergency_access(env.clone(), plan_id) {
+                if record.trusted_contact == caller {
+                    is_authorized = true;
+                }
+            }
+        }
+
+        if !is_authorized {
             return Err(InheritanceError::Unauthorized);
         }
         Ok(plan)
+    }
+    /// Deactivate emergency access for a specific plan.
+    /// Emits EmergencyAccessRevocationEvent.
+    pub fn deactivate_emergency_access(
+        env: Env,
+        owner: Address,
+        plan_id: u64,
+    ) -> Result<(), InheritanceError> {
+        owner.require_auth();
+
+        let plan = Self::get_plan(&env, plan_id).ok_or(InheritanceError::PlanNotFound)?;
+
+        if plan.owner != owner {
+            return Err(InheritanceError::Unauthorized);
+        }
+
+        let key = DataKey::EmergencyAccess(plan_id);
+        if env.storage().persistent().has(&key) {
+            env.storage().persistent().remove(&key);
+        } else {
+            return Err(InheritanceError::Unauthorized); // Or perhaps a specific error
+        }
+
+        env.events().publish(
+            (symbol_short!("EMERG"), symbol_short!("REVOK")),
+            EmergencyAccessRevocationEvent {
+                plan_id,
+                revoked_at: env.ledger().timestamp(),
+            },
+        );
+
+        Ok(())
+    }
+
+    /// Internal helper to check and potentially expire emergency access based on the 7-day period.
+    fn check_and_expire_emergency_access(env: &Env, plan_id: u64) -> bool {
+        let key = DataKey::EmergencyAccess(plan_id);
+        if let Some(record) = env
+            .storage()
+            .persistent()
+            .get::<_, EmergencyAccessRecord>(&key)
+        {
+            if env.ledger().timestamp() > record.activated_at + Self::EMERGENCY_EXPIRATION_PERIOD {
+                // Expired
+                env.storage().persistent().remove(&key);
+
+                env.events().publish(
+                    (symbol_short!("EMERG"), symbol_short!("EXPIR")),
+                    EmergencyAccessExpirationEvent {
+                        plan_id,
+                        expired_at: env.ledger().timestamp(),
+                    },
+                );
+                return false;
+            }
+            return true;
+        }
+        false
     }
 
     pub fn get_user_plans(env: Env, user: Address) -> Vec<InheritancePlan> {
@@ -634,14 +873,20 @@ impl InheritanceContract {
         Ok(())
     }
 
-    /// Create a new inheritance plan
+    /// Creation fee in basis points (2% = 200 bp).
+    const CREATION_FEE_BP: u64 = 200;
+
+    /// Create a new inheritance plan.
+    /// Applies a 2% creation fee: fee is deducted from the user's input amount,
+    /// transferred to the admin wallet, and the net amount is saved in the plan.
     ///
     /// # Arguments
     /// * `env` - The environment
-    /// * `owner` - The plan owner
+    /// * `owner` - The plan owner (must authorize and have sufficient token balance)
+    /// * `token` - The token contract address (e.g. USDC)
     /// * `plan_name` - Name of the inheritance plan (required)
     /// * `description` - Description of the plan (max 500 characters)
-    /// * `total_amount` - Total amount in the plan (must be > 0)
+    /// * `total_amount` - User-input amount (must be > 0); fee is 2% of this, plan stores net
     /// * `distribution_method` - How to distribute the inheritance
     /// * `beneficiaries_data` - Vector of beneficiary data tuples: (full_name, email, claim_code, bank_account, allocation_bp)
     ///
@@ -649,20 +894,46 @@ impl InheritanceContract {
     /// The plan ID of the created inheritance plan
     ///
     /// # Errors
-    /// Returns InheritanceError for various validation failures
+    /// - AdminNotSet: Admin wallet not initialized
+    /// - InsufficientBalance: Owner balance less than total_amount
+    /// - FeeTransferFailed: Fee transfer to admin failed
+    /// - InvalidTotalAmount: Net amount would be zero after fee
+    /// - Other validation errors from validate_plan_inputs / validate_beneficiaries
     pub fn create_inheritance_plan(
         env: Env,
-        owner: Address,
-        plan_name: String,
-        description: String,
-        total_amount: u64,
-        distribution_method: DistributionMethod,
-        beneficiaries_data: Vec<(String, String, u32, Bytes, u32)>,
+        params: CreateInheritancePlanParams,
     ) -> Result<u64, InheritanceError> {
+        let CreateInheritancePlanParams {
+            owner,
+            token,
+            plan_name,
+            description,
+            total_amount,
+            distribution_method,
+            beneficiaries_data,
+            is_lendable,
+        } = params;
+
         // Require owner authorization
         owner.require_auth();
 
-        // Validate plan inputs (asset type is hardcoded to USDC)
+        // Admin must be set to receive the fee
+        let admin = Self::get_admin(&env).ok_or(InheritanceError::AdminNotSet)?;
+
+        // Fee: 2% of user input; net amount stored in plan
+        let fee = total_amount
+            .checked_mul(Self::CREATION_FEE_BP)
+            .and_then(|v| v.checked_div(10000))
+            .unwrap_or(0);
+        let net_amount = total_amount
+            .checked_sub(fee)
+            .ok_or(InheritanceError::InvalidTotalAmount)?;
+
+        if net_amount == 0 {
+            return Err(InheritanceError::InvalidTotalAmount);
+        }
+
+        // Validate plan inputs using user input for "full amount" validation
         let usdc_symbol = Symbol::new(&env, "USDC");
         Self::validate_plan_inputs(
             plan_name.clone(),
@@ -670,6 +941,53 @@ impl InheritanceContract {
             usdc_symbol.clone(),
             total_amount,
         )?;
+
+        // Wallet balance validation: must cover full amount (what user is debited)
+        let token_client = token::Client::new(&env, &token);
+        let balance = token_client.balance(&owner);
+        let required = total_amount as i128;
+        if balance < required {
+            return Err(InheritanceError::InsufficientBalance);
+        }
+
+        // Transfer fee to admin (owner must have authorized this via auth).
+        // Use try_invoke_contract so we can return FeeTransferFailed instead of trapping.
+        let fee_i128 = fee as i128;
+        if fee_i128 > 0 {
+            let args: Vec<Val> = vec![
+                &env,
+                owner.clone().into_val(&env),
+                admin.clone().into_val(&env),
+                fee_i128.into_val(&env),
+            ];
+            let res = env.try_invoke_contract::<(), InvokeError>(
+                &token,
+                &symbol_short!("transfer"),
+                args,
+            );
+            if res.is_err() {
+                return Err(InheritanceError::FeeTransferFailed);
+            }
+        }
+
+        // Transfer net amount to this contract (escrow for the plan).
+        // Same: catch failure and return FeeTransferFailed.
+        let contract_id = env.current_contract_address();
+        let net_i128 = net_amount as i128;
+        let net_args: Vec<Val> = vec![
+            &env,
+            owner.clone().into_val(&env),
+            contract_id.clone().into_val(&env),
+            net_i128.into_val(&env),
+        ];
+        let net_res = env.try_invoke_contract::<(), InvokeError>(
+            &token,
+            &symbol_short!("transfer"),
+            net_args,
+        );
+        if net_res.is_err() {
+            return Err(InheritanceError::FeeTransferFailed);
+        }
 
         // Validate beneficiaries
         Self::validate_beneficiaries(beneficiaries_data.clone())?;
@@ -691,18 +1009,20 @@ impl InheritanceContract {
             beneficiaries.push_back(beneficiary);
         }
 
-        // Create the inheritance plan
+        // Create the inheritance plan with net amount (user input minus 2% fee)
         let plan = InheritancePlan {
             plan_name,
             description,
             asset_type: Symbol::new(&env, "USDC"),
-            total_amount,
+            total_amount: net_amount,
             distribution_method,
             beneficiaries,
             total_allocation_bp,
             owner: owner.clone(),
             created_at: env.ledger().timestamp(),
             is_active: true,
+            is_lendable,
+            total_loaned: 0,
         };
 
         // Store the plan and get the plan ID
@@ -715,6 +1035,151 @@ impl InheritanceContract {
         log!(&env, "Inheritance plan created with ID: {}", plan_id);
 
         Ok(plan_id)
+    }
+
+    pub fn set_lendable(
+        env: Env,
+        owner: Address,
+        plan_id: u64,
+        is_lendable: bool,
+    ) -> Result<(), InheritanceError> {
+        owner.require_auth();
+        let mut plan = Self::get_plan(&env, plan_id).ok_or(InheritanceError::PlanNotFound)?;
+        if plan.owner != owner {
+            return Err(InheritanceError::Unauthorized);
+        }
+
+        plan.is_lendable = is_lendable;
+        Self::store_plan(&env, plan_id, &plan);
+
+        env.events().publish(
+            (symbol_short!("VAULT"), symbol_short!("LENDABLE")),
+            VaultLendableChangedEvent {
+                plan_id,
+                is_lendable,
+            },
+        );
+        log!(&env, "Vault {} lendable set to {}", plan_id, is_lendable);
+        Ok(())
+    }
+
+    pub fn deposit(
+        env: Env,
+        caller: Address,
+        token: Address,
+        plan_id: u64,
+        amount: u64,
+    ) -> Result<(), InheritanceError> {
+        caller.require_auth();
+        if amount == 0 {
+            return Err(InheritanceError::InvalidTotalAmount);
+        }
+
+        let mut plan = Self::get_plan(&env, plan_id).ok_or(InheritanceError::PlanNotFound)?;
+
+        // Authorization check: owner or active emergency contact
+        let mut is_authorized = plan.owner == caller;
+        if !is_authorized {
+            if let Some(record) = Self::get_emergency_access(env.clone(), plan_id) {
+                if record.trusted_contact == caller {
+                    is_authorized = true;
+                }
+            }
+        }
+
+        if !is_authorized {
+            return Err(InheritanceError::Unauthorized);
+        }
+        if !plan.is_active {
+            return Err(InheritanceError::PlanNotActive);
+        }
+
+        let token_client = token::Client::new(&env, &token);
+        let balance = token_client.balance(&caller);
+        let required = amount as i128;
+        if balance < required {
+            return Err(InheritanceError::InsufficientBalance);
+        }
+
+        let contract_id = env.current_contract_address();
+        let args: Vec<Val> = vec![
+            &env,
+            caller.clone().into_val(&env),
+            contract_id.clone().into_val(&env),
+            required.into_val(&env),
+        ];
+        let res =
+            env.try_invoke_contract::<(), InvokeError>(&token, &symbol_short!("transfer"), args);
+        if res.is_err() {
+            return Err(InheritanceError::FeeTransferFailed);
+        }
+
+        plan.total_amount += amount;
+        Self::store_plan(&env, plan_id, &plan);
+
+        env.events().publish(
+            (symbol_short!("VAULT"), symbol_short!("DEPOSIT")),
+            VaultDepositEvent { plan_id, amount },
+        );
+        log!(&env, "Deposited {} into plan {}", amount, plan_id);
+        Ok(())
+    }
+
+    pub fn withdraw(
+        env: Env,
+        caller: Address,
+        token: Address,
+        plan_id: u64,
+        amount: u64,
+    ) -> Result<(), InheritanceError> {
+        caller.require_auth();
+        if amount == 0 {
+            return Err(InheritanceError::InvalidTotalAmount);
+        }
+        let mut plan = Self::get_plan(&env, plan_id).ok_or(InheritanceError::PlanNotFound)?;
+
+        // Authorization check: owner or active emergency contact
+        let mut is_authorized = plan.owner == caller;
+        if !is_authorized {
+            if let Some(record) = Self::get_emergency_access(env.clone(), plan_id) {
+                if record.trusted_contact == caller {
+                    is_authorized = true;
+                }
+            }
+        }
+
+        if !is_authorized {
+            return Err(InheritanceError::Unauthorized);
+        }
+
+        let available = plan.total_amount.saturating_sub(plan.total_loaned);
+        if amount > available {
+            return Err(InheritanceError::InsufficientLiquidity);
+        }
+
+        let contract_id = env.current_contract_address();
+        let required = amount as i128;
+        let args: Vec<Val> = vec![
+            &env,
+            contract_id.clone().into_val(&env),
+            caller.clone().into_val(&env),
+            required.into_val(&env),
+        ];
+        let res =
+            env.try_invoke_contract::<(), InvokeError>(&token, &symbol_short!("transfer"), args);
+        if res.is_err() {
+            return Err(InheritanceError::FeeTransferFailed);
+        }
+
+        plan.total_amount -= amount;
+        Self::store_plan(&env, plan_id, &plan);
+
+        env.events().publish(
+            (symbol_short!("VAULT"), symbol_short!("WITHDRAW")),
+            VaultWithdrawEvent { plan_id, amount },
+        );
+        log!(&env, "Withdrew {} from plan {}", amount, plan_id);
+        Ok(())
     }
 
     fn is_claim_time_valid(env: &Env, plan: &InheritancePlan) -> bool {
@@ -743,8 +1208,10 @@ impl InheritanceContract {
             return Err(InheritanceError::PlanNotActive);
         }
 
-        // Check if claim is allowed by distribution method
-        if !Self::is_claim_time_valid(&env, &plan) {
+        // When inheritance is triggered, bypass the time-based check so
+        // that inheritance execution cannot be blocked.
+        let triggered = Self::get_trigger_info(&env, plan_id).is_some();
+        if !triggered && !Self::is_claim_time_valid(&env, &plan) {
             return Err(InheritanceError::ClaimNotAllowedYet);
         }
 
@@ -752,7 +1219,6 @@ impl InheritanceContract {
         let hashed_email = Self::hash_string(&env, email.clone());
         let hashed_claim_code = Self::hash_claim_code(&env, claim_code)?;
 
-        // Build claim key including plan ID
         // Build claim key including plan ID
         let claim_key = {
             let mut data = Bytes::new(&env);
@@ -787,13 +1253,49 @@ impl InheritanceContract {
 
         env.storage().persistent().set(&claim_key, &claim);
 
+        // --- Payout Logic ---
+        let beneficiary = plan.beneficiaries.get(index).unwrap();
+
+        // Calculate the base payout
+        let base_payout = (plan.total_amount as u128)
+            .checked_mul(beneficiary.allocation_bp as u128)
+            .and_then(|v| v.checked_div(10000))
+            .unwrap_or(0) as u64;
+
+        // If plan is lendable and funds are loaned, we might have yield or need to recall funds.
+        // For MVP priority logic: if we don't have enough liquid funds (amount - total_loaned < base_payout)
+        // we'd recall from LendingContract.
+        // Since we don't store the LendingContract address in InheritanceContract yet,
+        // we assume the funds are sitting in the contract (vault) or we are authorized to pull them.
+        let available_liquidity = plan.total_amount.saturating_sub(plan.total_loaned);
+
+        // In a full implementation, we would call LendingClient::withdraw_priority
+        // if base_payout > available_liquidity.
+        // For now, we simulate the priority payout directly if liquid funds are sufficient,
+        // or fail with InsufficientLiquidity if not (which a later migration would fix by linking contracts).
+        // When inheritance is triggered, bypass the liquidity check so that
+        // beneficiary claims are never blocked by outstanding loans.
+        if !triggered && base_payout > available_liquidity {
+            return Err(InheritanceError::InsufficientLiquidity);
+        }
+
+        // Transfer funds to beneficiary
+        // Note: For fiat (bank_account), this would typically emit an event for off-chain processing.
+        // Here, we'll try to transfer USDC if an address can be derived, or just emit an event.
+        // As a simplification, we'll emit the event first.
+
+        // Update plan balances
+        let mut updated_plan = plan.clone();
+        updated_plan.total_amount = updated_plan.total_amount.saturating_sub(base_payout);
+        Self::store_plan(&env, plan_id, &updated_plan);
+
         // Mark plan as claimed
         Self::add_plan_to_claimed(&env, plan.owner.clone(), plan_id);
 
         // Emit claim event
         env.events().publish(
             (symbol_short!("CLAIM"), symbol_short!("SUCCESS")),
-            (plan_id, hashed_email),
+            (plan_id, hashed_email, base_payout),
         );
 
         log!(
@@ -972,6 +1474,256 @@ impl InheritanceContract {
         Ok(())
     }
 
+    /// Activate emergency access for a trusted contact on a vault/plan.
+    pub fn set_guardians(
+        env: Env,
+        owner: Address,
+        plan_id: u64,
+        guardians: Vec<Address>,
+        threshold: u32,
+    ) -> Result<(), InheritanceError> {
+        owner.require_auth();
+        let plan = Self::get_plan(&env, plan_id).ok_or(InheritanceError::PlanNotFound)?;
+        if plan.owner != owner {
+            return Err(InheritanceError::Unauthorized);
+        }
+        if threshold == 0 || guardians.len() < threshold {
+            return Err(InheritanceError::InvalidGuardianThreshold);
+        }
+        let config = GuardianConfig {
+            guardians,
+            threshold,
+        };
+        env.storage()
+            .persistent()
+            .set(&DataKey::Guardians(plan_id), &config);
+        Ok(())
+    }
+
+    /// Add an emergency contact to a vault/plan.
+    /// Emergency contacts can later request emergency access with guardian approval.
+    pub fn add_emergency_contact(
+        env: Env,
+        owner: Address,
+        plan_id: u64,
+        contact: Address,
+    ) -> Result<(), InheritanceError> {
+        owner.require_auth();
+
+        let plan = Self::get_plan(&env, plan_id).ok_or(InheritanceError::PlanNotFound)?;
+        if plan.owner != owner {
+            return Err(InheritanceError::Unauthorized);
+        }
+
+        let key = DataKey::EmergencyContacts(plan_id);
+        let mut contacts: Vec<Address> = env
+            .storage()
+            .persistent()
+            .get(&key)
+            .unwrap_or(Vec::new(&env));
+
+        // Check for duplicates
+        for c in contacts.iter() {
+            if c == contact {
+                return Err(InheritanceError::EmergencyContactAlreadyExists);
+            }
+        }
+
+        // Limit to 10 emergency contacts per plan
+        if contacts.len() >= 10 {
+            return Err(InheritanceError::TooManyEmergencyContacts);
+        }
+
+        contacts.push_back(contact.clone());
+        env.storage().persistent().set(&key, &contacts);
+
+        env.events().publish(
+            (symbol_short!("EMERG"), symbol_short!("CON_ADD")),
+            EmergencyContactAddedEvent {
+                plan_id,
+                contact: contact.clone(),
+            },
+        );
+
+        log!(&env, "Emergency contact added to plan {}", plan_id);
+
+        Ok(())
+    }
+
+    /// Remove an emergency contact from a vault/plan.
+    pub fn remove_emergency_contact(
+        env: Env,
+        owner: Address,
+        plan_id: u64,
+        contact: Address,
+    ) -> Result<(), InheritanceError> {
+        owner.require_auth();
+
+        let plan = Self::get_plan(&env, plan_id).ok_or(InheritanceError::PlanNotFound)?;
+        if plan.owner != owner {
+            return Err(InheritanceError::Unauthorized);
+        }
+
+        let key = DataKey::EmergencyContacts(plan_id);
+        let mut contacts: Vec<Address> = env
+            .storage()
+            .persistent()
+            .get(&key)
+            .unwrap_or(Vec::new(&env));
+
+        // Find and remove the contact
+        let mut found_index: Option<u32> = None;
+        for i in 0..contacts.len() {
+            if contacts.get(i).unwrap() == contact {
+                found_index = Some(i);
+                break;
+            }
+        }
+
+        let index = found_index.ok_or(InheritanceError::EmergencyContactNotFound)?;
+
+        // Swap-remove for efficiency
+        let last_index = contacts.len() - 1;
+        if index != last_index {
+            let last = contacts.get(last_index).unwrap();
+            contacts.set(index, last);
+        }
+        contacts.pop_back();
+
+        env.storage().persistent().set(&key, &contacts);
+
+        env.events().publish(
+            (symbol_short!("EMERG"), symbol_short!("CON_REM")),
+            EmergencyContactRemovedEvent {
+                plan_id,
+                contact: contact.clone(),
+            },
+        );
+
+        log!(&env, "Emergency contact removed from plan {}", plan_id);
+
+        Ok(())
+    }
+
+    /// Get all emergency contacts for a vault/plan.
+    pub fn get_emergency_contacts(env: Env, plan_id: u64) -> Vec<Address> {
+        let key = DataKey::EmergencyContacts(plan_id);
+        env.storage()
+            .persistent()
+            .get(&key)
+            .unwrap_or(Vec::new(&env))
+    }
+
+    pub fn approve_emergency_access(
+        env: Env,
+        guardian: Address,
+        plan_id: u64,
+        trusted_contact: Address,
+    ) -> Result<(), InheritanceError> {
+        guardian.require_auth();
+        let _plan = Self::get_plan(&env, plan_id).ok_or(InheritanceError::PlanNotFound)?;
+
+        let key_access = DataKey::EmergencyAccess(plan_id);
+        if env.storage().persistent().has(&key_access) {
+            return Err(InheritanceError::EmergencyAccessAlreadyActive);
+        }
+
+        let config: GuardianConfig = env
+            .storage()
+            .persistent()
+            .get(&DataKey::Guardians(plan_id))
+            .ok_or(InheritanceError::GuardianNotFound)?;
+
+        // Check if guardian is in the list
+        let mut is_guardian = false;
+        for g in config.guardians.iter() {
+            if g == guardian {
+                is_guardian = true;
+                break;
+            }
+        }
+        if !is_guardian {
+            return Err(InheritanceError::Unauthorized);
+        }
+
+        let key_approvals = DataKey::EmergencyApprovals(plan_id, trusted_contact.clone());
+        let mut approvals: Vec<Address> = env
+            .storage()
+            .persistent()
+            .get(&key_approvals)
+            .unwrap_or(Vec::new(&env));
+
+        let mut already_approved = false;
+        for a in approvals.iter() {
+            if a == guardian {
+                already_approved = true;
+                break;
+            }
+        }
+        if already_approved {
+            return Err(InheritanceError::AlreadyApproved);
+        }
+
+        approvals.push_back(guardian.clone());
+        env.storage().persistent().set(&key_approvals, &approvals);
+
+        env.events().publish(
+            (symbol_short!("EMERG"), symbol_short!("APPROVE")),
+            EmergencyAccessApprovedEvent {
+                plan_id,
+                trusted_contact: trusted_contact.clone(),
+                guardian,
+                approvals_count: approvals.len(),
+            },
+        );
+
+        if approvals.len() >= config.threshold {
+            let now = env.ledger().timestamp();
+            let emergency_access = EmergencyAccessRecord {
+                plan_id,
+                trusted_contact: trusted_contact.clone(),
+                activated_at: now,
+            };
+            env.storage()
+                .persistent()
+                .set(&key_access, &emergency_access);
+
+            env.events().publish(
+                (symbol_short!("EMERG"), symbol_short!("ACTIV")),
+                EmergencyAccessActivatedEvent {
+                    plan_id,
+                    trusted_contact,
+                    activated_at: now,
+                },
+            );
+            log!(
+                &env,
+                "Emergency access activated for plan {} at timestamp {}",
+                plan_id,
+                now
+            );
+        }
+
+        Ok(())
+    }
+
+    /// Query the emergency access record for a plan.
+    ///
+    /// # Arguments
+    /// * `env` - The environment
+    /// * `plan_id` - The ID of the plan
+    ///
+    /// # Returns
+    /// The EmergencyAccessRecord if emergency access is active, None otherwise
+    pub fn get_emergency_access(env: Env, plan_id: u64) -> Option<EmergencyAccessRecord> {
+        if Self::check_and_expire_emergency_access(&env, plan_id) {
+            let key = DataKey::EmergencyAccess(plan_id);
+            env.storage().persistent().get(&key)
+        } else {
+            None
+        }
+    }
+
     /// Retrieve a specific deactivated plan (User)
     ///
     /// # Arguments
@@ -1130,6 +1882,275 @@ impl InheritanceContract {
             }
         }
         Ok(plans)
+    }
+
+    // ───────────────────────────────────────────
+    // Loan Recall on Inheritance Trigger
+    // ───────────────────────────────────────────
+
+    fn get_trigger_info(env: &Env, plan_id: u64) -> Option<InheritanceTriggerInfo> {
+        let key = DataKey::InheritanceTrigger(plan_id);
+        env.storage().persistent().get(&key)
+    }
+
+    fn set_trigger_info(env: &Env, plan_id: u64, info: &InheritanceTriggerInfo) {
+        let key = DataKey::InheritanceTrigger(plan_id);
+        env.storage().persistent().set(&key, info);
+    }
+
+    /// Trigger inheritance for a plan. This freezes new loans and initiates
+    /// the loan recall process.
+    ///
+    /// # Arguments
+    /// * `env` - The environment
+    /// * `admin` - The admin address (must be the initialized admin)
+    /// * `plan_id` - The ID of the plan to trigger inheritance for
+    ///
+    /// # Effects
+    /// - Sets `is_lendable = false` to freeze new loans against this plan
+    /// - Records the trigger info for tracking recall/liquidation state
+    /// - Emits `INHERIT/TRIGGER` and `LOAN/FREEZE` events
+    ///
+    /// # Errors
+    /// - `PlanNotFound` if plan_id doesn't exist
+    /// - `PlanNotActive` if plan is not active
+    /// - `InheritanceAlreadyTriggered` if inheritance was already triggered
+    pub fn trigger_inheritance(
+        env: Env,
+        caller: Address,
+        plan_id: u64,
+    ) -> Result<(), InheritanceError> {
+        // Authorization check: Admin OR Owner OR Trusted Contact with active emergency access
+        let mut is_authorized = false;
+
+        // 1. Admin check
+        if let Some(admin) = Self::get_admin(&env) {
+            if admin == caller {
+                caller.require_auth();
+                is_authorized = true;
+            }
+        }
+
+        // 2. Plan check (Owner or Generic Emergency Access)
+        if !is_authorized {
+            let plan = Self::get_plan(&env, plan_id).ok_or(InheritanceError::PlanNotFound)?;
+            if plan.owner == caller {
+                caller.require_auth();
+                is_authorized = true;
+            } else if let Some(record) = Self::get_emergency_access(env.clone(), plan_id) {
+                if record.trusted_contact == caller {
+                    caller.require_auth();
+                    is_authorized = true;
+                }
+            }
+        }
+
+        if !is_authorized {
+            return Err(InheritanceError::Unauthorized);
+        }
+
+        let mut plan = Self::get_plan(&env, plan_id).ok_or(InheritanceError::PlanNotFound)?;
+
+        if !plan.is_active {
+            return Err(InheritanceError::PlanNotActive);
+        }
+
+        // Check if already triggered
+        if Self::get_trigger_info(&env, plan_id).is_some() {
+            return Err(InheritanceError::InheritanceAlreadyTriggered);
+        }
+
+        let now = env.ledger().timestamp();
+
+        // Freeze new loans by setting is_lendable to false
+        plan.is_lendable = false;
+        Self::store_plan(&env, plan_id, &plan);
+
+        // Create trigger info
+        let trigger_info = InheritanceTriggerInfo {
+            triggered_at: now,
+            loan_freeze_active: true,
+            recall_attempted: false,
+            liquidation_triggered: false,
+            original_loaned: plan.total_loaned,
+            recalled_amount: 0,
+            settled_amount: 0,
+        };
+        Self::set_trigger_info(&env, plan_id, &trigger_info);
+
+        // Emit events
+        env.events().publish(
+            (symbol_short!("INHERIT"), symbol_short!("TRIGGER")),
+            InheritanceTriggeredEvent {
+                plan_id,
+                triggered_at: now,
+                outstanding_loans: plan.total_loaned,
+            },
+        );
+
+        env.events().publish(
+            (symbol_short!("LOAN"), symbol_short!("FREEZE")),
+            LoanFreezeEvent {
+                plan_id,
+                frozen_at: now,
+            },
+        );
+
+        log!(
+            &env,
+            "Inheritance triggered for plan {} — loans frozen, outstanding: {}",
+            plan_id,
+            plan.total_loaned
+        );
+
+        Ok(())
+    }
+
+    /// Attempt to recall loaned funds back to the plan.
+    /// Called by admin after loan repayment has been collected off-chain
+    /// or via cross-contract calls to lending/borrowing contracts.
+    ///
+    /// # Arguments
+    /// * `env` - The environment
+    /// * `admin` - The admin address
+    /// * `plan_id` - The plan ID
+    /// * `recall_amount` - Amount of loaned funds being recalled
+    ///
+    /// # Effects
+    /// - Reduces `total_loaned` by the recalled amount
+    /// - Updates trigger info with recall progress
+    /// - Emits `LOAN/RECALL` event
+    ///
+    /// # Errors
+    /// - `InheritanceNotTriggered` if inheritance hasn't been triggered
+    /// - `NoOutstandingLoans` if there are no loans to recall
+    /// - `LoanRecallFailed` if recall_amount exceeds outstanding loans
+    pub fn recall_loan(
+        env: Env,
+        admin: Address,
+        plan_id: u64,
+        recall_amount: u64,
+    ) -> Result<(), InheritanceError> {
+        Self::require_admin(&env, &admin)?;
+
+        let mut plan = Self::get_plan(&env, plan_id).ok_or(InheritanceError::PlanNotFound)?;
+
+        let mut trigger_info = Self::get_trigger_info(&env, plan_id)
+            .ok_or(InheritanceError::InheritanceNotTriggered)?;
+
+        if plan.total_loaned == 0 {
+            return Err(InheritanceError::NoOutstandingLoans);
+        }
+
+        if recall_amount == 0 || recall_amount > plan.total_loaned {
+            return Err(InheritanceError::LoanRecallFailed);
+        }
+
+        // Reduce the loaned amount
+        plan.total_loaned -= recall_amount;
+        Self::store_plan(&env, plan_id, &plan);
+
+        // Update trigger info
+        trigger_info.recall_attempted = true;
+        trigger_info.recalled_amount += recall_amount;
+        Self::set_trigger_info(&env, plan_id, &trigger_info);
+
+        env.events().publish(
+            (symbol_short!("LOAN"), symbol_short!("RECALL")),
+            LoanRecallEvent {
+                plan_id,
+                recalled_amount: recall_amount,
+                remaining_loaned: plan.total_loaned,
+            },
+        );
+
+        log!(
+            &env,
+            "Recalled {} from plan {} loans — {} remaining",
+            recall_amount,
+            plan_id,
+            plan.total_loaned
+        );
+
+        Ok(())
+    }
+
+    /// Trigger liquidation fallback when loans cannot be fully recalled.
+    /// This writes off unrecoverable loaned amounts so that inheritance
+    /// execution cannot be blocked by outstanding loans.
+    ///
+    /// # Arguments
+    /// * `env` - The environment
+    /// * `admin` - The admin address
+    /// * `plan_id` - The plan ID
+    ///
+    /// # Effects
+    /// - Writes off remaining `total_loaned` from `total_amount`
+    /// - Sets `total_loaned` to 0
+    /// - Records liquidation in trigger info
+    /// - Emits `LOAN/LIQUIDATE` event
+    ///
+    /// # Errors
+    /// - `InheritanceNotTriggered` if inheritance hasn't been triggered
+    /// - `NoOutstandingLoans` if there are no loans to liquidate
+    pub fn liquidation_fallback(
+        env: Env,
+        admin: Address,
+        plan_id: u64,
+    ) -> Result<(), InheritanceError> {
+        Self::require_admin(&env, &admin)?;
+
+        let mut plan = Self::get_plan(&env, plan_id).ok_or(InheritanceError::PlanNotFound)?;
+
+        let mut trigger_info = Self::get_trigger_info(&env, plan_id)
+            .ok_or(InheritanceError::InheritanceNotTriggered)?;
+
+        if plan.total_loaned == 0 {
+            return Err(InheritanceError::NoOutstandingLoans);
+        }
+
+        let unrecoverable = plan.total_loaned;
+
+        // Write off the unrecoverable loaned amount from the plan's total
+        plan.total_amount = plan.total_amount.saturating_sub(unrecoverable);
+        plan.total_loaned = 0;
+        Self::store_plan(&env, plan_id, &plan);
+
+        // Update trigger info
+        trigger_info.liquidation_triggered = true;
+        trigger_info.settled_amount += unrecoverable;
+        Self::set_trigger_info(&env, plan_id, &trigger_info);
+
+        env.events().publish(
+            (symbol_short!("LOAN"), symbol_short!("LIQUIDAT")),
+            LiquidationFallbackEvent {
+                plan_id,
+                settled_amount: unrecoverable,
+                claimable_amount: plan.total_amount,
+            },
+        );
+
+        log!(
+            &env,
+            "Liquidation fallback for plan {}: wrote off {}, claimable: {}",
+            plan_id,
+            unrecoverable,
+            plan.total_amount
+        );
+
+        Ok(())
+    }
+
+    /// Query the inheritance trigger status for a plan.
+    pub fn get_inheritance_trigger(env: Env, plan_id: u64) -> Option<InheritanceTriggerInfo> {
+        Self::get_trigger_info(&env, plan_id)
+    }
+
+    /// Calculate the claimable amount for a plan, accounting for outstanding loans.
+    /// Returns the amount available to beneficiaries after any loan deductions.
+    pub fn get_claimable_amount(env: Env, plan_id: u64) -> Result<u64, InheritanceError> {
+        let plan = Self::get_plan(&env, plan_id).ok_or(InheritanceError::PlanNotFound)?;
+        Ok(plan.total_amount.saturating_sub(plan.total_loaned))
     }
 
     // ───────────────────────────────────────────

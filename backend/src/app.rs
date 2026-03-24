@@ -1,6 +1,6 @@
 use axum::{
-    extract::{Path, State},
-    routing::{get, patch, post},
+    extract::{Path, Query, State},
+    routing::{get, post},
     Json, Router,
 };
 use serde_json::{json, Value};
@@ -11,21 +11,29 @@ use tower_governor::{governor::GovernorConfigBuilder, GovernorLayer};
 use tower_http::trace::TraceLayer;
 use uuid::Uuid;
 
+use crate::analytics::analytics_router;
 use crate::api_error::ApiError;
 use crate::auth::{AuthenticatedAdmin, AuthenticatedUser};
 use crate::config::Config;
-use crate::notifications::{AuditLogService, NotificationService};
+use crate::loan_lifecycle::{CreateLoanRequest, LoanLifecycleService, LoanListFilters};
 use crate::service::{
-    ClaimPlanRequest, CreatePlanRequest, KycRecord, KycService, KycStatus, PlanService,
+    ClaimPlanRequest, CreatePlanRequest, KycRecord, KycService, KycStatus, LoanSimulationRequest,
+    LoanSimulationService, PlanService,
 };
+use crate::yield_service::{DefaultOnChainYieldService, OnChainYieldService};
 
 pub struct AppState {
     pub db: PgPool,
     pub config: Config,
+    pub yield_service: Arc<dyn OnChainYieldService>,
 }
 
 pub async fn create_app(db: PgPool, config: Config) -> Result<Router, ApiError> {
-    let state = Arc::new(AppState { db, config });
+    let state = Arc::new(AppState {
+        db,
+        config,
+        yield_service: Arc::new(DefaultOnChainYieldService::new()),
+    });
 
     // Rate limiting configuration
     let governor_conf = Arc::new(
@@ -40,11 +48,6 @@ pub async fn create_app(db: PgPool, config: Config) -> Result<Router, ApiError> 
         .route("/health", get(health_check))
         .route("/health/db", get(db_health_check))
         .route("/admin/login", post(crate::auth::login_admin))
-        .route(
-            "/api/auth/nonce/:wallet_address",
-            get(crate::auth::generate_nonce),
-        )
-        .route("/api/auth/wallet-login", post(crate::auth::wallet_login))
         .layer(
             ServiceBuilder::new()
                 .layer(TraceLayer::new_for_http())
@@ -62,9 +65,26 @@ pub async fn create_app(db: PgPool, config: Config) -> Result<Router, ApiError> 
         )
         .route("/api/plans/:plan_id/claim", post(claim_plan))
         .route("/api/plans/:plan_id", get(get_plan))
-        .route("/api/plans/:plan_id", axum::routing::delete(cancel_plan))
         .route("/api/plans", post(create_plan))
-        .route("/api/kyc/submit", post(submit_kyc))
+        // Loan Simulation endpoints
+        .route("/api/loans/simulate", post(simulate_loan))
+        .route("/api/loans/simulations", get(get_user_simulations))
+        .route("/api/loans/simulations/:simulation_id", get(get_simulation))
+        .route("/api/reputation", get(get_user_reputation))
+        // ── Loan Lifecycle Tracker ─────────────────────────────────────────────
+        .route("/api/loans/lifecycle", post(create_lifecycle_loan))
+        .route("/api/loans/lifecycle", get(list_lifecycle_loans))
+        .route("/api/loans/lifecycle/summary", get(get_lifecycle_summary))
+        .route("/api/loans/lifecycle/:id", get(get_lifecycle_loan))
+        .route("/api/loans/lifecycle/:id/repay", post(repay_lifecycle_loan))
+        .route(
+            "/api/admin/loans/lifecycle/:id/liquidate",
+            post(liquidate_lifecycle_loan),
+        )
+        .route(
+            "/api/admin/loans/lifecycle/mark-overdue",
+            post(mark_overdue_loans),
+        )
         .route(
             "/api/admin/plans/due-for-claim",
             get(get_all_due_for_claim_plans_admin),
@@ -72,12 +92,7 @@ pub async fn create_app(db: PgPool, config: Config) -> Result<Router, ApiError> 
         .route("/api/admin/kyc/:user_id", get(get_kyc_status))
         .route("/api/admin/kyc/approve", post(approve_kyc))
         .route("/api/admin/kyc/reject", post(reject_kyc))
-        .route("/api/kyc", get(get_user_kyc))
-        // ── Notifications ────────────────────────────────────────────────
-        .route("/api/notifications", get(list_notifications))
-        .route("/api/notifications/:id/read", patch(mark_notification_read))
-        // ── Admin Audit Logs ─────────────────────────────────────────────
-        .route("/api/admin/logs", get(list_audit_logs))
+        .merge(analytics_router())
         .with_state(state);
 
     Ok(app)
@@ -96,114 +111,12 @@ async fn db_health_check(
     ))
 }
 
-async fn submit_kyc(
-    State(state): State<Arc<AppState>>,
-    AuthenticatedUser(user): AuthenticatedUser,
-) -> Result<Json<KycRecord>, ApiError> {
-    let status = KycService::submit_kyc(&state.db, user.user_id).await?;
-    Ok(Json(status))
-}
-
 async fn create_plan(
     State(state): State<Arc<AppState>>,
     AuthenticatedUser(user): AuthenticatedUser,
-    headers: axum::http::HeaderMap,
     Json(req): Json<CreatePlanRequest>,
 ) -> Result<Json<Value>, ApiError> {
-    // Validate KYC approved
-    let kyc_record = KycService::get_kyc_status(&state.db, user.user_id).await?;
-    if kyc_record.status != "approved" {
-        return Err(ApiError::Forbidden("KYC not approved".to_string()));
-    }
-
-    // Require 2FA verification (stub, replace with actual logic)
-    // if !verify_2fa(user.user_id, req.2fa_code) {
-    //     return Err(ApiError::Forbidden("2FA verification failed".to_string()));
-    // }
-
-    // Deduct 2% fee
-    let amount = req.net_amount + req.fee;
-    let fee = amount * rust_decimal::Decimal::new(2, 2) / rust_decimal::Decimal::new(100, 0);
-    let net_amount = amount - fee;
-
-    let mut req_mut = req.clone();
-    req_mut.fee = fee;
-    req_mut.net_amount = net_amount;
-
-    let mut tx = state.db.begin().await?;
-    let beneficiary_name = req_mut
-        .beneficiary_name
-        .as_deref()
-        .map(|s| s.trim().to_string());
-    let bank_name = req_mut.bank_name.as_deref().map(|s| s.trim().to_string());
-    let bank_account_number = req_mut
-        .bank_account_number
-        .as_deref()
-        .map(|s| s.trim().to_string());
-    let currency_preference = Some(req_mut.currency_preference.trim().to_uppercase());
-
-    let inserted_id: Uuid = sqlx::query_scalar(
-        r#"
-        INSERT INTO plans (
-            user_id, title, description, fee, net_amount, status,
-            beneficiary_name, bank_account_number, bank_name, currency_preference
-        )
-        VALUES ($1, $2, $3, $4, $5, 'pending', $6, $7, $8, $9)
-        RETURNING id
-        "#,
-    )
-    .bind(user.user_id)
-    .bind(&req_mut.title)
-    .bind(&req_mut.description)
-    .bind(req_mut.fee.to_string())
-    .bind(req_mut.net_amount.to_string())
-    .bind(&beneficiary_name)
-    .bind(&bank_account_number)
-    .bind(&bank_name)
-    .bind(&currency_preference)
-    .fetch_one(&mut *tx)
-    .await?;
-
-    sqlx::query(
-        r#"
-        INSERT INTO action_logs (user_id, action, entity_id, entity_type)
-        VALUES ($1, $2, $3, $4)
-        "#,
-    )
-    .bind(Some(user.user_id))
-    .bind(crate::notifications::audit_action::PLAN_CREATED)
-    .bind(Some(inserted_id))
-    .bind(Some(crate::notifications::entity_type::PLAN))
-    .execute(&mut *tx)
-    .await?;
-
-    let should_revert = headers
-        .get("X-Simulate-Revert")
-        .and_then(|v| v.to_str().ok())
-        .map(|v| v.eq_ignore_ascii_case("true") || v == "1")
-        .unwrap_or(false);
-    if should_revert {
-        tx.rollback().await?;
-        return Err(ApiError::Internal(anyhow::anyhow!(
-            "Token transfer reverted"
-        )));
-    }
-    tx.commit().await?;
-    let plan = PlanService::get_plan_by_id(&state.db, inserted_id, user.user_id)
-        .await?
-        .expect("plan must exist after commit");
-
-    // Audit log
-    sqlx::query("INSERT INTO plan_logs (plan_id, action, performed_by) VALUES ($1, $2, $3)")
-        .bind(inserted_id)
-        .bind("create")
-        .bind(user.user_id)
-        .execute(&state.db)
-        .await?;
-
-    // Notification (stub)
-    // notify_plan_created(user.user_id, plan.id);
-
+    let plan = PlanService::create_plan(&state.db, user.user_id, &req).await?;
     Ok(Json(json!({
         "status": "success",
         "data": plan
@@ -231,50 +144,10 @@ async fn claim_plan(
     AuthenticatedUser(user): AuthenticatedUser,
     Json(req): Json<ClaimPlanRequest>,
 ) -> Result<Json<Value>, ApiError> {
-    // Validate KYC approved
-    let kyc_record = KycService::get_kyc_status(&state.db, user.user_id).await?;
-    if kyc_record.status != "approved" {
-        return Err(ApiError::Forbidden("KYC not approved".to_string()));
-    }
-
-    // Require 2FA verification (stub, replace with actual logic)
-    // if !verify_2fa(user.user_id, req.2fa_code) {
-    //     return Err(ApiError::Forbidden("2FA verification failed".to_string()));
-    // }
-
     let plan = PlanService::claim_plan(&state.db, plan_id, user.user_id, &req).await?;
-
-    // Transfer USDC to user wallet (stub)
-    // transfer_usdc_to_wallet(user.user_id, plan.net_amount);
-
-    // Audit log
-    sqlx::query("INSERT INTO plan_logs (plan_id, action, performed_by) VALUES ($1, $2, $3)")
-        .bind(plan.id)
-        .bind("claim")
-        .bind(user.user_id)
-        .execute(&state.db)
-        .await?;
-
-    // Notification (stub)
-    // notify_plan_claimed(user.user_id, plan.id);
-
     Ok(Json(json!({
         "status": "success",
         "message": "Claim recorded",
-        "data": plan
-    })))
-}
-
-async fn cancel_plan(
-    State(state): State<Arc<AppState>>,
-    Path(plan_id): Path<Uuid>,
-    AuthenticatedUser(user): AuthenticatedUser,
-) -> Result<Json<Value>, ApiError> {
-    let plan = PlanService::cancel_plan(&state.db, plan_id, user.user_id).await?;
-
-    Ok(Json(json!({
-        "status": "success",
-        "message": "Plan cancelled successfully",
         "data": plan
     })))
 }
@@ -324,14 +197,6 @@ async fn get_all_due_for_claim_plans_admin(
     })))
 }
 
-async fn get_user_kyc(
-    State(state): State<Arc<AppState>>,
-    AuthenticatedUser(user): AuthenticatedUser,
-) -> Result<Json<KycRecord>, ApiError> {
-    let status = KycService::get_kyc_status(&state.db, user.user_id).await?;
-    Ok(Json(status))
-}
-
 #[derive(serde::Deserialize)]
 pub struct KycUpdateRequest {
     pub user_id: Uuid,
@@ -376,42 +241,178 @@ async fn reject_kyc(
     Ok(Json(status))
 }
 
-// ── Notification Handlers ─────────────────────────────────────────────────────
+// =============================================================================
+// Loan Simulation Endpoints
+// =============================================================================
 
-async fn list_notifications(
+/// Preview loan simulation without saving
+async fn simulate_loan(
     State(state): State<Arc<AppState>>,
     AuthenticatedUser(user): AuthenticatedUser,
+    Json(req): Json<LoanSimulationRequest>,
 ) -> Result<Json<Value>, ApiError> {
-    let notifications = NotificationService::list_for_user(&state.db, user.user_id).await?;
+    let result = LoanSimulationService::create_simulation(&state.db, user.user_id, &req).await?;
     Ok(Json(json!({
         "status": "success",
-        "data": notifications,
-        "count": notifications.len()
+        "data": result
     })))
 }
 
-async fn mark_notification_read(
+/// Get all loan simulations for the current user
+async fn get_user_simulations(
     State(state): State<Arc<AppState>>,
-    Path(notif_id): Path<Uuid>,
     AuthenticatedUser(user): AuthenticatedUser,
 ) -> Result<Json<Value>, ApiError> {
-    let notification = NotificationService::mark_read(&state.db, notif_id, user.user_id).await?;
+    let limit = 50; // Default limit
+    let simulations =
+        LoanSimulationService::get_user_simulations(&state.db, user.user_id, limit).await?;
     Ok(Json(json!({
         "status": "success",
-        "data": notification
+        "data": simulations,
+        "count": simulations.len()
     })))
 }
 
-// ── Admin Audit Log Handler ───────────────────────────────────────────────────
+/// Get a specific loan simulation by ID
+async fn get_simulation(
+    State(state): State<Arc<AppState>>,
+    Path(simulation_id): Path<Uuid>,
+    AuthenticatedUser(user): AuthenticatedUser,
+) -> Result<Json<Value>, ApiError> {
+    let simulation =
+        LoanSimulationService::get_simulation_by_id(&state.db, simulation_id, user.user_id).await?;
+    match simulation {
+        Some(sim) => Ok(Json(json!({
+            "status": "success",
+            "data": sim
+        }))),
+        None => Err(ApiError::NotFound(format!(
+            "Simulation {} not found",
+            simulation_id
+        ))),
+    }
+}
 
-async fn list_audit_logs(
+// =============================================================================
+// Reputation Endpoints
+// =============================================================================
+
+/// Get the current user's borrower reputation
+async fn get_user_reputation(
+    State(state): State<Arc<AppState>>,
+    AuthenticatedUser(user): AuthenticatedUser,
+) -> Result<Json<Value>, ApiError> {
+    let reputation =
+        crate::reputation::ReputationService::get_reputation(&state.db, user.user_id).await?;
+    Ok(Json(json!({
+        "status": "success",
+        "data": reputation
+    })))
+}
+
+// =============================================================================
+// Loan Lifecycle Endpoints
+// =============================================================================
+
+/// Open a new loan in the `active` state.
+///
+/// `POST /api/loans/lifecycle`
+async fn create_lifecycle_loan(
+    State(state): State<Arc<AppState>>,
+    AuthenticatedUser(user): AuthenticatedUser,
+    Json(mut req): Json<CreateLoanRequest>,
+) -> Result<Json<Value>, ApiError> {
+    // Override user_id from the authenticated token to prevent impersonation.
+    req.user_id = user.user_id;
+    let record = LoanLifecycleService::create_loan(&state.db, &req).await?;
+    Ok(Json(json!({ "status": "success", "data": record })))
+}
+
+/// List loans, optionally filtered by status.
+///
+/// `GET /api/loans/lifecycle[?status=active|repaid|overdue|liquidated]`
+async fn list_lifecycle_loans(
+    State(state): State<Arc<AppState>>,
+    AuthenticatedUser(user): AuthenticatedUser,
+    Query(mut filters): Query<LoanListFilters>,
+) -> Result<Json<Value>, ApiError> {
+    // Users may only see their own loans.
+    filters.user_id = Some(user.user_id);
+    let loans = LoanLifecycleService::list_loans(&state.db, &filters).await?;
+    Ok(Json(json!({
+        "status": "success",
+        "data": loans,
+        "count": loans.len()
+    })))
+}
+
+/// Aggregate counts by lifecycle status for the authenticated user.
+///
+/// `GET /api/loans/lifecycle/summary`
+async fn get_lifecycle_summary(
+    State(state): State<Arc<AppState>>,
+    AuthenticatedUser(user): AuthenticatedUser,
+) -> Result<Json<Value>, ApiError> {
+    let summary =
+        LoanLifecycleService::get_lifecycle_summary(&state.db, Some(user.user_id)).await?;
+    Ok(Json(json!({ "status": "success", "data": summary })))
+}
+
+/// Fetch a single loan by its UUID.
+///
+/// `GET /api/loans/lifecycle/:id`
+async fn get_lifecycle_loan(
+    State(state): State<Arc<AppState>>,
+    Path(id): Path<Uuid>,
+    AuthenticatedUser(_user): AuthenticatedUser,
+) -> Result<Json<Value>, ApiError> {
+    let record = LoanLifecycleService::get_loan(&state.db, id).await?;
+    Ok(Json(json!({ "status": "success", "data": record })))
+}
+
+/// Apply a repayment to a loan.  When cumulative repayments reach or exceed
+/// the principal the loan transitions to `repaid`.
+///
+/// `POST /api/loans/lifecycle/:id/repay`
+#[derive(serde::Deserialize)]
+struct RepayRequest {
+    amount: rust_decimal::Decimal,
+}
+
+async fn repay_lifecycle_loan(
+    State(state): State<Arc<AppState>>,
+    Path(id): Path<Uuid>,
+    AuthenticatedUser(user): AuthenticatedUser,
+    Json(req): Json<RepayRequest>,
+) -> Result<Json<Value>, ApiError> {
+    let record = LoanLifecycleService::repay_loan(&state.db, id, user.user_id, req.amount).await?;
+    Ok(Json(json!({ "status": "success", "data": record })))
+}
+
+/// Admin: forcefully liquidate a loan.
+///
+/// `POST /api/admin/loans/lifecycle/:id/liquidate`
+async fn liquidate_lifecycle_loan(
+    State(state): State<Arc<AppState>>,
+    Path(id): Path<Uuid>,
+    AuthenticatedAdmin(admin): AuthenticatedAdmin,
+) -> Result<Json<Value>, ApiError> {
+    let record = LoanLifecycleService::liquidate_loan(&state.db, id, admin.admin_id).await?;
+    Ok(Json(json!({ "status": "success", "data": record })))
+}
+
+/// Admin: sweep all active loans whose due_date has passed and mark them
+/// `overdue`.  Designed to be triggered by a cron / background job.
+///
+/// `POST /api/admin/loans/lifecycle/mark-overdue`
+async fn mark_overdue_loans(
     State(state): State<Arc<AppState>>,
     AuthenticatedAdmin(_admin): AuthenticatedAdmin,
 ) -> Result<Json<Value>, ApiError> {
-    let logs = AuditLogService::list_all(&state.db).await?;
+    let marked_ids = LoanLifecycleService::mark_overdue_loans(&state.db).await?;
     Ok(Json(json!({
         "status": "success",
-        "data": logs,
-        "count": logs.len()
+        "marked_overdue": marked_ids.len(),
+        "loan_ids": marked_ids
     })))
 }

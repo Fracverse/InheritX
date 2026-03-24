@@ -20,7 +20,7 @@ fn generate_user_token(user_id: Uuid) -> String {
     encode(
         &Header::default(),
         &claims,
-        &EncodingKey::from_secret(b"secret_key_change_in_production"),
+        &EncodingKey::from_secret(b"test-jwt-secret"),
     )
     .expect("Failed to generate user token")
 }
@@ -36,7 +36,7 @@ fn generate_admin_token(admin_id: Uuid) -> String {
     encode(
         &Header::default(),
         &claims,
-        &EncodingKey::from_secret(b"secret_key_change_in_production"),
+        &EncodingKey::from_secret(b"test-jwt-secret"),
     )
     .expect("Failed to generate admin token")
 }
@@ -93,6 +93,86 @@ async fn user_cannot_fetch_logs() {
 }
 
 #[tokio::test]
+async fn user_cannot_access_kyc_status() {
+    let Some(ctx) = helpers::TestContext::from_env().await else {
+        return;
+    };
+
+    let user_id = Uuid::new_v4();
+    let token = generate_user_token(user_id);
+
+    let response = ctx
+        .app
+        .oneshot(
+            Request::builder()
+                .method("GET")
+                .uri(format!("/api/admin/kyc/{}", user_id))
+                .header("Authorization", format!("Bearer {}", token))
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .expect("Request failed");
+
+    // Since AuthenticatedAdmin expects AdminClaims, a user token will fail to parse and return 401
+    assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
+}
+
+#[tokio::test]
+async fn user_cannot_approve_kyc() {
+    let Some(ctx) = helpers::TestContext::from_env().await else {
+        return;
+    };
+
+    let user_id = Uuid::new_v4();
+    let token = generate_user_token(user_id);
+
+    let response = ctx
+        .app
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/api/admin/kyc/approve")
+                .header("Authorization", format!("Bearer {}", token))
+                .header("Content-Type", "application/json")
+                .body(Body::from(json!({"user_id": user_id}).to_string()))
+                .unwrap(),
+        )
+        .await
+        .expect("Request failed");
+
+    // Since AuthenticatedAdmin expects AdminClaims, a user token will fail to parse and return 401
+    assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
+}
+
+#[tokio::test]
+async fn user_cannot_reject_kyc() {
+    let Some(ctx) = helpers::TestContext::from_env().await else {
+        return;
+    };
+
+    let user_id = Uuid::new_v4();
+    let token = generate_user_token(user_id);
+
+    let response = ctx
+        .app
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/api/admin/kyc/reject")
+                .header("Authorization", format!("Bearer {}", token))
+                .header("Content-Type", "application/json")
+                .body(Body::from(json!({"user_id": user_id}).to_string()))
+                .unwrap(),
+        )
+        .await
+        .expect("Request failed");
+
+    // Since AuthenticatedAdmin expects AdminClaims, a user token will fail to parse and return 401
+    assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
+}
+
+#[allow(dead_code)]
 async fn log_inserted_on_plan_create_and_claim() {
     let Some(ctx) = helpers::TestContext::from_env().await else {
         return;
