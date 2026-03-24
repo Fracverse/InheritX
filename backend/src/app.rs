@@ -558,7 +558,8 @@ async fn mark_overdue_loans(
 // =============================================================================
 
 use crate::emergency_access::{
-    EmergencyAccessService, GrantEmergencyAccessRequest, RevokeEmergencyAccessRequest,
+    EmergencyAccessService as LegacyEmergencyAccessService, GrantEmergencyAccessRequest,
+    RevokeEmergencyAccessRequest,
 };
 
 /// Admin: Grant emergency access to a plan
@@ -569,7 +570,8 @@ async fn grant_emergency_access(
     AuthenticatedAdmin(admin): AuthenticatedAdmin,
     Json(req): Json<GrantEmergencyAccessRequest>,
 ) -> Result<Json<Value>, ApiError> {
-    let response = EmergencyAccessService::grant_access(&state.db, admin.admin_id, &req).await?;
+    let response =
+        LegacyEmergencyAccessService::grant_access(&state.db, admin.admin_id, &req).await?;
     Ok(Json(json!({
         "status": "success",
         "data": response
@@ -584,7 +586,8 @@ async fn revoke_emergency_access(
     AuthenticatedAdmin(admin): AuthenticatedAdmin,
     Json(req): Json<RevokeEmergencyAccessRequest>,
 ) -> Result<Json<Value>, ApiError> {
-    let response = EmergencyAccessService::revoke_access(&state.db, admin.admin_id, &req).await?;
+    let response =
+        LegacyEmergencyAccessService::revoke_access(&state.db, admin.admin_id, &req).await?;
     Ok(Json(json!({
         "status": "success",
         "data": response
@@ -598,7 +601,7 @@ async fn get_all_emergency_access(
     State(state): State<Arc<AppState>>,
     AuthenticatedAdmin(_admin): AuthenticatedAdmin,
 ) -> Result<Json<Value>, ApiError> {
-    let access_records = EmergencyAccessService::get_all_access(&state.db).await?;
+    let access_records = LegacyEmergencyAccessService::get_all_access(&state.db).await?;
     Ok(Json(json!({
         "status": "success",
         "data": access_records,
@@ -615,7 +618,7 @@ async fn get_plan_emergency_access(
     AuthenticatedAdmin(_admin): AuthenticatedAdmin,
 ) -> Result<Json<Value>, ApiError> {
     let access_records =
-        EmergencyAccessService::get_active_access_for_plan(&state.db, plan_id).await?;
+        LegacyEmergencyAccessService::get_active_access_for_plan(&state.db, plan_id).await?;
     Ok(Json(json!({
         "status": "success",
         "data": access_records,
