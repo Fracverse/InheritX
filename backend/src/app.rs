@@ -1,6 +1,6 @@
 use axum::{
     extract::{Path, Query, State},
-    routing::{get, post},
+    routing::{get, post, put},
     Json, Router,
 };
 use serde_json::{json, Value};
@@ -17,9 +17,10 @@ use crate::auth::{AuthenticatedAdmin, AuthenticatedUser};
 use crate::config::Config;
 use crate::loan_lifecycle::{CreateLoanRequest, LoanLifecycleService, LoanListFilters};
 use crate::service::{
-    ClaimPlanRequest, CreatePlanRequest, EmergencyAdminService, KycRecord, KycService, KycStatus,
-    LoanSimulationRequest, LoanSimulationService, PausePlanRequest, PlanService,
-    RiskOverrideRequest, UnpausePlanRequest,
+    ClaimPlanRequest, CreateEmergencyContactRequest, CreatePlanRequest, EmergencyAdminService,
+    EmergencyContactService, KycRecord, KycService, KycStatus, LoanSimulationRequest,
+    LoanSimulationService, PausePlanRequest, PlanService, RiskOverrideRequest, UnpausePlanRequest,
+    UpdateEmergencyContactRequest,
 };
 use crate::yield_service::{DefaultOnChainYieldService, OnChainYieldService};
 
@@ -67,6 +68,14 @@ pub async fn create_app(db: PgPool, config: Config) -> Result<Router, ApiError> 
         .route("/api/plans/:plan_id/claim", post(claim_plan))
         .route("/api/plans/:plan_id", get(get_plan))
         .route("/api/plans", post(create_plan))
+        .route(
+            "/api/emergency/contacts",
+            get(list_emergency_contacts).post(create_emergency_contact),
+        )
+        .route(
+            "/api/emergency/contacts/:contact_id",
+            put(update_emergency_contact).delete(delete_emergency_contact),
+        )
         // Loan Simulation endpoints
         .route("/api/loans/simulate", post(simulate_loan))
         .route("/api/loans/simulations", get(get_user_simulations))
@@ -208,6 +217,46 @@ async fn get_all_due_for_claim_plans_admin(
         "data": plans,
         "count": plans.len()
     })))
+}
+
+async fn list_emergency_contacts(
+    State(state): State<Arc<AppState>>,
+    AuthenticatedUser(user): AuthenticatedUser,
+) -> Result<Json<Value>, ApiError> {
+    let contacts = EmergencyContactService::list_for_user(&state.db, user.user_id).await?;
+    Ok(Json(
+        json!({ "status": "success", "data": contacts, "count": contacts.len() }),
+    ))
+}
+
+async fn create_emergency_contact(
+    State(state): State<Arc<AppState>>,
+    AuthenticatedUser(user): AuthenticatedUser,
+    Json(req): Json<CreateEmergencyContactRequest>,
+) -> Result<Json<Value>, ApiError> {
+    let contact = EmergencyContactService::create_contact(&state.db, user.user_id, &req).await?;
+    Ok(Json(json!({ "status": "success", "data": contact })))
+}
+
+async fn update_emergency_contact(
+    State(state): State<Arc<AppState>>,
+    Path(contact_id): Path<Uuid>,
+    AuthenticatedUser(user): AuthenticatedUser,
+    Json(req): Json<UpdateEmergencyContactRequest>,
+) -> Result<Json<Value>, ApiError> {
+    let contact =
+        EmergencyContactService::update_contact(&state.db, user.user_id, contact_id, &req).await?;
+    Ok(Json(json!({ "status": "success", "data": contact })))
+}
+
+async fn delete_emergency_contact(
+    State(state): State<Arc<AppState>>,
+    Path(contact_id): Path<Uuid>,
+    AuthenticatedUser(user): AuthenticatedUser,
+) -> Result<Json<Value>, ApiError> {
+    let result =
+        EmergencyContactService::delete_contact(&state.db, user.user_id, contact_id).await?;
+    Ok(Json(json!({ "status": "success", "data": result })))
 }
 
 #[derive(serde::Deserialize)]
