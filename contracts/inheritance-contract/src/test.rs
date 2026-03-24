@@ -3,7 +3,10 @@
 use super::*;
 use mock_token::MockToken;
 use mock_token::MockTokenClient;
-use soroban_sdk::{testutils::Address as _, token, vec, Address, Bytes, Env, String, Vec};
+use soroban_sdk::{
+    testutils::{Address as _, Ledger},
+    token, vec, Address, Bytes, Env, String, Vec,
+};
 
 /// Test helper for balance and mint (uses mock-token crate client).
 struct TestTokenHelper<'a> {
@@ -2561,4 +2564,147 @@ fn test_full_loan_recall_workflow() {
     assert_eq!(info.original_loaned, 200_000);
     assert_eq!(info.recalled_amount, 150_000);
     assert_eq!(info.settled_amount, 50_000);
+}
+
+// ───────────────────────────────────────────────────
+// Emergency Access and Transfer Guard Tests
+// ───────────────────────────────────────────────────
+
+#[test]
+fn test_activate_and_deactivate_emergency_access() {
+    let env = Env::default();
+    let (client, token, _admin, owner) = setup_with_token_and_admin(&env);
+    let trusted_contact = create_test_address(&env, 555);
+
+    let plan_id = client.create_inheritance_plan(&plan_params(
+        &env,
+        &owner,
+        &token,
+        "Will",
+        "My will",
+        100_000u64,
+        DistributionMethod::LumpSum,
+        &one_beneficiary(&env, "Alice", "alice@example.com", 123456),
+    ));
+
+    // Initially no emergency access
+    assert!(client.get_emergency_access(&plan_id).is_none());
+    assert!(!client.is_emergency_active(&plan_id));
+
+    // Activate
+    client.activate_emergency_access(&owner, &plan_id, &trusted_contact);
+    
+    let record = client.get_emergency_access(&plan_id).unwrap();
+    assert_eq!(record.trusted_contact, trusted_contact);
+    assert!(client.is_emergency_active(&plan_id));
+
+    // Deactivate
+    client.deactivate_emergency_access(&owner, &plan_id);
+    assert!(client.get_emergency_access(&plan_id).is_none());
+    assert!(!client.is_emergency_active(&plan_id));
+}
+
+#[test]
+fn test_is_emergency_active_cooldown() {
+    let env = Env::default();
+    let (client, token, _admin, owner) = setup_with_token_and_admin(&env);
+    let trusted_contact = create_test_address(&env, 555);
+
+    let plan_id = client.create_inheritance_plan(&plan_params(
+        &env,
+        &owner,
+        &token,
+        "Will",
+        "My will",
+        100_000u64,
+        DistributionMethod::LumpSum,
+        &one_beneficiary(&env, "Alice", "alice@example.com", 123456),
+    ));
+
+    client.activate_emergency_access(&owner, &plan_id, &trusted_contact);
+    assert!(client.is_emergency_active(&plan_id));
+
+    // Jump forward 23 hours (82800 seconds) - should still be active
+    env.ledger().with_mut(|li| li.timestamp += 82800);
+    assert!(client.is_emergency_active(&plan_id));
+
+    // Jump forward another 2 hours (total 25 hours) - should NO LONGER be active
+    env.ledger().with_mut(|li| li.timestamp += 7200);
+    assert!(!client.is_emergency_active(&plan_id));
+}
+
+#[test]
+fn test_withdraw_emergency_limit() {
+    let env = Env::default();
+    let (client, token, _admin, owner) = setup_with_token_and_admin(&env);
+    let trusted_contact = create_test_address(&env, 555);
+
+    // Plan stores 98,000 (100,000 - 2% fee)
+    let plan_id = client.create_inheritance_plan(&plan_params(
+        &env,
+        &owner,
+        &token,
+        "Will",
+        "My will",
+        100_000u64,
+        DistributionMethod::LumpSum,
+        &one_beneficiary(&env, "Alice", "alice@example.com", 123456),
+    ));
+
+    // Activate emergency
+    client.activate_emergency_access(&owner, &plan_id, &trusted_contact);
+    
+    // 10% limit of 98,000 is 9,800
+    
+    // Withdraw 5,000 should SUCCEED
+    assert!(client.try_withdraw(&owner, &token, &plan_id, &5_000u64).is_ok());
+
+    // Withdraw 10,000 should FAIL
+    let result = client.try_withdraw(&owner, &token, &plan_id, &10_000u64);
+    assert!(result.is_err());
+    
+    // Jump forward 25 hours - limit should BE REMOVED
+    env.ledger().with_mut(|li| li.timestamp += 90000);
+    assert!(client.try_withdraw(&owner, &token, &plan_id, &10_000u64).is_ok());
+}
+
+#[test]
+fn test_claim_emergency_limit() {
+    let env = Env::default();
+    let (client, token, _admin, owner) = setup_with_token_and_admin(&env);
+    let trusted_contact = create_test_address(&env, 555);
+
+    // 10% limit will be applied to the payout.
+    // If we want it to fail, we need a payout > 10% of total.
+    // Since we only have one beneficiary with 100%, payout is 100% of total.
+    
+    let plan_id = client.create_inheritance_plan(&plan_params(
+        &env,
+        &owner,
+        &token,
+        "Will",
+        "My will",
+        100_000u64,
+        DistributionMethod::LumpSum,
+        &one_beneficiary(&env, "Alice", "alice@example.com", 123456),
+    ));
+
+    client.activate_emergency_access(&owner, &plan_id, &trusted_contact);
+    
+    // Claim should FAIL because payout (100%) > limit (10%)
+    let result = client.try_claim_inheritance_plan(
+        &plan_id,
+        &String::from_str(&env, "alice@example.com"),
+        &123456u32,
+    );
+    assert!(result.is_err());
+
+    // Jump forward 25 hours - should SUCCEED
+    env.ledger().with_mut(|li| li.timestamp += 90000);
+    let result = client.try_claim_inheritance_plan(
+        &plan_id,
+        &String::from_str(&env, "alice@example.com"),
+        &123456u32,
+    );
+    assert!(result.is_ok());
 }
