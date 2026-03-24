@@ -2517,6 +2517,19 @@ pub struct EmergencyAccessActionResponse {
     pub message: String,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize, sqlx::FromRow)]
+pub struct EmergencyAccessRiskAlert {
+    pub id: Uuid,
+    pub grant_id: Uuid,
+    pub user_id: Uuid,
+    pub emergency_contact_id: Uuid,
+    pub alert_type: String,
+    pub severity: String,
+    pub message: String,
+    pub metadata: serde_json::Value,
+    pub created_at: DateTime<Utc>,
+}
+
 #[derive(Debug, Serialize)]
 pub struct EmergencyActionResponse {
     pub success: bool,
@@ -2700,6 +2713,120 @@ impl EmergencyContactService {
 pub struct EmergencyAccessService;
 
 impl EmergencyAccessService {
+    async fn create_risk_alert(
+        executor: &mut sqlx::PgConnection,
+        grant_id: Uuid,
+        user_id: Uuid,
+        contact_id: Uuid,
+        alert_type: &str,
+        severity: &str,
+        message: &str,
+        metadata: serde_json::Value,
+    ) -> Result<(), ApiError> {
+        sqlx::query(
+            r#"
+            INSERT INTO emergency_access_risk_alerts (
+                grant_id, user_id, emergency_contact_id, alert_type, severity, message, metadata
+            )
+            VALUES ($1, $2, $3, $4, $5, $6, $7)
+            "#,
+        )
+        .bind(grant_id)
+        .bind(user_id)
+        .bind(contact_id)
+        .bind(alert_type)
+        .bind(severity)
+        .bind(message)
+        .bind(metadata)
+        .execute(executor)
+        .await?;
+
+        Ok(())
+    }
+
+    async fn evaluate_grant_risk(
+        executor: &mut sqlx::PgConnection,
+        grant: &EmergencyAccessGrant,
+    ) -> Result<(), ApiError> {
+        let recent_grant_count = sqlx::query_scalar::<_, i64>(
+            r#"
+            SELECT COUNT(*)
+            FROM emergency_access_grants
+            WHERE user_id = $1
+              AND created_at >= NOW() - INTERVAL '1 hour'
+            "#,
+        )
+        .bind(grant.user_id)
+        .fetch_one(&mut *executor)
+        .await?;
+
+        if recent_grant_count >= 4 {
+            Self::create_risk_alert(
+                &mut *executor,
+                grant.id,
+                grant.user_id,
+                grant.emergency_contact_id,
+                "high_frequency_grants",
+                "high",
+                "Multiple emergency access grants were created within a short time window.",
+                serde_json::json!({ "recent_grant_count": recent_grant_count }),
+            )
+            .await?;
+        }
+
+        let long_lived_high_privilege = grant.permissions.iter().any(|permission| {
+            permission == "transfer_funds" || permission == "manage_beneficiaries"
+        }) && grant.expires_at
+            >= Utc::now() + chrono::Duration::days(7);
+
+        if long_lived_high_privilege {
+            Self::create_risk_alert(
+                &mut *executor,
+                grant.id,
+                grant.user_id,
+                grant.emergency_contact_id,
+                "high_privilege_long_lived_access",
+                "medium",
+                "High-privilege emergency access was granted with a long expiration window.",
+                serde_json::json!({
+                    "permissions": grant.permissions,
+                    "expires_at": grant.expires_at
+                }),
+            )
+            .await?;
+        }
+
+        Ok(())
+    }
+
+    async fn evaluate_revoke_risk(
+        executor: &mut sqlx::PgConnection,
+        grant: &EmergencyAccessGrant,
+    ) -> Result<(), ApiError> {
+        if let Some(revoked_at) = grant.revoked_at {
+            let active_duration = revoked_at - grant.created_at;
+            if active_duration <= chrono::Duration::minutes(10) {
+                Self::create_risk_alert(
+                    executor,
+                    grant.id,
+                    grant.user_id,
+                    grant.emergency_contact_id,
+                    "rapid_grant_revoke",
+                    "medium",
+                    "Emergency access was revoked shortly after it was granted.",
+                    serde_json::json!({
+                        "granted_at": grant.created_at,
+                        "revoked_at": revoked_at,
+                        "active_duration_minutes": active_duration.num_minutes()
+                    }),
+                )
+                .await?;
+            }
+        }
+
+        Ok(())
+    }
+
     fn normalize_permissions(permissions: &[String]) -> Vec<String> {
         permissions
             .iter()
@@ -2839,6 +2966,8 @@ impl EmergencyAccessService {
         )
         .await?;
 
+        Self::evaluate_grant_risk(&mut *tx, &grant).await?;
+
         tx.commit().await?;
 
         Ok(EmergencyAccessActionResponse {
@@ -2924,6 +3053,8 @@ impl EmergencyAccessService {
         )
         .await?;
 
+        Self::evaluate_revoke_risk(&mut *tx, &updated).await?;
+
         tx.commit().await?;
 
         Ok(EmergencyAccessActionResponse {
@@ -2950,6 +3081,26 @@ impl EmergencyAccessService {
         .await?;
 
         Ok(logs)
+    }
+
+    pub async fn list_risk_alerts(
+        pool: &PgPool,
+        user_id: Uuid,
+    ) -> Result<Vec<EmergencyAccessRiskAlert>, ApiError> {
+        let alerts = sqlx::query_as::<_, EmergencyAccessRiskAlert>(
+            r#"
+            SELECT id, grant_id, user_id, emergency_contact_id, alert_type, severity, message,
+                   metadata, created_at
+            FROM emergency_access_risk_alerts
+            WHERE user_id = $1
+            ORDER BY created_at DESC
+            "#,
+        )
+        .bind(user_id)
+        .fetch_all(pool)
+        .await?;
+
+        Ok(alerts)
     }
 }
 

@@ -89,6 +89,10 @@ pub async fn create_app(db: PgPool, config: Config) -> Result<Router, ApiError> 
             "/api/emergency/access/audit-logs",
             get(list_emergency_access_audit_logs),
         )
+        .route(
+            "/api/emergency/access/risk-alerts",
+            get(list_emergency_access_risk_alerts),
+        )
         // Loan Simulation endpoints
         .route("/api/loans/simulate", post(simulate_loan))
         .route("/api/loans/simulations", get(get_user_simulations))
@@ -316,6 +320,16 @@ async fn list_emergency_access_audit_logs(
     let logs = EmergencyAccessService::list_audit_logs(&state.db, user.user_id).await?;
     Ok(Json(
         json!({ "status": "success", "data": logs, "count": logs.len() }),
+    ))
+}
+
+async fn list_emergency_access_risk_alerts(
+    State(state): State<Arc<AppState>>,
+    AuthenticatedUser(user): AuthenticatedUser,
+) -> Result<Json<Value>, ApiError> {
+    let alerts = EmergencyAccessService::list_risk_alerts(&state.db, user.user_id).await?;
+    Ok(Json(
+        json!({ "status": "success", "data": alerts, "count": alerts.len() }),
     ))
 }
 
