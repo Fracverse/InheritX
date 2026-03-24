@@ -319,7 +319,18 @@ impl EventService {
         .fetch_one(&mut **tx)
         .await?;
 
-        row.try_into()
+        let event: LendingEvent = row.try_into()?;
+
+        // Update borrower reputation immediately upon event creation
+        crate::reputation::ReputationService::update_reputation(
+            tx,
+            event.user_id,
+            event.event_type,
+            event.amount,
+        )
+        .await?;
+
+        Ok(event)
     }
 
     /// Query events by user

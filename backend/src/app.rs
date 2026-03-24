@@ -63,6 +63,7 @@ pub async fn create_app(db: PgPool, config: Config) -> Result<Router, ApiError> 
         .route("/api/loans/simulate", post(simulate_loan))
         .route("/api/loans/simulations", get(get_user_simulations))
         .route("/api/loans/simulations/:simulation_id", get(get_simulation))
+        .route("/api/reputation", get(get_user_reputation))
         .route(
             "/api/admin/plans/due-for-claim",
             get(get_all_due_for_claim_plans_admin),
@@ -269,4 +270,21 @@ async fn get_simulation(
             simulation_id
         ))),
     }
+}
+
+// =============================================================================
+// Reputation Endpoints
+// =============================================================================
+
+/// Get the current user's borrower reputation
+async fn get_user_reputation(
+    State(state): State<Arc<AppState>>,
+    AuthenticatedUser(user): AuthenticatedUser,
+) -> Result<Json<Value>, ApiError> {
+    let reputation =
+        crate::reputation::ReputationService::get_reputation(&state.db, user.user_id).await?;
+    Ok(Json(json!({
+        "status": "success",
+        "data": reputation
+    })))
 }
