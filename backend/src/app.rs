@@ -17,8 +17,9 @@ use crate::auth::{AuthenticatedAdmin, AuthenticatedUser};
 use crate::config::Config;
 use crate::loan_lifecycle::{CreateLoanRequest, LoanLifecycleService, LoanListFilters};
 use crate::service::{
-    ClaimPlanRequest, CreatePlanRequest, KycRecord, KycService, KycStatus, LoanSimulationRequest,
-    LoanSimulationService, PlanService,
+    ClaimPlanRequest, CreatePlanRequest, EmergencyAdminService, KycRecord, KycService, KycStatus,
+    LoanSimulationRequest, LoanSimulationService, PausePlanRequest, PlanService,
+    RiskOverrideRequest, UnpausePlanRequest,
 };
 use crate::yield_service::{DefaultOnChainYieldService, OnChainYieldService};
 
@@ -92,6 +93,18 @@ pub async fn create_app(db: PgPool, config: Config) -> Result<Router, ApiError> 
         .route("/api/admin/kyc/:user_id", get(get_kyc_status))
         .route("/api/admin/kyc/approve", post(approve_kyc))
         .route("/api/admin/kyc/reject", post(reject_kyc))
+        // Emergency Admin endpoints (pause/unpause/risk-override)
+        .route("/api/admin/emergency/pause", post(pause_plan))
+        .route("/api/admin/emergency/unpause", post(unpause_plan))
+        .route(
+            "/api/admin/emergency/risk-override",
+            post(set_risk_override),
+        )
+        .route("/api/admin/emergency/paused-plans", get(get_paused_plans))
+        .route(
+            "/api/admin/emergency/risk-override-plans",
+            get(get_risk_override_plans),
+        )
         // ── Emergency Access (Issue #293) ──────────────────────────────────────
         .route("/api/admin/emergency-access/grant", post(grant_emergency_access))
         .route("/api/admin/emergency-access/revoke", post(revoke_emergency_access))
@@ -423,6 +436,7 @@ async fn mark_overdue_loans(
 }
 
 // =============================================================================
+<<<<<<< HEAD
 // Emergency Access Endpoints (Issue #293)
 // =============================================================================
 
@@ -489,4 +503,54 @@ async fn get_plan_emergency_access(
         "data": access_records,
         "count": access_records.len()
     })))
+}
+
+// Emergency Admin Endpoints
+// =============================================================================
+
+async fn pause_plan(
+    State(state): State<Arc<AppState>>,
+    AuthenticatedAdmin(admin): AuthenticatedAdmin,
+    Json(req): Json<PausePlanRequest>,
+) -> Result<Json<Value>, ApiError> {
+    let result = EmergencyAdminService::pause_plan(&state.db, admin.admin_id, &req).await?;
+    Ok(Json(json!({ "status": "success", "data": result })))
+}
+
+async fn unpause_plan(
+    State(state): State<Arc<AppState>>,
+    AuthenticatedAdmin(admin): AuthenticatedAdmin,
+    Json(req): Json<UnpausePlanRequest>,
+) -> Result<Json<Value>, ApiError> {
+    let result = EmergencyAdminService::unpause_plan(&state.db, admin.admin_id, &req).await?;
+    Ok(Json(json!({ "status": "success", "data": result })))
+}
+
+async fn set_risk_override(
+    State(state): State<Arc<AppState>>,
+    AuthenticatedAdmin(admin): AuthenticatedAdmin,
+    Json(req): Json<RiskOverrideRequest>,
+) -> Result<Json<Value>, ApiError> {
+    let result = EmergencyAdminService::set_risk_override(&state.db, admin.admin_id, &req).await?;
+    Ok(Json(json!({ "status": "success", "data": result })))
+}
+
+async fn get_paused_plans(
+    State(state): State<Arc<AppState>>,
+    AuthenticatedAdmin(_admin): AuthenticatedAdmin,
+) -> Result<Json<Value>, ApiError> {
+    let plans = EmergencyAdminService::get_paused_plans(&state.db).await?;
+    Ok(Json(
+        json!({ "status": "success", "data": plans, "count": plans.len() }),
+    ))
+}
+
+async fn get_risk_override_plans(
+    State(state): State<Arc<AppState>>,
+    AuthenticatedAdmin(_admin): AuthenticatedAdmin,
+) -> Result<Json<Value>, ApiError> {
+    let plans = EmergencyAdminService::get_risk_override_plans(&state.db).await?;
+    Ok(Json(
+        json!({ "status": "success", "data": plans, "count": plans.len() }),
+    ))
 }

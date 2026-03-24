@@ -2,6 +2,7 @@ pub mod analytics;
 pub mod api_error;
 pub mod app;
 pub mod auth;
+pub mod compliance;
 pub mod config;
 pub mod db;
 pub mod emergency_access;
@@ -23,6 +24,7 @@ pub mod yield_service;
 
 pub use api_error::ApiError;
 pub use app::create_app;
+pub use compliance::ComplianceEngine;
 pub use config::Config;
 pub use events::{EventService, EventType, LendingEvent};
 pub use interest_reconciliation::InterestReconciliationService;

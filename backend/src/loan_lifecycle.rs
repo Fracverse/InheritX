@@ -362,6 +362,23 @@ impl LoanLifecycleService {
 
         let mut tx = pool.begin().await?;
 
+        // If plan_id is provided, check if the plan is paused
+        if let Some(plan_id) = req.plan_id {
+            let is_paused: Option<bool> =
+                sqlx::query_scalar("SELECT is_paused FROM plans WHERE id = $1")
+                    .bind(plan_id)
+                    .fetch_optional(&mut *tx)
+                    .await?
+                    .flatten();
+
+            if is_paused == Some(true) {
+                return Err(ApiError::BadRequest(
+                    "Cannot create a loan for a plan that is currently paused by an administrator"
+                        .to_string(),
+                ));
+            }
+        }
+
         let row = sqlx::query_as::<_, LoanLifecycleRow>(
             r#"
             INSERT INTO loan_lifecycle (
@@ -422,14 +439,17 @@ impl LoanLifecycleService {
         let mut tx = pool.begin().await?;
 
         // Lock the row for the duration of the transaction
+        // Join with plans to check if the plan is paused
         let row = sqlx::query_as::<_, LoanLifecycleRow>(
             r#"
-            SELECT id, user_id, plan_id, borrow_asset, collateral_asset,
-                   principal, interest_rate_bps, collateral_amount, amount_repaid,
-                   status, due_date, transaction_hash,
-                   created_at, updated_at, repaid_at, liquidated_at
-            FROM loan_lifecycle
-            WHERE id = $1 AND user_id = $2
+            SELECT ll.id, ll.user_id, ll.plan_id, ll.borrow_asset, ll.collateral_asset,
+                   ll.principal, ll.interest_rate_bps, ll.collateral_amount, ll.amount_repaid,
+                   ll.status, ll.due_date, ll.transaction_hash,
+                   ll.created_at, ll.updated_at, ll.repaid_at, ll.liquidated_at
+            FROM loan_lifecycle ll
+            LEFT JOIN plans p ON p.id = ll.plan_id
+            WHERE ll.id = $1 AND ll.user_id = $2
+              AND (p.is_paused IS NULL OR p.is_paused = false)
             FOR UPDATE
             "#,
         )
@@ -437,7 +457,11 @@ impl LoanLifecycleService {
         .bind(user_id)
         .fetch_optional(&mut *tx)
         .await?
-        .ok_or_else(|| ApiError::NotFound(format!("loan {loan_id} not found")))?;
+        .ok_or_else(|| {
+            ApiError::BadRequest(
+                "Loan not found or its associated plan is paused by an administrator".to_string(),
+            )
+        })?;
 
         let current_status = LoanStatus::from_str(&row.status)?;
         if current_status == LoanStatus::Repaid || current_status == LoanStatus::Liquidated {

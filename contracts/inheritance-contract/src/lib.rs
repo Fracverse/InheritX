@@ -1051,19 +1051,11 @@ impl InheritanceContract {
 
         let mut plan = Self::get_plan(&env, plan_id).ok_or(InheritanceError::PlanNotFound)?;
 
-        // Authorization check: owner or active emergency contact
-        let mut is_authorized = plan.owner == caller;
-        if !is_authorized {
-            if let Some(record) = Self::get_emergency_access(env.clone(), plan_id) {
-                if record.trusted_contact == caller {
-                    is_authorized = true;
-                }
-            }
-        }
-
-        if !is_authorized {
+        // Authorization check: owner only
+        if plan.owner != caller {
             return Err(InheritanceError::Unauthorized);
         }
+
         if !plan.is_active {
             return Err(InheritanceError::PlanNotActive);
         }
@@ -1112,18 +1104,21 @@ impl InheritanceContract {
         }
         let mut plan = Self::get_plan(&env, plan_id).ok_or(InheritanceError::PlanNotFound)?;
 
-        // Authorization check: owner or active emergency contact
-        let mut is_authorized = plan.owner == caller;
-        if !is_authorized {
-            if let Some(record) = Self::get_emergency_access(env.clone(), plan_id) {
-                if record.trusted_contact == caller {
-                    is_authorized = true;
-                }
-            }
+        // Authorization check: owner only
+        if plan.owner != caller {
+            return Err(InheritanceError::Unauthorized);
         }
 
-        if !is_authorized {
-            return Err(InheritanceError::Unauthorized);
+        // Emergency Guard: Limit withdrawal if emergency access was recently activated
+        if Self::is_emergency_active(&env, plan_id) {
+            let limit = (plan.total_amount as u128)
+                .checked_mul(EMERGENCY_TRANSFER_LIMIT_BP as u128)
+                .and_then(|v| v.checked_div(10000))
+                .unwrap_or(0) as u64;
+
+            if amount > limit {
+                return Err(InheritanceError::EmergencyCooldownActive);
+            }
         }
 
         // Emergency Guard: Limit withdrawal if emergency access was recently activated
