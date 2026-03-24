@@ -93,6 +93,8 @@ pub struct PlanWithBeneficiary {
     pub contract_plan_id: Option<i64>,
     pub distribution_method: Option<String>,
     pub is_active: Option<bool>,
+    pub is_paused: Option<bool>,
+    pub risk_override_enabled: Option<bool>,
     pub contract_created_at: Option<i64>,
     pub beneficiary_name: Option<String>,
     pub bank_name: Option<String>,
@@ -133,6 +135,8 @@ struct PlanRowFull {
     contract_plan_id: Option<i64>,
     distribution_method: Option<String>,
     is_active: Option<bool>,
+    is_paused: Option<bool>,
+    risk_override_enabled: Option<bool>,
     contract_created_at: Option<i64>,
     beneficiary_name: Option<String>,
     bank_account_number: Option<String>,
@@ -159,6 +163,8 @@ fn plan_row_to_plan_with_beneficiary(row: &PlanRowFull) -> Result<PlanWithBenefi
         contract_plan_id: row.contract_plan_id,
         distribution_method: row.distribution_method.clone(),
         is_active: row.is_active,
+        is_paused: row.is_paused,
+        risk_override_enabled: row.risk_override_enabled,
         contract_created_at: row.contract_created_at,
         beneficiary_name: row.beneficiary_name.clone(),
         bank_name: row.bank_name.clone(),
@@ -288,8 +294,8 @@ impl PlanService {
         let row = sqlx::query_as::<_, PlanRowFull>(
             r#"
         SELECT id, user_id, title, description, fee, net_amount, status,
-               contract_plan_id, distribution_method, is_active, contract_created_at,
-               beneficiary_name, bank_account_number, bank_name, currency_preference,
+               contract_plan_id, distribution_method, is_active, is_paused, risk_override_enabled,
+               contract_created_at, beneficiary_name, bank_account_number, bank_name, currency_preference,
                created_at, updated_at
         FROM plans
         WHERE id = $1 AND user_id = $2
@@ -316,8 +322,8 @@ impl PlanService {
         let row = sqlx::query_as::<_, PlanRowFull>(
             r#"
         SELECT id, user_id, title, description, fee, net_amount, status,
-               contract_plan_id, distribution_method, is_active, contract_created_at,
-               beneficiary_name, bank_account_number, bank_name, currency_preference,
+               contract_plan_id, distribution_method, is_active, is_paused, risk_override_enabled,
+               contract_created_at, beneficiary_name, bank_account_number, bank_name, currency_preference,
                created_at, updated_at
         FROM plans
         WHERE id = $1
@@ -345,8 +351,8 @@ impl PlanService {
         let row = sqlx::query_as::<_, PlanRowFull>(
             r#"
             SELECT id, user_id, title, description, fee, net_amount, status,
-                   contract_plan_id, distribution_method, is_active, contract_created_at,
-                   beneficiary_name, bank_account_number, bank_name, currency_preference,
+                   contract_plan_id, distribution_method, is_active, is_paused, risk_override_enabled,
+                   contract_created_at, beneficiary_name, bank_account_number, bank_name, currency_preference,
                    created_at, updated_at
             FROM plans
             WHERE id = $1 AND user_id = $2
@@ -364,13 +370,7 @@ impl PlanService {
         };
 
         // Check if plan is paused
-        let is_paused: Option<bool> =
-            sqlx::query_scalar("SELECT is_paused FROM plans WHERE id = $1")
-                .bind(plan_id)
-                .fetch_one(&mut *tx)
-                .await?;
-
-        if is_paused == Some(true) {
+        if plan.is_paused == Some(true) {
             return Err(ApiError::BadRequest(
                 "This plan is currently paused by an administrator and cannot be claimed"
                     .to_string(),
@@ -2433,11 +2433,225 @@ pub struct RiskOverrideRequest {
     pub reason: String,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize, sqlx::FromRow)]
+pub struct EmergencyContact {
+    pub id: Uuid,
+    pub user_id: Uuid,
+    pub name: String,
+    pub relationship: String,
+    pub email: Option<String>,
+    pub phone: Option<String>,
+    pub wallet_address: Option<String>,
+    pub notes: Option<String>,
+    pub created_at: DateTime<Utc>,
+    pub updated_at: DateTime<Utc>,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct CreateEmergencyContactRequest {
+    pub name: String,
+    pub relationship: String,
+    pub email: Option<String>,
+    pub phone: Option<String>,
+    pub wallet_address: Option<String>,
+    pub notes: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct UpdateEmergencyContactRequest {
+    pub name: String,
+    pub relationship: String,
+    pub email: Option<String>,
+    pub phone: Option<String>,
+    pub wallet_address: Option<String>,
+    pub notes: Option<String>,
+}
+
+#[derive(Debug, Serialize)]
+pub struct EmergencyContactDeleteResponse {
+    pub success: bool,
+    pub contact_id: Uuid,
+    pub message: String,
+}
+
 #[derive(Debug, Serialize)]
 pub struct EmergencyActionResponse {
     pub success: bool,
     pub plan_id: Uuid,
     pub message: String,
+}
+
+pub struct EmergencyContactService;
+
+impl EmergencyContactService {
+    fn normalize_optional(value: &Option<String>) -> Option<String> {
+        value.as_ref().and_then(|value| {
+            let trimmed = value.trim();
+            if trimmed.is_empty() {
+                None
+            } else {
+                Some(trimmed.to_string())
+            }
+        })
+    }
+
+    fn validate_contact_details(
+        name: &str,
+        relationship: &str,
+        email: &Option<String>,
+        phone: &Option<String>,
+        wallet_address: &Option<String>,
+    ) -> Result<(), ApiError> {
+        if name.trim().is_empty() {
+            return Err(ApiError::BadRequest(
+                "name is required for an emergency contact".to_string(),
+            ));
+        }
+
+        if relationship.trim().is_empty() {
+            return Err(ApiError::BadRequest(
+                "relationship is required for an emergency contact".to_string(),
+            ));
+        }
+
+        if email.is_none() && phone.is_none() && wallet_address.is_none() {
+            return Err(ApiError::BadRequest(
+                "at least one contact detail is required: email, phone, or wallet_address"
+                    .to_string(),
+            ));
+        }
+
+        Ok(())
+    }
+
+    pub async fn list_for_user(
+        pool: &PgPool,
+        user_id: Uuid,
+    ) -> Result<Vec<EmergencyContact>, ApiError> {
+        let contacts = sqlx::query_as::<_, EmergencyContact>(
+            r#"
+            SELECT id, user_id, name, relationship, email, phone, wallet_address, notes,
+                   created_at, updated_at
+            FROM emergency_contacts
+            WHERE user_id = $1
+            ORDER BY created_at DESC
+            "#,
+        )
+        .bind(user_id)
+        .fetch_all(pool)
+        .await?;
+
+        Ok(contacts)
+    }
+
+    pub async fn create_contact(
+        pool: &PgPool,
+        user_id: Uuid,
+        req: &CreateEmergencyContactRequest,
+    ) -> Result<EmergencyContact, ApiError> {
+        let email = Self::normalize_optional(&req.email);
+        let phone = Self::normalize_optional(&req.phone);
+        let wallet_address = Self::normalize_optional(&req.wallet_address);
+        let notes = Self::normalize_optional(&req.notes);
+        let name = req.name.trim();
+        let relationship = req.relationship.trim();
+
+        Self::validate_contact_details(name, relationship, &email, &phone, &wallet_address)?;
+
+        let contact = sqlx::query_as::<_, EmergencyContact>(
+            r#"
+            INSERT INTO emergency_contacts (
+                user_id, name, relationship, email, phone, wallet_address, notes
+            )
+            VALUES ($1, $2, $3, $4, $5, $6, $7)
+            RETURNING id, user_id, name, relationship, email, phone, wallet_address, notes,
+                      created_at, updated_at
+            "#,
+        )
+        .bind(user_id)
+        .bind(name)
+        .bind(relationship)
+        .bind(email)
+        .bind(phone)
+        .bind(wallet_address)
+        .bind(notes)
+        .fetch_one(pool)
+        .await?;
+
+        Ok(contact)
+    }
+
+    pub async fn update_contact(
+        pool: &PgPool,
+        user_id: Uuid,
+        contact_id: Uuid,
+        req: &UpdateEmergencyContactRequest,
+    ) -> Result<EmergencyContact, ApiError> {
+        let email = Self::normalize_optional(&req.email);
+        let phone = Self::normalize_optional(&req.phone);
+        let wallet_address = Self::normalize_optional(&req.wallet_address);
+        let notes = Self::normalize_optional(&req.notes);
+        let name = req.name.trim();
+        let relationship = req.relationship.trim();
+
+        Self::validate_contact_details(name, relationship, &email, &phone, &wallet_address)?;
+
+        let updated = sqlx::query_as::<_, EmergencyContact>(
+            r#"
+            UPDATE emergency_contacts
+            SET name = $1,
+                relationship = $2,
+                email = $3,
+                phone = $4,
+                wallet_address = $5,
+                notes = $6,
+                updated_at = NOW()
+            WHERE id = $7 AND user_id = $8
+            RETURNING id, user_id, name, relationship, email, phone, wallet_address, notes,
+                      created_at, updated_at
+            "#,
+        )
+        .bind(name)
+        .bind(relationship)
+        .bind(email)
+        .bind(phone)
+        .bind(wallet_address)
+        .bind(notes)
+        .bind(contact_id)
+        .bind(user_id)
+        .fetch_optional(pool)
+        .await?;
+
+        updated.ok_or_else(|| {
+            ApiError::NotFound(format!("Emergency contact {} not found", contact_id))
+        })
+    }
+
+    pub async fn delete_contact(
+        pool: &PgPool,
+        user_id: Uuid,
+        contact_id: Uuid,
+    ) -> Result<EmergencyContactDeleteResponse, ApiError> {
+        let deleted = sqlx::query_scalar::<_, Uuid>(
+            "DELETE FROM emergency_contacts WHERE id = $1 AND user_id = $2 RETURNING id",
+        )
+        .bind(contact_id)
+        .bind(user_id)
+        .fetch_optional(pool)
+        .await?;
+
+        match deleted {
+            Some(contact_id) => Ok(EmergencyContactDeleteResponse {
+                success: true,
+                contact_id,
+                message: "Emergency contact deleted successfully".to_string(),
+            }),
+            None => Err(ApiError::NotFound(format!(
+                "Emergency contact {} not found",
+                contact_id
+            ))),
+        }
+    }
 }
 
 pub struct EmergencyAdminService;
@@ -2692,8 +2906,8 @@ impl EmergencyAdminService {
         let rows = sqlx::query_as::<_, PlanRowFull>(
             r#"
             SELECT id, user_id, title, description, fee, net_amount, status,
-                   contract_plan_id, distribution_method, is_active, contract_created_at,
-                   beneficiary_name, bank_account_number, bank_name, currency_preference,
+                   contract_plan_id, distribution_method, is_active, is_paused, risk_override_enabled,
+                   contract_created_at, beneficiary_name, bank_account_number, bank_name, currency_preference,
                    created_at, updated_at
             FROM plans
             WHERE is_paused = true
@@ -2713,8 +2927,8 @@ impl EmergencyAdminService {
         let rows = sqlx::query_as::<_, PlanRowFull>(
             r#"
             SELECT id, user_id, title, description, fee, net_amount, status,
-                   contract_plan_id, distribution_method, is_active, contract_created_at,
-                   beneficiary_name, bank_account_number, bank_name, currency_preference,
+                   contract_plan_id, distribution_method, is_active, is_paused, risk_override_enabled,
+                   contract_created_at, beneficiary_name, bank_account_number, bank_name, currency_preference,
                    created_at, updated_at
             FROM plans
             WHERE risk_override_enabled = true
