@@ -106,10 +106,22 @@ pub async fn create_app(db: PgPool, config: Config) -> Result<Router, ApiError> 
             get(get_risk_override_plans),
         )
         // ── Emergency Access (Issue #293) ──────────────────────────────────────
-        .route("/api/admin/emergency-access/grant", post(grant_emergency_access))
-        .route("/api/admin/emergency-access/revoke", post(revoke_emergency_access))
-        .route("/api/admin/emergency-access/all", get(get_all_emergency_access))
-        .route("/api/admin/emergency-access/plan/:plan_id", get(get_plan_emergency_access))
+        .route(
+            "/api/admin/emergency-access/grant",
+            post(grant_emergency_access),
+        )
+        .route(
+            "/api/admin/emergency-access/revoke",
+            post(revoke_emergency_access),
+        )
+        .route(
+            "/api/admin/emergency-access/all",
+            get(get_all_emergency_access),
+        )
+        .route(
+            "/api/admin/emergency-access/plan/:plan_id",
+            get(get_plan_emergency_access),
+        )
         .merge(analytics_router())
         .with_state(state);
 
@@ -496,7 +508,8 @@ async fn get_plan_emergency_access(
     Path(plan_id): Path<Uuid>,
     AuthenticatedAdmin(_admin): AuthenticatedAdmin,
 ) -> Result<Json<Value>, ApiError> {
-    let access_records = EmergencyAccessService::get_active_access_for_plan(&state.db, plan_id).await?;
+    let access_records =
+        EmergencyAccessService::get_active_access_for_plan(&state.db, plan_id).await?;
     Ok(Json(json!({
         "status": "success",
         "data": access_records,

@@ -46,16 +46,17 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     // Initialize Interest Reconciliation Service
     let yield_service = Arc::new(inheritx_backend::DefaultOnChainYieldService::new());
-    let interest_reconciliation =
-        Arc::new(inheritx_backend::InterestReconciliationService::new(
-            db_pool.clone(),
-            yield_service,
-            rust_decimal::Decimal::new(1, 2), // 0.01 discrepancy threshold
-        ));
+    let interest_reconciliation = Arc::new(inheritx_backend::InterestReconciliationService::new(
+        db_pool.clone(),
+        yield_service,
+        rust_decimal::Decimal::new(1, 2), // 0.01 discrepancy threshold
+    ));
     interest_reconciliation.start();
 
     // Initialize Emergency Access Background Job (Issue #293)
-    inheritx_backend::emergency_access_jobs::EmergencyAccessJobService::start(Arc::new(db_pool.clone()));
+    inheritx_backend::emergency_access_jobs::EmergencyAccessJobService::start(Arc::new(
+        db_pool.clone(),
+    ));
 
     // Start server
     let addr = SocketAddr::from(([0, 0, 0, 0], config.port));

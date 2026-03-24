@@ -22,7 +22,10 @@ impl EmergencyAccessJobService {
                 match EmergencyAccessService::check_expiring_access(&db).await {
                     Ok(count) => {
                         if count > 0 {
-                            info!("Emergency access expiration check: {} notifications sent", count);
+                            info!(
+                                "Emergency access expiration check: {} notifications sent",
+                                count
+                            );
                         }
                     }
                     Err(e) => {

@@ -62,13 +62,17 @@ impl EmergencyAccessService {
         let mut tx = pool.begin().await?;
 
         // Verify plan exists
-        let plan_exists: bool = sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM plans WHERE id = $1)")
-            .bind(req.plan_id)
-            .fetch_one(&mut *tx)
-            .await?;
+        let plan_exists: bool =
+            sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM plans WHERE id = $1)")
+                .bind(req.plan_id)
+                .fetch_one(&mut *tx)
+                .await?;
 
         if !plan_exists {
-            return Err(ApiError::NotFound(format!("Plan {} not found", req.plan_id)));
+            return Err(ApiError::NotFound(format!(
+                "Plan {} not found",
+                req.plan_id
+            )));
         }
 
         // Calculate expiration time if provided
@@ -112,7 +116,12 @@ impl EmergencyAccessService {
 
         // Notify user
         let expiry_msg = expires_at
-            .map(|exp| format!(" This access will expire at {}", exp.format("%Y-%m-%d %H:%M:%S UTC")))
+            .map(|exp| {
+                format!(
+                    " This access will expire at {}",
+                    exp.format("%Y-%m-%d %H:%M:%S UTC")
+                )
+            })
             .unwrap_or_default();
 
         NotificationService::create(
@@ -144,17 +153,20 @@ impl EmergencyAccessService {
         let mut tx = pool.begin().await?;
 
         // Fetch the access record
-        let access: EmergencyAccess = sqlx::query_as(
-            "SELECT * FROM emergency_access WHERE id = $1"
-        )
-        .bind(req.access_id)
-        .fetch_optional(&mut *tx)
-        .await?
-        .ok_or_else(|| ApiError::NotFound(format!("Emergency access {} not found", req.access_id)))?;
+        let access: EmergencyAccess =
+            sqlx::query_as("SELECT * FROM emergency_access WHERE id = $1")
+                .bind(req.access_id)
+                .fetch_optional(&mut *tx)
+                .await?
+                .ok_or_else(|| {
+                    ApiError::NotFound(format!("Emergency access {} not found", req.access_id))
+                })?;
 
         // Check if already revoked
         if access.status == "revoked" {
-            return Err(ApiError::BadRequest("Access is already revoked".to_string()));
+            return Err(ApiError::BadRequest(
+                "Access is already revoked".to_string(),
+            ));
         }
 
         // Update access record
@@ -266,12 +278,11 @@ impl EmergencyAccessService {
 
         for (_access_id, plan_id, expires_at) in expiring_access {
             // Get plan user
-            if let Ok(plan_user_id) = sqlx::query_scalar::<_, Uuid>(
-                "SELECT user_id FROM plans WHERE id = $1"
-            )
-            .bind(plan_id)
-            .fetch_one(db)
-            .await
+            if let Ok(plan_user_id) =
+                sqlx::query_scalar::<_, Uuid>("SELECT user_id FROM plans WHERE id = $1")
+                    .bind(plan_id)
+                    .fetch_one(db)
+                    .await
             {
                 // Create notification
                 let mut tx = db.begin().await?;
@@ -373,7 +384,8 @@ mod tests {
             "expires_in_hours": 48
         }"#;
 
-        let req: GrantEmergencyAccessRequest = serde_json::from_str(json).expect("Should deserialize");
+        let req: GrantEmergencyAccessRequest =
+            serde_json::from_str(json).expect("Should deserialize");
         assert_eq!(req.access_type, "temporary_access");
         assert_eq!(req.expires_in_hours, Some(48));
     }
@@ -385,7 +397,8 @@ mod tests {
             "reason": "Access no longer needed"
         }"#;
 
-        let req: RevokeEmergencyAccessRequest = serde_json::from_str(json).expect("Should deserialize");
+        let req: RevokeEmergencyAccessRequest =
+            serde_json::from_str(json).expect("Should deserialize");
         assert_eq!(req.reason, "Access no longer needed");
     }
 }
