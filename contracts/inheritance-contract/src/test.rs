@@ -2803,7 +2803,7 @@ fn test_emergency_access_expiration() {
 }
 
 #[test]
-fn test_emergency_withdrawal_success() {
+fn test_emergency_withdrawal_fails() {
     let env = Env::default();
     env.mock_all_auths();
     let (client, token_id, _admin, user) = setup_with_token_and_admin(&env);
@@ -2840,6 +2840,16 @@ fn test_emergency_withdrawal_success() {
     let plan = client.get_plan_details(&plan_id).unwrap();
     // Initial 9800 (10000 - 2% fee) + 5000 (deposit) - 1000 (withdraw) = 13800
     assert_eq!(plan.total_amount, 13800);
+    // Trusted contact withdraws (should fail)
+    let result = client.try_withdraw(&trusted_contact, &token_id, &plan_id, &2000);
+    assert!(result.is_err());
+    assert_eq!(result.err().unwrap(), Ok(InheritanceError::Unauthorized));
+
+    // Verify balance
+    assert_eq!(token_helper.balance(&trusted_contact), 0);
+    let plan = client.get_plan_details(&plan_id).unwrap();
+    // Initial 9800 (10000 - 2% fee) + 5000 (deposit) = 14800
+    assert_eq!(plan.total_amount, 14800);
 }
 
 #[test]
@@ -2882,7 +2892,7 @@ fn test_emergency_withdrawal_fails_after_expiration() {
 }
 
 #[test]
-fn test_emergency_deposit_success() {
+fn test_emergency_deposit_fails() {
     let env = Env::default();
     env.mock_all_auths();
     let (client, token_id, _admin, user) = setup_with_token_and_admin(&env);
@@ -2908,14 +2918,16 @@ fn test_emergency_deposit_success() {
     client.set_guardians(&user, &plan_id, &guardians, &1);
     client.approve_emergency_access(&user, &plan_id, &trusted_contact);
 
-    // Trusted contact deposits
-    client.deposit(&trusted_contact, &token_id, &plan_id, &500);
+    // Trusted contact deposits (should fail)
+    let result = client.try_deposit(&trusted_contact, &token_id, &plan_id, &500);
+    assert!(result.is_err());
+    assert_eq!(result.err().unwrap(), Ok(InheritanceError::Unauthorized));
 
     // Verify
     let plan = client.get_plan_details(&plan_id).unwrap();
-    // Initial 9800 (10000 - 2% fee) + 500 (deposit) = 10300
-    assert_eq!(plan.total_amount, 10300);
-    assert_eq!(token_helper.balance(&trusted_contact), 500);
+    // Initial 9800 (10000 - 2% fee)
+    assert_eq!(plan.total_amount, 9800);
+    assert_eq!(token_helper.balance(&trusted_contact), 1000);
 }
 
 #[test]

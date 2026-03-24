@@ -23,6 +23,7 @@ pub mod notif_type {
     pub const EMERGENCY_ACCESS_GRANTED: &str = "emergency_access_granted";
     pub const EMERGENCY_ACCESS_REVOKED: &str = "emergency_access_revoked";
     pub const EMERGENCY_ACCESS_EXPIRING: &str = "emergency_access_expiring";
+    pub const SUSPICIOUS_ACTIVITY_FLAGGED: &str = "suspicious_activity_flagged";
 }
 
 // ─── Notification ────────────────────────────────────────────────────────────
@@ -166,6 +167,7 @@ pub mod audit_action {
     pub const PLAN_UNPAUSED: &str = "plan_unpaused";
     pub const RISK_OVERRIDE_APPLIED: &str = "risk_override_applied";
     pub const RISK_OVERRIDE_REMOVED: &str = "risk_override_removed";
+    pub const SUSPICIOUS_BORROWING_DETECTED: &str = "suspicious_borrowing_detected";
     // Loan lifecycle
     pub const LOAN_CREATED: &str = "loan_created";
     pub const LOAN_REPAID: &str = "loan_repaid";
