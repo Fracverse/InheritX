@@ -2712,16 +2712,20 @@ impl EmergencyContactService {
 
 pub struct EmergencyAccessService;
 
+struct RiskAlertInput<'a> {
+    grant_id: Uuid,
+    user_id: Uuid,
+    contact_id: Uuid,
+    alert_type: &'a str,
+    severity: &'a str,
+    message: &'a str,
+    metadata: serde_json::Value,
+}
+
 impl EmergencyAccessService {
     async fn create_risk_alert(
         executor: &mut sqlx::PgConnection,
-        grant_id: Uuid,
-        user_id: Uuid,
-        contact_id: Uuid,
-        alert_type: &str,
-        severity: &str,
-        message: &str,
-        metadata: serde_json::Value,
+        input: RiskAlertInput<'_>,
     ) -> Result<(), ApiError> {
         sqlx::query(
             r#"
@@ -2731,13 +2735,13 @@ impl EmergencyAccessService {
             VALUES ($1, $2, $3, $4, $5, $6, $7)
             "#,
         )
-        .bind(grant_id)
-        .bind(user_id)
-        .bind(contact_id)
-        .bind(alert_type)
-        .bind(severity)
-        .bind(message)
-        .bind(metadata)
+        .bind(input.grant_id)
+        .bind(input.user_id)
+        .bind(input.contact_id)
+        .bind(input.alert_type)
+        .bind(input.severity)
+        .bind(input.message)
+        .bind(input.metadata)
         .execute(executor)
         .await?;
 
@@ -2762,14 +2766,17 @@ impl EmergencyAccessService {
 
         if recent_grant_count >= 4 {
             Self::create_risk_alert(
-                &mut *executor,
-                grant.id,
-                grant.user_id,
-                grant.emergency_contact_id,
-                "high_frequency_grants",
-                "high",
-                "Multiple emergency access grants were created within a short time window.",
-                serde_json::json!({ "recent_grant_count": recent_grant_count }),
+                executor,
+                RiskAlertInput {
+                    grant_id: grant.id,
+                    user_id: grant.user_id,
+                    contact_id: grant.emergency_contact_id,
+                    alert_type: "high_frequency_grants",
+                    severity: "high",
+                    message:
+                        "Multiple emergency access grants were created within a short time window.",
+                    metadata: serde_json::json!({ "recent_grant_count": recent_grant_count }),
+                },
             )
             .await?;
         }
@@ -2781,17 +2788,19 @@ impl EmergencyAccessService {
 
         if long_lived_high_privilege {
             Self::create_risk_alert(
-                &mut *executor,
-                grant.id,
-                grant.user_id,
-                grant.emergency_contact_id,
-                "high_privilege_long_lived_access",
-                "medium",
-                "High-privilege emergency access was granted with a long expiration window.",
-                serde_json::json!({
-                    "permissions": grant.permissions,
-                    "expires_at": grant.expires_at
-                }),
+                executor,
+                RiskAlertInput {
+                    grant_id: grant.id,
+                    user_id: grant.user_id,
+                    contact_id: grant.emergency_contact_id,
+                    alert_type: "high_privilege_long_lived_access",
+                    severity: "medium",
+                    message: "High-privilege emergency access was granted with a long expiration window.",
+                    metadata: serde_json::json!({
+                        "permissions": grant.permissions,
+                        "expires_at": grant.expires_at
+                    }),
+                },
             )
             .await?;
         }
@@ -2808,17 +2817,19 @@ impl EmergencyAccessService {
             if active_duration <= chrono::Duration::minutes(10) {
                 Self::create_risk_alert(
                     executor,
-                    grant.id,
-                    grant.user_id,
-                    grant.emergency_contact_id,
-                    "rapid_grant_revoke",
-                    "medium",
-                    "Emergency access was revoked shortly after it was granted.",
-                    serde_json::json!({
-                        "granted_at": grant.created_at,
-                        "revoked_at": revoked_at,
-                        "active_duration_minutes": active_duration.num_minutes()
-                    }),
+                    RiskAlertInput {
+                        grant_id: grant.id,
+                        user_id: grant.user_id,
+                        contact_id: grant.emergency_contact_id,
+                        alert_type: "rapid_grant_revoke",
+                        severity: "medium",
+                        message: "Emergency access was revoked shortly after it was granted.",
+                        metadata: serde_json::json!({
+                            "granted_at": grant.created_at,
+                            "revoked_at": revoked_at,
+                            "active_duration_minutes": active_duration.num_minutes()
+                        }),
+                    },
                 )
                 .await?;
             }
@@ -2966,7 +2977,7 @@ impl EmergencyAccessService {
         )
         .await?;
 
-        Self::evaluate_grant_risk(&mut *tx, &grant).await?;
+        Self::evaluate_grant_risk(&mut tx, &grant).await?;
 
         tx.commit().await?;
 
@@ -3053,7 +3064,7 @@ impl EmergencyAccessService {
         )
         .await?;
 
-        Self::evaluate_revoke_risk(&mut *tx, &updated).await?;
+        Self::evaluate_revoke_risk(&mut tx, &updated).await?;
 
         tx.commit().await?;
 
