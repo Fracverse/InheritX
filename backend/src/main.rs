@@ -1,5 +1,6 @@
 use inheritx_backend::{create_app, db, telemetry, Config};
 use std::net::SocketAddr;
+use std::sync::Arc;
 use tracing::info;
 
 #[tokio::main]
@@ -20,7 +21,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let app = create_app(db_pool.clone(), config.clone()).await?;
 
     // Initialize Price Feed and Risk Engine
-    let price_feed = std::sync::Arc::new(inheritx_backend::DefaultPriceFeedService::new(
+    let price_feed = Arc::new(inheritx_backend::DefaultPriceFeedService::new(
         db_pool.clone(),
         3600,
     ));
@@ -28,7 +29,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         tracing::warn!("Failed to initialize default price feeds: {}", e);
     }
 
-    let risk_engine = std::sync::Arc::new(inheritx_backend::RiskEngine::new(
+    let risk_engine = Arc::new(inheritx_backend::RiskEngine::new(
         db_pool.clone(),
         price_feed,
         rust_decimal::Decimal::new(12, 1), // 1.2 health factor liquidation threshold
@@ -36,14 +37,17 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     risk_engine.start();
 
     // Initialize Interest Reconciliation Service
-    let yield_service = std::sync::Arc::new(inheritx_backend::DefaultOnChainYieldService::new());
+    let yield_service = Arc::new(inheritx_backend::DefaultOnChainYieldService::new());
     let interest_reconciliation =
-        std::sync::Arc::new(inheritx_backend::InterestReconciliationService::new(
+        Arc::new(inheritx_backend::InterestReconciliationService::new(
             db_pool.clone(),
             yield_service,
             rust_decimal::Decimal::new(1, 2), // 0.01 discrepancy threshold
         ));
     interest_reconciliation.start();
+
+    // Initialize Emergency Access Background Job (Issue #293)
+    inheritx_backend::emergency_access_jobs::EmergencyAccessJobService::start(Arc::new(db_pool.clone()));
 
     // Start server
     let addr = SocketAddr::from(([0, 0, 0, 0], config.port));

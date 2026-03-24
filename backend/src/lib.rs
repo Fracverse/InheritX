@@ -4,6 +4,8 @@ pub mod app;
 pub mod auth;
 pub mod config;
 pub mod db;
+pub mod emergency_access;
+pub mod emergency_access_jobs;
 pub mod event_handlers;
 pub mod events;
 pub mod interest_reconciliation;

@@ -92,6 +92,11 @@ pub async fn create_app(db: PgPool, config: Config) -> Result<Router, ApiError> 
         .route("/api/admin/kyc/:user_id", get(get_kyc_status))
         .route("/api/admin/kyc/approve", post(approve_kyc))
         .route("/api/admin/kyc/reject", post(reject_kyc))
+        // ── Emergency Access (Issue #293) ──────────────────────────────────────
+        .route("/api/admin/emergency-access/grant", post(grant_emergency_access))
+        .route("/api/admin/emergency-access/revoke", post(revoke_emergency_access))
+        .route("/api/admin/emergency-access/all", get(get_all_emergency_access))
+        .route("/api/admin/emergency-access/plan/:plan_id", get(get_plan_emergency_access))
         .merge(analytics_router())
         .with_state(state);
 
@@ -414,5 +419,74 @@ async fn mark_overdue_loans(
         "status": "success",
         "marked_overdue": marked_ids.len(),
         "loan_ids": marked_ids
+    })))
+}
+
+// =============================================================================
+// Emergency Access Endpoints (Issue #293)
+// =============================================================================
+
+use crate::emergency_access::{
+    EmergencyAccessService, GrantEmergencyAccessRequest, RevokeEmergencyAccessRequest,
+};
+
+/// Admin: Grant emergency access to a plan
+///
+/// `POST /api/admin/emergency-access/grant`
+async fn grant_emergency_access(
+    State(state): State<Arc<AppState>>,
+    AuthenticatedAdmin(admin): AuthenticatedAdmin,
+    Json(req): Json<GrantEmergencyAccessRequest>,
+) -> Result<Json<Value>, ApiError> {
+    let response = EmergencyAccessService::grant_access(&state.db, admin.admin_id, &req).await?;
+    Ok(Json(json!({
+        "status": "success",
+        "data": response
+    })))
+}
+
+/// Admin: Revoke emergency access
+///
+/// `POST /api/admin/emergency-access/revoke`
+async fn revoke_emergency_access(
+    State(state): State<Arc<AppState>>,
+    AuthenticatedAdmin(admin): AuthenticatedAdmin,
+    Json(req): Json<RevokeEmergencyAccessRequest>,
+) -> Result<Json<Value>, ApiError> {
+    let response = EmergencyAccessService::revoke_access(&state.db, admin.admin_id, &req).await?;
+    Ok(Json(json!({
+        "status": "success",
+        "data": response
+    })))
+}
+
+/// Admin: Get all emergency access records
+///
+/// `GET /api/admin/emergency-access/all`
+async fn get_all_emergency_access(
+    State(state): State<Arc<AppState>>,
+    AuthenticatedAdmin(_admin): AuthenticatedAdmin,
+) -> Result<Json<Value>, ApiError> {
+    let access_records = EmergencyAccessService::get_all_access(&state.db).await?;
+    Ok(Json(json!({
+        "status": "success",
+        "data": access_records,
+        "count": access_records.len()
+    })))
+}
+
+/// Admin: Get emergency access records for a specific plan
+///
+/// `GET /api/admin/emergency-access/plan/:plan_id`
+async fn get_plan_emergency_access(
+    State(state): State<Arc<AppState>>,
+    Path(plan_id): Path<Uuid>,
+    AuthenticatedAdmin(_admin): AuthenticatedAdmin,
+) -> Result<Json<Value>, ApiError> {
+    let access_records = EmergencyAccessService::get_active_access_for_plan(&state.db, plan_id).await?;
+    Ok(Json(json!({
+        "status": "success",
+        "data": access_records,
+        "count": access_records.len()
     })))
 }
