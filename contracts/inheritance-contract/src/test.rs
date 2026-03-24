@@ -2593,7 +2593,7 @@ fn test_activate_and_deactivate_emergency_access() {
 
     // Activate
     client.activate_emergency_access(&owner, &plan_id, &trusted_contact);
-    
+
     let record = client.get_emergency_access(&plan_id).unwrap();
     assert_eq!(record.trusted_contact, trusted_contact);
     assert!(client.is_emergency_active(&plan_id));
@@ -2653,19 +2653,23 @@ fn test_withdraw_emergency_limit() {
 
     // Activate emergency
     client.activate_emergency_access(&owner, &plan_id, &trusted_contact);
-    
+
     // 10% limit of 98,000 is 9,800
-    
+
     // Withdraw 5,000 should SUCCEED
-    assert!(client.try_withdraw(&owner, &token, &plan_id, &5_000u64).is_ok());
+    assert!(client
+        .try_withdraw(&owner, &token, &plan_id, &5_000u64)
+        .is_ok());
 
     // Withdraw 10,000 should FAIL
     let result = client.try_withdraw(&owner, &token, &plan_id, &10_000u64);
     assert!(result.is_err());
-    
+
     // Jump forward 25 hours - limit should BE REMOVED
     env.ledger().with_mut(|li| li.timestamp += 90000);
-    assert!(client.try_withdraw(&owner, &token, &plan_id, &10_000u64).is_ok());
+    assert!(client
+        .try_withdraw(&owner, &token, &plan_id, &10_000u64)
+        .is_ok());
 }
 
 #[test]
@@ -2677,7 +2681,7 @@ fn test_claim_emergency_limit() {
     // 10% limit will be applied to the payout.
     // If we want it to fail, we need a payout > 10% of total.
     // Since we only have one beneficiary with 100%, payout is 100% of total.
-    
+
     let plan_id = client.create_inheritance_plan(&plan_params(
         &env,
         &owner,
@@ -2690,7 +2694,7 @@ fn test_claim_emergency_limit() {
     ));
 
     client.activate_emergency_access(&owner, &plan_id, &trusted_contact);
-    
+
     // Claim should FAIL because payout (100%) > limit (10%)
     let result = client.try_claim_inheritance_plan(
         &plan_id,
