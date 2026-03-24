@@ -93,6 +93,10 @@ pub async fn create_app(db: PgPool, config: Config) -> Result<Router, ApiError> 
             "/api/emergency/access/risk-alerts",
             get(list_emergency_access_risk_alerts),
         )
+        .route(
+            "/api/emergency/access/dashboard",
+            get(get_emergency_access_dashboard),
+        )
         // Loan Simulation endpoints
         .route("/api/loans/simulate", post(simulate_loan))
         .route("/api/loans/simulations", get(get_user_simulations))
@@ -331,6 +335,14 @@ async fn list_emergency_access_risk_alerts(
     Ok(Json(
         json!({ "status": "success", "data": alerts, "count": alerts.len() }),
     ))
+}
+
+async fn get_emergency_access_dashboard(
+    State(state): State<Arc<AppState>>,
+    AuthenticatedUser(user): AuthenticatedUser,
+) -> Result<Json<Value>, ApiError> {
+    let dashboard = EmergencyAccessService::get_dashboard(&state.db, user.user_id).await?;
+    Ok(Json(json!({ "status": "success", "data": dashboard })))
 }
 
 #[derive(serde::Deserialize)]

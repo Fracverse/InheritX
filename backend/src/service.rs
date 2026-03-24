@@ -2530,6 +2530,23 @@ pub struct EmergencyAccessRiskAlert {
     pub created_at: DateTime<Utc>,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct EmergencyAccessDashboardItem {
+    pub grant_id: Uuid,
+    pub emergency_contact_id: Uuid,
+    pub contact_name: String,
+    pub status: String,
+    pub active_access: bool,
+    pub permissions: Vec<String>,
+    pub expires_at: DateTime<Utc>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct EmergencyAccessDashboardResponse {
+    pub active_access_count: usize,
+    pub grants: Vec<EmergencyAccessDashboardItem>,
+}
+
 #[derive(Debug, Serialize)]
 pub struct EmergencyActionResponse {
     pub success: bool,
@@ -3112,6 +3129,71 @@ impl EmergencyAccessService {
         .await?;
 
         Ok(alerts)
+    }
+
+    pub async fn get_dashboard(
+        pool: &PgPool,
+        user_id: Uuid,
+    ) -> Result<EmergencyAccessDashboardResponse, ApiError> {
+        #[derive(sqlx::FromRow)]
+        struct DashboardRow {
+            grant_id: Uuid,
+            emergency_contact_id: Uuid,
+            contact_name: String,
+            is_active: bool,
+            expires_at: DateTime<Utc>,
+            permissions: Vec<String>,
+        }
+
+        let rows = sqlx::query_as::<_, DashboardRow>(
+            r#"
+            SELECT g.id AS grant_id,
+                   g.emergency_contact_id,
+                   c.name AS contact_name,
+                   g.is_active,
+                   g.expires_at,
+                   g.permissions
+            FROM emergency_access_grants g
+            INNER JOIN emergency_contacts c ON c.id = g.emergency_contact_id
+            WHERE g.user_id = $1
+            ORDER BY g.created_at DESC
+            "#,
+        )
+        .bind(user_id)
+        .fetch_all(pool)
+        .await?;
+
+        let now = Utc::now();
+        let grants = rows
+            .into_iter()
+            .map(|row| {
+                let active_access = row.is_active && row.expires_at > now;
+                let status = if active_access {
+                    "active"
+                } else if row.is_active {
+                    "expired"
+                } else {
+                    "revoked"
+                };
+
+                EmergencyAccessDashboardItem {
+                    grant_id: row.grant_id,
+                    emergency_contact_id: row.emergency_contact_id,
+                    contact_name: row.contact_name,
+                    status: status.to_string(),
+                    active_access,
+                    permissions: row.permissions,
+                    expires_at: row.expires_at,
+                }
+            })
+            .collect::<Vec<_>>();
+
+        let active_access_count = grants.iter().filter(|grant| grant.active_access).count();
+
+        Ok(EmergencyAccessDashboardResponse {
+            active_access_count,
+            grants,
+        })
     }
 }
 
