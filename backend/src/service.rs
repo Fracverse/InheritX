@@ -2555,6 +2555,29 @@ pub struct EmergencyAccessDashboardResponse {
     pub grants: Vec<EmergencyAccessDashboardItem>,
 }
 
+// ─── Emergency Access Sessions (Issue #306) ─────────────────────────────────
+
+#[derive(Debug, Clone, Serialize, Deserialize, sqlx::FromRow)]
+pub struct EmergencyAccessSession {
+    pub id: Uuid,
+    pub grant_id: Uuid,
+    pub user_id: Uuid,
+    pub emergency_contact_id: Uuid,
+    pub started_at: DateTime<Utc>,
+    pub last_active_at: DateTime<Utc>,
+    pub ended_at: Option<DateTime<Utc>>,
+    pub ip_address: Option<String>,
+    pub user_agent: Option<String>,
+    pub created_at: DateTime<Utc>,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct StartSessionRequest {
+    pub grant_id: Uuid,
+    pub ip_address: Option<String>,
+    pub user_agent: Option<String>,
+}
+
 #[derive(Debug, Serialize)]
 pub struct EmergencyActionResponse {
     pub success: bool,
@@ -3117,6 +3140,9 @@ impl EmergencyAccessService {
 
         Self::evaluate_revoke_risk(pool, &mut tx, &updated).await?;
 
+        // Auto-end all active sessions for this grant (Issue #306)
+        EmergencySessionService::end_sessions_for_grant(&mut *tx, updated.id).await?;
+
         tx.commit().await?;
 
         Ok(EmergencyAccessActionResponse {
@@ -3541,5 +3567,155 @@ impl EmergencyAdminService {
         .await?;
 
         rows.iter().map(plan_row_to_plan_with_beneficiary).collect()
+    }
+}
+
+// ─── Emergency Session Service (Issue #306) ─────────────────────────────────
+
+pub struct EmergencySessionService;
+
+impl EmergencySessionService {
+    /// Start a new session for an active grant.
+    pub async fn start_session(
+        pool: &PgPool,
+        user_id: Uuid,
+        req: &StartSessionRequest,
+    ) -> Result<EmergencyAccessSession, ApiError> {
+        // Verify the grant exists, belongs to user, and is active
+        let grant = sqlx::query_as::<_, EmergencyAccessGrant>(
+            r#"
+            SELECT id, user_id, emergency_contact_id, permissions, expires_at, is_active,
+                   revoked_at, created_at, updated_at
+            FROM emergency_access_grants
+            WHERE id = $1 AND user_id = $2
+            "#,
+        )
+        .bind(req.grant_id)
+        .bind(user_id)
+        .fetch_optional(pool)
+        .await?
+        .ok_or_else(|| {
+            ApiError::NotFound(format!("Emergency access grant {} not found", req.grant_id))
+        })?;
+
+        if !grant.is_active {
+            return Err(ApiError::BadRequest(
+                "Cannot start session for an inactive grant".to_string(),
+            ));
+        }
+
+        if grant.expires_at <= Utc::now() {
+            return Err(ApiError::BadRequest(
+                "Cannot start session for an expired grant".to_string(),
+            ));
+        }
+
+        let session = sqlx::query_as::<_, EmergencyAccessSession>(
+            r#"
+            INSERT INTO emergency_access_sessions (
+                grant_id, user_id, emergency_contact_id, ip_address, user_agent
+            )
+            VALUES ($1, $2, $3, $4, $5)
+            RETURNING id, grant_id, user_id, emergency_contact_id, started_at,
+                      last_active_at, ended_at, ip_address, user_agent, created_at
+            "#,
+        )
+        .bind(req.grant_id)
+        .bind(user_id)
+        .bind(grant.emergency_contact_id)
+        .bind(&req.ip_address)
+        .bind(&req.user_agent)
+        .fetch_one(pool)
+        .await?;
+
+        Ok(session)
+    }
+
+    /// Update the heartbeat timestamp for an active session.
+    pub async fn heartbeat(
+        pool: &PgPool,
+        user_id: Uuid,
+        session_id: Uuid,
+    ) -> Result<EmergencyAccessSession, ApiError> {
+        let session = sqlx::query_as::<_, EmergencyAccessSession>(
+            r#"
+            UPDATE emergency_access_sessions
+            SET last_active_at = NOW()
+            WHERE id = $1 AND user_id = $2 AND ended_at IS NULL
+            RETURNING id, grant_id, user_id, emergency_contact_id, started_at,
+                      last_active_at, ended_at, ip_address, user_agent, created_at
+            "#,
+        )
+        .bind(session_id)
+        .bind(user_id)
+        .fetch_optional(pool)
+        .await?
+        .ok_or_else(|| ApiError::NotFound(format!("Active session {} not found", session_id)))?;
+
+        Ok(session)
+    }
+
+    /// End an active session.
+    pub async fn end_session(
+        pool: &PgPool,
+        user_id: Uuid,
+        session_id: Uuid,
+    ) -> Result<EmergencyAccessSession, ApiError> {
+        let session = sqlx::query_as::<_, EmergencyAccessSession>(
+            r#"
+            UPDATE emergency_access_sessions
+            SET ended_at = NOW(), last_active_at = NOW()
+            WHERE id = $1 AND user_id = $2 AND ended_at IS NULL
+            RETURNING id, grant_id, user_id, emergency_contact_id, started_at,
+                      last_active_at, ended_at, ip_address, user_agent, created_at
+            "#,
+        )
+        .bind(session_id)
+        .bind(user_id)
+        .fetch_optional(pool)
+        .await?
+        .ok_or_else(|| ApiError::NotFound(format!("Active session {} not found", session_id)))?;
+
+        Ok(session)
+    }
+
+    /// List all active sessions for a user.
+    pub async fn list_active_sessions(
+        pool: &PgPool,
+        user_id: Uuid,
+    ) -> Result<Vec<EmergencyAccessSession>, ApiError> {
+        let sessions = sqlx::query_as::<_, EmergencyAccessSession>(
+            r#"
+            SELECT id, grant_id, user_id, emergency_contact_id, started_at,
+                   last_active_at, ended_at, ip_address, user_agent, created_at
+            FROM emergency_access_sessions
+            WHERE user_id = $1 AND ended_at IS NULL
+            ORDER BY started_at DESC
+            "#,
+        )
+        .bind(user_id)
+        .fetch_all(pool)
+        .await?;
+
+        Ok(sessions)
+    }
+
+    /// End all active sessions for a specific grant (used during revocation).
+    pub async fn end_sessions_for_grant(
+        executor: impl sqlx::PgExecutor<'_>,
+        grant_id: Uuid,
+    ) -> Result<(), ApiError> {
+        sqlx::query(
+            r#"
+            UPDATE emergency_access_sessions
+            SET ended_at = NOW(), last_active_at = NOW()
+            WHERE grant_id = $1 AND ended_at IS NULL
+            "#,
+        )
+        .bind(grant_id)
+        .execute(executor)
+        .await?;
+
+        Ok(())
     }
 }

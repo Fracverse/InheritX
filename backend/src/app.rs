@@ -22,10 +22,10 @@ use crate::loan_lifecycle::{CreateLoanRequest, LoanLifecycleService, LoanListFil
 use crate::service::{
     ClaimPlanRequest, CreateEmergencyAccessGrantRequest, CreateEmergencyContactRequest,
     CreatePlanRequest, EmergencyAccessAuditLogFilters, EmergencyAccessService,
-    EmergencyAdminService, EmergencyContactService, KycRecord, KycService, KycStatus,
-    LoanSimulationRequest, LoanSimulationService, PausePlanRequest, PlanService,
-    RevokeEmergencyAccessGrantRequest, RiskOverrideRequest, UnpausePlanRequest,
-    UpdateEmergencyContactRequest,
+    EmergencyAdminService, EmergencyContactService, EmergencySessionService, KycRecord, KycService,
+    KycStatus, LoanSimulationRequest, LoanSimulationService, PausePlanRequest, PlanService,
+    RevokeEmergencyAccessGrantRequest, RiskOverrideRequest, StartSessionRequest,
+    UnpausePlanRequest, UpdateEmergencyContactRequest,
 };
 use crate::stress_testing::StressTestingEngine;
 use crate::yield_service::{DefaultOnChainYieldService, OnChainYieldService};
@@ -138,6 +138,19 @@ pub async fn create_app(db: PgPool, config: Config) -> Result<Router, ApiError> 
         .route(
             "/api/emergency/access/dashboard",
             get(get_emergency_access_dashboard),
+        )
+        // Emergency Access Sessions (Issue #306)
+        .route(
+            "/api/emergency/access/sessions",
+            post(start_emergency_session).get(list_active_emergency_sessions),
+        )
+        .route(
+            "/api/emergency/access/sessions/:session_id/heartbeat",
+            put(heartbeat_emergency_session),
+        )
+        .route(
+            "/api/emergency/access/sessions/:session_id/end",
+            put(end_emergency_session),
         )
         // Loan Simulation endpoints
         .route("/api/loans/simulate", post(simulate_loan))
@@ -417,6 +430,51 @@ async fn get_emergency_access_dashboard(
 ) -> Result<Json<Value>, ApiError> {
     let dashboard = EmergencyAccessService::get_dashboard(&state.db, user.user_id).await?;
     Ok(Json(json!({ "status": "success", "data": dashboard })))
+}
+
+// ─── Emergency Access Session Handlers (Issue #306) ────────────────────────────
+
+async fn start_emergency_session(
+    State(state): State<Arc<AppState>>,
+    AuthenticatedUser(user): AuthenticatedUser,
+    Json(req): Json<StartSessionRequest>,
+) -> Result<Json<Value>, ApiError> {
+    let session = EmergencySessionService::start_session(&state.db, user.user_id, &req).await?;
+    Ok(Json(
+        json!({ "status": "success", "data": session, "message": "Session started" }),
+    ))
+}
+
+async fn heartbeat_emergency_session(
+    State(state): State<Arc<AppState>>,
+    AuthenticatedUser(user): AuthenticatedUser,
+    Path(session_id): Path<Uuid>,
+) -> Result<Json<Value>, ApiError> {
+    let session = EmergencySessionService::heartbeat(&state.db, user.user_id, session_id).await?;
+    Ok(Json(
+        json!({ "status": "success", "data": session, "message": "Heartbeat recorded" }),
+    ))
+}
+
+async fn end_emergency_session(
+    State(state): State<Arc<AppState>>,
+    AuthenticatedUser(user): AuthenticatedUser,
+    Path(session_id): Path<Uuid>,
+) -> Result<Json<Value>, ApiError> {
+    let session = EmergencySessionService::end_session(&state.db, user.user_id, session_id).await?;
+    Ok(Json(
+        json!({ "status": "success", "data": session, "message": "Session ended" }),
+    ))
+}
+
+async fn list_active_emergency_sessions(
+    State(state): State<Arc<AppState>>,
+    AuthenticatedUser(user): AuthenticatedUser,
+) -> Result<Json<Value>, ApiError> {
+    let sessions = EmergencySessionService::list_active_sessions(&state.db, user.user_id).await?;
+    Ok(Json(
+        json!({ "status": "success", "data": sessions, "count": sessions.len() }),
+    ))
 }
 
 #[derive(serde::Deserialize)]
