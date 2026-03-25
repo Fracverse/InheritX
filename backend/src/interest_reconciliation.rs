@@ -113,6 +113,8 @@ impl InterestReconciliationService {
         }
 
         Ok(())
+    }
+
     pub async fn reconcile_vault_balances(&self) -> Result<(), ApiError> {
         #[derive(sqlx::FromRow)]
         struct AssetBalanceRow {
@@ -123,9 +125,9 @@ impl InterestReconciliationService {
         // Aggregate net_amount per asset from plans
         // We assume 'USDC' for now if not specified, or we could join with a table that defines the asset.
         // The 'plans' table has 'net_amount'. Let's assume it's all one asset or we need to filter.
-        // Actually, looking at plans table, it doesn't have asset_code? 
+        // Actually, looking at plans table, it doesn't have asset_code?
         // Wait, check_all_loans in risk_engine.rs used p.asset_code.
-        
+
         let vault_balances = sqlx::query_as::<_, AssetBalanceRow>(
             r#"
             SELECT asset_code, SUM(CAST(net_amount AS numeric)) as total_vault_balance
@@ -163,9 +165,10 @@ impl InterestReconciliationService {
                     row.asset_code, row.total_vault_balance, on_chain_balance, difference
                 );
 
-                let mut tx = self.db.begin().await.map_err(|e| {
-                    ApiError::Internal(anyhow::anyhow!("Tx start error: {}", e))
-                })?;
+                let mut tx =
+                    self.db.begin().await.map_err(|e| {
+                        ApiError::Internal(anyhow::anyhow!("Tx start error: {}", e))
+                    })?;
 
                 AuditLogService::log(
                     &mut *tx,
