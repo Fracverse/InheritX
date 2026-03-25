@@ -15,6 +15,7 @@ use crate::notifications::{
     audit_action, entity_type, notif_type, AuditLogService, NotificationService,
 };
 use chrono::{DateTime, Utc};
+use rust_decimal::Decimal;
 use serde::{Deserialize, Serialize};
 use sqlx::PgPool;
 use std::fmt;
@@ -164,6 +165,103 @@ fn plan_row_to_plan_with_beneficiary(row: &PlanRowFull) -> Result<PlanWithBenefi
         created_at: row.created_at,
         updated_at: row.updated_at,
     })
+}
+
+#[derive(Debug, sqlx::FromRow)]
+struct InheritanceExecutionSafetyRow {
+    outstanding_debt: Option<Decimal>,
+    is_risky: Option<bool>,
+    risk_override_enabled: Option<bool>,
+}
+
+#[derive(Debug, Clone)]
+struct InheritanceExecutionSafety {
+    outstanding_debt: Decimal,
+    utilization_rate: Decimal,
+    is_risky: bool,
+    risk_override_enabled: bool,
+}
+
+impl InheritanceExecutionSafety {
+    fn from_plan_state(
+        net_amount: Decimal,
+        outstanding_debt: Decimal,
+        is_risky: bool,
+        risk_override_enabled: bool,
+    ) -> Self {
+        let utilization_rate = if outstanding_debt <= Decimal::ZERO {
+            Decimal::ZERO
+        } else if net_amount > Decimal::ZERO {
+            ((outstanding_debt / net_amount) * Decimal::from(100)).round_dp(2)
+        } else {
+            Decimal::from(100)
+        };
+
+        Self {
+            outstanding_debt,
+            utilization_rate,
+            is_risky,
+            risk_override_enabled,
+        }
+    }
+
+    fn blocking_reason(&self) -> Option<String> {
+        if self.is_risky && !self.risk_override_enabled {
+            return Some(format!(
+                "Inheritance execution is blocked because the plan is currently flagged as risky by the lending monitor (utilization: {}%, outstanding debt: {}).",
+                self.utilization_rate.normalize(),
+                self.outstanding_debt.round_dp(4).normalize()
+            ));
+        }
+
+        if self.outstanding_debt > Decimal::ZERO {
+            return Some(format!(
+                "Inheritance execution is blocked while plan funds remain utilized in lending (utilization: {}%, outstanding debt: {}).",
+                self.utilization_rate.normalize(),
+                self.outstanding_debt.round_dp(4).normalize()
+            ));
+        }
+
+        None
+    }
+}
+
+async fn load_inheritance_execution_safety<'a, E>(
+    executor: E,
+    plan_id: Uuid,
+    net_amount: Decimal,
+) -> Result<InheritanceExecutionSafety, ApiError>
+where
+    E: sqlx::Executor<'a, Database = sqlx::Postgres>,
+{
+    let row = sqlx::query_as::<_, InheritanceExecutionSafetyRow>(
+        r#"
+        WITH lending_balance AS (
+            SELECT
+                COALESCE(SUM(CASE WHEN event_type = 'borrow' THEN CAST(amount AS numeric) ELSE 0 END), 0) -
+                COALESCE(SUM(CASE WHEN event_type = 'repay' THEN CAST(amount AS numeric) ELSE 0 END), 0) -
+                COALESCE(SUM(CASE WHEN event_type = 'liquidation' THEN CAST(amount AS numeric) ELSE 0 END), 0) AS outstanding_debt
+            FROM lending_events
+            WHERE plan_id = $1
+        )
+        SELECT
+            lending_balance.outstanding_debt,
+            p.is_risky,
+            p.risk_override_enabled
+        FROM lending_balance
+        JOIN plans p ON p.id = $1
+        "#,
+    )
+    .bind(plan_id)
+    .fetch_one(executor)
+    .await?;
+
+    Ok(InheritanceExecutionSafety::from_plan_state(
+        net_amount,
+        row.outstanding_debt.unwrap_or(Decimal::ZERO),
+        row.is_risky.unwrap_or(false),
+        row.risk_override_enabled.unwrap_or(false),
+    ))
 }
 
 pub struct PlanService;
@@ -390,6 +488,12 @@ impl PlanService {
             ));
         }
 
+        let execution_safety =
+            load_inheritance_execution_safety(&mut *tx, plan_id, plan.net_amount).await?;
+        if let Some(reason) = execution_safety.blocking_reason() {
+            return Err(ApiError::BadRequest(reason));
+        }
+
         let contract_plan_id = plan.contract_plan_id.unwrap_or(0_i64);
 
         // ... (Currency validation logic remains same) ...
@@ -576,7 +680,11 @@ impl PlanService {
                 .await?;
 
                 if !has_claim {
-                    return Ok(Some(plan));
+                    let execution_safety =
+                        load_inheritance_execution_safety(db, plan.id, plan.net_amount).await?;
+                    if execution_safety.blocking_reason().is_none() {
+                        return Ok(Some(plan));
+                    }
                 }
             }
         }
@@ -672,7 +780,11 @@ impl PlanService {
                 .await?;
 
                 if !has_claim {
-                    due_plans.push(plan);
+                    let execution_safety =
+                        load_inheritance_execution_safety(db, plan.id, plan.net_amount).await?;
+                    if execution_safety.blocking_reason().is_none() {
+                        due_plans.push(plan);
+                    }
                 }
             }
         }
@@ -765,7 +877,11 @@ impl PlanService {
                 .await?;
 
                 if !has_claim {
-                    due_plans.push(plan);
+                    let execution_safety =
+                        load_inheritance_execution_safety(db, plan.id, plan.net_amount).await?;
+                    if execution_safety.blocking_reason().is_none() {
+                        due_plans.push(plan);
+                    }
                 }
             }
         }
@@ -1706,8 +1822,9 @@ impl LoanSimulationService {
 
 #[cfg(test)]
 mod tests {
-    use super::{CurrencyPreference, PlanService};
+    use super::{CurrencyPreference, InheritanceExecutionSafety, PlanService};
     use crate::api_error::ApiError;
+    use rust_decimal::Decimal;
     use std::str::FromStr;
 
     #[test]
@@ -1802,6 +1919,51 @@ mod tests {
             Some("12345678")
         )
         .is_err());
+    }
+
+    #[test]
+    fn inheritance_execution_safety_blocks_active_lending_utilization() {
+        let safety = InheritanceExecutionSafety::from_plan_state(
+            Decimal::new(1000, 0),
+            Decimal::new(250, 0),
+            false,
+            false,
+        );
+
+        let reason = safety
+            .blocking_reason()
+            .expect("expected active lending utilization to block execution");
+
+        assert!(reason.contains("utilized in lending"));
+        assert!(reason.contains("25"));
+    }
+
+    #[test]
+    fn inheritance_execution_safety_blocks_risky_plan_without_override() {
+        let safety = InheritanceExecutionSafety::from_plan_state(
+            Decimal::new(1000, 0),
+            Decimal::ZERO,
+            true,
+            false,
+        );
+
+        let reason = safety
+            .blocking_reason()
+            .expect("expected risky plans to block execution");
+
+        assert!(reason.contains("flagged as risky"));
+    }
+
+    #[test]
+    fn inheritance_execution_safety_allows_clean_plan() {
+        let safety = InheritanceExecutionSafety::from_plan_state(
+            Decimal::new(1000, 0),
+            Decimal::ZERO,
+            false,
+            false,
+        );
+
+        assert!(safety.blocking_reason().is_none());
     }
 
     // ========================================================================
