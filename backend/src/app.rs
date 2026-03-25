@@ -14,6 +14,7 @@ use uuid::Uuid;
 use crate::analytics::analytics_router;
 use crate::api_error::ApiError;
 use crate::auth::{AuthenticatedAdmin, AuthenticatedUser};
+use crate::beneficiary_sync::{BeneficiarySyncService, DocumentBeneficiary};
 use crate::config::Config;
 use crate::governance::{
     CreateProposalRequest, GovernanceService, ParameterUpdateRequest, Proposal, VoteRequest,
@@ -28,6 +29,10 @@ use crate::service::{
     UnpausePlanRequest, UpdateEmergencyContactRequest,
 };
 use crate::stress_testing::StressTestingEngine;
+use crate::will_pdf::{WillDocumentInput, WillPdfService, WillTemplate};
+use crate::will_signature::{
+    SigningChallengeRequest, SubmitSignatureRequest, WillSignatureService,
+};
 use crate::yield_service::{DefaultOnChainYieldService, OnChainYieldService};
 
 pub struct AppState {
@@ -239,6 +244,31 @@ pub async fn create_app(db: PgPool, config: Config) -> Result<Router, ApiError> 
             post(update_protocol_parameter),
         )
         .merge(analytics_router())
+        // ── Will PDF & Template Engine (Tasks 1 & 2) ─────────────────────────
+        .route(
+            "/api/plans/:plan_id/will/generate",
+            post(generate_will_document),
+        )
+        .route("/api/will/documents/:document_id", get(get_will_document))
+        .route(
+            "/api/plans/:plan_id/will/documents",
+            get(list_will_documents),
+        )
+        // ── Beneficiary Sync (Task 3) ─────────────────────────────────────────
+        .route(
+            "/api/plans/:plan_id/beneficiaries/sync",
+            post(sync_beneficiaries),
+        )
+        // ── Digital Signature (Task 4) ────────────────────────────────────────
+        .route(
+            "/api/will/documents/:document_id/sign/challenge",
+            post(create_signing_challenge),
+        )
+        .route("/api/will/sign", post(submit_will_signature))
+        .route(
+            "/api/will/documents/:document_id/signatures",
+            get(get_will_signatures),
+        )
         .with_state(state);
 
     Ok(app)
@@ -915,5 +945,128 @@ async fn update_protocol_parameter(
     GovernanceService::update_parameter(&state.db, admin.admin_id, &req).await?;
     Ok(Json(
         json!({ "status": "success", "message": "Parameter updated successfully" }),
+    ))
+}
+
+// ─── Will PDF & Template Engine Handlers (Tasks 1 & 2) ───────────────────────
+
+#[derive(serde::Deserialize)]
+struct GenerateWillRequest {
+    owner_name: String,
+    owner_wallet: String,
+    vault_id: String,
+    beneficiaries: Vec<crate::will_pdf::BeneficiaryEntry>,
+    execution_rules: Option<String>,
+    template: Option<String>,
+    jurisdiction: Option<String>,
+    will_hash_reference: Option<String>,
+}
+
+async fn generate_will_document(
+    State(state): State<Arc<AppState>>,
+    Path(plan_id): Path<Uuid>,
+    AuthenticatedUser(user): AuthenticatedUser,
+    Json(req): Json<GenerateWillRequest>,
+) -> Result<Json<Value>, ApiError> {
+    use std::str::FromStr;
+    let template = req
+        .template
+        .as_deref()
+        .map(WillTemplate::from_str)
+        .transpose()?
+        .unwrap_or(WillTemplate::Formal);
+
+    let input = WillDocumentInput {
+        plan_id,
+        owner_name: req.owner_name,
+        owner_wallet: req.owner_wallet,
+        vault_id: req.vault_id,
+        beneficiaries: req.beneficiaries,
+        execution_rules: req.execution_rules,
+        template,
+        jurisdiction: req.jurisdiction,
+        will_hash_reference: req.will_hash_reference,
+    };
+
+    let doc = WillPdfService::generate(&state.db, user.user_id, &input).await?;
+    Ok(Json(json!({ "status": "success", "data": doc })))
+}
+
+async fn get_will_document(
+    State(state): State<Arc<AppState>>,
+    Path(document_id): Path<Uuid>,
+    AuthenticatedUser(user): AuthenticatedUser,
+) -> Result<Json<Value>, ApiError> {
+    let doc = WillPdfService::get_document(&state.db, document_id, user.user_id).await?;
+    Ok(Json(json!({ "status": "success", "data": doc })))
+}
+
+async fn list_will_documents(
+    State(state): State<Arc<AppState>>,
+    Path(plan_id): Path<Uuid>,
+    AuthenticatedUser(user): AuthenticatedUser,
+) -> Result<Json<Value>, ApiError> {
+    let docs = WillPdfService::list_for_plan(&state.db, plan_id, user.user_id).await?;
+    Ok(Json(
+        json!({ "status": "success", "data": docs, "count": docs.len() }),
+    ))
+}
+
+// ─── Beneficiary Sync Handler (Task 3) ───────────────────────────────────────
+
+#[derive(serde::Deserialize)]
+struct SyncBeneficiariesRequest {
+    document_beneficiaries: Vec<DocumentBeneficiary>,
+}
+
+async fn sync_beneficiaries(
+    State(state): State<Arc<AppState>>,
+    Path(plan_id): Path<Uuid>,
+    AuthenticatedUser(_user): AuthenticatedUser,
+    Json(req): Json<SyncBeneficiariesRequest>,
+) -> Result<Json<Value>, ApiError> {
+    let result =
+        BeneficiarySyncService::sync_and_validate(&state.db, plan_id, &req.document_beneficiaries)
+            .await?;
+    Ok(Json(json!({ "status": "success", "data": result })))
+}
+
+// ─── Digital Signature Handlers (Task 4) ─────────────────────────────────────
+
+async fn create_signing_challenge(
+    State(state): State<Arc<AppState>>,
+    Path(document_id): Path<Uuid>,
+    AuthenticatedUser(user): AuthenticatedUser,
+    Json(mut req): Json<SigningChallengeRequest>,
+) -> Result<Json<Value>, ApiError> {
+    // Bind document_id from path
+    req.document_id = document_id;
+    // Bind wallet from authenticated user's claims if not provided
+    if req.wallet_address.is_empty() {
+        req.wallet_address = user.email.clone();
+    }
+    let challenge = WillSignatureService::create_challenge(&state.db, &req).await?;
+    Ok(Json(json!({ "status": "success", "data": challenge })))
+}
+
+async fn submit_will_signature(
+    State(state): State<Arc<AppState>>,
+    AuthenticatedUser(_user): AuthenticatedUser,
+    Json(req): Json<SubmitSignatureRequest>,
+) -> Result<Json<Value>, ApiError> {
+    let record = WillSignatureService::verify_and_store(&state.db, &req).await?;
+    Ok(Json(json!({ "status": "success", "data": record })))
+}
+
+async fn get_will_signatures(
+    State(state): State<Arc<AppState>>,
+    Path(document_id): Path<Uuid>,
+    AuthenticatedUser(user): AuthenticatedUser,
+) -> Result<Json<Value>, ApiError> {
+    let sigs =
+        WillSignatureService::get_signatures_for_document(&state.db, document_id, user.user_id)
+            .await?;
+    Ok(Json(
+        json!({ "status": "success", "data": sigs, "count": sigs.len() }),
     ))
 }

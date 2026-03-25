@@ -3,6 +3,7 @@ pub mod analytics;
 pub mod api_error;
 pub mod app;
 pub mod auth;
+pub mod beneficiary_sync;
 pub mod compliance;
 pub mod config;
 pub mod db;
@@ -24,6 +25,8 @@ pub mod safe_math;
 pub mod service;
 pub mod stress_testing;
 pub mod telemetry;
+pub mod will_pdf;
+pub mod will_signature;
 pub mod yield_service;
 
 pub use api_error::ApiError;
