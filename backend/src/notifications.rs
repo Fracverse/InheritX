@@ -1,9 +1,9 @@
+use crate::alert_provider::AlertProvider;
 use crate::api_error::ApiError;
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use sqlx::PgPool;
 use uuid::Uuid;
-use crate::alert_provider::AlertProvider;
 
 // ─── Notification Types ──────────────────────────────────────────────────────
 
@@ -176,36 +176,44 @@ impl EmergencyAlertService {
             .await?;
 
         // 2. Fetch contact info
-        let contact: (Option<String>, Option<String>) = sqlx::query_as(
-            "SELECT email, phone FROM emergency_contacts WHERE id = $1"
-        )
-        .bind(contact_id)
-        .fetch_one(db)
-        .await?;
+        let contact: (Option<String>, Option<String>) =
+            sqlx::query_as("SELECT email, phone FROM emergency_contacts WHERE id = $1")
+                .bind(contact_id)
+                .fetch_one(db)
+                .await?;
 
         let (contact_email, contact_phone) = contact;
 
         // 3. Send to user (Email)
-        provider.send_email(
-            &user_email,
-            &format!("Security Alert: {}", alert_type),
-            message,
-        ).await.map_err(|e| ApiError::Internal(anyhow::anyhow!(e)))?;
+        provider
+            .send_email(
+                &user_email,
+                &format!("Security Alert: {}", alert_type),
+                message,
+            )
+            .await
+            .map_err(|e| ApiError::Internal(anyhow::anyhow!(e)))?;
 
         // 4. Send to contact (Email and/or SMS)
         if let Some(email) = contact_email {
-            provider.send_email(
-                &email,
-                &format!("Emergency Alert for your contact: {}", alert_type),
-                message,
-            ).await.map_err(|e| ApiError::Internal(anyhow::anyhow!(e)))?;
+            provider
+                .send_email(
+                    &email,
+                    &format!("Emergency Alert for your contact: {}", alert_type),
+                    message,
+                )
+                .await
+                .map_err(|e| ApiError::Internal(anyhow::anyhow!(e)))?;
         }
 
         if let Some(phone) = contact_phone {
-            provider.send_sms(
-                &phone,
-                &format!("Emergency Alert: {}. Message: {}", alert_type, message),
-            ).await.map_err(|e| ApiError::Internal(anyhow::anyhow!(e)))?;
+            provider
+                .send_sms(
+                    &phone,
+                    &format!("Emergency Alert: {}. Message: {}", alert_type, message),
+                )
+                .await
+                .map_err(|e| ApiError::Internal(anyhow::anyhow!(e)))?;
         }
 
         Ok(())

@@ -2772,8 +2772,8 @@ impl EmergencyAccessService {
         .await?;
 
         // After persisting the alert, trigger external notifications
-        use crate::notifications::EmergencyAlertService;
         use crate::alert_provider::MockAlertProvider;
+        use crate::notifications::EmergencyAlertService;
 
         let provider = MockAlertProvider;
         if let Err(e) = EmergencyAlertService::send_risk_alert(
@@ -2783,7 +2783,9 @@ impl EmergencyAccessService {
             input.contact_id,
             input.alert_type,
             input.message,
-        ).await {
+        )
+        .await
+        {
             tracing::error!("Failed to send emergency risk alert: {}", e);
             // We don't return error here to avoid rolling back the risk alert insertion
             // because the alert itself is already in the DB.
