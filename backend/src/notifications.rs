@@ -26,6 +26,7 @@ pub mod notif_type {
     pub const EMERGENCY_ACCESS_REVOKED: &str = "emergency_access_revoked";
     pub const EMERGENCY_ACCESS_EXPIRING: &str = "emergency_access_expiring";
     pub const SUSPICIOUS_ACTIVITY_FLAGGED: &str = "suspicious_activity_flagged";
+    pub const RESERVE_HEALTH_ALERT: &str = "reserve_health_alert";
 }
 
 // ─── Notification ────────────────────────────────────────────────────────────
@@ -182,6 +183,7 @@ pub mod audit_action {
     pub const EMERGENCY_ACCESS_EXPIRED: &str = "emergency_access_expired";
     pub const REPAYMENT_REMINDER_SENT: &str = "repayment_reminder_sent";
     pub const YIELD_UPDATE_SENT: &str = "yield_update_sent";
+    pub const RESERVE_HEALTH_ALERT: &str = "reserve_health_alert";
 }
 
 /// Entity type constants — stored in `entity_type` column of `action_logs`.
@@ -189,6 +191,7 @@ pub mod entity_type {
     pub const USER: &str = "user";
     pub const PLAN: &str = "plan";
     pub const LOAN: &str = "loan";
+    pub const POOL: &str = "pool";
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, sqlx::FromRow)]

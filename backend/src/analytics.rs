@@ -292,6 +292,19 @@ async fn get_plan_metrics_legacy(
     })))
 }
 
+/// GET /api/admin/analytics/reserve-health
+/// Returns reserve health metrics for all pools
+async fn get_reserve_health_analytics(
+    State(state): State<Arc<AppState>>,
+    AuthenticatedAdmin(_admin): AuthenticatedAdmin,
+) -> Result<Json<Value>, ApiError> {
+    let metrics = state.reserve_health_engine.check_all_reserves().await?;
+    Ok(Json(json!({
+        "status": "success",
+        "data": metrics
+    })))
+}
+
 pub fn analytics_router() -> Router<Arc<AppState>> {
     Router::new()
         // New canonical API routes
@@ -307,6 +320,7 @@ pub fn analytics_router() -> Router<Arc<AppState>> {
             "/api/admin/analytics/yield/history",
             get(get_earnings_history),
         )
+        .route("/api/admin/analytics/reserve-health", get(get_reserve_health_analytics))
         // Legacy routes (backwards compatibility)
         .route("/admin/metrics/overview", get(get_overview_legacy))
         .route("/admin/metrics/revenue", get(get_revenue_metrics_legacy))

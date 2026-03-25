@@ -28,6 +28,7 @@ use crate::service::{
     UpdateEmergencyContactRequest,
 };
 use crate::stress_testing::StressTestingEngine;
+use crate::reserve_health::ReserveHealthEngine;
 use crate::yield_service::{DefaultOnChainYieldService, OnChainYieldService};
 
 pub struct AppState {
@@ -35,6 +36,7 @@ pub struct AppState {
     pub config: Config,
     pub yield_service: Arc<dyn OnChainYieldService>,
     pub stress_testing_engine: Arc<StressTestingEngine>,
+    pub reserve_health_engine: Arc<ReserveHealthEngine>,
 }
 
 pub async fn create_app(db: PgPool, config: Config) -> Result<Router, ApiError> {
@@ -61,11 +63,15 @@ pub async fn create_app(db: PgPool, config: Config) -> Result<Router, ApiError> 
         risk_engine,
     ));
 
+    let reserve_health_engine = Arc::new(ReserveHealthEngine::new(db.clone()));
+    reserve_health_engine.clone().start();
+
     let state = Arc::new(AppState {
         db,
         config,
         yield_service,
         stress_testing_engine,
+        reserve_health_engine,
     });
 
     // Rate limiting configuration
@@ -198,6 +204,19 @@ pub async fn create_app(db: PgPool, config: Config) -> Result<Router, ApiError> 
         .route(
             "/api/admin/stress-test/liquidity-drain",
             post(simulate_liquidity_drain),
+        )
+        // ── Reserve Health Endpoints ──────────────────────────────────────────
+        .route(
+            "/api/admin/reserve-health",
+            get(get_all_reserve_health),
+        )
+        .route(
+            "/api/admin/reserve-health/:asset_code",
+            get(get_reserve_health_by_asset),
+        )
+        .route(
+            "/api/admin/reserve-health/sync",
+            post(sync_reserve_health),
         )
         // ── Governance Endpoints ──────────────────────────────────────────────
         .route(
@@ -846,4 +865,42 @@ async fn update_protocol_parameter(
     Ok(Json(
         json!({ "status": "success", "message": "Parameter updated successfully" }),
     ))
+}
+
+// Reserve Health Endpoints
+
+async fn get_all_reserve_health(
+    State(state): State<Arc<AppState>>,
+    AuthenticatedAdmin(_admin): AuthenticatedAdmin,
+) -> Result<Json<Value>, ApiError> {
+    let metrics = state.reserve_health_engine.check_all_reserves().await?;
+    Ok(Json(json!({
+        "status": "success",
+        "data": metrics
+    })))
+}
+
+async fn get_reserve_health_by_asset(
+    State(state): State<Arc<AppState>>,
+    AuthenticatedAdmin(_admin): AuthenticatedAdmin,
+    Path(asset_code): Path<String>,
+) -> Result<Json<Value>, ApiError> {
+    let metrics = state.reserve_health_engine.get_reserve_health(&asset_code).await?;
+    Ok(Json(json!({
+        "status": "success",
+        "data": metrics
+    })))
+}
+
+async fn sync_reserve_health(
+    State(state): State<Arc<AppState>>,
+    AuthenticatedAdmin(_admin): AuthenticatedAdmin,
+) -> Result<Json<Value>, ApiError> {
+    state.reserve_health_engine.sync_reserves_from_events().await?;
+    let metrics = state.reserve_health_engine.check_all_reserves().await?;
+    Ok(Json(json!({
+        "status": "success",
+        "message": "Reserve health synced successfully",
+        "data": metrics
+    })))
 }
