@@ -3417,3 +3417,347 @@ fn test_get_emergency_contacts_empty() {
     let contacts = client.get_emergency_contacts(&plan_id);
     assert_eq!(contacts.len(), 0);
 }
+
+// ── Will Management System Tests (Issues #314–#317) ──
+
+fn create_plan_and_get_id(
+    env: &Env,
+    client: &InheritanceContractClient,
+    token_id: &Address,
+    owner: &Address,
+) -> u64 {
+    let params = plan_params(
+        env,
+        owner,
+        token_id,
+        "Test Plan",
+        "Test Description",
+        10000,
+        DistributionMethod::LumpSum,
+        &default_beneficiaries(env),
+    );
+    client.create_inheritance_plan(&params);
+    1u64
+}
+
+fn test_will_hash(env: &Env) -> BytesN<32> {
+    BytesN::from_array(env, &[1u8; 32])
+}
+
+fn test_will_hash_2(env: &Env) -> BytesN<32> {
+    BytesN::from_array(env, &[2u8; 32])
+}
+
+// --- Issue #314: Legal Will Hash Storage ---
+
+#[test]
+fn test_store_will_hash_success() {
+    let env = Env::default();
+    let (client, token_id, _admin, owner) = setup_with_token_and_admin(&env);
+    let plan_id = create_plan_and_get_id(&env, &client, &token_id, &owner);
+    let will_hash = test_will_hash(&env);
+
+    client.store_will_hash(&owner, &plan_id, &will_hash);
+
+    let stored = client.get_will_hash(&plan_id);
+    assert_eq!(stored, Some(will_hash));
+}
+
+#[test]
+fn test_store_will_hash_already_stored() {
+    let env = Env::default();
+    let (client, token_id, _admin, owner) = setup_with_token_and_admin(&env);
+    let plan_id = create_plan_and_get_id(&env, &client, &token_id, &owner);
+    let will_hash = test_will_hash(&env);
+
+    client.store_will_hash(&owner, &plan_id, &will_hash);
+
+    let result = client.try_store_will_hash(&owner, &plan_id, &will_hash);
+    assert!(result.is_err());
+}
+
+#[test]
+fn test_store_will_hash_unauthorized() {
+    let env = Env::default();
+    let (client, token_id, _admin, owner) = setup_with_token_and_admin(&env);
+    let plan_id = create_plan_and_get_id(&env, &client, &token_id, &owner);
+    let other = create_test_address(&env, 99);
+    let will_hash = test_will_hash(&env);
+
+    let result = client.try_store_will_hash(&other, &plan_id, &will_hash);
+    assert!(result.is_err());
+}
+
+#[test]
+fn test_store_will_hash_plan_not_found() {
+    let env = Env::default();
+    let (client, _token_id, _admin, owner) = setup_with_token_and_admin(&env);
+    let will_hash = test_will_hash(&env);
+
+    let result = client.try_store_will_hash(&owner, &999u64, &will_hash);
+    assert!(result.is_err());
+}
+
+#[test]
+fn test_get_will_hash_none() {
+    let env = Env::default();
+    let (client, token_id, _admin, owner) = setup_with_token_and_admin(&env);
+    let _plan_id = create_plan_and_get_id(&env, &client, &token_id, &owner);
+
+    let result = client.get_will_hash(&1u64);
+    assert_eq!(result, None);
+}
+
+// --- Issue #315: Link Will Document to Vault ---
+
+#[test]
+fn test_link_will_to_vault_success() {
+    let env = Env::default();
+    let (client, token_id, _admin, owner) = setup_with_token_and_admin(&env);
+    let plan_id = create_plan_and_get_id(&env, &client, &token_id, &owner);
+    let will_hash = test_will_hash(&env);
+
+    client.link_will_to_vault(&owner, &plan_id, &will_hash);
+
+    let stored = client.get_vault_will(&plan_id);
+    assert_eq!(stored, Some(will_hash));
+}
+
+#[test]
+fn test_link_will_to_vault_already_linked() {
+    let env = Env::default();
+    let (client, token_id, _admin, owner) = setup_with_token_and_admin(&env);
+    let plan_id = create_plan_and_get_id(&env, &client, &token_id, &owner);
+    let will_hash = test_will_hash(&env);
+
+    client.link_will_to_vault(&owner, &plan_id, &will_hash);
+
+    let result = client.try_link_will_to_vault(&owner, &plan_id, &will_hash);
+    assert!(result.is_err());
+}
+
+#[test]
+fn test_link_will_to_vault_not_found() {
+    let env = Env::default();
+    let (client, _token_id, _admin, owner) = setup_with_token_and_admin(&env);
+    let will_hash = test_will_hash(&env);
+
+    let result = client.try_link_will_to_vault(&owner, &999u64, &will_hash);
+    assert!(result.is_err());
+}
+
+#[test]
+fn test_link_will_to_vault_unauthorized() {
+    let env = Env::default();
+    let (client, token_id, _admin, owner) = setup_with_token_and_admin(&env);
+    let plan_id = create_plan_and_get_id(&env, &client, &token_id, &owner);
+    let other = create_test_address(&env, 99);
+    let will_hash = test_will_hash(&env);
+
+    let result = client.try_link_will_to_vault(&other, &plan_id, &will_hash);
+    assert!(result.is_err());
+}
+
+#[test]
+fn test_get_vault_will_none() {
+    let env = Env::default();
+    let (client, token_id, _admin, owner) = setup_with_token_and_admin(&env);
+    let _plan_id = create_plan_and_get_id(&env, &client, &token_id, &owner);
+
+    let result = client.get_vault_will(&1u64);
+    assert_eq!(result, None);
+}
+
+// --- Issue #316: Beneficiary Verification ---
+
+#[test]
+fn test_verify_beneficiaries_match() {
+    let env = Env::default();
+    let (client, token_id, _admin, owner) = setup_with_token_and_admin(&env);
+    let plan_id = create_plan_and_get_id(&env, &client, &token_id, &owner);
+
+    // Get the plan to extract the hashed_email of the beneficiary
+    let plan = client.get_plan_details(&plan_id).unwrap();
+    let ben = plan.beneficiaries.get(0).unwrap();
+
+    let will_bens: Vec<(BytesN<32>, u32)> =
+        vec![&env, (ben.hashed_email.clone(), ben.allocation_bp)];
+
+    let result = client.verify_beneficiaries(&plan_id, &will_bens);
+    assert_eq!(result, true);
+
+    let status = client.get_verification_status(&plan_id);
+    assert_eq!(status, Some(true));
+}
+
+#[test]
+fn test_verify_beneficiaries_mismatch_allocation() {
+    let env = Env::default();
+    let (client, token_id, _admin, owner) = setup_with_token_and_admin(&env);
+    let plan_id = create_plan_and_get_id(&env, &client, &token_id, &owner);
+
+    let plan = client.get_plan_details(&plan_id).unwrap();
+    let ben = plan.beneficiaries.get(0).unwrap();
+
+    // Wrong allocation
+    let will_bens: Vec<(BytesN<32>, u32)> = vec![&env, (ben.hashed_email.clone(), 5000u32)];
+
+    let result = client.verify_beneficiaries(&plan_id, &will_bens);
+    assert_eq!(result, false);
+
+    let status = client.get_verification_status(&plan_id);
+    assert_eq!(status, Some(false));
+}
+
+#[test]
+fn test_verify_beneficiaries_mismatch_count() {
+    let env = Env::default();
+    let (client, token_id, _admin, owner) = setup_with_token_and_admin(&env);
+    let plan_id = create_plan_and_get_id(&env, &client, &token_id, &owner);
+
+    // Empty list — count mismatch
+    let will_bens: Vec<(BytesN<32>, u32)> = Vec::new(&env);
+
+    let result = client.verify_beneficiaries(&plan_id, &will_bens);
+    assert_eq!(result, false);
+}
+
+#[test]
+fn test_verify_beneficiaries_plan_not_found() {
+    let env = Env::default();
+    let (client, _token_id, _admin, _owner) = setup_with_token_and_admin(&env);
+
+    let will_bens: Vec<(BytesN<32>, u32)> = Vec::new(&env);
+    let result = client.try_verify_beneficiaries(&999u64, &will_bens);
+    assert!(result.is_err());
+}
+
+#[test]
+fn test_get_verification_status_none() {
+    let env = Env::default();
+    let (client, token_id, _admin, owner) = setup_with_token_and_admin(&env);
+    let _plan_id = create_plan_and_get_id(&env, &client, &token_id, &owner);
+
+    let status = client.get_verification_status(&1u64);
+    assert_eq!(status, None);
+}
+
+// --- Issue #317: Will Versioning System ---
+
+#[test]
+fn test_create_will_version_first() {
+    let env = Env::default();
+    let (client, token_id, _admin, owner) = setup_with_token_and_admin(&env);
+    let plan_id = create_plan_and_get_id(&env, &client, &token_id, &owner);
+    let will_hash = test_will_hash(&env);
+
+    let version = client.create_will_version(&owner, &plan_id, &will_hash);
+    assert_eq!(version, 1);
+
+    let count = client.get_will_version_count(&plan_id);
+    assert_eq!(count, 1);
+
+    let ver_info = client.get_will_version(&plan_id, &1u32).unwrap();
+    assert_eq!(ver_info.version, 1);
+    assert_eq!(ver_info.will_hash, will_hash);
+    assert_eq!(ver_info.is_active, true);
+}
+
+#[test]
+fn test_create_will_version_multiple() {
+    let env = Env::default();
+    let (client, token_id, _admin, owner) = setup_with_token_and_admin(&env);
+    let plan_id = create_plan_and_get_id(&env, &client, &token_id, &owner);
+    let hash1 = test_will_hash(&env);
+    let hash2 = test_will_hash_2(&env);
+
+    let v1 = client.create_will_version(&owner, &plan_id, &hash1);
+    assert_eq!(v1, 1);
+
+    let v2 = client.create_will_version(&owner, &plan_id, &hash2);
+    assert_eq!(v2, 2);
+
+    // v1 should be deactivated
+    let ver1 = client.get_will_version(&plan_id, &1u32).unwrap();
+    assert_eq!(ver1.is_active, false);
+
+    // v2 should be active
+    let ver2 = client.get_will_version(&plan_id, &2u32).unwrap();
+    assert_eq!(ver2.is_active, true);
+
+    let active = client.get_active_will_version(&plan_id).unwrap();
+    assert_eq!(active.version, 2);
+    assert_eq!(active.will_hash, hash2);
+
+    let count = client.get_will_version_count(&plan_id);
+    assert_eq!(count, 2);
+}
+
+#[test]
+fn test_create_will_version_updates_vault_will() {
+    let env = Env::default();
+    let (client, token_id, _admin, owner) = setup_with_token_and_admin(&env);
+    let plan_id = create_plan_and_get_id(&env, &client, &token_id, &owner);
+    let hash1 = test_will_hash(&env);
+    let hash2 = test_will_hash_2(&env);
+
+    client.create_will_version(&owner, &plan_id, &hash1);
+    let vault_will = client.get_vault_will(&plan_id);
+    assert_eq!(vault_will, Some(hash1));
+
+    client.create_will_version(&owner, &plan_id, &hash2);
+    let vault_will = client.get_vault_will(&plan_id);
+    assert_eq!(vault_will, Some(hash2));
+}
+
+#[test]
+fn test_create_will_version_unauthorized() {
+    let env = Env::default();
+    let (client, token_id, _admin, owner) = setup_with_token_and_admin(&env);
+    let plan_id = create_plan_and_get_id(&env, &client, &token_id, &owner);
+    let other = create_test_address(&env, 99);
+    let will_hash = test_will_hash(&env);
+
+    let result = client.try_create_will_version(&other, &plan_id, &will_hash);
+    assert!(result.is_err());
+}
+
+#[test]
+fn test_create_will_version_plan_not_found() {
+    let env = Env::default();
+    let (client, _token_id, _admin, owner) = setup_with_token_and_admin(&env);
+    let will_hash = test_will_hash(&env);
+
+    let result = client.try_create_will_version(&owner, &999u64, &will_hash);
+    assert!(result.is_err());
+}
+
+#[test]
+fn test_get_will_version_not_found() {
+    let env = Env::default();
+    let (client, token_id, _admin, owner) = setup_with_token_and_admin(&env);
+    let _plan_id = create_plan_and_get_id(&env, &client, &token_id, &owner);
+
+    let result = client.get_will_version(&1u64, &99u32);
+    assert_eq!(result, None);
+}
+
+#[test]
+fn test_get_active_will_version_none() {
+    let env = Env::default();
+    let (client, token_id, _admin, owner) = setup_with_token_and_admin(&env);
+    let _plan_id = create_plan_and_get_id(&env, &client, &token_id, &owner);
+
+    let result = client.get_active_will_version(&1u64);
+    assert_eq!(result, None);
+}
+
+#[test]
+fn test_get_will_version_count_zero() {
+    let env = Env::default();
+    let (client, token_id, _admin, owner) = setup_with_token_and_admin(&env);
+    let _plan_id = create_plan_and_get_id(&env, &client, &token_id, &owner);
+
+    let count = client.get_will_version_count(&1u64);
+    assert_eq!(count, 0);
+}

@@ -105,6 +105,11 @@ pub enum InheritanceError {
     EmergencyContactNotFound = 41,
     EmergencyContactAlreadyExists = 42,
     TooManyEmergencyContacts = 43,
+    WillHashAlreadyStored = 44,
+    WillAlreadyLinked = 45,
+    VaultNotFound = 46,
+    VerificationFailed = 47,
+    WillVersionNotFound = 48,
 }
 
 #[contracttype]
@@ -127,6 +132,12 @@ pub enum DataKey {
     Guardians(u64),                   // per-plan guardian configuration
     EmergencyApprovals(u64, Address), // (plan_id, trusted_contact) -> Vec<Address>
     EmergencyContacts(u64),           // per-plan emergency contacts list
+    WillHash(u64),                    // plan_id -> BytesN<32> (will document hash)
+    VaultWill(u64),                   // plan_id -> BytesN<32> (linked will hash)
+    BeneficiaryVerification(u64),     // plan_id -> bool (last verification result)
+    WillVersionCount(u64),            // plan_id -> u32 (number of will versions)
+    WillVersion(u64, u32),            // (plan_id, version) -> WillVersion struct
+    ActiveWillVersion(u64),           // plan_id -> u32 (active version number)
 }
 
 #[contracttype]
@@ -328,6 +339,50 @@ pub struct EmergencyContactRemovedEvent {
     pub plan_id: u64,
     pub contact: Address,
 }
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct WillVersionInfo {
+    pub version: u32,
+    pub will_hash: BytesN<32>,
+    pub created_at: u64,
+    pub is_active: bool,
+}
+
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct WillHashStoredEvent {
+    pub plan_id: u64,
+    pub will_hash: BytesN<32>,
+}
+
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct WillLinkedToVaultEvent {
+    pub plan_id: u64,
+    pub will_hash: BytesN<32>,
+}
+
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct BeneficiariesVerifiedEvent {
+    pub plan_id: u64,
+    pub status: bool,
+}
+
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct WillVersionCreatedEvent {
+    pub plan_id: u64,
+    pub version: u32,
+}
+
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct WillVersionActivatedEvent {
+    pub plan_id: u64,
+    pub version: u32,
+}
+
 /// Parameters for creating an inheritance plan (groups args to satisfy Clippy).
 #[contracttype]
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -2375,6 +2430,235 @@ impl InheritanceContract {
         );
 
         Ok(())
+    }
+
+    // ── Will Management System (Issues #314–#317) ──
+
+    /// Store a SHA-256 hash of a will document on-chain, mapped to a plan_id.
+    pub fn store_will_hash(
+        env: Env,
+        owner: Address,
+        plan_id: u64,
+        will_hash: BytesN<32>,
+    ) -> Result<(), InheritanceError> {
+        owner.require_auth();
+
+        let plan = Self::get_plan(&env, plan_id).ok_or(InheritanceError::PlanNotFound)?;
+        if plan.owner != owner {
+            return Err(InheritanceError::Unauthorized);
+        }
+
+        let key = DataKey::WillHash(plan_id);
+        if env
+            .storage()
+            .persistent()
+            .get::<_, BytesN<32>>(&key)
+            .is_some()
+        {
+            return Err(InheritanceError::WillHashAlreadyStored);
+        }
+
+        env.storage().persistent().set(&key, &will_hash);
+
+        env.events().publish(
+            (symbol_short!("WILL"), symbol_short!("STORED")),
+            WillHashStoredEvent { plan_id, will_hash },
+        );
+
+        Ok(())
+    }
+
+    /// Retrieve the stored will hash for a plan.
+    pub fn get_will_hash(env: Env, plan_id: u64) -> Option<BytesN<32>> {
+        let key = DataKey::WillHash(plan_id);
+        env.storage().persistent().get(&key)
+    }
+
+    /// Link a will document hash to a vault (plan). Prevents re-linking unless
+    /// the will versioning system is used (create_will_version updates VaultWill).
+    pub fn link_will_to_vault(
+        env: Env,
+        owner: Address,
+        plan_id: u64,
+        will_hash: BytesN<32>,
+    ) -> Result<(), InheritanceError> {
+        owner.require_auth();
+
+        let plan = Self::get_plan(&env, plan_id).ok_or(InheritanceError::VaultNotFound)?;
+        if plan.owner != owner {
+            return Err(InheritanceError::Unauthorized);
+        }
+
+        let key = DataKey::VaultWill(plan_id);
+        if env
+            .storage()
+            .persistent()
+            .get::<_, BytesN<32>>(&key)
+            .is_some()
+        {
+            return Err(InheritanceError::WillAlreadyLinked);
+        }
+
+        env.storage().persistent().set(&key, &will_hash);
+
+        env.events().publish(
+            (symbol_short!("WILL"), symbol_short!("LINKED")),
+            WillLinkedToVaultEvent { plan_id, will_hash },
+        );
+
+        Ok(())
+    }
+
+    /// Retrieve the will hash linked to a vault.
+    pub fn get_vault_will(env: Env, plan_id: u64) -> Option<BytesN<32>> {
+        let key = DataKey::VaultWill(plan_id);
+        env.storage().persistent().get(&key)
+    }
+
+    /// Verify that the beneficiaries in a will document match those stored in the plan.
+    /// Takes a list of (hashed_email, allocation_bp) pairs and compares against the plan.
+    pub fn verify_beneficiaries(
+        env: Env,
+        plan_id: u64,
+        will_beneficiaries: Vec<(BytesN<32>, u32)>,
+    ) -> Result<bool, InheritanceError> {
+        let plan = Self::get_plan(&env, plan_id).ok_or(InheritanceError::PlanNotFound)?;
+
+        let plan_bens = &plan.beneficiaries;
+        let mut status = true;
+
+        // Check count matches
+        if will_beneficiaries.len() != plan_bens.len() {
+            status = false;
+        } else {
+            // For each will beneficiary, find a matching plan beneficiary
+            for i in 0..will_beneficiaries.len() {
+                let (ref wh_email, w_alloc) = will_beneficiaries.get(i).unwrap();
+                let mut found = false;
+                for j in 0..plan_bens.len() {
+                    let pb = plan_bens.get(j).unwrap();
+                    if pb.hashed_email == *wh_email && pb.allocation_bp == w_alloc {
+                        found = true;
+                        break;
+                    }
+                }
+                if !found {
+                    status = false;
+                    break;
+                }
+            }
+        }
+
+        // Store verification result
+        let ver_key = DataKey::BeneficiaryVerification(plan_id);
+        env.storage().persistent().set(&ver_key, &status);
+
+        env.events().publish(
+            (symbol_short!("WILL"), symbol_short!("VERIFY")),
+            BeneficiariesVerifiedEvent { plan_id, status },
+        );
+
+        Ok(status)
+    }
+
+    /// Get the last beneficiary verification status for a plan.
+    pub fn get_verification_status(env: Env, plan_id: u64) -> Option<bool> {
+        let key = DataKey::BeneficiaryVerification(plan_id);
+        env.storage().persistent().get(&key)
+    }
+
+    /// Create a new will version for a plan. Auto-increments version number and
+    /// deactivates the previously active version. Also updates the VaultWill link.
+    pub fn create_will_version(
+        env: Env,
+        owner: Address,
+        plan_id: u64,
+        will_hash: BytesN<32>,
+    ) -> Result<u32, InheritanceError> {
+        owner.require_auth();
+
+        let plan = Self::get_plan(&env, plan_id).ok_or(InheritanceError::PlanNotFound)?;
+        if plan.owner != owner {
+            return Err(InheritanceError::Unauthorized);
+        }
+
+        // Get and increment version count
+        let count_key = DataKey::WillVersionCount(plan_id);
+        let current_count: u32 = env.storage().persistent().get(&count_key).unwrap_or(0);
+        let new_version = current_count + 1;
+        env.storage().persistent().set(&count_key, &new_version);
+
+        // Deactivate previously active version if any
+        let active_key = DataKey::ActiveWillVersion(plan_id);
+        if let Some(prev_ver_num) = env.storage().persistent().get::<_, u32>(&active_key) {
+            let prev_key = DataKey::WillVersion(plan_id, prev_ver_num);
+            if let Some(mut prev_ver) = env
+                .storage()
+                .persistent()
+                .get::<_, WillVersionInfo>(&prev_key)
+            {
+                prev_ver.is_active = false;
+                env.storage().persistent().set(&prev_key, &prev_ver);
+            }
+        }
+
+        // Store new version
+        let version_info = WillVersionInfo {
+            version: new_version,
+            will_hash: will_hash.clone(),
+            created_at: env.ledger().timestamp(),
+            is_active: true,
+        };
+        let ver_key = DataKey::WillVersion(plan_id, new_version);
+        env.storage().persistent().set(&ver_key, &version_info);
+
+        // Set as active
+        env.storage().persistent().set(&active_key, &new_version);
+
+        // Update VaultWill link to point to latest will hash
+        let vault_will_key = DataKey::VaultWill(plan_id);
+        env.storage().persistent().set(&vault_will_key, &will_hash);
+
+        env.events().publish(
+            (symbol_short!("WILL"), symbol_short!("VERSION")),
+            WillVersionCreatedEvent {
+                plan_id,
+                version: new_version,
+            },
+        );
+
+        env.events().publish(
+            (symbol_short!("WILL"), symbol_short!("ACTIVE")),
+            WillVersionActivatedEvent {
+                plan_id,
+                version: new_version,
+            },
+        );
+
+        Ok(new_version)
+    }
+
+    /// Get a specific will version for a plan.
+    pub fn get_will_version(env: Env, plan_id: u64, version: u32) -> Option<WillVersionInfo> {
+        let key = DataKey::WillVersion(plan_id, version);
+        env.storage().persistent().get(&key)
+    }
+
+    /// Get the currently active will version for a plan.
+    pub fn get_active_will_version(env: Env, plan_id: u64) -> Option<WillVersionInfo> {
+        let active_key = DataKey::ActiveWillVersion(plan_id);
+        if let Some(active_ver) = env.storage().persistent().get::<_, u32>(&active_key) {
+            let key = DataKey::WillVersion(plan_id, active_ver);
+            env.storage().persistent().get(&key)
+        } else {
+            None
+        }
+    }
+
+    /// Get the total number of will versions for a plan.
+    pub fn get_will_version_count(env: Env, plan_id: u64) -> u32 {
+        let key = DataKey::WillVersionCount(plan_id);
+        env.storage().persistent().get(&key).unwrap_or(0)
     }
 }
 
