@@ -29,6 +29,16 @@ pub struct PoolState {
     pub bad_debt_reserve: u64, // Reserve bucket for bad debt coverage
 }
 
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct PerformanceData {
+    pub total_loans_issued: u64,
+    pub total_principal_borrowed: u64,
+    pub total_interest_earned: u64,
+    pub total_liquidations_count: u64,
+    pub total_collateral_seized: u64,
+}
+
 const SECONDS_IN_YEAR: u64 = 31_536_000;
 
 #[contracttype]
@@ -185,6 +195,7 @@ pub enum DataKey {
     WhitelistedCollateral(Address),
     NFTToken,
     ReentrancyGuard,
+    Performance,
 }
 
 // ─────────────────────────────────────────────────
@@ -231,6 +242,16 @@ impl LendingContract {
                 bad_debt_reserve: 0,
             },
         );
+        env.storage().instance().set(
+            &DataKey::Performance,
+            &PerformanceData {
+                total_loans_issued: 0,
+                total_principal_borrowed: 0,
+                total_interest_earned: 0,
+                total_liquidations_count: 0,
+                total_collateral_seized: 0,
+            },
+        );
         Ok(())
     }
 
@@ -275,6 +296,23 @@ impl LendingContract {
 
     fn set_pool(env: &Env, pool: &PoolState) {
         env.storage().instance().set(&DataKey::Pool, pool);
+    }
+
+    fn get_performance(env: &Env) -> PerformanceData {
+        env.storage()
+            .instance()
+            .get(&DataKey::Performance)
+            .unwrap_or(PerformanceData {
+                total_loans_issued: 0,
+                total_principal_borrowed: 0,
+                total_interest_earned: 0,
+                total_liquidations_count: 0,
+                total_collateral_seized: 0,
+            })
+    }
+
+    fn set_performance(env: &Env, performance: &PerformanceData) {
+        env.storage().instance().set(&DataKey::Performance, performance);
     }
 
     fn get_shares(env: &Env, owner: &Address) -> u64 {
@@ -604,6 +642,11 @@ impl LendingContract {
 
         Self::set_pool(&env, &pool);
 
+        let mut performance = Self::get_performance(&env);
+        performance.total_loans_issued += 1;
+        performance.total_principal_borrowed += amount;
+        Self::set_performance(&env, &performance);
+
         let loan_id = Self::increment_loan_id(&env);
         let borrow_time = env.ledger().timestamp();
         let due_date = borrow_time + duration_seconds;
@@ -725,6 +768,10 @@ impl LendingContract {
         pool.retained_yield += retained_share;
         pool.bad_debt_reserve += reserve_share;
         Self::set_pool(&env, &pool);
+
+        let mut performance = Self::get_performance(&env);
+        performance.total_interest_earned += interest;
+        Self::set_performance(&env, &performance);
 
         env.storage()
             .persistent()
@@ -867,6 +914,12 @@ impl LendingContract {
         Ok(Self::get_pool(&env))
     }
 
+    /// Returns the current cumulative performance data.
+    pub fn get_performance_data(env: Env) -> Result<PerformanceData, LendingError> {
+        Self::require_initialized(&env)?;
+        Ok(Self::get_performance(&env))
+    }
+
     /// Returns the share balance of the given address.
     pub fn get_shares_of(env: Env, owner: Address) -> u64 {
         Self::get_shares(&env, &owner)
@@ -998,6 +1051,11 @@ impl LendingContract {
         pool.total_borrowed = pool.total_borrowed.saturating_sub(amount);
         pool.total_deposits += amount;
         Self::set_pool(&env, &pool);
+
+        let mut performance = Self::get_performance(&env);
+        performance.total_liquidations_count += 1;
+        performance.total_collateral_seized += collateral_to_seize;
+        Self::set_performance(&env, &performance);
 
         // Emit liquidation event
         env.events().publish(
