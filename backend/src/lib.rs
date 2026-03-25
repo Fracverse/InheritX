@@ -1,3 +1,4 @@
+pub mod alert_provider;
 pub mod analytics;
 pub mod api_error;
 pub mod app;

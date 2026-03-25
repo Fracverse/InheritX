@@ -2749,6 +2749,7 @@ struct RiskAlertInput<'a> {
 
 impl EmergencyAccessService {
     async fn create_risk_alert(
+        pool: &PgPool,
         executor: &mut sqlx::PgConnection,
         input: RiskAlertInput<'_>,
     ) -> Result<(), ApiError> {
@@ -2770,10 +2771,29 @@ impl EmergencyAccessService {
         .execute(executor)
         .await?;
 
+        // After persisting the alert, trigger external notifications
+        use crate::notifications::EmergencyAlertService;
+        use crate::alert_provider::MockAlertProvider;
+
+        let provider = MockAlertProvider;
+        if let Err(e) = EmergencyAlertService::send_risk_alert(
+            pool,
+            &provider,
+            input.user_id,
+            input.contact_id,
+            input.alert_type,
+            input.message,
+        ).await {
+            tracing::error!("Failed to send emergency risk alert: {}", e);
+            // We don't return error here to avoid rolling back the risk alert insertion
+            // because the alert itself is already in the DB.
+        }
+
         Ok(())
     }
 
     async fn evaluate_grant_risk(
+        pool: &PgPool,
         executor: &mut sqlx::PgConnection,
         grant: &EmergencyAccessGrant,
     ) -> Result<(), ApiError> {
@@ -2791,6 +2811,7 @@ impl EmergencyAccessService {
 
         if recent_grant_count >= 4 {
             Self::create_risk_alert(
+                pool,
                 executor,
                 RiskAlertInput {
                     grant_id: grant.id,
@@ -2813,6 +2834,7 @@ impl EmergencyAccessService {
 
         if long_lived_high_privilege {
             Self::create_risk_alert(
+                pool,
                 executor,
                 RiskAlertInput {
                     grant_id: grant.id,
@@ -2834,6 +2856,7 @@ impl EmergencyAccessService {
     }
 
     async fn evaluate_revoke_risk(
+        pool: &PgPool,
         executor: &mut sqlx::PgConnection,
         grant: &EmergencyAccessGrant,
     ) -> Result<(), ApiError> {
@@ -2841,6 +2864,7 @@ impl EmergencyAccessService {
             let active_duration = revoked_at - grant.created_at;
             if active_duration <= chrono::Duration::minutes(10) {
                 Self::create_risk_alert(
+                    pool,
                     executor,
                     RiskAlertInput {
                         grant_id: grant.id,
@@ -3002,7 +3026,7 @@ impl EmergencyAccessService {
         )
         .await?;
 
-        Self::evaluate_grant_risk(&mut tx, &grant).await?;
+        Self::evaluate_grant_risk(pool, &mut tx, &grant).await?;
 
         tx.commit().await?;
 
@@ -3089,7 +3113,7 @@ impl EmergencyAccessService {
         )
         .await?;
 
-        Self::evaluate_revoke_risk(&mut tx, &updated).await?;
+        Self::evaluate_revoke_risk(pool, &mut tx, &updated).await?;
 
         tx.commit().await?;
 

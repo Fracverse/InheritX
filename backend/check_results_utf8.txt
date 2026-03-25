@@ -1,0 +1,242 @@
+﻿cargo :     Checking 
+inheritx-backend 
+v0.1.0 (C:\Users\HomeP
+C\Desktop\DRIPS 
+W3\InheritX\backend)
+At line:1 char:1
++ cargo check > 
+check_results.txt 2>&1
++ ~~~~~~~~~~~~~~~~~~~~
+~~~~~~~~~~~~~~~~
+    + CategoryInfo    
+          : NotSpeci  
+  fied: (    Checki   
+ ng in...heritX\ba    
+ckend):String) []    
+, RemoteException
+    + FullyQualifiedE 
+   rrorId : NativeCo  
+  mmandError
+ 
+error[E0061]: this 
+function takes 3 
+arguments but 2 
+arguments were 
+supplied
+    --> 
+src\service.rs:2813:13
+     |
+2813 |               S
+elf::create_risk_alert
+(
+     |               ^
+^^^^^^^^^^^^^^^^^^^^^^
+2814 |                
+   pool,
+2815 | /              
+   RiskAlertInput {
+2816 | |              
+       grant_id: 
+grant.id,
+2817 | |              
+       user_id: 
+grant.user_id,
+2818 | |              
+       contact_id: gra
+nt.emergency_contact_i
+d,
+...    |
+2823 | |              
+       metadata: 
+serde_json::json!({ 
+"recent_grant_count": 
+recent_grant_count }),
+2824 | |              
+   },
+     | 
+|_________________- 
+argument #2 of type 
+`&mut PgConnection` 
+is missing
+     |
+note: associated 
+function defined here
+    --> 
+src\service.rs:2751:14
+     |
+2751 |     async fn 
+create_risk_alert(
+     |              
+^^^^^^^^^^^^^^^^^
+2752 |         pool: 
+&PgPool,
+2753 |         
+executor: &mut 
+sqlx::PgConnection,
+     |         -------
+----------------------
+----
+help: provide the 
+argument
+     |
+2813 |             Sel
+f::create_risk_alert(
+2814 |                
+ pool,
+2815 ~                
+ /* &mut PgConnection 
+*/,
+2816 ~                
+ RiskAlertInput {
+     |
+
+error[E0061]: this 
+function takes 3 
+arguments but 2 
+arguments were 
+supplied
+    --> 
+src\service.rs:2835:13
+     |
+2835 |               S
+elf::create_risk_alert
+(
+     |               ^
+^^^^^^^^^^^^^^^^^^^^^^
+2836 |                
+   pool,
+2837 | /              
+   RiskAlertInput {
+2838 | |              
+       grant_id: 
+grant.id,
+2839 | |              
+       user_id: 
+grant.user_id,
+2840 | |              
+       contact_id: gra
+nt.emergency_contact_i
+d,
+...    |
+2847 | |              
+       }),
+2848 | |              
+   },
+     | 
+|_________________- 
+argument #2 of type 
+`&mut PgConnection` 
+is missing
+     |
+note: associated 
+function defined here
+    --> 
+src\service.rs:2751:14
+     |
+2751 |     async fn 
+create_risk_alert(
+     |              
+^^^^^^^^^^^^^^^^^
+2752 |         pool: 
+&PgPool,
+2753 |         
+executor: &mut 
+sqlx::PgConnection,
+     |         -------
+----------------------
+----
+help: provide the 
+argument
+     |
+2835 |             Sel
+f::create_risk_alert(
+2836 |                
+ pool,
+2837 ~                
+ /* &mut PgConnection 
+*/,
+2838 ~                
+ RiskAlertInput {
+     |
+
+error[E0061]: this 
+function takes 3 
+arguments but 2 
+arguments were 
+supplied
+    --> 
+src\service.rs:2864:17
+     |
+2864 |                
+   Self::create_risk_a
+lert(
+     |                
+   ^^^^^^^^^^^^^^^^^^^
+^^^^
+2865 |                
+       pool,
+2866 | /              
+       RiskAlertInput 
+{
+2867 | |              
+           grant_id: 
+grant.id,
+2868 | |              
+           user_id: 
+grant.user_id,
+2869 | |              
+           
+contact_id: grant.emer
+gency_contact_id,
+...    |
+2877 | |              
+           }),
+2878 | |              
+       },
+     | |______________
+_______- argument #2 
+of type `&mut 
+PgConnection` is 
+missing
+     |
+note: associated 
+function defined here
+    --> 
+src\service.rs:2751:14
+     |
+2751 |     async fn 
+create_risk_alert(
+     |              
+^^^^^^^^^^^^^^^^^
+2752 |         pool: 
+&PgPool,
+2753 |         
+executor: &mut 
+sqlx::PgConnection,
+     |         -------
+----------------------
+----
+help: provide the 
+argument
+     |
+2864 |                
+ Self::create_risk_ale
+rt(
+2865 |                
+     pool,
+2866 ~                
+     /* &mut 
+PgConnection */,
+2867 ~                
+     RiskAlertInput {
+     |
+
+For more information 
+about this error, try 
+`rustc --explain 
+E0061`.
+error: could not 
+compile 
+`inheritx-backend` 
+(lib) due to 3 
+previous errors
