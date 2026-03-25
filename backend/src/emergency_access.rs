@@ -257,6 +257,22 @@ impl EmergencyAccessService {
         Ok(records)
     }
 
+    /// Get all currently active emergency sessions
+    pub async fn get_active_sessions(db: &PgPool) -> Result<Vec<EmergencyAccess>, ApiError> {
+        let records = sqlx::query_as::<_, EmergencyAccess>(
+            r#"
+            SELECT * FROM emergency_access
+            WHERE status = 'active'
+              AND (expires_at IS NULL OR expires_at > NOW())
+            ORDER BY granted_at DESC
+            "#,
+        )
+        .fetch_all(db)
+        .await?;
+
+        Ok(records)
+    }
+
     /// Check for expiring access and send notifications
     /// This should be called periodically (e.g., every hour)
     pub async fn check_expiring_access(db: &PgPool) -> Result<u64, ApiError> {

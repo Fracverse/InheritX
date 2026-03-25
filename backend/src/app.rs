@@ -150,6 +150,10 @@ pub async fn create_app(db: PgPool, config: Config) -> Result<Router, ApiError> 
             get(get_all_emergency_access),
         )
         .route(
+            "/api/admin/emergency-access/active-sessions",
+            get(get_active_emergency_sessions),
+        )
+        .route(
             "/api/admin/emergency-access/plan/:plan_id",
             get(get_plan_emergency_access),
         )
@@ -637,6 +641,21 @@ async fn get_plan_emergency_access(
         "status": "success",
         "data": access_records,
         "count": access_records.len()
+    })))
+}
+
+/// Admin: Get all active emergency access sessions
+///
+/// `GET /api/admin/emergency-access/active-sessions`
+async fn get_active_emergency_sessions(
+    State(state): State<Arc<AppState>>,
+    AuthenticatedAdmin(_admin): AuthenticatedAdmin,
+) -> Result<Json<Value>, ApiError> {
+    let active_sessions = LegacyEmergencyAccessService::get_active_sessions(&state.db).await?;
+    Ok(Json(json!({
+        "status": "success",
+        "data": active_sessions,
+        "count": active_sessions.len()
     })))
 }
 
