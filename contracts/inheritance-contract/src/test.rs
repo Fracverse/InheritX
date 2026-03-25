@@ -3584,7 +3584,7 @@ fn test_verify_beneficiaries_match() {
         vec![&env, (ben.hashed_email.clone(), ben.allocation_bp)];
 
     let result = client.verify_beneficiaries(&plan_id, &will_bens);
-    assert_eq!(result, true);
+    assert!(result);
 
     let status = client.get_verification_status(&plan_id);
     assert_eq!(status, Some(true));
@@ -3603,7 +3603,7 @@ fn test_verify_beneficiaries_mismatch_allocation() {
     let will_bens: Vec<(BytesN<32>, u32)> = vec![&env, (ben.hashed_email.clone(), 5000u32)];
 
     let result = client.verify_beneficiaries(&plan_id, &will_bens);
-    assert_eq!(result, false);
+    assert!(!result);
 
     let status = client.get_verification_status(&plan_id);
     assert_eq!(status, Some(false));
@@ -3619,7 +3619,7 @@ fn test_verify_beneficiaries_mismatch_count() {
     let will_bens: Vec<(BytesN<32>, u32)> = Vec::new(&env);
 
     let result = client.verify_beneficiaries(&plan_id, &will_bens);
-    assert_eq!(result, false);
+    assert!(!result);
 }
 
 #[test]
@@ -3660,7 +3660,7 @@ fn test_create_will_version_first() {
     let ver_info = client.get_will_version(&plan_id, &1u32).unwrap();
     assert_eq!(ver_info.version, 1);
     assert_eq!(ver_info.will_hash, will_hash);
-    assert_eq!(ver_info.is_active, true);
+    assert!(ver_info.is_active);
 }
 
 #[test]
@@ -3679,11 +3679,11 @@ fn test_create_will_version_multiple() {
 
     // v1 should be deactivated
     let ver1 = client.get_will_version(&plan_id, &1u32).unwrap();
-    assert_eq!(ver1.is_active, false);
+    assert!(!ver1.is_active);
 
     // v2 should be active
     let ver2 = client.get_will_version(&plan_id, &2u32).unwrap();
-    assert_eq!(ver2.is_active, true);
+    assert!(ver2.is_active);
 
     let active = client.get_active_will_version(&plan_id).unwrap();
     assert_eq!(active.version, 2);
