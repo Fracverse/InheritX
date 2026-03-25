@@ -147,6 +147,93 @@ async fn grant_and_revoke_emergency_access_creates_audit_logs() {
 }
 
 #[tokio::test]
+async fn audit_logs_can_be_filtered_by_action_and_contact() {
+    let Some(ctx) = helpers::TestContext::from_env().await else {
+        return;
+    };
+
+    let user_id = Uuid::new_v4();
+    insert_user(&ctx.pool, user_id).await;
+    let first_contact_id = insert_contact(&ctx.pool, user_id).await;
+    let second_contact_id: Uuid = sqlx::query_scalar(
+        r#"
+        INSERT INTO emergency_contacts (user_id, name, relationship, email)
+        VALUES ($1, $2, $3, $4)
+        RETURNING id
+        "#,
+    )
+    .bind(user_id)
+    .bind("Backup Contact")
+    .bind("Friend")
+    .bind("backup@example.com")
+    .fetch_one(&ctx.pool)
+    .await
+    .expect("failed to insert second emergency contact");
+    let token = generate_user_token(user_id);
+
+    for contact_id in [first_contact_id, second_contact_id] {
+        let response = ctx
+            .app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/api/emergency/access/grants")
+                    .header("Authorization", format!("Bearer {}", token))
+                    .header("Content-Type", "application/json")
+                    .body(Body::from(
+                        json!({
+                            "emergency_contact_id": contact_id,
+                            "permissions": ["view_plan"],
+                            "expires_at": (Utc::now() + Duration::hours(2)).to_rfc3339()
+                        })
+                        .to_string(),
+                    ))
+                    .unwrap(),
+            )
+            .await
+            .expect("grant request failed");
+
+        assert_eq!(response.status(), StatusCode::OK);
+    }
+
+    let filtered_response = ctx
+        .app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("GET")
+                .uri(format!(
+                    "/api/emergency/access/audit-logs?action=emergency_access_granted&emergency_contact_id={}",
+                    second_contact_id
+                ))
+                .header("Authorization", format!("Bearer {}", token))
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .expect("filtered logs request failed");
+
+    assert_eq!(filtered_response.status(), StatusCode::OK);
+
+    let filtered_body = axum::body::to_bytes(filtered_response.into_body(), usize::MAX)
+        .await
+        .expect("failed to read filtered logs body");
+    let filtered_json: Value =
+        serde_json::from_slice(&filtered_body).expect("invalid filtered logs json");
+
+    assert_eq!(filtered_json["count"], 1);
+    assert_eq!(
+        filtered_json["data"][0]["emergency_contact_id"],
+        second_contact_id.to_string()
+    );
+    assert_eq!(
+        filtered_json["data"][0]["action"],
+        "emergency_access_granted"
+    );
+}
+
+#[tokio::test]
 async fn cannot_create_emergency_access_for_another_users_contact() {
     let Some(ctx) = helpers::TestContext::from_env().await else {
         return;

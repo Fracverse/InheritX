@@ -18,10 +18,11 @@ use crate::config::Config;
 use crate::loan_lifecycle::{CreateLoanRequest, LoanLifecycleService, LoanListFilters};
 use crate::service::{
     ClaimPlanRequest, CreateEmergencyAccessGrantRequest, CreateEmergencyContactRequest,
-    CreatePlanRequest, EmergencyAccessService, EmergencyAdminService, EmergencyContactService,
-    KycRecord, KycService, KycStatus, LoanSimulationRequest, LoanSimulationService,
-    PausePlanRequest, PlanService, RevokeEmergencyAccessGrantRequest, RiskOverrideRequest,
-    UnpausePlanRequest, UpdateEmergencyContactRequest,
+    CreatePlanRequest, EmergencyAccessAuditLogFilters, EmergencyAccessService,
+    EmergencyAdminService, EmergencyContactService, KycRecord, KycService, KycStatus,
+    LoanSimulationRequest, LoanSimulationService, PausePlanRequest, PlanService,
+    RevokeEmergencyAccessGrantRequest, RiskOverrideRequest, UnpausePlanRequest,
+    UpdateEmergencyContactRequest,
 };
 use crate::yield_service::{DefaultOnChainYieldService, OnChainYieldService};
 
@@ -315,9 +316,10 @@ async fn revoke_emergency_access_grant(
 
 async fn list_emergency_access_audit_logs(
     State(state): State<Arc<AppState>>,
+    Query(filters): Query<EmergencyAccessAuditLogFilters>,
     AuthenticatedUser(user): AuthenticatedUser,
 ) -> Result<Json<Value>, ApiError> {
-    let logs = EmergencyAccessService::list_audit_logs(&state.db, user.user_id).await?;
+    let logs = EmergencyAccessService::list_audit_logs(&state.db, user.user_id, &filters).await?;
     Ok(Json(
         json!({ "status": "success", "data": logs, "count": logs.len() }),
     ))

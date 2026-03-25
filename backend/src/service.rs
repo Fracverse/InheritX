@@ -2498,6 +2498,14 @@ pub struct EmergencyAccessAuditLog {
     pub created_at: DateTime<Utc>,
 }
 
+#[derive(Debug, Clone, Deserialize, Default)]
+pub struct EmergencyAccessAuditLogFilters {
+    pub action: Option<String>,
+    pub grant_id: Option<Uuid>,
+    pub emergency_contact_id: Option<Uuid>,
+    pub limit: Option<u32>,
+}
+
 #[derive(Debug, Deserialize)]
 pub struct CreateEmergencyAccessGrantRequest {
     pub emergency_contact_id: Uuid,
@@ -3078,18 +3086,43 @@ impl EmergencyAccessService {
     pub async fn list_audit_logs(
         pool: &PgPool,
         user_id: Uuid,
+        filters: &EmergencyAccessAuditLogFilters,
     ) -> Result<Vec<EmergencyAccessAuditLog>, ApiError> {
-        let logs = sqlx::query_as::<_, EmergencyAccessAuditLog>(
-            r#"
-            SELECT id, grant_id, user_id, emergency_contact_id, action, metadata, created_at
-            FROM emergency_access_audit_logs
-            WHERE user_id = $1
-            ORDER BY created_at DESC
-            "#,
-        )
-        .bind(user_id)
-        .fetch_all(pool)
-        .await?;
+        let limit = filters.limit.unwrap_or(50).min(100) as i64;
+
+        let mut query = QueryBuilder::<Postgres>::new(
+            "SELECT id, grant_id, user_id, emergency_contact_id, action, metadata, created_at \
+             FROM emergency_access_audit_logs WHERE user_id = ",
+        );
+        query.push_bind(user_id);
+
+        if let Some(action) = filters
+            .action
+            .as_ref()
+            .map(|value| value.trim())
+            .filter(|value| !value.is_empty())
+        {
+            query.push(" AND action = ");
+            query.push_bind(action);
+        }
+
+        if let Some(grant_id) = filters.grant_id {
+            query.push(" AND grant_id = ");
+            query.push_bind(grant_id);
+        }
+
+        if let Some(emergency_contact_id) = filters.emergency_contact_id {
+            query.push(" AND emergency_contact_id = ");
+            query.push_bind(emergency_contact_id);
+        }
+
+        query.push(" ORDER BY created_at DESC LIMIT ");
+        query.push_bind(limit);
+
+        let logs = query
+            .build_query_as::<EmergencyAccessAuditLog>()
+            .fetch_all(pool)
+            .await?;
 
         Ok(logs)
     }
