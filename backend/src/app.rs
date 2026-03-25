@@ -15,14 +15,17 @@ use crate::analytics::analytics_router;
 use crate::api_error::ApiError;
 use crate::auth::{AuthenticatedAdmin, AuthenticatedUser};
 use crate::config::Config;
+use crate::governance::{
+    CreateProposalRequest, GovernanceService, ParameterUpdateRequest, Proposal, VoteRequest,
+};
 use crate::loan_lifecycle::{CreateLoanRequest, LoanLifecycleService, LoanListFilters};
 use crate::service::{
     ClaimPlanRequest, CreateEmergencyAccessGrantRequest, CreateEmergencyContactRequest,
     CreatePlanRequest, EmergencyAccessAuditLogFilters, EmergencyAccessService,
-    EmergencyAdminService, EmergencyContactService, KycRecord, KycService, KycStatus,
-    LoanSimulationRequest, LoanSimulationService, PausePlanRequest, PlanService,
-    RevokeEmergencyAccessGrantRequest, RiskOverrideRequest, UnpausePlanRequest,
-    UpdateEmergencyContactRequest,
+    EmergencyAdminService, EmergencyContactService, EmergencySessionService, KycRecord, KycService,
+    KycStatus, LoanSimulationRequest, LoanSimulationService, PausePlanRequest, PlanService,
+    RevokeEmergencyAccessGrantRequest, RiskOverrideRequest, StartSessionRequest,
+    UnpausePlanRequest, UpdateEmergencyContactRequest,
 };
 use crate::stress_testing::StressTestingEngine;
 use crate::yield_service::{DefaultOnChainYieldService, OnChainYieldService};
@@ -74,6 +77,14 @@ pub async fn create_app(db: PgPool, config: Config) -> Result<Router, ApiError> 
             .unwrap(),
     );
 
+    let emergency_governor_conf = Arc::new(
+        GovernorConfigBuilder::default()
+            .per_second(1)
+            .burst_size(2)
+            .finish()
+            .unwrap(),
+    );
+
     let app = Router::new()
         .route("/health", get(health_check))
         .route("/health/db", get(db_health_check))
@@ -106,11 +117,15 @@ pub async fn create_app(db: PgPool, config: Config) -> Result<Router, ApiError> 
         )
         .route(
             "/api/emergency/access/grants",
-            post(create_emergency_access_grant),
+            post(create_emergency_access_grant).layer(GovernorLayer {
+                config: emergency_governor_conf.clone(),
+            }),
         )
         .route(
             "/api/emergency/access/grants/:grant_id/revoke",
-            post(revoke_emergency_access_grant),
+            post(revoke_emergency_access_grant).layer(GovernorLayer {
+                config: emergency_governor_conf,
+            }),
         )
         .route(
             "/api/emergency/access/audit-logs",
@@ -123,6 +138,19 @@ pub async fn create_app(db: PgPool, config: Config) -> Result<Router, ApiError> 
         .route(
             "/api/emergency/access/dashboard",
             get(get_emergency_access_dashboard),
+        )
+        // Emergency Access Sessions (Issue #306)
+        .route(
+            "/api/emergency/access/sessions",
+            post(start_emergency_session).get(list_active_emergency_sessions),
+        )
+        .route(
+            "/api/emergency/access/sessions/:session_id/heartbeat",
+            put(heartbeat_emergency_session),
+        )
+        .route(
+            "/api/emergency/access/sessions/:session_id/end",
+            put(end_emergency_session),
         )
         // Loan Simulation endpoints
         .route("/api/loans/simulate", post(simulate_loan))
@@ -195,6 +223,20 @@ pub async fn create_app(db: PgPool, config: Config) -> Result<Router, ApiError> 
         .route(
             "/api/admin/stress-test/liquidity-drain",
             post(simulate_liquidity_drain),
+        )
+        // ── Governance Endpoints ──────────────────────────────────────────────
+        .route(
+            "/api/admin/governance/proposals",
+            post(create_governance_proposal),
+        )
+        .route("/api/governance/proposals", get(list_governance_proposals))
+        .route(
+            "/api/governance/proposals/:id/vote",
+            post(vote_on_governance_proposal),
+        )
+        .route(
+            "/api/admin/governance/parameters/update",
+            post(update_protocol_parameter),
         )
         .merge(analytics_router())
         .with_state(state);
@@ -430,6 +472,51 @@ async fn get_emergency_access_dashboard(
     Ok(Json(json!({ "status": "success", "data": dashboard })))
 }
 
+// ─── Emergency Access Session Handlers (Issue #306) ────────────────────────────
+
+async fn start_emergency_session(
+    State(state): State<Arc<AppState>>,
+    AuthenticatedUser(user): AuthenticatedUser,
+    Json(req): Json<StartSessionRequest>,
+) -> Result<Json<Value>, ApiError> {
+    let session = EmergencySessionService::start_session(&state.db, user.user_id, &req).await?;
+    Ok(Json(
+        json!({ "status": "success", "data": session, "message": "Session started" }),
+    ))
+}
+
+async fn heartbeat_emergency_session(
+    State(state): State<Arc<AppState>>,
+    AuthenticatedUser(user): AuthenticatedUser,
+    Path(session_id): Path<Uuid>,
+) -> Result<Json<Value>, ApiError> {
+    let session = EmergencySessionService::heartbeat(&state.db, user.user_id, session_id).await?;
+    Ok(Json(
+        json!({ "status": "success", "data": session, "message": "Heartbeat recorded" }),
+    ))
+}
+
+async fn end_emergency_session(
+    State(state): State<Arc<AppState>>,
+    AuthenticatedUser(user): AuthenticatedUser,
+    Path(session_id): Path<Uuid>,
+) -> Result<Json<Value>, ApiError> {
+    let session = EmergencySessionService::end_session(&state.db, user.user_id, session_id).await?;
+    Ok(Json(
+        json!({ "status": "success", "data": session, "message": "Session ended" }),
+    ))
+}
+
+async fn list_active_emergency_sessions(
+    State(state): State<Arc<AppState>>,
+    AuthenticatedUser(user): AuthenticatedUser,
+) -> Result<Json<Value>, ApiError> {
+    let sessions = EmergencySessionService::list_active_sessions(&state.db, user.user_id).await?;
+    Ok(Json(
+        json!({ "status": "success", "data": sessions, "count": sessions.len() }),
+    ))
+}
+
 #[derive(serde::Deserialize)]
 pub struct KycUpdateRequest {
     pub user_id: Uuid,
@@ -474,9 +561,7 @@ async fn reject_kyc(
     Ok(Json(status))
 }
 
-// =============================================================================
 // Loan Simulation Endpoints
-// =============================================================================
 
 /// Preview loan simulation without saving
 async fn simulate_loan(
@@ -526,9 +611,7 @@ async fn get_simulation(
     }
 }
 
-// =============================================================================
 // Reputation Endpoints
-// =============================================================================
 
 /// Get the current user's borrower reputation
 async fn get_user_reputation(
@@ -543,9 +626,7 @@ async fn get_user_reputation(
     })))
 }
 
-// =============================================================================
 // Loan Lifecycle Endpoints
-// =============================================================================
 
 /// Open a new loan in the `active` state.
 ///
@@ -650,9 +731,7 @@ async fn mark_overdue_loans(
     })))
 }
 
-// =============================================================================
 // Emergency Access Endpoints (Issue #293)
-// =============================================================================
 
 use crate::emergency_access::{
     EmergencyAccessService as LegacyEmergencyAccessService, GrantEmergencyAccessRequest,
@@ -739,7 +818,6 @@ async fn get_active_emergency_sessions(
 }
 
 // Emergency Admin Endpoints
-// =============================================================================
 
 async fn pause_plan(
     State(state): State<Arc<AppState>>,
@@ -787,9 +865,7 @@ async fn get_risk_override_plans(
         json!({ "status": "success", "data": plans, "count": plans.len() }),
     ))
 }
-// =============================================================================
 // Stress Testing Endpoints
-// =============================================================================
 
 #[derive(serde::Deserialize)]
 pub struct PriceCrashRequest {
@@ -838,5 +914,46 @@ async fn simulate_liquidity_drain(
         .await?;
     Ok(Json(
         json!({ "status": "success", "message": "Liquidity drain simulation completed" }),
+    ))
+}
+
+// Governance Endpoints
+
+async fn create_governance_proposal(
+    State(state): State<Arc<AppState>>,
+    AuthenticatedAdmin(admin): AuthenticatedAdmin,
+    Json(req): Json<CreateProposalRequest>,
+) -> Result<Json<Proposal>, ApiError> {
+    let proposal = GovernanceService::create_proposal(&state.db, admin.admin_id, &req).await?;
+    Ok(Json(proposal))
+}
+
+async fn list_governance_proposals(
+    State(state): State<Arc<AppState>>,
+) -> Result<Json<Vec<Proposal>>, ApiError> {
+    let proposals = GovernanceService::list_proposals(&state.db).await?;
+    Ok(Json(proposals))
+}
+
+async fn vote_on_governance_proposal(
+    State(state): State<Arc<AppState>>,
+    AuthenticatedUser(user): AuthenticatedUser,
+    Path(proposal_id): Path<Uuid>,
+    Json(req): Json<VoteRequest>,
+) -> Result<Json<Value>, ApiError> {
+    GovernanceService::vote_on_proposal(&state.db, user.user_id, proposal_id, &req).await?;
+    Ok(Json(
+        json!({ "status": "success", "message": "Vote recorded" }),
+    ))
+}
+
+async fn update_protocol_parameter(
+    State(state): State<Arc<AppState>>,
+    AuthenticatedAdmin(admin): AuthenticatedAdmin,
+    Json(req): Json<ParameterUpdateRequest>,
+) -> Result<Json<Value>, ApiError> {
+    GovernanceService::update_parameter(&state.db, admin.admin_id, &req).await?;
+    Ok(Json(
+        json!({ "status": "success", "message": "Parameter updated successfully" }),
     ))
 }

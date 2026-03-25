@@ -2555,6 +2555,29 @@ pub struct EmergencyAccessDashboardResponse {
     pub grants: Vec<EmergencyAccessDashboardItem>,
 }
 
+// ─── Emergency Access Sessions (Issue #306) ─────────────────────────────────
+
+#[derive(Debug, Clone, Serialize, Deserialize, sqlx::FromRow)]
+pub struct EmergencyAccessSession {
+    pub id: Uuid,
+    pub grant_id: Uuid,
+    pub user_id: Uuid,
+    pub emergency_contact_id: Uuid,
+    pub started_at: DateTime<Utc>,
+    pub last_active_at: DateTime<Utc>,
+    pub ended_at: Option<DateTime<Utc>>,
+    pub ip_address: Option<String>,
+    pub user_agent: Option<String>,
+    pub created_at: DateTime<Utc>,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct StartSessionRequest {
+    pub grant_id: Uuid,
+    pub ip_address: Option<String>,
+    pub user_agent: Option<String>,
+}
+
 #[derive(Debug, Serialize)]
 pub struct EmergencyActionResponse {
     pub success: bool,
@@ -2749,6 +2772,7 @@ struct RiskAlertInput<'a> {
 
 impl EmergencyAccessService {
     async fn create_risk_alert(
+        pool: &PgPool,
         executor: &mut sqlx::PgConnection,
         input: RiskAlertInput<'_>,
     ) -> Result<(), ApiError> {
@@ -2770,10 +2794,31 @@ impl EmergencyAccessService {
         .execute(executor)
         .await?;
 
+        // After persisting the alert, trigger external notifications
+        use crate::alert_provider::MockAlertProvider;
+        use crate::notifications::EmergencyAlertService;
+
+        let provider = MockAlertProvider;
+        if let Err(e) = EmergencyAlertService::send_risk_alert(
+            pool,
+            &provider,
+            input.user_id,
+            input.contact_id,
+            input.alert_type,
+            input.message,
+        )
+        .await
+        {
+            tracing::error!("Failed to send emergency risk alert: {}", e);
+            // We don't return error here to avoid rolling back the risk alert insertion
+            // because the alert itself is already in the DB.
+        }
+
         Ok(())
     }
 
     async fn evaluate_grant_risk(
+        pool: &PgPool,
         executor: &mut sqlx::PgConnection,
         grant: &EmergencyAccessGrant,
     ) -> Result<(), ApiError> {
@@ -2791,6 +2836,7 @@ impl EmergencyAccessService {
 
         if recent_grant_count >= 4 {
             Self::create_risk_alert(
+                pool,
                 executor,
                 RiskAlertInput {
                     grant_id: grant.id,
@@ -2813,6 +2859,7 @@ impl EmergencyAccessService {
 
         if long_lived_high_privilege {
             Self::create_risk_alert(
+                pool,
                 executor,
                 RiskAlertInput {
                     grant_id: grant.id,
@@ -2834,6 +2881,7 @@ impl EmergencyAccessService {
     }
 
     async fn evaluate_revoke_risk(
+        pool: &PgPool,
         executor: &mut sqlx::PgConnection,
         grant: &EmergencyAccessGrant,
     ) -> Result<(), ApiError> {
@@ -2841,6 +2889,7 @@ impl EmergencyAccessService {
             let active_duration = revoked_at - grant.created_at;
             if active_duration <= chrono::Duration::minutes(10) {
                 Self::create_risk_alert(
+                    pool,
                     executor,
                     RiskAlertInput {
                         grant_id: grant.id,
@@ -3002,7 +3051,7 @@ impl EmergencyAccessService {
         )
         .await?;
 
-        Self::evaluate_grant_risk(&mut tx, &grant).await?;
+        Self::evaluate_grant_risk(pool, &mut tx, &grant).await?;
 
         tx.commit().await?;
 
@@ -3089,7 +3138,10 @@ impl EmergencyAccessService {
         )
         .await?;
 
-        Self::evaluate_revoke_risk(&mut tx, &updated).await?;
+        Self::evaluate_revoke_risk(pool, &mut tx, &updated).await?;
+
+        // Auto-end all active sessions for this grant (Issue #306)
+        EmergencySessionService::end_sessions_for_grant(&mut *tx, updated.id).await?;
 
         tx.commit().await?;
 
@@ -3515,5 +3567,249 @@ impl EmergencyAdminService {
         .await?;
 
         rows.iter().map(plan_row_to_plan_with_beneficiary).collect()
+    }
+}
+
+// ─── Emergency Session Service (Issue #306) ─────────────────────────────────
+
+pub struct EmergencySessionService;
+
+impl EmergencySessionService {
+    /// Start a new session for an active grant.
+    pub async fn start_session(
+        pool: &PgPool,
+        user_id: Uuid,
+        req: &StartSessionRequest,
+    ) -> Result<EmergencyAccessSession, ApiError> {
+        // Verify the grant exists, belongs to user, and is active
+        let grant = sqlx::query_as::<_, EmergencyAccessGrant>(
+            r#"
+            SELECT id, user_id, emergency_contact_id, permissions, expires_at, is_active,
+                   revoked_at, created_at, updated_at
+            FROM emergency_access_grants
+            WHERE id = $1 AND user_id = $2
+            "#,
+        )
+        .bind(req.grant_id)
+        .bind(user_id)
+        .fetch_optional(pool)
+        .await?
+        .ok_or_else(|| {
+            ApiError::NotFound(format!("Emergency access grant {} not found", req.grant_id))
+        })?;
+
+        if !grant.is_active {
+            return Err(ApiError::BadRequest(
+                "Cannot start session for an inactive grant".to_string(),
+            ));
+        }
+
+        if grant.expires_at <= Utc::now() {
+            return Err(ApiError::BadRequest(
+                "Cannot start session for an expired grant".to_string(),
+            ));
+        }
+
+        let session = sqlx::query_as::<_, EmergencyAccessSession>(
+            r#"
+            INSERT INTO emergency_access_sessions (
+                grant_id, user_id, emergency_contact_id, ip_address, user_agent
+            )
+            VALUES ($1, $2, $3, $4, $5)
+            RETURNING id, grant_id, user_id, emergency_contact_id, started_at,
+                      last_active_at, ended_at, ip_address, user_agent, created_at
+            "#,
+        )
+        .bind(req.grant_id)
+        .bind(user_id)
+        .bind(grant.emergency_contact_id)
+        .bind(&req.ip_address)
+        .bind(&req.user_agent)
+        .fetch_one(pool)
+        .await?;
+
+        Ok(session)
+    }
+
+    /// Update the heartbeat timestamp for an active session.
+    pub async fn heartbeat(
+        pool: &PgPool,
+        user_id: Uuid,
+        session_id: Uuid,
+    ) -> Result<EmergencyAccessSession, ApiError> {
+        let session = sqlx::query_as::<_, EmergencyAccessSession>(
+            r#"
+            UPDATE emergency_access_sessions
+            SET last_active_at = NOW()
+            WHERE id = $1 AND user_id = $2 AND ended_at IS NULL
+            RETURNING id, grant_id, user_id, emergency_contact_id, started_at,
+                      last_active_at, ended_at, ip_address, user_agent, created_at
+            "#,
+        )
+        .bind(session_id)
+        .bind(user_id)
+        .fetch_optional(pool)
+        .await?
+        .ok_or_else(|| ApiError::NotFound(format!("Active session {} not found", session_id)))?;
+
+        Ok(session)
+    }
+
+    /// End an active session.
+    pub async fn end_session(
+        pool: &PgPool,
+        user_id: Uuid,
+        session_id: Uuid,
+    ) -> Result<EmergencyAccessSession, ApiError> {
+        let session = sqlx::query_as::<_, EmergencyAccessSession>(
+            r#"
+            UPDATE emergency_access_sessions
+            SET ended_at = NOW(), last_active_at = NOW()
+            WHERE id = $1 AND user_id = $2 AND ended_at IS NULL
+            RETURNING id, grant_id, user_id, emergency_contact_id, started_at,
+                      last_active_at, ended_at, ip_address, user_agent, created_at
+            "#,
+        )
+        .bind(session_id)
+        .bind(user_id)
+        .fetch_optional(pool)
+        .await?
+        .ok_or_else(|| ApiError::NotFound(format!("Active session {} not found", session_id)))?;
+
+        Ok(session)
+    }
+
+    /// List all active sessions for a user.
+    pub async fn list_active_sessions(
+        pool: &PgPool,
+        user_id: Uuid,
+    ) -> Result<Vec<EmergencyAccessSession>, ApiError> {
+        let sessions = sqlx::query_as::<_, EmergencyAccessSession>(
+            r#"
+            SELECT id, grant_id, user_id, emergency_contact_id, started_at,
+                   last_active_at, ended_at, ip_address, user_agent, created_at
+            FROM emergency_access_sessions
+            WHERE user_id = $1 AND ended_at IS NULL
+            ORDER BY started_at DESC
+            "#,
+        )
+        .bind(user_id)
+        .fetch_all(pool)
+        .await?;
+
+        Ok(sessions)
+    }
+
+    /// End all active sessions for a specific grant (used during revocation).
+    pub async fn end_sessions_for_grant(
+        executor: impl sqlx::PgExecutor<'_>,
+        grant_id: Uuid,
+    ) -> Result<(), ApiError> {
+        sqlx::query(
+            r#"
+            UPDATE emergency_access_sessions
+            SET ended_at = NOW(), last_active_at = NOW()
+            WHERE grant_id = $1 AND ended_at IS NULL
+            "#,
+        )
+        .bind(grant_id)
+        .execute(executor)
+        .await?;
+
+        Ok(())
+    }
+}
+
+// ── Emergency Access Analytics (Issue #306) ─────────────────────────────────
+
+#[derive(Debug, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct EmergencyAccessMetric {
+    pub date: String,
+    pub count: i64,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct EmergencyAccessMetrics {
+    pub total_grants: i64,
+    pub active_grants: i64,
+    pub total_revocations: i64,
+    pub total_alerts: i64,
+    pub alerts_by_severity: BTreeMap<String, i64>,
+    pub grant_trend: Vec<EmergencyAccessMetric>,
+}
+
+pub struct EmergencyAccessMetricsService;
+
+impl EmergencyAccessMetricsService {
+    pub async fn get_metrics(db: &PgPool, range: &str) -> Result<EmergencyAccessMetrics, ApiError> {
+        let total_grants: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM emergency_access_grants")
+            .fetch_one(db)
+            .await?;
+
+        let active_grants: i64 = sqlx::query_scalar(
+            "SELECT COUNT(*) FROM emergency_access_grants WHERE is_active = true AND expires_at > NOW()",
+        )
+        .fetch_one(db)
+        .await?;
+
+        let total_revocations: i64 = sqlx::query_scalar(
+            "SELECT COUNT(*) FROM emergency_access_grants WHERE revoked_at IS NOT NULL",
+        )
+        .fetch_one(db)
+        .await?;
+
+        let total_alerts: i64 =
+            sqlx::query_scalar("SELECT COUNT(*) FROM emergency_access_risk_alerts")
+                .fetch_one(db)
+                .await?;
+
+        let alert_severity_rows: Vec<(String, i64)> = sqlx::query_as(
+            "SELECT severity, COUNT(*) FROM emergency_access_risk_alerts GROUP BY severity",
+        )
+        .fetch_all(db)
+        .await?;
+
+        let mut alerts_by_severity = BTreeMap::new();
+        for (severity, count) in alert_severity_rows {
+            alerts_by_severity.insert(severity.to_lowercase(), count);
+        }
+
+        let (interval, trunc) = match range {
+            "daily" => ("30 days", "day"),
+            "weekly" => ("12 weeks", "week"),
+            "monthly" => ("12 months", "month"),
+            _ => ("30 days", "day"), // default to daily
+        };
+
+        let trend_query = format!(
+            r#"
+            SELECT 
+                DATE_TRUNC('{}', created_at)::DATE::TEXT as date,
+                COUNT(*)::BIGINT as count
+            FROM emergency_access_grants
+            WHERE created_at >= NOW() - INTERVAL '{}'
+            GROUP BY 1
+            ORDER BY 1
+            "#,
+            trunc, interval
+        );
+
+        let trend_rows: Vec<(String, i64)> = sqlx::query_as(&trend_query).fetch_all(db).await?;
+
+        let grant_trend = trend_rows
+            .into_iter()
+            .map(|(date, count)| EmergencyAccessMetric { date, count })
+            .collect();
+
+        Ok(EmergencyAccessMetrics {
+            total_grants,
+            active_grants,
+            total_revocations,
+            total_alerts,
+            alerts_by_severity,
+            grant_trend,
+        })
     }
 }
