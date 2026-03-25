@@ -786,6 +786,8 @@ async fn simulate_liquidity_drain(
     Ok(Json(
         json!({ "status": "success", "message": "Liquidity drain simulation completed" }),
     ))
+}
+
 // Governance Endpoints
 
 async fn create_governance_proposal(

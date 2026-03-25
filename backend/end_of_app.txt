@@ -1,0 +1,100 @@
+
+async fn get_risk_override_plans(
+    State(state): State<Arc<AppState>>,
+    AuthenticatedAdmin(_admin): AuthenticatedAdmin,
+) -> Result<Json<Value>, ApiError> {
+    let plans = EmergencyAdminService::get_risk_override_plans(&state.db).await?;
+    Ok(Json(
+        json!({ "status": "success", "data": plans, "count": plans.len() }),
+    ))
+}
+// Stress Testing Endpoints
+
+#[derive(serde::Deserialize)]
+pub struct PriceCrashRequest {
+    pub asset_code: String,
+    pub drop_percentage: rust_decimal::Decimal,
+}
+
+#[derive(serde::Deserialize)]
+pub struct LiquidityDrainRequest {
+    pub asset_code: String,
+    pub amount: rust_decimal::Decimal,
+}
+
+async fn simulate_price_crash(
+    State(state): State<Arc<AppState>>,
+    AuthenticatedAdmin(_admin): AuthenticatedAdmin,
+    Json(req): Json<PriceCrashRequest>,
+) -> Result<Json<Value>, ApiError> {
+    state
+        .stress_testing_engine
+        .simulate_price_crash(&req.asset_code, req.drop_percentage)
+        .await?;
+    Ok(Json(
+        json!({ "status": "success", "message": "Price crash simulation completed" }),
+    ))
+}
+
+async fn simulate_mass_default(
+    State(state): State<Arc<AppState>>,
+    AuthenticatedAdmin(_admin): AuthenticatedAdmin,
+) -> Result<Json<Value>, ApiError> {
+    state.stress_testing_engine.simulate_mass_default().await?;
+    Ok(Json(
+        json!({ "status": "success", "message": "Mass default simulation completed" }),
+    ))
+}
+
+async fn simulate_liquidity_drain(
+    State(state): State<Arc<AppState>>,
+    AuthenticatedAdmin(_admin): AuthenticatedAdmin,
+    Json(req): Json<LiquidityDrainRequest>,
+) -> Result<Json<Value>, ApiError> {
+    state
+        .stress_testing_engine
+        .simulate_liquidity_drain(&req.asset_code, req.amount)
+        .await?;
+    Ok(Json(
+        json!({ "status": "success", "message": "Liquidity drain simulation completed" }),
+    ))
+// Governance Endpoints
+
+async fn create_governance_proposal(
+    State(state): State<Arc<AppState>>,
+    AuthenticatedAdmin(admin): AuthenticatedAdmin,
+    Json(req): Json<CreateProposalRequest>,
+) -> Result<Json<Proposal>, ApiError> {
+    let proposal = GovernanceService::create_proposal(&state.db, admin.admin_id, &req).await?;
+    Ok(Json(proposal))
+}
+
+async fn list_governance_proposals(
+    State(state): State<Arc<AppState>>,
+) -> Result<Json<Vec<Proposal>>, ApiError> {
+    let proposals = GovernanceService::list_proposals(&state.db).await?;
+    Ok(Json(proposals))
+}
+
+async fn vote_on_governance_proposal(
+    State(state): State<Arc<AppState>>,
+    AuthenticatedUser(user): AuthenticatedUser,
+    Path(proposal_id): Path<Uuid>,
+    Json(req): Json<VoteRequest>,
+) -> Result<Json<Value>, ApiError> {
+    GovernanceService::vote_on_proposal(&state.db, user.user_id, proposal_id, &req).await?;
+    Ok(Json(
+        json!({ "status": "success", "message": "Vote recorded" }),
+    ))
+}
+
+async fn update_protocol_parameter(
+    State(state): State<Arc<AppState>>,
+    AuthenticatedAdmin(admin): AuthenticatedAdmin,
+    Json(req): Json<ParameterUpdateRequest>,
+) -> Result<Json<Value>, ApiError> {
+    GovernanceService::update_parameter(&state.db, admin.admin_id, &req).await?;
+    Ok(Json(
+        json!({ "status": "success", "message": "Parameter updated successfully" }),
+    ))
+}
