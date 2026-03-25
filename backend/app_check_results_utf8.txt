@@ -1,0 +1,74 @@
+﻿cargo :     Checking 
+inheritx-backend 
+v0.1.0 (C:\Users\HomeP
+C\Desktop\DRIPS 
+W3\InheritX\backend)
+At line:1 char:1
++ cargo check > 
+app_check_results.txt 
+2>&1
++ ~~~~~~~~~~~~~~~~~~~~
+~~~~~~~~~~~~~~~~~~~~
+    + CategoryInfo    
+          : NotSpeci  
+  fied: (    Checki   
+ ng in...heritX\ba    
+ckend):String) []    
+, RemoteException
+    + FullyQualifiedE 
+   rrorId : NativeCo  
+  mmandError
+ 
+error[E0599]: no 
+method named 
+`seconds_per_token` 
+found for mutable 
+reference `&mut Govern
+orConfigBuilder<PeerIp
+KeyExtractor, 
+NoOpMiddleware<...>>` 
+in the current scope
+  --> src\app.rs:85:14
+   |
+82 | /         Governo
+rConfigBuilder::defaul
+t()
+83 | |             
+.per_second(1)
+84 | |             
+.burst_size(2)
+85 | |             
+.seconds_per_token(60)
+   | |             
+-^^^^^^^^^^^^^^^^^ 
+method not found in 
+`&mut GovernorConfigBu
+ilder<PeerIpKeyExtract
+or, 
+NoOpMiddleware<...>>`
+   | |_____________|
+   |
+   |
+   = note: the full 
+name for the type has 
+been written to 'C:\Us
+ers\HomePC\Desktop\DRI
+PS W3\InheritX\backend
+\target\debug\deps\inh
+eritx_backend-dc0309c5
+a7a2d712.long-type-151
+63956381635215502.txt'
+   = note: consider 
+using `--verbose` to 
+print the full type 
+name to the console
+
+For more information 
+about this error, try 
+`rustc --explain 
+E0599`.
+error: could not 
+compile 
+`inheritx-backend` 
+(lib) due to 1 
+previous error

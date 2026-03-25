@@ -1,0 +1,57 @@
+﻿cargo :    Compiling 
+inheritx-backend 
+v0.1.0 (C:\Users\HomeP
+C\Desktop\DRIPS 
+W3\InheritX\backend)
+At line:1 char:78
++ ... wt-secret'; 
+cargo test --test emer
+gency_access_rate_limi
+t_tests -- -- ...
++                 ~~~~
+~~~~~~~~~~~~~~~~~~~~~~
+~~~~~~~~~~~~~~~~~~~~~~
+~~~~~~~~~
+    + CategoryInfo    
+          : NotSpeci  
+  fied: (   Compili   
+ ng in...heritX\ba    
+ckend):String) []    
+, RemoteException
+    + FullyQualifiedE 
+   rrorId : NativeCo  
+  mmandError
+ 
+    Finished `test` 
+profile [unoptimized 
++ debuginfo] 
+target(s) in 49.23s
+warning: the 
+following packages 
+contain code that 
+will be rejected by a 
+future version of 
+Rust: sqlx-postgres 
+v0.7.4
+note: to see what the 
+problems were, use 
+the option `--future-i
+ncompat-report`, or 
+run `cargo report futu
+re-incompatibilities 
+--id 2`
+     Running tests\eme
+rgency_access_rate_lim
+it_tests.rs (target\de
+bug\deps\emergency_acc
+ess_rate_limit_tests-f
+ebf84bfaca514e9.exe)
+
+running 1 test
+Skipping integration 
+test: DATABASE_URL is 
+not set
+test emergency_access_grant_rate_limiting_works ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+

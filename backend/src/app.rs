@@ -77,6 +77,14 @@ pub async fn create_app(db: PgPool, config: Config) -> Result<Router, ApiError> 
             .unwrap(),
     );
 
+    let emergency_governor_conf = Arc::new(
+        GovernorConfigBuilder::default()
+            .per_second(1)
+            .burst_size(2)
+            .finish()
+            .unwrap(),
+    );
+
     let app = Router::new()
         .route("/health", get(health_check))
         .route("/health/db", get(db_health_check))
@@ -109,11 +117,15 @@ pub async fn create_app(db: PgPool, config: Config) -> Result<Router, ApiError> 
         )
         .route(
             "/api/emergency/access/grants",
-            post(create_emergency_access_grant),
+            post(create_emergency_access_grant).layer(GovernorLayer {
+                config: emergency_governor_conf.clone(),
+            }),
         )
         .route(
             "/api/emergency/access/grants/:grant_id/revoke",
-            post(revoke_emergency_access_grant),
+            post(revoke_emergency_access_grant).layer(GovernorLayer {
+                config: emergency_governor_conf,
+            }),
         )
         .route(
             "/api/emergency/access/audit-logs",
