@@ -282,7 +282,9 @@ impl ReserveHealthEngine {
         .bind(asset_code)
         .fetch_one(&self.db)
         .await
-        .map_err(|e| ApiError::NotFound(format!("Pool not found for asset {}: {}", asset_code, e)))?;
+        .map_err(|e| {
+            ApiError::NotFound(format!("Pool not found for asset {}: {}", asset_code, e))
+        })?;
 
         self.calculate_reserve_metrics(&pool).await
     }
