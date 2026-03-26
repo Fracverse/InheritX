@@ -30,6 +30,7 @@ use crate::service::{
     UnpausePlanRequest, UpdateEmergencyContactRequest,
 };
 use crate::stress_testing::StressTestingEngine;
+use crate::will_compliance::{ValidationResult, WillComplianceService};
 use crate::will_pdf::{WillDocumentInput, WillPdfService, WillTemplate};
 use crate::will_signature::{
     SigningChallengeRequest, SubmitSignatureRequest, WillSignatureService,
@@ -302,6 +303,13 @@ pub async fn create_app(db: PgPool, config: Config) -> Result<Router, ApiError> 
         .route(
             "/api/will/documents/:document_id/backups",
             get(list_document_backups),
+        )
+        // -- Will Compliance Validation (Issue #330) --
+        .route("/api/will/validate", post(validate_will_compliance))
+        .route("/api/will/jurisdictions", get(list_jurisdictions))
+        .route(
+            "/api/will/jurisdictions/:jurisdiction",
+            get(get_jurisdiction_rules),
         )
         .with_state(state);
 
@@ -1252,4 +1260,38 @@ async fn list_document_backups(
     Ok(Json(
         json!({ "status": "success", "data": backups, "count": backups.len() }),
     ))
+}
+
+// -- Will Compliance Validation Handlers (Issue #330) --
+
+#[derive(serde::Deserialize)]
+struct ValidateWillRequest {
+    #[serde(flatten)]
+    input: WillDocumentInput,
+    witness_count: u32,
+}
+
+async fn validate_will_compliance(
+    AuthenticatedUser(_user): AuthenticatedUser,
+    Json(req): Json<ValidateWillRequest>,
+) -> Result<Json<Value>, ApiError> {
+    let result: ValidationResult = WillComplianceService::validate(&req.input, req.witness_count);
+    Ok(Json(json!({ "status": "success", "data": result })))
+}
+
+async fn list_jurisdictions(
+    AuthenticatedUser(_user): AuthenticatedUser,
+) -> Result<Json<Value>, ApiError> {
+    let jurisdictions = WillComplianceService::list_supported_jurisdictions();
+    Ok(Json(
+        json!({ "status": "success", "data": jurisdictions, "count": jurisdictions.len() }),
+    ))
+}
+
+async fn get_jurisdiction_rules(
+    AuthenticatedUser(_user): AuthenticatedUser,
+    Path(jurisdiction): Path<String>,
+) -> Result<Json<Value>, ApiError> {
+    let rules = WillComplianceService::get_jurisdiction_rules(&jurisdiction);
+    Ok(Json(json!({ "status": "success", "data": rules })))
 }
