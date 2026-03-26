@@ -6,7 +6,7 @@
 use crate::api_error::ApiError;
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
-use sqlx::{PgPool, FromRow, Row};
+use sqlx::{FromRow, PgPool, Row};
 use uuid::Uuid;
 
 // ─── Audit Log Entry ──────────────────────────────────────────────────────────
@@ -155,12 +155,11 @@ impl WillAuditService {
         plan_id: Uuid,
     ) -> Result<AuditLogSummary, ApiError> {
         // Get total count
-        let total_events: i64 = sqlx::query_scalar(
-            "SELECT COUNT(*) FROM will_event_log WHERE plan_id = $1",
-        )
-        .bind(plan_id)
-        .fetch_one(db)
-        .await?;
+        let total_events: i64 =
+            sqlx::query_scalar("SELECT COUNT(*) FROM will_event_log WHERE plan_id = $1")
+                .bind(plan_id)
+                .fetch_one(db)
+                .await?;
 
         // Get event type counts
         let event_type_counts = sqlx::query_as::<_, EventTypeCount>(
@@ -219,9 +218,19 @@ impl WillAuditService {
         db: &PgPool,
         user_id: Uuid,
     ) -> Result<UserActivitySummary, ApiError> {
-        let row: (i64, i64, i64, i64, i64, Option<DateTime<Utc>>, Option<DateTime<Utc>>) =
-            sqlx::query_as(
-                r#"
+        #[derive(sqlx::FromRow)]
+        struct ActivityRow {
+            total_actions: i64,
+            documents_created: i64,
+            documents_updated: i64,
+            documents_signed: i64,
+            documents_downloaded: i64,
+            first_activity: Option<DateTime<Utc>>,
+            last_activity: Option<DateTime<Utc>>,
+        }
+
+        let row = sqlx::query_as::<_, ActivityRow>(
+            r#"
                 SELECT
                     COUNT(*) as total_actions,
                     COUNT(*) FILTER (WHERE event_type = 'will_created') as documents_created,
@@ -233,20 +242,20 @@ impl WillAuditService {
                 FROM will_event_log
                 WHERE user_id = $1
                 "#,
-            )
-            .bind(user_id)
-            .fetch_one(db)
-            .await?;
+        )
+        .bind(user_id)
+        .fetch_one(db)
+        .await?;
 
         Ok(UserActivitySummary {
             user_id,
-            total_actions: row.0,
-            documents_created: row.1,
-            documents_updated: row.2,
-            documents_signed: row.3,
-            documents_downloaded: row.4,
-            first_activity: row.5,
-            last_activity: row.6,
+            total_actions: row.total_actions,
+            documents_created: row.documents_created,
+            documents_updated: row.documents_updated,
+            documents_signed: row.documents_signed,
+            documents_downloaded: row.documents_downloaded,
+            first_activity: row.first_activity,
+            last_activity: row.last_activity,
         })
     }
 

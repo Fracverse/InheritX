@@ -288,10 +288,7 @@ async fn test_download_will_document_by_version_success() {
     // Download version 1
     let request = Request::builder()
         .method("GET")
-        .uri(format!(
-            "/api/plans/{}/will/documents/1/download",
-            plan_id
-        ))
+        .uri(format!("/api/plans/{}/will/documents/1/download", plan_id))
         .header("Authorization", format!("Bearer {}", token))
         .body(Body::empty())
         .unwrap();
@@ -314,10 +311,7 @@ async fn test_download_will_document_by_version_success() {
     // Download version 2
     let request = Request::builder()
         .method("GET")
-        .uri(format!(
-            "/api/plans/{}/will/documents/2/download",
-            plan_id
-        ))
+        .uri(format!("/api/plans/{}/will/documents/2/download", plan_id))
         .header("Authorization", format!("Bearer {}", token))
         .body(Body::empty())
         .unwrap();

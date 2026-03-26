@@ -376,10 +376,7 @@ pub async fn create_app(db: PgPool, config: Config) -> Result<Router, ApiError> 
             "/api/admin/will/audit/event-types",
             get(get_admin_event_types),
         )
-        .route(
-            "/api/admin/will/audit/search",
-            get(search_admin_audit_logs),
-        )
+        .route("/api/admin/will/audit/search", get(search_admin_audit_logs))
         .route(
             "/api/admin/will/audit/user/:user_id",
             get(get_user_audit_activity),
@@ -1587,11 +1584,11 @@ async fn download_will_document(
     }
 
     // Build response with proper headers for download
-    use axum::http::{header, Response, StatusCode};
     use axum::body::Body;
-    
+    use axum::http::{header, Response, StatusCode};
+
     let content_disposition = format!("attachment; filename=\"{}\"", doc.filename);
-    
+
     Response::builder()
         .status(StatusCode::OK)
         .header(header::CONTENT_TYPE, "application/pdf")
@@ -1632,11 +1629,11 @@ async fn download_will_document_by_version(
     }
 
     // Build response with proper headers for download
-    use axum::http::{header, Response, StatusCode};
     use axum::body::Body;
-    
+    use axum::http::{header, Response, StatusCode};
+
     let content_disposition = format!("attachment; filename=\"{}\"", doc.filename);
-    
+
     Response::builder()
         .status(StatusCode::OK)
         .header(header::CONTENT_TYPE, "application/pdf")
