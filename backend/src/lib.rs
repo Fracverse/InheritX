@@ -7,6 +7,7 @@ pub mod beneficiary_sync;
 pub mod compliance;
 pub mod config;
 pub mod db;
+pub mod document_storage;
 pub mod emergency_access;
 pub mod emergency_access_jobs;
 pub mod event_handlers;

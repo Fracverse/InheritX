@@ -16,6 +16,7 @@ use crate::api_error::ApiError;
 use crate::auth::{AuthenticatedAdmin, AuthenticatedUser};
 use crate::beneficiary_sync::{BeneficiarySyncService, DocumentBeneficiary};
 use crate::config::Config;
+use crate::document_storage::DocumentStorageService;
 use crate::governance::{
     CreateProposalRequest, GovernanceService, ParameterUpdateRequest, Proposal, VoteRequest,
 };
@@ -34,6 +35,7 @@ use crate::will_signature::{
     SigningChallengeRequest, SubmitSignatureRequest, WillSignatureService,
 };
 use crate::yield_service::{DefaultOnChainYieldService, OnChainYieldService};
+use base64::Engine as _;
 
 pub struct AppState {
     pub db: PgPool,
@@ -268,6 +270,23 @@ pub async fn create_app(db: PgPool, config: Config) -> Result<Router, ApiError> 
         .route(
             "/api/will/documents/:document_id/signatures",
             get(get_will_signatures),
+        )
+        // -- Encrypted Document Storage (Issue #328) --
+        .route(
+            "/api/will/documents/:document_id/encrypt",
+            post(encrypt_document),
+        )
+        .route(
+            "/api/will/documents/:document_id/decrypt",
+            get(decrypt_document),
+        )
+        .route(
+            "/api/will/documents/:document_id/backup",
+            post(create_document_backup),
+        )
+        .route(
+            "/api/will/documents/:document_id/backups",
+            get(list_document_backups),
         )
         .with_state(state);
 
@@ -1108,5 +1127,65 @@ async fn get_will_signatures(
             .await?;
     Ok(Json(
         json!({ "status": "success", "data": sigs, "count": sigs.len() }),
+    ))
+}
+
+// -- Encrypted Document Storage Handlers (Issue #328) -------------------------
+
+async fn encrypt_document(
+    State(state): State<Arc<AppState>>,
+    Path(document_id): Path<Uuid>,
+    AuthenticatedUser(user): AuthenticatedUser,
+) -> Result<Json<Value>, ApiError> {
+    let doc = WillPdfService::get_document(&state.db, document_id, user.user_id).await?;
+    let content_bytes = base64::engine::general_purpose::STANDARD
+        .decode(&doc.pdf_base64)
+        .map_err(|e| ApiError::Internal(anyhow::anyhow!("Base64 decode error: {e}")))?;
+
+    DocumentStorageService::store_encrypted(&state.db, user.user_id, document_id, &content_bytes)
+        .await?;
+
+    Ok(Json(json!({
+        "status": "success",
+        "message": "Document encrypted successfully",
+        "document_id": document_id
+    })))
+}
+
+async fn decrypt_document(
+    State(state): State<Arc<AppState>>,
+    Path(document_id): Path<Uuid>,
+    AuthenticatedUser(user): AuthenticatedUser,
+) -> Result<Json<Value>, ApiError> {
+    let plaintext =
+        DocumentStorageService::retrieve_decrypted(&state.db, user.user_id, document_id).await?;
+    let encoded = base64::engine::general_purpose::STANDARD.encode(&plaintext);
+
+    Ok(Json(json!({
+        "status": "success",
+        "document_id": document_id,
+        "pdf_base64": encoded
+    })))
+}
+
+async fn create_document_backup(
+    State(state): State<Arc<AppState>>,
+    Path(document_id): Path<Uuid>,
+    AuthenticatedUser(user): AuthenticatedUser,
+) -> Result<Json<Value>, ApiError> {
+    let backup =
+        DocumentStorageService::create_backup(&state.db, user.user_id, document_id).await?;
+    Ok(Json(json!({ "status": "success", "data": backup })))
+}
+
+async fn list_document_backups(
+    State(state): State<Arc<AppState>>,
+    Path(document_id): Path<Uuid>,
+    AuthenticatedUser(user): AuthenticatedUser,
+) -> Result<Json<Value>, ApiError> {
+    let backups =
+        DocumentStorageService::list_backups(&state.db, user.user_id, document_id).await?;
+    Ok(Json(
+        json!({ "status": "success", "data": backups, "count": backups.len() }),
     ))
 }
