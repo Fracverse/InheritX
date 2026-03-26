@@ -203,6 +203,30 @@ impl WillSignatureService {
 
         tx.commit().await?;
 
+        // Fetch plan_id for event
+        let plan_id: Option<Uuid> =
+            sqlx::query_scalar("SELECT plan_id FROM will_documents WHERE id = $1")
+                .bind(row.document_id)
+                .fetch_optional(db)
+                .await?;
+
+        // Emit WillSigned event
+        if let Some(plan_id) = plan_id {
+            let sig_hash =
+                ring::digest::digest(&ring::digest::SHA256, req.signature_hex.as_bytes());
+            let event = crate::will_events::WillEvent::WillSigned {
+                vault_id: row.vault_id.clone(),
+                document_id: row.document_id,
+                plan_id,
+                signer: req.wallet_address.clone(),
+                signature_hash: hex::encode(sig_hash.as_ref()),
+                timestamp: signed_at,
+            };
+            if let Err(e) = crate::will_events::WillEventService::emit(db, event).await {
+                tracing::warn!("Failed to emit WillSigned event: {}", e);
+            }
+        }
+
         Ok(WillSignatureRecord {
             id: record_id,
             document_id: row.document_id,
