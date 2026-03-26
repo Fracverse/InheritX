@@ -1388,3 +1388,47 @@ async fn decline_witness(
     let record = WitnessService::decline_witness(&state.db, witness_id).await?;
     Ok(Json(json!({ "status": "success", "data": record })))
 }
+
+// ─── Reserve Health Endpoints ──────────────────────────────────────────────
+
+async fn get_all_reserve_health(
+    State(state): State<Arc<AppState>>,
+    AuthenticatedAdmin(_admin): AuthenticatedAdmin,
+) -> Result<Json<Value>, ApiError> {
+    let metrics = state.reserve_health_engine.check_all_reserves().await?;
+    Ok(Json(json!({
+        "status": "success",
+        "data": metrics
+    })))
+}
+
+async fn get_reserve_health_by_asset(
+    State(state): State<Arc<AppState>>,
+    AuthenticatedAdmin(_admin): AuthenticatedAdmin,
+    Path(asset_code): Path<String>,
+) -> Result<Json<Value>, ApiError> {
+    let metrics = state
+        .reserve_health_engine
+        .get_reserve_health(&asset_code)
+        .await?;
+    Ok(Json(json!({
+        "status": "success",
+        "data": metrics
+    })))
+}
+
+async fn sync_reserve_health(
+    State(state): State<Arc<AppState>>,
+    AuthenticatedAdmin(_admin): AuthenticatedAdmin,
+) -> Result<Json<Value>, ApiError> {
+    state
+        .reserve_health_engine
+        .sync_reserves_from_events()
+        .await?;
+    let metrics = state.reserve_health_engine.check_all_reserves().await?;
+    Ok(Json(json!({
+        "status": "success",
+        "message": "Reserve health synced successfully",
+        "data": metrics
+    })))
+}
