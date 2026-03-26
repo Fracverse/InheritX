@@ -357,6 +357,38 @@ pub async fn create_app(db: PgPool, config: Config) -> Result<Router, ApiError> 
             "/api/plans/:plan_id/will/events/stats",
             get(get_plan_event_stats),
         )
+        // -- Legal Document Download API (Issue #334) --------------------------
+        .route(
+            "/api/will/documents/:document_id/download",
+            get(download_will_document),
+        )
+        .route(
+            "/api/plans/:plan_id/will/documents/:version/download",
+            get(download_will_document_by_version),
+        )
+        // -- Legal Will Audit Logs (Issue #335) --------------------------------
+        .route("/api/admin/will/audit/logs", get(get_admin_audit_logs))
+        .route(
+            "/api/admin/will/audit/statistics",
+            get(get_admin_audit_statistics),
+        )
+        .route(
+            "/api/admin/will/audit/event-types",
+            get(get_admin_event_types),
+        )
+        .route(
+            "/api/admin/will/audit/search",
+            get(search_admin_audit_logs),
+        )
+        .route(
+            "/api/admin/will/audit/user/:user_id",
+            get(get_user_audit_activity),
+        )
+        .route(
+            "/api/will/audit/plan/:plan_id/summary",
+            get(get_plan_audit_summary),
+        )
+        .route("/api/will/audit/my-activity", get(get_my_audit_activity))
         .with_state(state);
 
     // Add price feed routes with separate state
@@ -1522,4 +1554,212 @@ async fn get_plan_event_stats(
     let stats =
         crate::will_events::WillEventService::get_plan_event_stats(&state.db, plan_id).await?;
     Ok(Json(json!({ "status": "success", "data": stats })))
+}
+
+// -- Legal Document Download API (Issue #334) ----------------------------------
+
+/// Download a will document as a PDF file by document ID
+///
+/// `GET /api/will/documents/:document_id/download`
+async fn download_will_document(
+    State(state): State<Arc<AppState>>,
+    Path(document_id): Path<Uuid>,
+    AuthenticatedUser(user): AuthenticatedUser,
+) -> Result<axum::response::Response, ApiError> {
+    // Retrieve the document with authentication check
+    let doc = WillPdfService::get_document(&state.db, document_id, user.user_id).await?;
+
+    // Decode the base64 PDF content
+    let pdf_bytes = base64::engine::general_purpose::STANDARD
+        .decode(&doc.pdf_base64)
+        .map_err(|e| ApiError::Internal(anyhow::anyhow!("Failed to decode PDF: {}", e)))?;
+
+    // Emit download event
+    let event = crate::will_events::WillEvent::WillDecrypted {
+        vault_id: format!("plan_{}", doc.plan_id),
+        document_id,
+        plan_id: doc.plan_id,
+        accessed_by: user.user_id,
+        timestamp: chrono::Utc::now(),
+    };
+    if let Err(e) = crate::will_events::WillEventService::emit(&state.db, event).await {
+        tracing::warn!("Failed to emit document download event: {}", e);
+    }
+
+    // Build response with proper headers for download
+    use axum::http::{header, Response, StatusCode};
+    use axum::body::Body;
+    
+    let content_disposition = format!("attachment; filename=\"{}\"", doc.filename);
+    
+    Response::builder()
+        .status(StatusCode::OK)
+        .header(header::CONTENT_TYPE, "application/pdf")
+        .header(header::CONTENT_DISPOSITION, content_disposition)
+        .header(header::CACHE_CONTROL, "no-cache, no-store, must-revalidate")
+        .header(header::PRAGMA, "no-cache")
+        .header(header::EXPIRES, "0")
+        .body(Body::from(pdf_bytes))
+        .map_err(|e| ApiError::Internal(anyhow::anyhow!("Failed to build response: {}", e)))
+}
+
+/// Download a specific version of a will document by plan ID and version number
+///
+/// `GET /api/plans/:plan_id/will/documents/:version/download`
+async fn download_will_document_by_version(
+    State(state): State<Arc<AppState>>,
+    Path((plan_id, version)): Path<(Uuid, u32)>,
+    AuthenticatedUser(user): AuthenticatedUser,
+) -> Result<axum::response::Response, ApiError> {
+    // Retrieve the specific version
+    let doc = WillVersionService::get_version(&state.db, plan_id, user.user_id, version).await?;
+
+    // Decode the base64 PDF content
+    let pdf_bytes = base64::engine::general_purpose::STANDARD
+        .decode(&doc.pdf_base64)
+        .map_err(|e| ApiError::Internal(anyhow::anyhow!("Failed to decode PDF: {}", e)))?;
+
+    // Emit download event
+    let event = crate::will_events::WillEvent::WillDecrypted {
+        vault_id: format!("plan_{}", doc.plan_id),
+        document_id: doc.document_id,
+        plan_id: doc.plan_id,
+        accessed_by: user.user_id,
+        timestamp: chrono::Utc::now(),
+    };
+    if let Err(e) = crate::will_events::WillEventService::emit(&state.db, event).await {
+        tracing::warn!("Failed to emit document download event: {}", e);
+    }
+
+    // Build response with proper headers for download
+    use axum::http::{header, Response, StatusCode};
+    use axum::body::Body;
+    
+    let content_disposition = format!("attachment; filename=\"{}\"", doc.filename);
+    
+    Response::builder()
+        .status(StatusCode::OK)
+        .header(header::CONTENT_TYPE, "application/pdf")
+        .header(header::CONTENT_DISPOSITION, content_disposition)
+        .header(header::CACHE_CONTROL, "no-cache, no-store, must-revalidate")
+        .header(header::PRAGMA, "no-cache")
+        .header(header::EXPIRES, "0")
+        .body(Body::from(pdf_bytes))
+        .map_err(|e| ApiError::Internal(anyhow::anyhow!("Failed to build response: {}", e)))
+}
+
+// -- Legal Will Audit Logs (Issue #335) ----------------------------------------
+
+use crate::will_audit::{AuditLogFilters, WillAuditService};
+
+/// Admin: Get audit logs with filters
+///
+/// `GET /api/admin/will/audit/logs?document_id=...&plan_id=...&user_id=...&event_type=...&start_date=...&end_date=...&limit=...&offset=...`
+async fn get_admin_audit_logs(
+    State(state): State<Arc<AppState>>,
+    AuthenticatedAdmin(_admin): AuthenticatedAdmin,
+    Query(filters): Query<AuditLogFilters>,
+) -> Result<Json<Value>, ApiError> {
+    let logs = WillAuditService::get_audit_logs(&state.db, &filters).await?;
+    Ok(Json(json!({
+        "status": "success",
+        "data": logs,
+        "count": logs.len()
+    })))
+}
+
+/// Admin: Get audit statistics
+///
+/// `GET /api/admin/will/audit/statistics`
+async fn get_admin_audit_statistics(
+    State(state): State<Arc<AppState>>,
+    AuthenticatedAdmin(_admin): AuthenticatedAdmin,
+) -> Result<Json<Value>, ApiError> {
+    let stats = WillAuditService::get_admin_statistics(&state.db).await?;
+    Ok(Json(json!({
+        "status": "success",
+        "data": stats
+    })))
+}
+
+/// Admin: Get all event types
+///
+/// `GET /api/admin/will/audit/event-types`
+async fn get_admin_event_types(
+    State(state): State<Arc<AppState>>,
+    AuthenticatedAdmin(_admin): AuthenticatedAdmin,
+) -> Result<Json<Value>, ApiError> {
+    let event_types = WillAuditService::get_event_types(&state.db).await?;
+    Ok(Json(json!({
+        "status": "success",
+        "data": event_types,
+        "count": event_types.len()
+    })))
+}
+
+/// Admin: Search audit logs
+///
+/// `GET /api/admin/will/audit/search?q=...&limit=...`
+#[derive(serde::Deserialize)]
+struct SearchQuery {
+    q: String,
+    limit: Option<i64>,
+}
+
+async fn search_admin_audit_logs(
+    State(state): State<Arc<AppState>>,
+    AuthenticatedAdmin(_admin): AuthenticatedAdmin,
+    Query(query): Query<SearchQuery>,
+) -> Result<Json<Value>, ApiError> {
+    let limit = query.limit.unwrap_or(100);
+    let logs = WillAuditService::search_audit_logs(&state.db, &query.q, limit).await?;
+    Ok(Json(json!({
+        "status": "success",
+        "data": logs,
+        "count": logs.len()
+    })))
+}
+
+/// Admin: Get user audit activity
+///
+/// `GET /api/admin/will/audit/user/:user_id`
+async fn get_user_audit_activity(
+    State(state): State<Arc<AppState>>,
+    Path(user_id): Path<Uuid>,
+    AuthenticatedAdmin(_admin): AuthenticatedAdmin,
+) -> Result<Json<Value>, ApiError> {
+    let activity = WillAuditService::get_user_activity_summary(&state.db, user_id).await?;
+    Ok(Json(json!({
+        "status": "success",
+        "data": activity
+    })))
+}
+
+/// User: Get plan audit summary
+///
+/// `GET /api/will/audit/plan/:plan_id/summary`
+async fn get_plan_audit_summary(
+    State(state): State<Arc<AppState>>,
+    Path(plan_id): Path<Uuid>,
+    AuthenticatedUser(_user): AuthenticatedUser,
+) -> Result<Json<Value>, ApiError> {
+    let summary = WillAuditService::get_plan_audit_summary(&state.db, plan_id).await?;
+    Ok(Json(json!({
+        "status": "success",
+        "data": summary
+    })))
+}
+
+/// User: Get my audit activity
+///
+/// `GET /api/will/audit/my-activity`
+async fn get_my_audit_activity(
+    State(state): State<Arc<AppState>>,
+    AuthenticatedUser(user): AuthenticatedUser,
+) -> Result<Json<Value>, ApiError> {
+    let activity = WillAuditService::get_user_activity_summary(&state.db, user.user_id).await?;
+    Ok(Json(json!({
+        "status": "success",
+        "data": activity
+    })))
 }
