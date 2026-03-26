@@ -329,6 +329,34 @@ pub async fn create_app(db: PgPool, config: Config) -> Result<Router, ApiError> 
             "/api/will/witnesses/:witness_id/decline",
             post(decline_witness),
         )
+        // -- Legal Document Integrity Check (Issue #332) ----------------------
+        .route(
+            "/api/will/documents/:document_id/verify",
+            get(verify_document_integrity),
+        )
+        .route(
+            "/api/will/documents/:document_id/verify/hash",
+            post(verify_document_hash),
+        )
+        .route(
+            "/api/will/documents/:document_id/verify/content",
+            post(verify_document_content),
+        )
+        .route(
+            "/api/plans/:plan_id/will/verify-all",
+            get(verify_all_document_versions),
+        )
+        // -- Legal Will Event Logging (Issue #333) ----------------------------
+        .route(
+            "/api/will/documents/:document_id/events",
+            get(get_document_events),
+        )
+        .route("/api/plans/:plan_id/will/events", get(get_plan_events))
+        .route("/api/will/vaults/:vault_id/events", get(get_vault_events))
+        .route(
+            "/api/plans/:plan_id/will/events/stats",
+            get(get_plan_event_stats),
+        )
         .with_state(state);
 
     // Add price feed routes with separate state
@@ -1374,4 +1402,124 @@ async fn decline_witness(
 ) -> Result<Json<Value>, ApiError> {
     let record = WitnessService::decline_witness(&state.db, witness_id).await?;
     Ok(Json(json!({ "status": "success", "data": record })))
+}
+
+// -- Legal Document Integrity Check (Issue #332) -------------------------------
+
+async fn verify_document_integrity(
+    State(state): State<Arc<AppState>>,
+    Path(document_id): Path<Uuid>,
+    Query(params): Query<PaginationParams>,
+) -> Result<Json<Value>, ApiError> {
+    let version = params.page; // Reusing page param for version number
+    let result = crate::document_verification::DocumentVerificationService::verify_document(
+        &state.db,
+        document_id,
+        version,
+    )
+    .await?;
+    Ok(Json(json!({ "status": "success", "data": result })))
+}
+
+#[derive(serde::Deserialize)]
+struct VerifyHashRequest {
+    hash: String,
+    version: Option<u32>,
+}
+
+async fn verify_document_hash(
+    State(state): State<Arc<AppState>>,
+    Path(document_id): Path<Uuid>,
+    Json(req): Json<VerifyHashRequest>,
+) -> Result<Json<Value>, ApiError> {
+    let result = crate::document_verification::DocumentVerificationService::verify_hash(
+        &state.db,
+        document_id,
+        req.hash,
+        req.version,
+    )
+    .await?;
+    Ok(Json(json!({ "status": "success", "data": result })))
+}
+
+#[derive(serde::Deserialize)]
+struct VerifyContentRequest {
+    content: String,
+    version: Option<u32>,
+}
+
+async fn verify_document_content(
+    State(state): State<Arc<AppState>>,
+    Path(document_id): Path<Uuid>,
+    Json(req): Json<VerifyContentRequest>,
+) -> Result<Json<Value>, ApiError> {
+    let result = crate::document_verification::DocumentVerificationService::verify_content(
+        &state.db,
+        document_id,
+        req.content,
+        req.version,
+    )
+    .await?;
+    Ok(Json(json!({ "status": "success", "data": result })))
+}
+
+async fn verify_all_document_versions(
+    State(state): State<Arc<AppState>>,
+    Path(plan_id): Path<Uuid>,
+    AuthenticatedUser(_user): AuthenticatedUser,
+) -> Result<Json<Value>, ApiError> {
+    let results = crate::document_verification::DocumentVerificationService::verify_all_versions(
+        &state.db, plan_id,
+    )
+    .await?;
+    Ok(Json(
+        json!({ "status": "success", "data": results, "count": results.len() }),
+    ))
+}
+
+// -- Legal Will Event Logging (Issue #333) ------------------------------------
+
+async fn get_document_events(
+    State(state): State<Arc<AppState>>,
+    Path(document_id): Path<Uuid>,
+    AuthenticatedUser(_user): AuthenticatedUser,
+) -> Result<Json<Value>, ApiError> {
+    let events =
+        crate::will_events::WillEventService::get_document_events(&state.db, document_id).await?;
+    Ok(Json(
+        json!({ "status": "success", "data": events, "count": events.len() }),
+    ))
+}
+
+async fn get_plan_events(
+    State(state): State<Arc<AppState>>,
+    Path(plan_id): Path<Uuid>,
+    AuthenticatedUser(_user): AuthenticatedUser,
+) -> Result<Json<Value>, ApiError> {
+    let events = crate::will_events::WillEventService::get_plan_events(&state.db, plan_id).await?;
+    Ok(Json(
+        json!({ "status": "success", "data": events, "count": events.len() }),
+    ))
+}
+
+async fn get_vault_events(
+    State(state): State<Arc<AppState>>,
+    Path(vault_id): Path<String>,
+    AuthenticatedUser(_user): AuthenticatedUser,
+) -> Result<Json<Value>, ApiError> {
+    let events =
+        crate::will_events::WillEventService::get_vault_events(&state.db, &vault_id).await?;
+    Ok(Json(
+        json!({ "status": "success", "data": events, "count": events.len() }),
+    ))
+}
+
+async fn get_plan_event_stats(
+    State(state): State<Arc<AppState>>,
+    Path(plan_id): Path<Uuid>,
+    AuthenticatedUser(_user): AuthenticatedUser,
+) -> Result<Json<Value>, ApiError> {
+    let stats =
+        crate::will_events::WillEventService::get_plan_event_stats(&state.db, plan_id).await?;
+    Ok(Json(json!({ "status": "success", "data": stats })))
 }
