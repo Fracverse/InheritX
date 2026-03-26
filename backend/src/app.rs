@@ -36,6 +36,7 @@ use crate::will_signature::{
     SigningChallengeRequest, SubmitSignatureRequest, WillSignatureService,
 };
 use crate::will_version::{PaginatedVersions, PaginationParams, WillVersionService};
+use crate::witness::{InviteWitnessRequest, WitnessService, WitnessSignRequest};
 use crate::yield_service::{DefaultOnChainYieldService, OnChainYieldService};
 use base64::Engine as _;
 
@@ -310,6 +311,23 @@ pub async fn create_app(db: PgPool, config: Config) -> Result<Router, ApiError> 
         .route(
             "/api/will/jurisdictions/:jurisdiction",
             get(get_jurisdiction_rules),
+        )
+        // -- Witness Verification (Issue #331) --------------------------------
+        .route(
+            "/api/will/documents/:document_id/witnesses",
+            post(invite_witness).get(list_witnesses),
+        )
+        .route(
+            "/api/will/documents/:document_id/witnesses/status",
+            get(get_witness_status),
+        )
+        .route(
+            "/api/will/witnesses/:witness_id/sign",
+            post(sign_as_witness),
+        )
+        .route(
+            "/api/will/witnesses/:witness_id/decline",
+            post(decline_witness),
         )
         .with_state(state);
 
@@ -1294,4 +1312,66 @@ async fn get_jurisdiction_rules(
 ) -> Result<Json<Value>, ApiError> {
     let rules = WillComplianceService::get_jurisdiction_rules(&jurisdiction);
     Ok(Json(json!({ "status": "success", "data": rules })))
+}
+
+// -- Witness Verification (Issue #331) ----------------------------------------
+
+async fn invite_witness(
+    State(state): State<Arc<AppState>>,
+    Path(document_id): Path<Uuid>,
+    AuthenticatedUser(user): AuthenticatedUser,
+    Json(req): Json<InviteWitnessRequest>,
+) -> Result<Json<Value>, ApiError> {
+    let record = WitnessService::invite_witness(
+        &state.db,
+        user.user_id,
+        document_id,
+        req.wallet_address,
+        req.email,
+    )
+    .await?;
+    Ok(Json(json!({ "status": "success", "data": record })))
+}
+
+async fn list_witnesses(
+    State(state): State<Arc<AppState>>,
+    Path(document_id): Path<Uuid>,
+    AuthenticatedUser(user): AuthenticatedUser,
+) -> Result<Json<Value>, ApiError> {
+    let witnesses = WitnessService::get_witnesses(&state.db, user.user_id, document_id).await?;
+    Ok(Json(
+        json!({ "status": "success", "data": witnesses, "count": witnesses.len() }),
+    ))
+}
+
+async fn get_witness_status(
+    State(state): State<Arc<AppState>>,
+    Path(document_id): Path<Uuid>,
+    AuthenticatedUser(_user): AuthenticatedUser,
+) -> Result<Json<Value>, ApiError> {
+    let summary = WitnessService::get_witness_status(&state.db, document_id).await?;
+    Ok(Json(json!({ "status": "success", "data": summary })))
+}
+
+async fn sign_as_witness(
+    State(state): State<Arc<AppState>>,
+    Path(witness_id): Path<Uuid>,
+    Json(req): Json<WitnessSignRequest>,
+) -> Result<Json<Value>, ApiError> {
+    let record = WitnessService::sign_as_witness(
+        &state.db,
+        witness_id,
+        &req.wallet_address,
+        &req.signature_hex,
+    )
+    .await?;
+    Ok(Json(json!({ "status": "success", "data": record })))
+}
+
+async fn decline_witness(
+    State(state): State<Arc<AppState>>,
+    Path(witness_id): Path<Uuid>,
+) -> Result<Json<Value>, ApiError> {
+    let record = WitnessService::decline_witness(&state.db, witness_id).await?;
+    Ok(Json(json!({ "status": "success", "data": record })))
 }

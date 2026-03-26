@@ -31,6 +31,7 @@ pub mod will_compliance;
 pub mod will_pdf;
 pub mod will_signature;
 pub mod will_version;
+pub mod witness;
 pub mod yield_service;
 
 pub use api_error::ApiError;
