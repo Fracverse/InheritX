@@ -1,5 +1,7 @@
 use crate::api_error::ApiError;
-use crate::notifications::{audit_action, entity_type, notif_type, AuditLogService, NotificationService};
+use crate::notifications::{
+    audit_action, entity_type, notif_type, AuditLogService, NotificationService,
+};
 use rust_decimal::Decimal;
 use serde::{Deserialize, Serialize};
 use sqlx::PgPool;
@@ -81,10 +83,10 @@ impl ReserveHealthEngine {
         for pool in pools {
             let metrics = self.calculate_reserve_metrics(&pool).await?;
             self.update_pool_health(&pool.id, &metrics).await?;
-            
+
             // Check for alerts
             self.check_and_alert(&pool, &metrics).await?;
-            
+
             metrics_list.push(metrics);
         }
 
@@ -99,10 +101,10 @@ impl ReserveHealthEngine {
         let total_liquidity = pool.total_liquidity;
         let utilized = pool.utilized_liquidity;
         let bad_debt_reserve = pool.bad_debt_reserve;
-        
+
         // Calculate available liquidity
         let available_liquidity = total_liquidity.saturating_sub(utilized);
-        
+
         // Calculate utilization rate
         let utilization_rate = if total_liquidity > Decimal::ZERO {
             (utilized / total_liquidity) * Decimal::from(100)
@@ -143,7 +145,11 @@ impl ReserveHealthEngine {
     }
 
     /// Determine health status based on coverage ratio and utilization
-    fn determine_health_status(&self, coverage_ratio: Decimal, utilization_rate: Decimal) -> String {
+    fn determine_health_status(
+        &self,
+        coverage_ratio: Decimal,
+        utilization_rate: Decimal,
+    ) -> String {
         if coverage_ratio < self.critical_coverage_ratio {
             "critical".to_string()
         } else if coverage_ratio < self.warning_coverage_ratio {
@@ -177,9 +183,7 @@ impl ReserveHealthEngine {
         .bind(pool_id)
         .execute(&self.db)
         .await
-        .map_err(|e| {
-            ApiError::Internal(anyhow::anyhow!("DB error updating pool health: {}", e))
-        })?;
+        .map_err(|e| ApiError::Internal(anyhow::anyhow!("DB error updating pool health: {}", e)))?;
 
         Ok(())
     }
@@ -201,12 +205,11 @@ impl ReserveHealthEngine {
             );
 
             // Get admin users to notify
-            let admin_ids: Vec<uuid::Uuid> = sqlx::query_scalar(
-                "SELECT id FROM admins WHERE is_active = true LIMIT 10"
-            )
-            .fetch_all(&self.db)
-            .await
-            .unwrap_or_default();
+            let admin_ids: Vec<uuid::Uuid> =
+                sqlx::query_scalar("SELECT id FROM admins WHERE is_active = true LIMIT 10")
+                    .fetch_all(&self.db)
+                    .await
+                    .unwrap_or_default();
 
             let message = match current_status.as_str() {
                 "critical" => format!(
@@ -306,14 +309,14 @@ impl ReserveHealthEngine {
 
         for (asset_code, borrowed, repaid) in activity {
             let net_utilized = borrowed.saturating_sub(repaid);
-            
+
             sqlx::query(
                 r#"
                 UPDATE pools
                 SET utilized_liquidity = $1,
                     updated_at = CURRENT_TIMESTAMP
                 WHERE asset_code = $2
-                "#
+                "#,
             )
             .bind(net_utilized)
             .bind(&asset_code)
