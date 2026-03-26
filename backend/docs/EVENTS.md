@@ -7,7 +7,7 @@ The lending events system provides structured event emission and indexing for De
 ## Event Types
 
 ### 1. Deposit
-Emitted when a user deposits collateral into the system.
+Emitted when a user deposit collateral into the system.
 
 **Metadata:**
 ```rust

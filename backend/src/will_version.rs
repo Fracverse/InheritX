@@ -237,6 +237,28 @@ impl WillVersionService {
         .execute(db)
         .await?;
 
+        // Fetch vault_id from plan
+        let vault_id: Option<String> =
+            sqlx::query_scalar("SELECT COALESCE(title, id::text) FROM plans WHERE id = $1")
+                .bind(plan_id)
+                .fetch_optional(db)
+                .await?;
+
+        // Emit WillFinalized event
+        if let Some(vault_id) = vault_id {
+            let event = crate::will_events::WillEvent::WillFinalized {
+                vault_id,
+                document_id: row.id,
+                plan_id,
+                version: version_number,
+                will_hash: row.will_hash.clone(),
+                timestamp: chrono::Utc::now(),
+            };
+            if let Err(e) = crate::will_events::WillEventService::emit(db, event).await {
+                tracing::warn!("Failed to emit WillFinalized event: {}", e);
+            }
+        }
+
         Ok(WillVersionSummary {
             document_id: row.id,
             plan_id: row.plan_id,

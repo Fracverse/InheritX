@@ -100,6 +100,36 @@ impl WitnessService {
         .execute(db)
         .await?;
 
+        // Emit WitnessInvited event
+        let result: Option<(Uuid, String)> = sqlx::query_as(
+            "SELECT p.id, COALESCE(p.title, p.id::text) \
+             FROM plans p \
+             JOIN will_documents d ON d.plan_id = p.id \
+             WHERE d.id = $1",
+        )
+        .bind(document_id)
+        .fetch_optional(db)
+        .await?;
+
+        if let Some((plan_id, vault_id)) = result {
+            let witness_identifier = wallet_address
+                .clone()
+                .or_else(|| email.clone())
+                .unwrap_or_else(|| "unknown".to_string());
+
+            let event = crate::will_events::WillEvent::WitnessInvited {
+                vault_id,
+                document_id,
+                plan_id,
+                witness_id: id,
+                witness_identifier,
+                timestamp: invited_at,
+            };
+            if let Err(e) = crate::will_events::WillEventService::emit(db, event).await {
+                tracing::warn!("Failed to emit WitnessInvited event: {}", e);
+            }
+        }
+
         Ok(WitnessRecord {
             id,
             document_id,
@@ -239,6 +269,32 @@ impl WitnessService {
 
         tx.commit().await?;
 
+        // Fetch plan_id and vault_id for event
+        let (plan_id, vault_id): (Uuid, String) = sqlx::query_as(
+            "SELECT p.id, COALESCE(p.title, p.id::text) \
+             FROM plans p \
+             JOIN will_documents d ON d.plan_id = p.id \
+             WHERE d.id = $1",
+        )
+        .bind(witness.document_id)
+        .fetch_one(db)
+        .await?;
+
+        // Emit WitnessSigned event
+        let sig_hash = ring::digest::digest(&ring::digest::SHA256, signature_hex.as_bytes());
+        let event = crate::will_events::WillEvent::WitnessSigned {
+            vault_id,
+            document_id: witness.document_id,
+            plan_id,
+            witness: wallet_address.to_string(),
+            witness_id,
+            signature_hash: hex::encode(sig_hash.as_ref()),
+            timestamp: signed_at,
+        };
+        if let Err(e) = crate::will_events::WillEventService::emit(db, event).await {
+            tracing::warn!("Failed to emit WitnessSigned event: {}", e);
+        }
+
         Ok(WitnessRecord {
             id: witness.id,
             document_id: witness.document_id,
@@ -285,6 +341,30 @@ impl WitnessService {
             .bind(witness_id)
             .execute(db)
             .await?;
+
+        // Emit WitnessDeclined event
+        let result: Option<(Uuid, String)> = sqlx::query_as(
+            "SELECT p.id, COALESCE(p.title, p.id::text) \
+             FROM plans p \
+             JOIN will_documents d ON d.plan_id = p.id \
+             WHERE d.id = $1",
+        )
+        .bind(witness.document_id)
+        .fetch_optional(db)
+        .await?;
+
+        if let Some((plan_id, vault_id)) = result {
+            let event = crate::will_events::WillEvent::WitnessDeclined {
+                vault_id,
+                document_id: witness.document_id,
+                plan_id,
+                witness_id,
+                timestamp: chrono::Utc::now(),
+            };
+            if let Err(e) = crate::will_events::WillEventService::emit(db, event).await {
+                tracing::warn!("Failed to emit WitnessDeclined event: {}", e);
+            }
+        }
 
         Ok(WitnessRecord {
             id: witness.id,
