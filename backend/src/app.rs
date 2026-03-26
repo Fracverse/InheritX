@@ -34,6 +34,7 @@ use crate::will_pdf::{WillDocumentInput, WillPdfService, WillTemplate};
 use crate::will_signature::{
     SigningChallengeRequest, SubmitSignatureRequest, WillSignatureService,
 };
+use crate::will_version::{PaginatedVersions, PaginationParams, WillVersionService};
 use crate::yield_service::{DefaultOnChainYieldService, OnChainYieldService};
 use base64::Engine as _;
 
@@ -255,6 +256,20 @@ pub async fn create_app(db: PgPool, config: Config) -> Result<Router, ApiError> 
         .route(
             "/api/plans/:plan_id/will/documents",
             get(list_will_documents),
+        )
+        // ── Will Version Management ──────────────────────────────────────────
+        .route("/api/plans/:plan_id/will/versions", get(list_will_versions))
+        .route(
+            "/api/plans/:plan_id/will/versions/active",
+            get(get_active_will_version),
+        )
+        .route(
+            "/api/plans/:plan_id/will/versions/:version_number",
+            get(get_will_version),
+        )
+        .route(
+            "/api/plans/:plan_id/will/versions/:version_number/finalize",
+            put(finalize_will_version),
         )
         // ── Beneficiary Sync (Task 3) ─────────────────────────────────────────
         .route(
@@ -1069,6 +1084,55 @@ async fn list_will_documents(
     Ok(Json(
         json!({ "status": "success", "data": docs, "count": docs.len() }),
     ))
+}
+
+// ─── Will Version Handlers ────────────────────────────────────────────────────
+
+async fn list_will_versions(
+    State(state): State<Arc<AppState>>,
+    Path(plan_id): Path<Uuid>,
+    AuthenticatedUser(user): AuthenticatedUser,
+    Query(params): Query<PaginationParams>,
+) -> Result<Json<Value>, ApiError> {
+    let page = params.page.unwrap_or(1).max(1);
+    let per_page = params.per_page.unwrap_or(10).clamp(1, 100);
+    let (versions, total) =
+        WillVersionService::get_all_versions(&state.db, plan_id, user.user_id, page, per_page)
+            .await?;
+    Ok(Json(json!({
+        "status": "success",
+        "data": PaginatedVersions { versions, total, page, per_page }
+    })))
+}
+
+async fn get_active_will_version(
+    State(state): State<Arc<AppState>>,
+    Path(plan_id): Path<Uuid>,
+    AuthenticatedUser(user): AuthenticatedUser,
+) -> Result<Json<Value>, ApiError> {
+    let version = WillVersionService::get_active_version(&state.db, plan_id, user.user_id).await?;
+    Ok(Json(json!({ "status": "success", "data": version })))
+}
+
+async fn get_will_version(
+    State(state): State<Arc<AppState>>,
+    Path((plan_id, version_number)): Path<(Uuid, u32)>,
+    AuthenticatedUser(user): AuthenticatedUser,
+) -> Result<Json<Value>, ApiError> {
+    let doc =
+        WillVersionService::get_version(&state.db, plan_id, user.user_id, version_number).await?;
+    Ok(Json(json!({ "status": "success", "data": doc })))
+}
+
+async fn finalize_will_version(
+    State(state): State<Arc<AppState>>,
+    Path((plan_id, version_number)): Path<(Uuid, u32)>,
+    AuthenticatedUser(user): AuthenticatedUser,
+) -> Result<Json<Value>, ApiError> {
+    let version =
+        WillVersionService::finalize_version(&state.db, plan_id, user.user_id, version_number)
+            .await?;
+    Ok(Json(json!({ "status": "success", "data": version })))
 }
 
 // ─── Beneficiary Sync Handler (Task 3) ───────────────────────────────────────

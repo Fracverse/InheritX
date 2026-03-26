@@ -29,6 +29,7 @@ pub mod stress_testing;
 pub mod telemetry;
 pub mod will_pdf;
 pub mod will_signature;
+pub mod will_version;
 pub mod yield_service;
 
 pub use api_error::ApiError;
