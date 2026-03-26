@@ -1,4 +1,5 @@
 use crate::api_error::ApiError;
+use crate::external_price_fetcher::RedundantPriceFetcher;
 use async_trait::async_trait;
 use chrono::{DateTime, Utc};
 use rust_decimal::Decimal;
@@ -86,6 +87,9 @@ pub trait PriceFeedService: Send + Sync {
     /// Update price for an asset
     async fn update_price(&self, asset_code: &str, price: Decimal) -> Result<AssetPrice, ApiError>;
 
+    /// Fetch price from external source and update database
+    async fn fetch_and_update_price(&self, asset_code: &str) -> Result<AssetPrice, ApiError>;
+
     /// Calculate collateral valuation
     async fn calculate_valuation(
         &self,
@@ -97,11 +101,12 @@ pub trait PriceFeedService: Send + Sync {
     async fn get_active_feeds(&self) -> Result<Vec<PriceFeedConfig>, ApiError>;
 }
 
-/// In-memory price cache with database persistence
+/// In-memory price cache with database persistence and external price fetching
 pub struct DefaultPriceFeedService {
     db: PgPool,
     price_cache: Arc<RwLock<HashMap<String, AssetPrice>>>,
     cache_ttl_secs: u64,
+    external_fetcher: RedundantPriceFetcher,
 }
 
 impl DefaultPriceFeedService {
@@ -110,6 +115,7 @@ impl DefaultPriceFeedService {
             db,
             price_cache: Arc::new(RwLock::new(HashMap::new())),
             cache_ttl_secs,
+            external_fetcher: RedundantPriceFetcher::new(),
         }
     }
 
@@ -367,6 +373,61 @@ impl PriceFeedService for DefaultPriceFeedService {
         }
 
         info!("Updated price for {}: {}", asset_code, price);
+
+        Ok(asset_price)
+    }
+
+    async fn fetch_and_update_price(&self, asset_code: &str) -> Result<AssetPrice, ApiError> {
+        // Fetch price from external sources
+        let external_price = self.external_fetcher.fetch_price(asset_code).await?;
+
+        // Store in database
+        let now = Utc::now();
+        sqlx::query(
+            r#"
+            INSERT INTO asset_price_history (asset_code, price, price_timestamp, source)
+            VALUES ($1, $2, $3, $4)
+            "#,
+        )
+        .bind(asset_code)
+        .bind(external_price.price.to_string())
+        .bind(now)
+        .bind(&external_price.source)
+        .execute(&self.db)
+        .await
+        .map_err(|e| {
+            error!("Failed to store external price: {}", e);
+            ApiError::Internal(anyhow::anyhow!("Database error"))
+        })?;
+
+        // Update last_updated in price_feeds
+        sqlx::query("UPDATE price_feeds SET last_updated = $1 WHERE asset_code = $2")
+            .bind(now)
+            .bind(asset_code)
+            .execute(&self.db)
+            .await
+            .map_err(|e| {
+                error!("Failed to update feed timestamp: {}", e);
+                ApiError::Internal(anyhow::anyhow!("Database error"))
+            })?;
+
+        let asset_price = AssetPrice {
+            asset_code: asset_code.to_string(),
+            price: external_price.price,
+            timestamp: now,
+            source: external_price.source.clone(),
+        };
+
+        // Update cache
+        {
+            let mut cache = self.price_cache.write().await;
+            cache.insert(asset_code.to_string(), asset_price.clone());
+        }
+
+        info!(
+            "Fetched and stored price for {}: {} (from {})",
+            asset_code, external_price.price, external_price.source
+        );
 
         Ok(asset_price)
     }

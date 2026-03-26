@@ -1,0 +1,83 @@
+﻿cargo :     Finished 
+`test` profile 
+[unoptimized + 
+debuginfo] target(s) 
+in 5.45s
+At line:1 char:1
++ cargo test --test em
+ergency_access_risk_de
+tection -- 
+--nocapture > te ...
++ ~~~~~~~~~~~~~~~~~~~~
+~~~~~~~~~~~~~~~~~~~~~~
+~~~~~~~~~~~~~~~~~~~~~~
+~~~~~
+    + CategoryInfo    
+          : NotSpeci  
+  fied: (    Finish   
+ ed `t...get(s) in    
+ 5.45s:String) []    
+, RemoteException
+    + FullyQualifiedE 
+   rrorId : NativeCo  
+  mmandError
+ 
+warning: the 
+following packages 
+contain code that 
+will be rejected by a 
+future version of 
+Rust: sqlx-postgres 
+v0.7.4
+note: to see what the 
+problems were, use 
+the option `--future-i
+ncompat-report`, or 
+run `cargo report futu
+re-incompatibilities 
+--id 2`
+     Running tests\eme
+rgency_access_risk_det
+ection.rs (target\debu
+g\deps\emergency_acces
+s_risk_detection-9c586
+84ac1b4c52f.exe)
+
+running 2 tests
+Skipping integration 
+test: DATABASE_URL is 
+not set
+
+thread 'repeated_grant
+s_in_short_window_are_
+flagged' (8016) 
+panicked at C:\Users\H
+omePC\.cargo\registry\
+src\index.crates.io-19
+49cf8c6b5b557f\tracing
+-subscriber-0.3.22\src
+\util.rs:94:14:
+failed to set global 
+default subscriber: Se
+tGlobalDefaultError("a
+ global default trace 
+dispatcher has 
+already been set")
+note: run with 
+`RUST_BACKTRACE=1` 
+environment variable 
+to display a backtrace
+test high_privilege_long_lived_access_is_flagged ... ok
+test repeated_grants_in_short_window_are_flagged ... FAILED
+
+failures:
+
+failures:
+    repeated_grants_in_short_window_are_flagged
+
+test result: FAILED. 1 passed; 1 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+error: test failed, 
+to rerun pass `--test 
+emergency_access_risk_
+detection`

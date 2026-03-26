@@ -175,6 +175,103 @@ fn plan_row_to_plan_with_beneficiary(row: &PlanRowFull) -> Result<PlanWithBenefi
     })
 }
 
+#[derive(Debug, sqlx::FromRow)]
+struct InheritanceExecutionSafetyRow {
+    outstanding_debt: Option<Decimal>,
+    is_risky: Option<bool>,
+    risk_override_enabled: Option<bool>,
+}
+
+#[derive(Debug, Clone)]
+struct InheritanceExecutionSafety {
+    outstanding_debt: Decimal,
+    utilization_rate: Decimal,
+    is_risky: bool,
+    risk_override_enabled: bool,
+}
+
+impl InheritanceExecutionSafety {
+    fn from_plan_state(
+        net_amount: Decimal,
+        outstanding_debt: Decimal,
+        is_risky: bool,
+        risk_override_enabled: bool,
+    ) -> Self {
+        let utilization_rate = if outstanding_debt <= Decimal::ZERO {
+            Decimal::ZERO
+        } else if net_amount > Decimal::ZERO {
+            ((outstanding_debt / net_amount) * Decimal::from(100)).round_dp(2)
+        } else {
+            Decimal::from(100)
+        };
+
+        Self {
+            outstanding_debt,
+            utilization_rate,
+            is_risky,
+            risk_override_enabled,
+        }
+    }
+
+    fn blocking_reason(&self) -> Option<String> {
+        if self.is_risky && !self.risk_override_enabled {
+            return Some(format!(
+                "Inheritance execution is blocked because the plan is currently flagged as risky by the lending monitor (utilization: {}%, outstanding debt: {}).",
+                self.utilization_rate.normalize(),
+                self.outstanding_debt.round_dp(4).normalize()
+            ));
+        }
+
+        if self.outstanding_debt > Decimal::ZERO {
+            return Some(format!(
+                "Inheritance execution is blocked while plan funds remain utilized in lending (utilization: {}%, outstanding debt: {}).",
+                self.utilization_rate.normalize(),
+                self.outstanding_debt.round_dp(4).normalize()
+            ));
+        }
+
+        None
+    }
+}
+
+async fn load_inheritance_execution_safety<'a, E>(
+    executor: E,
+    plan_id: Uuid,
+    net_amount: Decimal,
+) -> Result<InheritanceExecutionSafety, ApiError>
+where
+    E: sqlx::Executor<'a, Database = sqlx::Postgres>,
+{
+    let row = sqlx::query_as::<_, InheritanceExecutionSafetyRow>(
+        r#"
+        WITH lending_balance AS (
+            SELECT
+                COALESCE(SUM(CASE WHEN event_type = 'borrow' THEN CAST(amount AS numeric) ELSE 0 END), 0) -
+                COALESCE(SUM(CASE WHEN event_type = 'repay' THEN CAST(amount AS numeric) ELSE 0 END), 0) -
+                COALESCE(SUM(CASE WHEN event_type = 'liquidation' THEN CAST(amount AS numeric) ELSE 0 END), 0) AS outstanding_debt
+            FROM lending_events
+            WHERE plan_id = $1
+        )
+        SELECT
+            lending_balance.outstanding_debt,
+            p.is_risky,
+            p.risk_override_enabled
+        FROM lending_balance
+        JOIN plans p ON p.id = $1
+        "#,
+    )
+    .bind(plan_id)
+    .fetch_one(executor)
+    .await?;
+
+    Ok(InheritanceExecutionSafety::from_plan_state(
+        net_amount,
+        row.outstanding_debt.unwrap_or(Decimal::ZERO),
+        row.is_risky.unwrap_or(false),
+        row.risk_override_enabled.unwrap_or(false),
+    ))
+}
+
 pub struct PlanService;
 
 impl PlanService {
@@ -393,6 +490,12 @@ impl PlanService {
             ));
         }
 
+        let execution_safety =
+            load_inheritance_execution_safety(&mut *tx, plan_id, plan.net_amount).await?;
+        if let Some(reason) = execution_safety.blocking_reason() {
+            return Err(ApiError::BadRequest(reason));
+        }
+
         let contract_plan_id = plan.contract_plan_id.unwrap_or(0_i64);
 
         // ... (Currency validation logic remains same) ...
@@ -579,7 +682,11 @@ impl PlanService {
                 .await?;
 
                 if !has_claim {
-                    return Ok(Some(plan));
+                    let execution_safety =
+                        load_inheritance_execution_safety(db, plan.id, plan.net_amount).await?;
+                    if execution_safety.blocking_reason().is_none() {
+                        return Ok(Some(plan));
+                    }
                 }
             }
         }
@@ -675,7 +782,11 @@ impl PlanService {
                 .await?;
 
                 if !has_claim {
-                    due_plans.push(plan);
+                    let execution_safety =
+                        load_inheritance_execution_safety(db, plan.id, plan.net_amount).await?;
+                    if execution_safety.blocking_reason().is_none() {
+                        due_plans.push(plan);
+                    }
                 }
             }
         }
@@ -768,7 +879,11 @@ impl PlanService {
                 .await?;
 
                 if !has_claim {
-                    due_plans.push(plan);
+                    let execution_safety =
+                        load_inheritance_execution_safety(db, plan.id, plan.net_amount).await?;
+                    if execution_safety.blocking_reason().is_none() {
+                        due_plans.push(plan);
+                    }
                 }
             }
         }
@@ -2025,8 +2140,9 @@ impl LoanSimulationService {
 
 #[cfg(test)]
 mod tests {
-    use super::{CurrencyPreference, PlanService};
+    use super::{CurrencyPreference, InheritanceExecutionSafety, PlanService};
     use crate::api_error::ApiError;
+    use rust_decimal::Decimal;
     use std::str::FromStr;
 
     #[test]
@@ -2121,6 +2237,51 @@ mod tests {
             Some("12345678")
         )
         .is_err());
+    }
+
+    #[test]
+    fn inheritance_execution_safety_blocks_active_lending_utilization() {
+        let safety = InheritanceExecutionSafety::from_plan_state(
+            Decimal::new(1000, 0),
+            Decimal::new(250, 0),
+            false,
+            false,
+        );
+
+        let reason = safety
+            .blocking_reason()
+            .expect("expected active lending utilization to block execution");
+
+        assert!(reason.contains("utilized in lending"));
+        assert!(reason.contains("25"));
+    }
+
+    #[test]
+    fn inheritance_execution_safety_blocks_risky_plan_without_override() {
+        let safety = InheritanceExecutionSafety::from_plan_state(
+            Decimal::new(1000, 0),
+            Decimal::ZERO,
+            true,
+            false,
+        );
+
+        let reason = safety
+            .blocking_reason()
+            .expect("expected risky plans to block execution");
+
+        assert!(reason.contains("flagged as risky"));
+    }
+
+    #[test]
+    fn inheritance_execution_safety_allows_clean_plan() {
+        let safety = InheritanceExecutionSafety::from_plan_state(
+            Decimal::new(1000, 0),
+            Decimal::ZERO,
+            false,
+            false,
+        );
+
+        assert!(safety.blocking_reason().is_none());
     }
 
     // ========================================================================
@@ -2555,6 +2716,29 @@ pub struct EmergencyAccessDashboardResponse {
     pub grants: Vec<EmergencyAccessDashboardItem>,
 }
 
+// ─── Emergency Access Sessions (Issue #306) ─────────────────────────────────
+
+#[derive(Debug, Clone, Serialize, Deserialize, sqlx::FromRow)]
+pub struct EmergencyAccessSession {
+    pub id: Uuid,
+    pub grant_id: Uuid,
+    pub user_id: Uuid,
+    pub emergency_contact_id: Uuid,
+    pub started_at: DateTime<Utc>,
+    pub last_active_at: DateTime<Utc>,
+    pub ended_at: Option<DateTime<Utc>>,
+    pub ip_address: Option<String>,
+    pub user_agent: Option<String>,
+    pub created_at: DateTime<Utc>,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct StartSessionRequest {
+    pub grant_id: Uuid,
+    pub ip_address: Option<String>,
+    pub user_agent: Option<String>,
+}
+
 #[derive(Debug, Serialize)]
 pub struct EmergencyActionResponse {
     pub success: bool,
@@ -2749,6 +2933,7 @@ struct RiskAlertInput<'a> {
 
 impl EmergencyAccessService {
     async fn create_risk_alert(
+        pool: &PgPool,
         executor: &mut sqlx::PgConnection,
         input: RiskAlertInput<'_>,
     ) -> Result<(), ApiError> {
@@ -2770,10 +2955,31 @@ impl EmergencyAccessService {
         .execute(executor)
         .await?;
 
+        // After persisting the alert, trigger external notifications
+        use crate::alert_provider::MockAlertProvider;
+        use crate::notifications::EmergencyAlertService;
+
+        let provider = MockAlertProvider;
+        if let Err(e) = EmergencyAlertService::send_risk_alert(
+            pool,
+            &provider,
+            input.user_id,
+            input.contact_id,
+            input.alert_type,
+            input.message,
+        )
+        .await
+        {
+            tracing::error!("Failed to send emergency risk alert: {}", e);
+            // We don't return error here to avoid rolling back the risk alert insertion
+            // because the alert itself is already in the DB.
+        }
+
         Ok(())
     }
 
     async fn evaluate_grant_risk(
+        pool: &PgPool,
         executor: &mut sqlx::PgConnection,
         grant: &EmergencyAccessGrant,
     ) -> Result<(), ApiError> {
@@ -2791,6 +2997,7 @@ impl EmergencyAccessService {
 
         if recent_grant_count >= 4 {
             Self::create_risk_alert(
+                pool,
                 executor,
                 RiskAlertInput {
                     grant_id: grant.id,
@@ -2813,6 +3020,7 @@ impl EmergencyAccessService {
 
         if long_lived_high_privilege {
             Self::create_risk_alert(
+                pool,
                 executor,
                 RiskAlertInput {
                     grant_id: grant.id,
@@ -2834,6 +3042,7 @@ impl EmergencyAccessService {
     }
 
     async fn evaluate_revoke_risk(
+        pool: &PgPool,
         executor: &mut sqlx::PgConnection,
         grant: &EmergencyAccessGrant,
     ) -> Result<(), ApiError> {
@@ -2841,6 +3050,7 @@ impl EmergencyAccessService {
             let active_duration = revoked_at - grant.created_at;
             if active_duration <= chrono::Duration::minutes(10) {
                 Self::create_risk_alert(
+                    pool,
                     executor,
                     RiskAlertInput {
                         grant_id: grant.id,
@@ -3002,7 +3212,7 @@ impl EmergencyAccessService {
         )
         .await?;
 
-        Self::evaluate_grant_risk(&mut tx, &grant).await?;
+        Self::evaluate_grant_risk(pool, &mut tx, &grant).await?;
 
         tx.commit().await?;
 
@@ -3089,7 +3299,10 @@ impl EmergencyAccessService {
         )
         .await?;
 
-        Self::evaluate_revoke_risk(&mut tx, &updated).await?;
+        Self::evaluate_revoke_risk(pool, &mut tx, &updated).await?;
+
+        // Auto-end all active sessions for this grant (Issue #306)
+        EmergencySessionService::end_sessions_for_grant(&mut *tx, updated.id).await?;
 
         tx.commit().await?;
 
@@ -3515,5 +3728,249 @@ impl EmergencyAdminService {
         .await?;
 
         rows.iter().map(plan_row_to_plan_with_beneficiary).collect()
+    }
+}
+
+// ─── Emergency Session Service (Issue #306) ─────────────────────────────────
+
+pub struct EmergencySessionService;
+
+impl EmergencySessionService {
+    /// Start a new session for an active grant.
+    pub async fn start_session(
+        pool: &PgPool,
+        user_id: Uuid,
+        req: &StartSessionRequest,
+    ) -> Result<EmergencyAccessSession, ApiError> {
+        // Verify the grant exists, belongs to user, and is active
+        let grant = sqlx::query_as::<_, EmergencyAccessGrant>(
+            r#"
+            SELECT id, user_id, emergency_contact_id, permissions, expires_at, is_active,
+                   revoked_at, created_at, updated_at
+            FROM emergency_access_grants
+            WHERE id = $1 AND user_id = $2
+            "#,
+        )
+        .bind(req.grant_id)
+        .bind(user_id)
+        .fetch_optional(pool)
+        .await?
+        .ok_or_else(|| {
+            ApiError::NotFound(format!("Emergency access grant {} not found", req.grant_id))
+        })?;
+
+        if !grant.is_active {
+            return Err(ApiError::BadRequest(
+                "Cannot start session for an inactive grant".to_string(),
+            ));
+        }
+
+        if grant.expires_at <= Utc::now() {
+            return Err(ApiError::BadRequest(
+                "Cannot start session for an expired grant".to_string(),
+            ));
+        }
+
+        let session = sqlx::query_as::<_, EmergencyAccessSession>(
+            r#"
+            INSERT INTO emergency_access_sessions (
+                grant_id, user_id, emergency_contact_id, ip_address, user_agent
+            )
+            VALUES ($1, $2, $3, $4, $5)
+            RETURNING id, grant_id, user_id, emergency_contact_id, started_at,
+                      last_active_at, ended_at, ip_address, user_agent, created_at
+            "#,
+        )
+        .bind(req.grant_id)
+        .bind(user_id)
+        .bind(grant.emergency_contact_id)
+        .bind(&req.ip_address)
+        .bind(&req.user_agent)
+        .fetch_one(pool)
+        .await?;
+
+        Ok(session)
+    }
+
+    /// Update the heartbeat timestamp for an active session.
+    pub async fn heartbeat(
+        pool: &PgPool,
+        user_id: Uuid,
+        session_id: Uuid,
+    ) -> Result<EmergencyAccessSession, ApiError> {
+        let session = sqlx::query_as::<_, EmergencyAccessSession>(
+            r#"
+            UPDATE emergency_access_sessions
+            SET last_active_at = NOW()
+            WHERE id = $1 AND user_id = $2 AND ended_at IS NULL
+            RETURNING id, grant_id, user_id, emergency_contact_id, started_at,
+                      last_active_at, ended_at, ip_address, user_agent, created_at
+            "#,
+        )
+        .bind(session_id)
+        .bind(user_id)
+        .fetch_optional(pool)
+        .await?
+        .ok_or_else(|| ApiError::NotFound(format!("Active session {} not found", session_id)))?;
+
+        Ok(session)
+    }
+
+    /// End an active session.
+    pub async fn end_session(
+        pool: &PgPool,
+        user_id: Uuid,
+        session_id: Uuid,
+    ) -> Result<EmergencyAccessSession, ApiError> {
+        let session = sqlx::query_as::<_, EmergencyAccessSession>(
+            r#"
+            UPDATE emergency_access_sessions
+            SET ended_at = NOW(), last_active_at = NOW()
+            WHERE id = $1 AND user_id = $2 AND ended_at IS NULL
+            RETURNING id, grant_id, user_id, emergency_contact_id, started_at,
+                      last_active_at, ended_at, ip_address, user_agent, created_at
+            "#,
+        )
+        .bind(session_id)
+        .bind(user_id)
+        .fetch_optional(pool)
+        .await?
+        .ok_or_else(|| ApiError::NotFound(format!("Active session {} not found", session_id)))?;
+
+        Ok(session)
+    }
+
+    /// List all active sessions for a user.
+    pub async fn list_active_sessions(
+        pool: &PgPool,
+        user_id: Uuid,
+    ) -> Result<Vec<EmergencyAccessSession>, ApiError> {
+        let sessions = sqlx::query_as::<_, EmergencyAccessSession>(
+            r#"
+            SELECT id, grant_id, user_id, emergency_contact_id, started_at,
+                   last_active_at, ended_at, ip_address, user_agent, created_at
+            FROM emergency_access_sessions
+            WHERE user_id = $1 AND ended_at IS NULL
+            ORDER BY started_at DESC
+            "#,
+        )
+        .bind(user_id)
+        .fetch_all(pool)
+        .await?;
+
+        Ok(sessions)
+    }
+
+    /// End all active sessions for a specific grant (used during revocation).
+    pub async fn end_sessions_for_grant(
+        executor: impl sqlx::PgExecutor<'_>,
+        grant_id: Uuid,
+    ) -> Result<(), ApiError> {
+        sqlx::query(
+            r#"
+            UPDATE emergency_access_sessions
+            SET ended_at = NOW(), last_active_at = NOW()
+            WHERE grant_id = $1 AND ended_at IS NULL
+            "#,
+        )
+        .bind(grant_id)
+        .execute(executor)
+        .await?;
+
+        Ok(())
+    }
+}
+
+// ── Emergency Access Analytics (Issue #306) ─────────────────────────────────
+
+#[derive(Debug, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct EmergencyAccessMetric {
+    pub date: String,
+    pub count: i64,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct EmergencyAccessMetrics {
+    pub total_grants: i64,
+    pub active_grants: i64,
+    pub total_revocations: i64,
+    pub total_alerts: i64,
+    pub alerts_by_severity: BTreeMap<String, i64>,
+    pub grant_trend: Vec<EmergencyAccessMetric>,
+}
+
+pub struct EmergencyAccessMetricsService;
+
+impl EmergencyAccessMetricsService {
+    pub async fn get_metrics(db: &PgPool, range: &str) -> Result<EmergencyAccessMetrics, ApiError> {
+        let total_grants: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM emergency_access_grants")
+            .fetch_one(db)
+            .await?;
+
+        let active_grants: i64 = sqlx::query_scalar(
+            "SELECT COUNT(*) FROM emergency_access_grants WHERE is_active = true AND expires_at > NOW()",
+        )
+        .fetch_one(db)
+        .await?;
+
+        let total_revocations: i64 = sqlx::query_scalar(
+            "SELECT COUNT(*) FROM emergency_access_grants WHERE revoked_at IS NOT NULL",
+        )
+        .fetch_one(db)
+        .await?;
+
+        let total_alerts: i64 =
+            sqlx::query_scalar("SELECT COUNT(*) FROM emergency_access_risk_alerts")
+                .fetch_one(db)
+                .await?;
+
+        let alert_severity_rows: Vec<(String, i64)> = sqlx::query_as(
+            "SELECT severity, COUNT(*) FROM emergency_access_risk_alerts GROUP BY severity",
+        )
+        .fetch_all(db)
+        .await?;
+
+        let mut alerts_by_severity = BTreeMap::new();
+        for (severity, count) in alert_severity_rows {
+            alerts_by_severity.insert(severity.to_lowercase(), count);
+        }
+
+        let (interval, trunc) = match range {
+            "daily" => ("30 days", "day"),
+            "weekly" => ("12 weeks", "week"),
+            "monthly" => ("12 months", "month"),
+            _ => ("30 days", "day"), // default to daily
+        };
+
+        let trend_query = format!(
+            r#"
+            SELECT 
+                DATE_TRUNC('{}', created_at)::DATE::TEXT as date,
+                COUNT(*)::BIGINT as count
+            FROM emergency_access_grants
+            WHERE created_at >= NOW() - INTERVAL '{}'
+            GROUP BY 1
+            ORDER BY 1
+            "#,
+            trunc, interval
+        );
+
+        let trend_rows: Vec<(String, i64)> = sqlx::query_as(&trend_query).fetch_all(db).await?;
+
+        let grant_trend = trend_rows
+            .into_iter()
+            .map(|(date, count)| EmergencyAccessMetric { date, count })
+            .collect();
+
+        Ok(EmergencyAccessMetrics {
+            total_grants,
+            active_grants,
+            total_revocations,
+            total_alerts,
+            alerts_by_severity,
+            grant_trend,
+        })
     }
 }

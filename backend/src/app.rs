@@ -14,7 +14,9 @@ use uuid::Uuid;
 use crate::analytics::analytics_router;
 use crate::api_error::ApiError;
 use crate::auth::{AuthenticatedAdmin, AuthenticatedUser};
+use crate::beneficiary_sync::{BeneficiarySyncService, DocumentBeneficiary};
 use crate::config::Config;
+use crate::document_storage::DocumentStorageService;
 use crate::governance::{
     CreateProposalRequest, GovernanceService, ParameterUpdateRequest, Proposal, VoteRequest,
 };
@@ -23,13 +25,21 @@ use crate::reserve_health::ReserveHealthEngine;
 use crate::service::{
     ClaimPlanRequest, CreateEmergencyAccessGrantRequest, CreateEmergencyContactRequest,
     CreatePlanRequest, EmergencyAccessAuditLogFilters, EmergencyAccessService,
-    EmergencyAdminService, EmergencyContactService, KycRecord, KycService, KycStatus,
-    LoanSimulationRequest, LoanSimulationService, PausePlanRequest, PlanService,
-    RevokeEmergencyAccessGrantRequest, RiskOverrideRequest, UnpausePlanRequest,
-    UpdateEmergencyContactRequest,
+    EmergencyAdminService, EmergencyContactService, EmergencySessionService, KycRecord, KycService,
+    KycStatus, LoanSimulationRequest, LoanSimulationService, PausePlanRequest, PlanService,
+    RevokeEmergencyAccessGrantRequest, RiskOverrideRequest, StartSessionRequest,
+    UnpausePlanRequest, UpdateEmergencyContactRequest,
 };
 use crate::stress_testing::StressTestingEngine;
+use crate::will_compliance::{ValidationResult, WillComplianceService};
+use crate::will_pdf::{WillDocumentInput, WillPdfService, WillTemplate};
+use crate::will_signature::{
+    SigningChallengeRequest, SubmitSignatureRequest, WillSignatureService,
+};
+use crate::will_version::{PaginatedVersions, PaginationParams, WillVersionService};
+use crate::witness::{InviteWitnessRequest, WitnessService, WitnessSignRequest};
 use crate::yield_service::{DefaultOnChainYieldService, OnChainYieldService};
+use base64::Engine as _;
 
 pub struct AppState {
     pub db: PgPool,
@@ -59,7 +69,7 @@ pub async fn create_app(db: PgPool, config: Config) -> Result<Router, ApiError> 
 
     let stress_testing_engine = Arc::new(StressTestingEngine::new(
         db.clone(),
-        price_feed,
+        price_feed.clone(),
         risk_engine,
     ));
 
@@ -67,7 +77,7 @@ pub async fn create_app(db: PgPool, config: Config) -> Result<Router, ApiError> 
     reserve_health_engine.clone().start();
 
     let state = Arc::new(AppState {
-        db,
+        db: db.clone(),
         config,
         yield_service,
         stress_testing_engine,
@@ -79,6 +89,14 @@ pub async fn create_app(db: PgPool, config: Config) -> Result<Router, ApiError> 
         GovernorConfigBuilder::default()
             .per_second(2)
             .burst_size(5)
+            .finish()
+            .unwrap(),
+    );
+
+    let emergency_governor_conf = Arc::new(
+        GovernorConfigBuilder::default()
+            .per_second(1)
+            .burst_size(2)
             .finish()
             .unwrap(),
     );
@@ -115,11 +133,15 @@ pub async fn create_app(db: PgPool, config: Config) -> Result<Router, ApiError> 
         )
         .route(
             "/api/emergency/access/grants",
-            post(create_emergency_access_grant),
+            post(create_emergency_access_grant).layer(GovernorLayer {
+                config: emergency_governor_conf.clone(),
+            }),
         )
         .route(
             "/api/emergency/access/grants/:grant_id/revoke",
-            post(revoke_emergency_access_grant),
+            post(revoke_emergency_access_grant).layer(GovernorLayer {
+                config: emergency_governor_conf,
+            }),
         )
         .route(
             "/api/emergency/access/audit-logs",
@@ -132,6 +154,19 @@ pub async fn create_app(db: PgPool, config: Config) -> Result<Router, ApiError> 
         .route(
             "/api/emergency/access/dashboard",
             get(get_emergency_access_dashboard),
+        )
+        // Emergency Access Sessions (Issue #306)
+        .route(
+            "/api/emergency/access/sessions",
+            post(start_emergency_session).get(list_active_emergency_sessions),
+        )
+        .route(
+            "/api/emergency/access/sessions/:session_id/heartbeat",
+            put(heartbeat_emergency_session),
+        )
+        .route(
+            "/api/emergency/access/sessions/:session_id/end",
+            put(end_emergency_session),
         )
         // Loan Simulation endpoints
         .route("/api/loans/simulate", post(simulate_loan))
@@ -227,9 +262,129 @@ pub async fn create_app(db: PgPool, config: Config) -> Result<Router, ApiError> 
             post(update_protocol_parameter),
         )
         .merge(analytics_router())
+        // ── Will PDF & Template Engine (Tasks 1 & 2) ─────────────────────────
+        .route(
+            "/api/plans/:plan_id/will/generate",
+            post(generate_will_document),
+        )
+        .route("/api/will/documents/:document_id", get(get_will_document))
+        .route(
+            "/api/plans/:plan_id/will/documents",
+            get(list_will_documents),
+        )
+        // ── Will Version Management ──────────────────────────────────────────
+        .route("/api/plans/:plan_id/will/versions", get(list_will_versions))
+        .route(
+            "/api/plans/:plan_id/will/versions/active",
+            get(get_active_will_version),
+        )
+        .route(
+            "/api/plans/:plan_id/will/versions/:version_number",
+            get(get_will_version),
+        )
+        .route(
+            "/api/plans/:plan_id/will/versions/:version_number/finalize",
+            put(finalize_will_version),
+        )
+        // ── Beneficiary Sync (Task 3) ─────────────────────────────────────────
+        .route(
+            "/api/plans/:plan_id/beneficiaries/sync",
+            post(sync_beneficiaries),
+        )
+        // ── Digital Signature (Task 4) ────────────────────────────────────────
+        .route(
+            "/api/will/documents/:document_id/sign/challenge",
+            post(create_signing_challenge),
+        )
+        .route("/api/will/sign", post(submit_will_signature))
+        .route(
+            "/api/will/documents/:document_id/signatures",
+            get(get_will_signatures),
+        )
+        // -- Encrypted Document Storage (Issue #328) --
+        .route(
+            "/api/will/documents/:document_id/encrypt",
+            post(encrypt_document),
+        )
+        .route(
+            "/api/will/documents/:document_id/decrypt",
+            get(decrypt_document),
+        )
+        .route(
+            "/api/will/documents/:document_id/backup",
+            post(create_document_backup),
+        )
+        .route(
+            "/api/will/documents/:document_id/backups",
+            get(list_document_backups),
+        )
+        // -- Will Compliance Validation (Issue #330) --
+        .route("/api/will/validate", post(validate_will_compliance))
+        .route("/api/will/jurisdictions", get(list_jurisdictions))
+        .route(
+            "/api/will/jurisdictions/:jurisdiction",
+            get(get_jurisdiction_rules),
+        )
+        // -- Witness Verification (Issue #331) --------------------------------
+        .route(
+            "/api/will/documents/:document_id/witnesses",
+            post(invite_witness).get(list_witnesses),
+        )
+        .route(
+            "/api/will/documents/:document_id/witnesses/status",
+            get(get_witness_status),
+        )
+        .route(
+            "/api/will/witnesses/:witness_id/sign",
+            post(sign_as_witness),
+        )
+        .route(
+            "/api/will/witnesses/:witness_id/decline",
+            post(decline_witness),
+        )
         .with_state(state);
 
-    Ok(app)
+    // Add price feed routes with separate state
+    let price_feed_state = (
+        db,
+        price_feed as Arc<dyn crate::price_feed::PriceFeedService>,
+    );
+    let price_routes = Router::new()
+        .route(
+            "/api/prices/:asset_code",
+            get(crate::price_feed_handlers::get_price),
+        )
+        .route(
+            "/api/prices/:asset_code/history",
+            get(crate::price_feed_handlers::get_price_history),
+        )
+        .route(
+            "/api/prices/:asset_code/valuation/:amount",
+            get(crate::price_feed_handlers::calculate_valuation),
+        )
+        .route(
+            "/api/plans/:plan_id/valuation",
+            get(crate::price_feed_handlers::get_plan_valuation),
+        )
+        .route(
+            "/api/admin/prices/register",
+            post(crate::price_feed_handlers::register_price_feed),
+        )
+        .route(
+            "/api/admin/prices/:asset_code/update",
+            post(crate::price_feed_handlers::update_price),
+        )
+        .route(
+            "/api/admin/prices/:asset_code/fetch",
+            post(crate::price_feed_handlers::fetch_and_update_price),
+        )
+        .route(
+            "/api/admin/prices/feeds",
+            get(crate::price_feed_handlers::get_active_feeds),
+        )
+        .with_state(price_feed_state);
+
+    Ok(app.merge(price_routes))
 }
 
 async fn health_check() -> Json<Value> {
@@ -418,6 +573,51 @@ async fn get_emergency_access_dashboard(
 ) -> Result<Json<Value>, ApiError> {
     let dashboard = EmergencyAccessService::get_dashboard(&state.db, user.user_id).await?;
     Ok(Json(json!({ "status": "success", "data": dashboard })))
+}
+
+// ─── Emergency Access Session Handlers (Issue #306) ────────────────────────────
+
+async fn start_emergency_session(
+    State(state): State<Arc<AppState>>,
+    AuthenticatedUser(user): AuthenticatedUser,
+    Json(req): Json<StartSessionRequest>,
+) -> Result<Json<Value>, ApiError> {
+    let session = EmergencySessionService::start_session(&state.db, user.user_id, &req).await?;
+    Ok(Json(
+        json!({ "status": "success", "data": session, "message": "Session started" }),
+    ))
+}
+
+async fn heartbeat_emergency_session(
+    State(state): State<Arc<AppState>>,
+    AuthenticatedUser(user): AuthenticatedUser,
+    Path(session_id): Path<Uuid>,
+) -> Result<Json<Value>, ApiError> {
+    let session = EmergencySessionService::heartbeat(&state.db, user.user_id, session_id).await?;
+    Ok(Json(
+        json!({ "status": "success", "data": session, "message": "Heartbeat recorded" }),
+    ))
+}
+
+async fn end_emergency_session(
+    State(state): State<Arc<AppState>>,
+    AuthenticatedUser(user): AuthenticatedUser,
+    Path(session_id): Path<Uuid>,
+) -> Result<Json<Value>, ApiError> {
+    let session = EmergencySessionService::end_session(&state.db, user.user_id, session_id).await?;
+    Ok(Json(
+        json!({ "status": "success", "data": session, "message": "Session ended" }),
+    ))
+}
+
+async fn list_active_emergency_sessions(
+    State(state): State<Arc<AppState>>,
+    AuthenticatedUser(user): AuthenticatedUser,
+) -> Result<Json<Value>, ApiError> {
+    let sessions = EmergencySessionService::list_active_sessions(&state.db, user.user_id).await?;
+    Ok(Json(
+        json!({ "status": "success", "data": sessions, "count": sessions.len() }),
+    ))
 }
 
 #[derive(serde::Deserialize)]
@@ -861,46 +1061,330 @@ async fn update_protocol_parameter(
     ))
 }
 
-// Reserve Health Endpoints
+// ─── Will PDF & Template Engine Handlers (Tasks 1 & 2) ───────────────────────
 
-async fn get_all_reserve_health(
+#[derive(serde::Deserialize)]
+struct GenerateWillRequest {
+    owner_name: String,
+    owner_wallet: String,
+    vault_id: String,
+    beneficiaries: Vec<crate::will_pdf::BeneficiaryEntry>,
+    execution_rules: Option<String>,
+    template: Option<String>,
+    jurisdiction: Option<String>,
+    will_hash_reference: Option<String>,
+}
+
+async fn generate_will_document(
     State(state): State<Arc<AppState>>,
-    AuthenticatedAdmin(_admin): AuthenticatedAdmin,
+    Path(plan_id): Path<Uuid>,
+    AuthenticatedUser(user): AuthenticatedUser,
+    Json(req): Json<GenerateWillRequest>,
 ) -> Result<Json<Value>, ApiError> {
-    let metrics = state.reserve_health_engine.check_all_reserves().await?;
+    use std::str::FromStr;
+    let template = req
+        .template
+        .as_deref()
+        .map(WillTemplate::from_str)
+        .transpose()?
+        .unwrap_or(WillTemplate::Formal);
+
+    let input = WillDocumentInput {
+        plan_id,
+        owner_name: req.owner_name,
+        owner_wallet: req.owner_wallet,
+        vault_id: req.vault_id,
+        beneficiaries: req.beneficiaries,
+        execution_rules: req.execution_rules,
+        template,
+        jurisdiction: req.jurisdiction,
+        will_hash_reference: req.will_hash_reference,
+    };
+
+    let doc = WillPdfService::generate(&state.db, user.user_id, &input).await?;
+    Ok(Json(json!({ "status": "success", "data": doc })))
+}
+
+async fn get_will_document(
+    State(state): State<Arc<AppState>>,
+    Path(document_id): Path<Uuid>,
+    AuthenticatedUser(user): AuthenticatedUser,
+) -> Result<Json<Value>, ApiError> {
+    let doc = WillPdfService::get_document(&state.db, document_id, user.user_id).await?;
+    Ok(Json(json!({ "status": "success", "data": doc })))
+}
+
+async fn list_will_documents(
+    State(state): State<Arc<AppState>>,
+    Path(plan_id): Path<Uuid>,
+    AuthenticatedUser(user): AuthenticatedUser,
+) -> Result<Json<Value>, ApiError> {
+    let docs = WillPdfService::list_for_plan(&state.db, plan_id, user.user_id).await?;
+    Ok(Json(
+        json!({ "status": "success", "data": docs, "count": docs.len() }),
+    ))
+}
+
+// ─── Will Version Handlers ────────────────────────────────────────────────────
+
+async fn list_will_versions(
+    State(state): State<Arc<AppState>>,
+    Path(plan_id): Path<Uuid>,
+    AuthenticatedUser(user): AuthenticatedUser,
+    Query(params): Query<PaginationParams>,
+) -> Result<Json<Value>, ApiError> {
+    let page = params.page.unwrap_or(1).max(1);
+    let per_page = params.per_page.unwrap_or(10).clamp(1, 100);
+    let (versions, total) =
+        WillVersionService::get_all_versions(&state.db, plan_id, user.user_id, page, per_page)
+            .await?;
     Ok(Json(json!({
         "status": "success",
-        "data": metrics
+        "data": PaginatedVersions { versions, total, page, per_page }
     })))
 }
 
-async fn get_reserve_health_by_asset(
+async fn get_active_will_version(
     State(state): State<Arc<AppState>>,
-    AuthenticatedAdmin(_admin): AuthenticatedAdmin,
-    Path(asset_code): Path<String>,
+    Path(plan_id): Path<Uuid>,
+    AuthenticatedUser(user): AuthenticatedUser,
 ) -> Result<Json<Value>, ApiError> {
-    let metrics = state
-        .reserve_health_engine
-        .get_reserve_health(&asset_code)
+    let version = WillVersionService::get_active_version(&state.db, plan_id, user.user_id).await?;
+    Ok(Json(json!({ "status": "success", "data": version })))
+}
+
+async fn get_will_version(
+    State(state): State<Arc<AppState>>,
+    Path((plan_id, version_number)): Path<(Uuid, u32)>,
+    AuthenticatedUser(user): AuthenticatedUser,
+) -> Result<Json<Value>, ApiError> {
+    let doc =
+        WillVersionService::get_version(&state.db, plan_id, user.user_id, version_number).await?;
+    Ok(Json(json!({ "status": "success", "data": doc })))
+}
+
+async fn finalize_will_version(
+    State(state): State<Arc<AppState>>,
+    Path((plan_id, version_number)): Path<(Uuid, u32)>,
+    AuthenticatedUser(user): AuthenticatedUser,
+) -> Result<Json<Value>, ApiError> {
+    let version =
+        WillVersionService::finalize_version(&state.db, plan_id, user.user_id, version_number)
+            .await?;
+    Ok(Json(json!({ "status": "success", "data": version })))
+}
+
+// ─── Beneficiary Sync Handler (Task 3) ───────────────────────────────────────
+
+#[derive(serde::Deserialize)]
+struct SyncBeneficiariesRequest {
+    document_beneficiaries: Vec<DocumentBeneficiary>,
+}
+
+async fn sync_beneficiaries(
+    State(state): State<Arc<AppState>>,
+    Path(plan_id): Path<Uuid>,
+    AuthenticatedUser(_user): AuthenticatedUser,
+    Json(req): Json<SyncBeneficiariesRequest>,
+) -> Result<Json<Value>, ApiError> {
+    let result =
+        BeneficiarySyncService::sync_and_validate(&state.db, plan_id, &req.document_beneficiaries)
+            .await?;
+    Ok(Json(json!({ "status": "success", "data": result })))
+}
+
+// ─── Digital Signature Handlers (Task 4) ─────────────────────────────────────
+
+async fn create_signing_challenge(
+    State(state): State<Arc<AppState>>,
+    Path(document_id): Path<Uuid>,
+    AuthenticatedUser(user): AuthenticatedUser,
+    Json(mut req): Json<SigningChallengeRequest>,
+) -> Result<Json<Value>, ApiError> {
+    // Bind document_id from path
+    req.document_id = document_id;
+    // Bind wallet from authenticated user's claims if not provided
+    if req.wallet_address.is_empty() {
+        req.wallet_address = user.email.clone();
+    }
+    let challenge = WillSignatureService::create_challenge(&state.db, &req).await?;
+    Ok(Json(json!({ "status": "success", "data": challenge })))
+}
+
+async fn submit_will_signature(
+    State(state): State<Arc<AppState>>,
+    AuthenticatedUser(_user): AuthenticatedUser,
+    Json(req): Json<SubmitSignatureRequest>,
+) -> Result<Json<Value>, ApiError> {
+    let record = WillSignatureService::verify_and_store(&state.db, &req).await?;
+    Ok(Json(json!({ "status": "success", "data": record })))
+}
+
+async fn get_will_signatures(
+    State(state): State<Arc<AppState>>,
+    Path(document_id): Path<Uuid>,
+    AuthenticatedUser(user): AuthenticatedUser,
+) -> Result<Json<Value>, ApiError> {
+    let sigs =
+        WillSignatureService::get_signatures_for_document(&state.db, document_id, user.user_id)
+            .await?;
+    Ok(Json(
+        json!({ "status": "success", "data": sigs, "count": sigs.len() }),
+    ))
+}
+
+// -- Encrypted Document Storage Handlers (Issue #328) -------------------------
+
+async fn encrypt_document(
+    State(state): State<Arc<AppState>>,
+    Path(document_id): Path<Uuid>,
+    AuthenticatedUser(user): AuthenticatedUser,
+) -> Result<Json<Value>, ApiError> {
+    let doc = WillPdfService::get_document(&state.db, document_id, user.user_id).await?;
+    let content_bytes = base64::engine::general_purpose::STANDARD
+        .decode(&doc.pdf_base64)
+        .map_err(|e| ApiError::Internal(anyhow::anyhow!("Base64 decode error: {e}")))?;
+
+    DocumentStorageService::store_encrypted(&state.db, user.user_id, document_id, &content_bytes)
         .await?;
+
     Ok(Json(json!({
         "status": "success",
-        "data": metrics
+        "message": "Document encrypted successfully",
+        "document_id": document_id
     })))
 }
 
-async fn sync_reserve_health(
+async fn decrypt_document(
     State(state): State<Arc<AppState>>,
-    AuthenticatedAdmin(_admin): AuthenticatedAdmin,
+    Path(document_id): Path<Uuid>,
+    AuthenticatedUser(user): AuthenticatedUser,
 ) -> Result<Json<Value>, ApiError> {
-    state
-        .reserve_health_engine
-        .sync_reserves_from_events()
-        .await?;
-    let metrics = state.reserve_health_engine.check_all_reserves().await?;
+    let plaintext =
+        DocumentStorageService::retrieve_decrypted(&state.db, user.user_id, document_id).await?;
+    let encoded = base64::engine::general_purpose::STANDARD.encode(&plaintext);
+
     Ok(Json(json!({
         "status": "success",
-        "message": "Reserve health synced successfully",
-        "data": metrics
+        "document_id": document_id,
+        "pdf_base64": encoded
     })))
+}
+
+async fn create_document_backup(
+    State(state): State<Arc<AppState>>,
+    Path(document_id): Path<Uuid>,
+    AuthenticatedUser(user): AuthenticatedUser,
+) -> Result<Json<Value>, ApiError> {
+    let backup =
+        DocumentStorageService::create_backup(&state.db, user.user_id, document_id).await?;
+    Ok(Json(json!({ "status": "success", "data": backup })))
+}
+
+async fn list_document_backups(
+    State(state): State<Arc<AppState>>,
+    Path(document_id): Path<Uuid>,
+    AuthenticatedUser(user): AuthenticatedUser,
+) -> Result<Json<Value>, ApiError> {
+    let backups =
+        DocumentStorageService::list_backups(&state.db, user.user_id, document_id).await?;
+    Ok(Json(
+        json!({ "status": "success", "data": backups, "count": backups.len() }),
+    ))
+}
+
+// -- Will Compliance Validation Handlers (Issue #330) --
+
+#[derive(serde::Deserialize)]
+struct ValidateWillRequest {
+    #[serde(flatten)]
+    input: WillDocumentInput,
+    witness_count: u32,
+}
+
+async fn validate_will_compliance(
+    AuthenticatedUser(_user): AuthenticatedUser,
+    Json(req): Json<ValidateWillRequest>,
+) -> Result<Json<Value>, ApiError> {
+    let result: ValidationResult = WillComplianceService::validate(&req.input, req.witness_count);
+    Ok(Json(json!({ "status": "success", "data": result })))
+}
+
+async fn list_jurisdictions(
+    AuthenticatedUser(_user): AuthenticatedUser,
+) -> Result<Json<Value>, ApiError> {
+    let jurisdictions = WillComplianceService::list_supported_jurisdictions();
+    Ok(Json(
+        json!({ "status": "success", "data": jurisdictions, "count": jurisdictions.len() }),
+    ))
+}
+
+async fn get_jurisdiction_rules(
+    AuthenticatedUser(_user): AuthenticatedUser,
+    Path(jurisdiction): Path<String>,
+) -> Result<Json<Value>, ApiError> {
+    let rules = WillComplianceService::get_jurisdiction_rules(&jurisdiction);
+    Ok(Json(json!({ "status": "success", "data": rules })))
+}
+
+// -- Witness Verification (Issue #331) ----------------------------------------
+
+async fn invite_witness(
+    State(state): State<Arc<AppState>>,
+    Path(document_id): Path<Uuid>,
+    AuthenticatedUser(user): AuthenticatedUser,
+    Json(req): Json<InviteWitnessRequest>,
+) -> Result<Json<Value>, ApiError> {
+    let record = WitnessService::invite_witness(
+        &state.db,
+        user.user_id,
+        document_id,
+        req.wallet_address,
+        req.email,
+    )
+    .await?;
+    Ok(Json(json!({ "status": "success", "data": record })))
+}
+
+async fn list_witnesses(
+    State(state): State<Arc<AppState>>,
+    Path(document_id): Path<Uuid>,
+    AuthenticatedUser(user): AuthenticatedUser,
+) -> Result<Json<Value>, ApiError> {
+    let witnesses = WitnessService::get_witnesses(&state.db, user.user_id, document_id).await?;
+    Ok(Json(
+        json!({ "status": "success", "data": witnesses, "count": witnesses.len() }),
+    ))
+}
+
+async fn get_witness_status(
+    State(state): State<Arc<AppState>>,
+    Path(document_id): Path<Uuid>,
+    AuthenticatedUser(_user): AuthenticatedUser,
+) -> Result<Json<Value>, ApiError> {
+    let summary = WitnessService::get_witness_status(&state.db, document_id).await?;
+    Ok(Json(json!({ "status": "success", "data": summary })))
+}
+
+async fn sign_as_witness(
+    State(state): State<Arc<AppState>>,
+    Path(witness_id): Path<Uuid>,
+    Json(req): Json<WitnessSignRequest>,
+) -> Result<Json<Value>, ApiError> {
+    let record = WitnessService::sign_as_witness(
+        &state.db,
+        witness_id,
+        &req.wallet_address,
+        &req.signature_hex,
+    )
+    .await?;
+    Ok(Json(json!({ "status": "success", "data": record })))
+}
+
+async fn decline_witness(
+    State(state): State<Arc<AppState>>,
+    Path(witness_id): Path<Uuid>,
+) -> Result<Json<Value>, ApiError> {
+    let record = WitnessService::decline_witness(&state.db, witness_id).await?;
+    Ok(Json(json!({ "status": "success", "data": record })))
 }

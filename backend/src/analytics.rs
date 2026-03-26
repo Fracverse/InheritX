@@ -2,8 +2,9 @@ use crate::api_error::ApiError;
 use crate::app::AppState;
 use crate::auth::AuthenticatedAdmin;
 use crate::service::{
-    AdminService, ClaimMetricsService, LendingMonitoringService, PlanStatisticsService,
-    RevenueMetricsService, UserMetricsService, YieldReportFilters, YieldReportingService,
+    AdminService, ClaimMetricsService, EmergencyAccessMetricsService, LendingMonitoringService,
+    PlanStatisticsService, RevenueMetricsService, UserMetricsService, YieldReportFilters,
+    YieldReportingService,
 };
 use axum::{
     extract::{Query, State},
@@ -189,6 +190,21 @@ async fn get_earnings_history(
     })))
 }
 
+/// GET /api/admin/analytics/emergency-access?range=daily|weekly|monthly
+/// Returns emergency access usage metrics and trends.
+async fn get_emergency_access_metrics(
+    State(state): State<Arc<AppState>>,
+    AuthenticatedAdmin(_admin): AuthenticatedAdmin,
+    Query(params): Query<RevenueRangeQuery>,
+) -> Result<Json<Value>, ApiError> {
+    let metrics: crate::service::EmergencyAccessMetrics =
+        EmergencyAccessMetricsService::get_metrics(&state.db, &params.range).await?;
+    Ok(Json(json!({
+        "status": "success",
+        "data": metrics
+    })))
+}
+
 /// Aggregated dashboard endpoint — all metrics in one request.
 /// GET /api/admin/analytics/dashboard
 async fn get_dashboard(
@@ -321,8 +337,8 @@ pub fn analytics_router() -> Router<Arc<AppState>> {
             get(get_earnings_history),
         )
         .route(
-            "/api/admin/analytics/reserve-health",
-            get(get_reserve_health_analytics),
+            "/api/admin/analytics/emergency-access",
+            get(get_emergency_access_metrics),
         )
         // Legacy routes (backwards compatibility)
         .route("/admin/metrics/overview", get(get_overview_legacy))

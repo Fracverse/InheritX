@@ -12,6 +12,12 @@ pub struct TestContext {
 
 impl TestContext {
     pub async fn from_env() -> Option<Self> {
+        // Use a static to ensure tracing is only initialized once
+        static INIT: std::sync::Once = std::sync::Once::new();
+        INIT.call_once(|| {
+            let _ = inheritx_backend::telemetry::init_tracing();
+        });
+
         let database_url = match env::var("DATABASE_URL") {
             Ok(url) => url,
             Err(_) => {

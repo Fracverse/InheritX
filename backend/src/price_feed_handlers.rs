@@ -263,3 +263,23 @@ pub async fn get_active_feeds(
         "count": feeds.len()
     })))
 }
+
+/// Fetch price from external source and update database (admin only)
+pub async fn fetch_and_update_price(
+    State((_db, price_service)): State<(PgPool, Arc<dyn PriceFeedService>)>,
+    AuthenticatedAdmin(_admin): AuthenticatedAdmin,
+    Path(asset_code): Path<String>,
+) -> Result<Json<Value>, ApiError> {
+    let asset_price = price_service.fetch_and_update_price(&asset_code).await?;
+
+    Ok(Json(json!({
+        "status": "success",
+        "message": format!("Price fetched and updated for {} from external source", asset_code),
+        "data": GetPriceResponse {
+            asset_code: asset_price.asset_code,
+            price: asset_price.price,
+            timestamp: asset_price.timestamp.to_rfc3339(),
+            source: asset_price.source,
+        }
+    })))
+}
