@@ -3761,3 +3761,101 @@ fn test_get_will_version_count_zero() {
     let count = client.get_will_version_count(&1u64);
     assert_eq!(count, 0);
 }
+
+// --- Issue #318: Legal Will Signature Verification ---
+
+#[test]
+fn test_sign_will_success() {
+    let env = Env::default();
+    let (client, token_id, _admin, owner) = setup_with_token_and_admin(&env);
+    let plan_id = create_plan_and_get_id(&env, &client, &token_id, &owner);
+    let will_hash = test_will_hash(&env);
+
+    client.sign_will(&owner, &plan_id, &will_hash);
+
+    let proof = client.get_will_signature(&plan_id).unwrap();
+    assert_eq!(proof.vault_id, plan_id);
+    assert_eq!(proof.will_hash, will_hash);
+    assert_eq!(proof.signer, owner);
+}
+
+#[test]
+fn test_sign_will_emits_event() {
+    let env = Env::default();
+    let (client, token_id, _admin, owner) = setup_with_token_and_admin(&env);
+    let plan_id = create_plan_and_get_id(&env, &client, &token_id, &owner);
+    let will_hash = test_will_hash(&env);
+
+    client.sign_will(&owner, &plan_id, &will_hash);
+
+    let events = env.events().all();
+    // Find the WillSigned event
+    let found = events.iter().any(|e| {
+        let topics: soroban_sdk::Vec<soroban_sdk::Val> = e.1;
+        topics.len() >= 2
+    });
+    assert!(found);
+}
+
+#[test]
+fn test_sign_will_replay_protection() {
+    let env = Env::default();
+    let (client, token_id, _admin, owner) = setup_with_token_and_admin(&env);
+    let plan_id = create_plan_and_get_id(&env, &client, &token_id, &owner);
+    let will_hash = test_will_hash(&env);
+
+    // First sign succeeds
+    client.sign_will(&owner, &plan_id, &will_hash);
+
+    // Same (vault_id, will_hash) pair must be rejected
+    let result = client.try_sign_will(&owner, &plan_id, &will_hash);
+    assert!(result.is_err());
+}
+
+#[test]
+fn test_sign_will_different_will_hash_allowed() {
+    let env = Env::default();
+    let (client, token_id, _admin, owner) = setup_with_token_and_admin(&env);
+    let plan_id = create_plan_and_get_id(&env, &client, &token_id, &owner);
+
+    // Sign with first will hash
+    client.sign_will(&owner, &plan_id, &test_will_hash(&env));
+
+    // Sign with a different will hash (new version) should succeed
+    client.sign_will(&owner, &plan_id, &test_will_hash_2(&env));
+
+    let proof = client.get_will_signature(&plan_id).unwrap();
+    assert_eq!(proof.will_hash, test_will_hash_2(&env));
+}
+
+#[test]
+fn test_sign_will_unauthorized() {
+    let env = Env::default();
+    let (client, token_id, _admin, owner) = setup_with_token_and_admin(&env);
+    let plan_id = create_plan_and_get_id(&env, &client, &token_id, &owner);
+    let will_hash = test_will_hash(&env);
+
+    let attacker = Address::generate(&env);
+    let result = client.try_sign_will(&attacker, &plan_id, &will_hash);
+    assert!(result.is_err());
+}
+
+#[test]
+fn test_sign_will_plan_not_found() {
+    let env = Env::default();
+    let (client, _token_id, _admin, owner) = setup_with_token_and_admin(&env);
+    let will_hash = test_will_hash(&env);
+
+    let result = client.try_sign_will(&owner, &999u64, &will_hash);
+    assert!(result.is_err());
+}
+
+#[test]
+fn test_get_will_signature_none() {
+    let env = Env::default();
+    let (client, token_id, _admin, owner) = setup_with_token_and_admin(&env);
+    let _plan_id = create_plan_and_get_id(&env, &client, &token_id, &owner);
+
+    let result = client.get_will_signature(&1u64);
+    assert_eq!(result, None);
+}

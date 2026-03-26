@@ -110,6 +110,8 @@ pub enum InheritanceError {
     VaultNotFound = 46,
     VerificationFailed = 47,
     WillVersionNotFound = 48,
+    SignatureAlreadyUsed = 49,
+    InvalidSignature = 50,
 }
 
 #[contracttype]
@@ -138,6 +140,8 @@ pub enum DataKey {
     WillVersionCount(u64),            // plan_id -> u32 (number of will versions)
     WillVersion(u64, u32),            // (plan_id, version) -> WillVersion struct
     ActiveWillVersion(u64),           // plan_id -> u32 (active version number)
+    WillSignature(u64),               // plan_id -> WillSignatureProof
+    SignatureUsed(BytesN<32>),        // sig_hash -> bool (replay protection)
 }
 
 #[contracttype]
@@ -381,6 +385,24 @@ pub struct WillVersionCreatedEvent {
 pub struct WillVersionActivatedEvent {
     pub plan_id: u64,
     pub version: u32,
+}
+
+/// Proof that a vault owner has cryptographically signed a will.
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct WillSignatureProof {
+    pub vault_id: u64,
+    pub will_hash: BytesN<32>,
+    pub signer: Address,
+    pub sig_hash: BytesN<32>,
+    pub signed_at: u64,
+}
+
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct WillSignedEvent {
+    pub vault_id: u64,
+    pub signer: Address,
 }
 
 /// Parameters for creating an inheritance plan (groups args to satisfy Clippy).
@@ -2659,6 +2681,82 @@ impl InheritanceContract {
     pub fn get_will_version_count(env: Env, plan_id: u64) -> u32 {
         let key = DataKey::WillVersionCount(plan_id);
         env.storage().persistent().get(&key).unwrap_or(0)
+    }
+
+    // ── Will Signature Verification (Issue #318) ──
+
+    /// Record that the vault owner has approved and signed a will.
+    ///
+    /// The caller must be the plan owner. A composite sig_hash is derived from
+    /// (vault_id, will_hash) to bind the signature to a specific will version and
+    /// prevent replay across different vaults or will documents.
+    pub fn sign_will(
+        env: Env,
+        owner: Address,
+        vault_id: u64,
+        will_hash: BytesN<32>,
+    ) -> Result<(), InheritanceError> {
+        owner.require_auth();
+
+        // Verify the plan exists and caller is the owner
+        let plan = Self::get_plan(&env, vault_id).ok_or(InheritanceError::PlanNotFound)?;
+        if plan.owner != owner {
+            return Err(InheritanceError::Unauthorized);
+        }
+
+        // Derive a deterministic sig_hash from (vault_id, will_hash) for replay protection
+        let mut sig_input = Bytes::new(&env);
+        for b in vault_id.to_be_bytes() {
+            sig_input.push_back(b);
+        }
+        for b in will_hash.to_array() {
+            sig_input.push_back(b);
+        }
+        let sig_hash: BytesN<32> = env.crypto().sha256(&sig_input).into();
+
+        // Replay protection: reject if this (vault_id, will_hash) pair was already signed
+        let used_key = DataKey::SignatureUsed(sig_hash.clone());
+        if env
+            .storage()
+            .persistent()
+            .get::<_, bool>(&used_key)
+            .unwrap_or(false)
+        {
+            return Err(InheritanceError::SignatureAlreadyUsed);
+        }
+
+        // Mark signature as used
+        env.storage().persistent().set(&used_key, &true);
+
+        // Store the signature proof
+        let proof = WillSignatureProof {
+            vault_id,
+            will_hash,
+            signer: owner.clone(),
+            sig_hash,
+            signed_at: env.ledger().timestamp(),
+        };
+        env.storage()
+            .persistent()
+            .set(&DataKey::WillSignature(vault_id), &proof);
+
+        // Emit WillSigned event
+        env.events().publish(
+            (symbol_short!("WILL"), symbol_short!("SIGNED")),
+            WillSignedEvent {
+                vault_id,
+                signer: owner,
+            },
+        );
+
+        Ok(())
+    }
+
+    /// Retrieve the stored will signature proof for a vault.
+    pub fn get_will_signature(env: Env, vault_id: u64) -> Option<WillSignatureProof> {
+        env.storage()
+            .persistent()
+            .get(&DataKey::WillSignature(vault_id))
     }
 }
 
