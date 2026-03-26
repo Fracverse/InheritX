@@ -3866,26 +3866,26 @@ fn test_get_will_signature_none() {
 fn test_create_legacy_message_success() {
     let env = Env::default();
     let (client, token_id, _admin, owner) = setup_with_token_and_admin(&env);
-    
+
     // Create a plan first
     let plan_id = create_plan_and_get_id(&env, &client, &token_id, &owner);
-    
+
     // Create a message hash (simulating off-chain content)
     let message_hash = BytesN::from_array(&env, &[1u8; 32]);
-    
+
     // Set unlock timestamp to 1 hour in the future
     let current_timestamp = env.ledger().timestamp();
     let unlock_timestamp = current_timestamp + 3600;
-    
+
     // Create the message
     let params = CreateLegacyMessageParams {
         vault_id: plan_id,
         message_hash: message_hash.clone(),
         unlock_timestamp,
     };
-    
+
     let message_id = client.create_legacy_message(&owner, &params);
-    
+
     // Verify message was created
     let message = client.get_legacy_message(&message_id);
     assert_eq!(message.vault_id, plan_id);
@@ -3895,7 +3895,7 @@ fn test_create_legacy_message_success() {
     assert_eq!(message.unlock_timestamp, unlock_timestamp);
     assert!(!message.is_unlocked);
     assert!(message.created_at <= current_timestamp);
-    
+
     // Verify event was emitted
     let events = env.events().all();
     let message_created_event = events.iter().find(|e| {
@@ -3909,20 +3909,20 @@ fn test_create_legacy_message_success() {
 fn test_create_legacy_message_invalid_timestamp() {
     let env = Env::default();
     let (client, token_id, _admin, owner) = setup_with_token_and_admin(&env);
-    
+
     let plan_id = create_plan_and_get_id(&env, &client, &token_id, &owner);
     let message_hash = BytesN::from_array(&env, &[1u8; 32]);
-    
+
     // Try to set unlock timestamp in the past
     let current_timestamp = env.ledger().timestamp();
     let unlock_timestamp = current_timestamp - 3600;
-    
+
     let params = CreateLegacyMessageParams {
         vault_id: plan_id,
         message_hash,
         unlock_timestamp,
     };
-    
+
     let result = client.try_create_legacy_message(&owner, &params);
     assert!(result.is_err());
 }
@@ -3931,11 +3931,11 @@ fn test_create_legacy_message_invalid_timestamp() {
 fn test_create_legacy_message_unauthorized() {
     let env = Env::default();
     let (client, token_id, _admin, owner) = setup_with_token_and_admin(&env);
-    
+
     let plan_id = create_plan_and_get_id(&env, &client, &token_id, &owner);
     let message_hash = BytesN::from_array(&env, &[1u8; 32]);
     let unlock_timestamp = env.ledger().timestamp() + 3600;
-    
+
     // Try to create message as non-owner
     let attacker = Address::generate(&env);
     let params = CreateLegacyMessageParams {
@@ -3943,7 +3943,7 @@ fn test_create_legacy_message_unauthorized() {
         message_hash,
         unlock_timestamp,
     };
-    
+
     let result = client.try_create_legacy_message(&attacker, &params);
     assert!(result.is_err());
     assert_eq!(result.unwrap_err(), InheritanceError::Unauthorized);
@@ -3953,16 +3953,16 @@ fn test_create_legacy_message_unauthorized() {
 fn test_create_legacy_message_plan_not_found() {
     let env = Env::default();
     let (client, _token_id, _admin, owner) = setup_with_token_and_admin(&env);
-    
+
     let message_hash = BytesN::from_array(&env, &[1u8; 32]);
     let unlock_timestamp = env.ledger().timestamp() + 3600;
-    
+
     let params = CreateLegacyMessageParams {
         vault_id: 999u64, // Non-existent plan
         message_hash,
         unlock_timestamp,
     };
-    
+
     let result = client.try_create_legacy_message(&owner, &params);
     assert!(result.is_err());
     assert_eq!(result.unwrap_err(), InheritanceError::PlanNotFound);
@@ -3972,29 +3972,29 @@ fn test_create_legacy_message_plan_not_found() {
 fn test_get_vault_messages() {
     let env = Env::default();
     let (client, token_id, _admin, owner) = setup_with_token_and_admin(&env);
-    
+
     let plan_id = create_plan_and_get_id(&env, &client, &token_id, &owner);
-    
+
     // Create multiple messages
     let mut message_ids = vec![&env];
     for i in 0..3 {
         let message_hash = BytesN::from_array(&env, &[(i + 1) as u8; 32]);
         let unlock_timestamp = env.ledger().timestamp() + 3600 * (i + 1);
-        
+
         let params = CreateLegacyMessageParams {
             vault_id: plan_id,
             message_hash,
             unlock_timestamp,
         };
-        
+
         let message_id = client.create_legacy_message(&owner, &params);
         message_ids.push_back(message_id);
     }
-    
+
     // Verify all messages are returned
     let vault_messages = client.get_vault_messages(&plan_id);
     assert_eq!(vault_messages.len(), 3);
-    
+
     for i in 0..3 {
         assert_eq!(vault_messages.get(i).unwrap(), message_ids.get(i).unwrap());
     }
@@ -4004,34 +4004,35 @@ fn test_get_vault_messages() {
 fn test_access_legacy_message_by_timestamp() {
     let env = Env::default();
     let (client, token_id, _admin, owner) = setup_with_token_and_admin(&env);
-    
+
     let plan_id = create_plan_and_get_id(&env, &client, &token_id, &owner);
     let message_hash = BytesN::from_array(&env, &[1u8; 32]);
-    
+
     // Set unlock timestamp to 1 hour in the future
     let current_timestamp = env.ledger().timestamp();
     let unlock_timestamp = current_timestamp + 3600;
-    
+
     let params = CreateLegacyMessageParams {
         vault_id: plan_id,
         message_hash,
         unlock_timestamp,
     };
-    
+
     let message_id = client.create_legacy_message(&owner, &params);
-    
+
     // Try to access before unlock time - should fail
     let beneficiary = Address::generate(&env);
     let result = client.try_access_legacy_message(&beneficiary, &message_id);
     assert!(result.is_err());
-    
+
     // Advance ledger timestamp past unlock time
-    env.ledger().with_mut(|li| li.timestamp = unlock_timestamp + 1);
-    
+    env.ledger()
+        .with_mut(|li| li.timestamp = unlock_timestamp + 1);
+
     // Now access should succeed and unlock the message
     let message = client.access_legacy_message(&beneficiary, &message_id);
     assert!(message.is_unlocked);
-    
+
     // Verify unlock event was emitted
     let events = env.events().all();
     let unlock_event = events.iter().find(|e| {
@@ -4045,30 +4046,30 @@ fn test_access_legacy_message_by_timestamp() {
 fn test_access_legacy_message_by_inheritance_trigger() {
     let env = Env::default();
     let (client, token_id, _admin, owner) = setup_with_token_and_admin(&env);
-    
+
     let plan_id = create_plan_and_get_id(&env, &client, &token_id, &owner);
     let message_hash = BytesN::from_array(&env, &[1u8; 32]);
-    
+
     // Set unlock timestamp far in the future
     let current_timestamp = env.ledger().timestamp();
     let unlock_timestamp = current_timestamp + 86400; // 1 day
-    
+
     let params = CreateLegacyMessageParams {
         vault_id: plan_id,
         message_hash,
         unlock_timestamp,
     };
-    
+
     let message_id = client.create_legacy_message(&owner, &params);
-    
+
     // Trigger inheritance
     client.trigger_inheritance(&owner, &plan_id);
-    
+
     // Now access should succeed even though timestamp hasn't been reached
     let beneficiary = Address::generate(&env);
     let message = client.access_legacy_message(&beneficiary, &message_id);
     assert!(message.is_unlocked);
-    
+
     // Verify unlock event was emitted
     let events = env.events().all();
     let unlock_event = events.iter().find(|e| {
@@ -4082,22 +4083,22 @@ fn test_access_legacy_message_by_inheritance_trigger() {
 fn test_access_legacy_message_not_beneficiary() {
     let env = Env::default();
     let (client, token_id, _admin, owner) = setup_with_token_and_admin(&env);
-    
+
     let plan_id = create_plan_and_get_id(&env, &client, &token_id, &owner);
     let message_hash = BytesN::from_array(&env, &[1u8; 32]);
-    
+
     // Set unlock timestamp in the past so it's immediately accessible
     let current_timestamp = env.ledger().timestamp();
     let unlock_timestamp = current_timestamp - 3600;
-    
+
     let params = CreateLegacyMessageParams {
         vault_id: plan_id,
         message_hash,
         unlock_timestamp,
     };
-    
+
     let message_id = client.create_legacy_message(&owner, &params);
-    
+
     // Random address (not a beneficiary) tries to access
     let random_address = Address::generate(&env);
     let result = client.try_access_legacy_message(&random_address, &message_id);
@@ -4108,7 +4109,7 @@ fn test_access_legacy_message_not_beneficiary() {
 fn test_access_legacy_message_not_found() {
     let env = Env::default();
     let (client, _token_id, _admin, owner) = setup_with_token_and_admin(&env);
-    
+
     let random_address = Address::generate(&env);
     let result = client.try_access_legacy_message(&random_address, &999u64);
     assert!(result.is_err());
@@ -4118,31 +4119,31 @@ fn test_access_legacy_message_not_found() {
 fn test_unlock_messages_on_inheritance() {
     let env = Env::default();
     let (client, token_id, _admin, _owner) = setup_with_token_and_admin(&env);
-    
+
     let plan_id = create_plan_and_get_id(&env, &client, &token_id, &owner);
-    
+
     // Create multiple messages with future timestamps
     let mut message_ids = vec![&env];
     for i in 0..3 {
         let message_hash = BytesN::from_array(&env, &[(i + 1) as u8; 32]);
         let unlock_timestamp = env.ledger().timestamp() + 86400 * (i + 1);
-        
+
         let params = CreateLegacyMessageParams {
             vault_id: plan_id,
             message_hash,
             unlock_timestamp,
         };
-        
+
         let message_id = client.create_legacy_message(&owner, &params);
         message_ids.push_back(message_id);
     }
-    
+
     // Trigger inheritance
     client.trigger_inheritance(&owner, &plan_id);
-    
+
     // Manually call unlock_messages_on_inheritance
     client.unlock_messages_on_inheritance(&plan_id);
-    
+
     // Verify all messages are now unlocked
     for message_id in message_ids.iter() {
         let message = client.get_legacy_message(&message_id);
@@ -4154,24 +4155,24 @@ fn test_unlock_messages_on_inheritance() {
 fn test_message_metadata_storage_comprehensive() {
     let env = Env::default();
     let (client, token_id, _admin, owner) = setup_with_token_and_admin(&env);
-    
+
     let plan_id = create_plan_and_get_id(&env, &client, &token_id, &owner);
-    
+
     // Create a message with specific hash
     let message_hash = BytesN::from_array(&env, &[42u8; 32]);
     let unlock_timestamp = env.ledger().timestamp() + 7200;
-    
+
     let params = CreateLegacyMessageParams {
         vault_id: plan_id,
         message_hash: message_hash.clone(),
         unlock_timestamp,
     };
-    
+
     let message_id = client.create_legacy_message(&owner, &params);
-    
+
     // Retrieve and verify all metadata fields
     let message = client.get_legacy_message(&message_id).unwrap();
-    
+
     assert_eq!(message.vault_id, plan_id);
     assert_eq!(message.message_id, message_id);
     assert_eq!(message.message_hash, message_hash);
@@ -4179,7 +4180,7 @@ fn test_message_metadata_storage_comprehensive() {
     assert_eq!(message.unlock_timestamp, unlock_timestamp);
     assert!(!message.is_unlocked);
     assert!(message.created_at > 0);
-    
+
     // Verify retrievability by vault_id
     let vault_messages = client.get_vault_messages(&plan_id);
     assert_eq!(vault_messages.len(), 1);

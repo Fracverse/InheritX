@@ -344,13 +344,13 @@ pub struct EmergencyContactAddedEvent {
 #[contracttype]
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct LegacyMessageMetadata {
-    pub vault_id: u64,           // Associated vault/plan ID
-    pub message_id: u64,         // Unique message identifier
+    pub vault_id: u64,            // Associated vault/plan ID
+    pub message_id: u64,          // Unique message identifier
     pub message_hash: BytesN<32>, // Cryptographic hash of message content (off-chain)
-    pub creator: Address,        // Message creator (vault owner)
-    pub unlock_timestamp: u64,   // Timestamp when message becomes accessible
-    pub is_unlocked: bool,       // Whether message has been unlocked
-    pub created_at: u64,         // Message creation timestamp
+    pub creator: Address,         // Message creator (vault owner)
+    pub unlock_timestamp: u64,    // Timestamp when message becomes accessible
+    pub is_unlocked: bool,        // Whether message has been unlocked
+    pub created_at: u64,          // Message creation timestamp
 }
 
 /// Parameters for creating a legacy message
@@ -2740,7 +2740,7 @@ impl InheritanceContract {
         owner: Address,
         vault_id: u64,
         will_hash: BytesN<32>,
-    ) -> Result<(), InheritanceError> { 
+    ) -> Result<(), InheritanceError> {
         owner.require_auth();
 
         // Verify the plan exists and caller is the owner
@@ -2805,12 +2805,12 @@ impl InheritanceContract {
     }
 
     /// Create a new legacy message with metadata stored on-chain
-    /// 
+    ///
     /// # Arguments
     /// * `env` - The Soroban environment
     /// * `creator` - The address of the message creator (must be vault owner)
     /// * `params` - Message creation parameters including hash and unlock timestamp
-    /// 
+    ///
     /// # Requirements
     /// - Creator must be the vault owner
     /// - Unlock timestamp must be in the future
@@ -2886,7 +2886,7 @@ impl InheritanceContract {
     }
 
     /// Get metadata for a specific legacy message
-    /// 
+    ///
     /// # Arguments
     /// * `env` - The Soroban environment
     /// * `message_id` - The unique message identifier
@@ -2897,7 +2897,7 @@ impl InheritanceContract {
     }
 
     /// Get all message IDs for a specific vault
-    /// 
+    ///
     /// # Arguments
     /// * `env` - The Soroban environment
     /// * `vault_id` - The vault/plan ID
@@ -2909,12 +2909,12 @@ impl InheritanceContract {
     }
 
     /// Access a legacy message (returns metadata if accessible)
-    /// 
+    ///
     /// # Arguments
     /// * `env` - The Soroban environment
     /// * `caller` - The address requesting access
     /// * `message_id` - The message ID to access
-    /// 
+    ///
     /// # Requirements
     /// - Caller must be a verified beneficiary of the vault
     /// - Message must be unlocked (either by timestamp or inheritance trigger)
@@ -2933,7 +2933,7 @@ impl InheritanceContract {
         // Check if already unlocked
         if !message.is_unlocked {
             let current_timestamp = env.ledger().timestamp();
-            
+
             // Check if unlock timestamp has been reached
             if current_timestamp >= message.unlock_timestamp {
                 // Unlock by timestamp
@@ -2987,14 +2987,17 @@ impl InheritanceContract {
 
         // Verify caller is a beneficiary of this vault
         let plan = Self::get_plan(&env, message.vault_id).ok_or(InheritanceError::PlanNotFound)?;
-        
+
         // Hash the caller's address to check against beneficiaries
         let caller_bytes = Bytes::from_val(&env, &caller.to_val());
         let caller_hash: BytesN<32> = env.crypto().sha256(&caller_bytes).into();
         let mut is_beneficiary = false;
 
         for i in 0..plan.beneficiaries.len() {
-            let beneficiary = plan.beneficiaries.get(i).ok_or(InheritanceError::BeneficiaryNotFound)?;
+            let beneficiary = plan
+                .beneficiaries
+                .get(i)
+                .ok_or(InheritanceError::BeneficiaryNotFound)?;
             // Check if caller matches any beneficiary hashed email
             if beneficiary.hashed_email == caller_hash {
                 is_beneficiary = true;
@@ -3011,7 +3014,7 @@ impl InheritanceContract {
 
     /// Manually unlock a message when inheritance is triggered
     /// This can be called during the inheritance trigger process
-    /// 
+    ///
     /// # Arguments
     /// * `env` - The Soroban environment
     /// * `vault_id` - The vault/plan ID for which inheritance was triggered
