@@ -368,6 +368,20 @@ impl WillPdfService {
         .execute(db)
         .await?;
 
+        // Emit WillCreated event
+        let event = crate::will_events::WillEvent::WillCreated {
+            vault_id: input.vault_id.clone(),
+            document_id,
+            plan_id: input.plan_id,
+            version,
+            template: input.template.as_str().to_string(),
+            will_hash: will_hash.clone(),
+            timestamp: generated_at,
+        };
+        if let Err(e) = crate::will_events::WillEventService::emit(db, event).await {
+            tracing::warn!("Failed to emit WillCreated event: {}", e);
+        }
+
         Ok(GeneratedWillDocument {
             document_id,
             plan_id: input.plan_id,
