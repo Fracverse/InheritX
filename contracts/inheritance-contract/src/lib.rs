@@ -110,8 +110,8 @@ pub enum InheritanceError {
     VaultNotFound = 46,
     VerificationFailed = 47,
     WillVersionNotFound = 48,
-    SignatureAlreadyUsed = 49,
-    InvalidSignature = 50,
+    WillAlreadyFinalized = 49,
+    WillNotVerified = 50,
 }
 
 #[contracttype]
@@ -145,6 +145,10 @@ pub enum DataKey {
     NextMessageId,                    // Global next message ID counter
     LegacyMessage(u64),               // message_id -> LegacyMessageMetadata
     VaultMessages(u64),               // vault_id -> Vec<u64> (message IDs)
+    WillFinalized(u64, u32),          // (plan_id, version) -> bool
+    WillFinalizedAt(u64, u32),        // (plan_id, version) -> u64 timestamp
+    WillWitnesses(u64),               // plan_id -> Vec<Address>
+    WitnessSignature(u64, Address),   // (plan_id, witness) -> u64 (signed_at)
 }
 
 #[contracttype]
@@ -448,6 +452,28 @@ pub struct WillSignatureProof {
 pub struct WillSignedEvent {
     pub vault_id: u64,
     pub signer: Address,
+}
+
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct WillFinalizedEvent {
+    pub vault_id: u64,
+    pub version: u32,
+    pub finalized_at: u64,
+}
+
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct WitnessAddedEvent {
+    pub vault_id: u64,
+    pub witness: Address,
+}
+
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct WitnessSignedEvent {
+    pub vault_id: u64,
+    pub witness: Address,
 }
 
 /// Parameters for creating an inheritance plan (groups args to satisfy Clippy).
@@ -2649,6 +2675,20 @@ impl InheritanceContract {
             return Err(InheritanceError::Unauthorized);
         }
 
+        // Block creating a new version if the currently active version is finalized
+        let active_key = DataKey::ActiveWillVersion(plan_id);
+        if let Some(active_ver_num) = env.storage().persistent().get::<_, u32>(&active_key) {
+            let fin_key = DataKey::WillFinalized(plan_id, active_ver_num);
+            if env
+                .storage()
+                .persistent()
+                .get::<_, bool>(&fin_key)
+                .unwrap_or(false)
+            {
+                return Err(InheritanceError::WillAlreadyFinalized);
+            }
+        }
+
         // Get and increment version count
         let count_key = DataKey::WillVersionCount(plan_id);
         let current_count: u32 = env.storage().persistent().get(&count_key).unwrap_or(0);
@@ -2767,7 +2807,7 @@ impl InheritanceContract {
             .get::<_, bool>(&used_key)
             .unwrap_or(false)
         {
-            return Err(InheritanceError::SignatureAlreadyUsed);
+            return Err(InheritanceError::WillAlreadyFinalized);
         }
 
         // Mark signature as used
@@ -3065,6 +3105,221 @@ impl InheritanceContract {
         }
 
         Ok(())
+    }
+
+    // ── Will Finalization (Issue #319) ──
+
+    /// Finalize a specific will version, permanently locking it.
+    ///
+    /// Requirements:
+    /// - Caller must be the plan owner.
+    /// - The will version must exist.
+    /// - The owner must have signed the will (WillSignature must exist).
+    /// - If witnesses are assigned, all must have signed.
+    /// - Cannot finalize an already-finalized version.
+    pub fn finalize_will(
+        env: Env,
+        owner: Address,
+        vault_id: u64,
+        version: u32,
+    ) -> Result<(), InheritanceError> {
+        owner.require_auth();
+
+        let plan = Self::get_plan(&env, vault_id).ok_or(InheritanceError::PlanNotFound)?;
+        if plan.owner != owner {
+            return Err(InheritanceError::Unauthorized);
+        }
+
+        // Version must exist
+        let ver_key = DataKey::WillVersion(vault_id, version);
+        env.storage()
+            .persistent()
+            .get::<_, WillVersionInfo>(&ver_key)
+            .ok_or(InheritanceError::WillVersionNotFound)?;
+
+        // Already finalized?
+        let fin_key = DataKey::WillFinalized(vault_id, version);
+        if env
+            .storage()
+            .persistent()
+            .get::<_, bool>(&fin_key)
+            .unwrap_or(false)
+        {
+            return Err(InheritanceError::WillAlreadyFinalized);
+        }
+
+        // Owner must have signed the will
+        if env
+            .storage()
+            .persistent()
+            .get::<_, WillSignatureProof>(&DataKey::WillSignature(vault_id))
+            .is_none()
+        {
+            return Err(InheritanceError::WillNotVerified);
+        }
+
+        // All assigned witnesses must have signed
+        let witnesses_key = DataKey::WillWitnesses(vault_id);
+        let witnesses: Vec<Address> = env
+            .storage()
+            .persistent()
+            .get(&witnesses_key)
+            .unwrap_or_else(|| Vec::new(&env));
+
+        for i in 0..witnesses.len() {
+            let w = witnesses.get(i).unwrap();
+            let wsig_key = DataKey::WitnessSignature(vault_id, w);
+            if env
+                .storage()
+                .persistent()
+                .get::<_, u64>(&wsig_key)
+                .is_none()
+            {
+                return Err(InheritanceError::MissingRequiredField);
+            }
+        }
+
+        let finalized_at = env.ledger().timestamp();
+        env.storage().persistent().set(&fin_key, &true);
+        env.storage()
+            .persistent()
+            .set(&DataKey::WillFinalizedAt(vault_id, version), &finalized_at);
+
+        env.events().publish(
+            (symbol_short!("WILL"), symbol_short!("FINAL")),
+            WillFinalizedEvent {
+                vault_id,
+                version,
+                finalized_at,
+            },
+        );
+
+        Ok(())
+    }
+
+    /// Check whether a specific will version is finalized.
+    pub fn is_will_finalized(env: Env, vault_id: u64, version: u32) -> bool {
+        env.storage()
+            .persistent()
+            .get::<_, bool>(&DataKey::WillFinalized(vault_id, version))
+            .unwrap_or(false)
+    }
+
+    /// Get the finalization timestamp for a will version (None if not finalized).
+    pub fn get_will_finalized_at(env: Env, vault_id: u64, version: u32) -> Option<u64> {
+        env.storage()
+            .persistent()
+            .get(&DataKey::WillFinalizedAt(vault_id, version))
+    }
+
+    // ── Legal Witness Verification (Issue #320) ──
+
+    /// Assign a witness address to a vault's will. Only the plan owner can add witnesses.
+    pub fn add_witness(
+        env: Env,
+        owner: Address,
+        vault_id: u64,
+        witness: Address,
+    ) -> Result<(), InheritanceError> {
+        owner.require_auth();
+
+        let plan = Self::get_plan(&env, vault_id).ok_or(InheritanceError::PlanNotFound)?;
+        if plan.owner != owner {
+            return Err(InheritanceError::Unauthorized);
+        }
+
+        let key = DataKey::WillWitnesses(vault_id);
+        let mut witnesses: Vec<Address> = env
+            .storage()
+            .persistent()
+            .get(&key)
+            .unwrap_or_else(|| Vec::new(&env));
+
+        // Prevent duplicates
+        for i in 0..witnesses.len() {
+            if witnesses.get(i).unwrap() == witness {
+                return Err(InheritanceError::EmergencyContactAlreadyExists);
+            }
+        }
+
+        witnesses.push_back(witness.clone());
+        env.storage().persistent().set(&key, &witnesses);
+
+        env.events().publish(
+            (symbol_short!("WILL"), symbol_short!("WITNESS")),
+            WitnessAddedEvent { vault_id, witness },
+        );
+
+        Ok(())
+    }
+
+    /// Record a witness signature for a vault's will.
+    ///
+    /// The caller must be a registered witness for this vault.
+    pub fn sign_as_witness(
+        env: Env,
+        witness: Address,
+        vault_id: u64,
+    ) -> Result<(), InheritanceError> {
+        witness.require_auth();
+
+        // Vault must exist
+        Self::get_plan(&env, vault_id).ok_or(InheritanceError::PlanNotFound)?;
+
+        // Witness must be in the registered list
+        let key = DataKey::WillWitnesses(vault_id);
+        let witnesses: Vec<Address> = env
+            .storage()
+            .persistent()
+            .get(&key)
+            .unwrap_or_else(|| Vec::new(&env));
+
+        let mut found = false;
+        for i in 0..witnesses.len() {
+            if witnesses.get(i).unwrap() == witness {
+                found = true;
+                break;
+            }
+        }
+        if !found {
+            return Err(InheritanceError::EmergencyContactNotFound);
+        }
+
+        // Prevent double-signing
+        let wsig_key = DataKey::WitnessSignature(vault_id, witness.clone());
+        if env
+            .storage()
+            .persistent()
+            .get::<_, u64>(&wsig_key)
+            .is_some()
+        {
+            return Err(InheritanceError::AlreadyApproved);
+        }
+
+        let signed_at = env.ledger().timestamp();
+        env.storage().persistent().set(&wsig_key, &signed_at);
+
+        env.events().publish(
+            (symbol_short!("WILL"), symbol_short!("WSIGN")),
+            WitnessSignedEvent { vault_id, witness },
+        );
+
+        Ok(())
+    }
+
+    /// Get all registered witnesses for a vault.
+    pub fn get_witnesses(env: Env, vault_id: u64) -> Vec<Address> {
+        env.storage()
+            .persistent()
+            .get(&DataKey::WillWitnesses(vault_id))
+            .unwrap_or_else(|| Vec::new(&env))
+    }
+
+    /// Get the timestamp at which a witness signed, or None if not yet signed.
+    pub fn get_witness_signature(env: Env, vault_id: u64, witness: Address) -> Option<u64> {
+        env.storage()
+            .persistent()
+            .get(&DataKey::WitnessSignature(vault_id, witness))
     }
 }
 
