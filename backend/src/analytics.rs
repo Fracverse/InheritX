@@ -340,6 +340,10 @@ pub fn analytics_router() -> Router<Arc<AppState>> {
             "/api/admin/analytics/emergency-access",
             get(get_emergency_access_metrics),
         )
+        .route(
+            "/api/admin/analytics/reserve-health",
+            get(get_reserve_health_analytics),
+        )
         // Legacy routes (backwards compatibility)
         .route("/admin/metrics/overview", get(get_overview_legacy))
         .route("/admin/metrics/revenue", get(get_revenue_metrics_legacy))
