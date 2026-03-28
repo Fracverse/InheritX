@@ -27,14 +27,28 @@ CREATE TABLE asset_price_history (
 );
 
 -- Add collateral tracking to plans table
-ALTER TABLE plans ADD COLUMN IF NOT EXISTS collateral_ratio DECIMAL(5, 2) DEFAULT 100.00;
-ALTER TABLE plans ADD COLUMN IF NOT EXISTS asset_code VARCHAR(20) DEFAULT 'USDC';
-ALTER TABLE plans ADD COLUMN IF NOT EXISTS valuation_usd DECIMAL(20, 8);
-ALTER TABLE plans ADD COLUMN IF NOT EXISTS last_valuation_at TIMESTAMP WITH TIME ZONE;
+-- Check if plans table exists before altering
+DO $$
+BEGIN
+    IF EXISTS (SELECT FROM information_schema.tables WHERE table_name = 'plans') THEN
+        ALTER TABLE plans ADD COLUMN IF NOT EXISTS collateral_ratio DECIMAL(5, 2) DEFAULT 100.00;
+        ALTER TABLE plans ADD COLUMN IF NOT EXISTS asset_code VARCHAR(20) DEFAULT 'USDC';
+        ALTER TABLE plans ADD COLUMN IF NOT EXISTS valuation_usd DECIMAL(20, 8);
+        ALTER TABLE plans ADD COLUMN IF NOT EXISTS last_valuation_at TIMESTAMP WITH TIME ZONE;
+    END IF;
+END $$;
 
 -- Create indexes for performance
-CREATE INDEX idx_asset_price_history_asset_code ON asset_price_history(asset_code);
-CREATE INDEX idx_asset_price_history_timestamp ON asset_price_history(price_timestamp DESC);
-CREATE INDEX idx_plans_asset_code ON plans(asset_code);
-CREATE INDEX idx_plans_collateral_ratio ON plans(collateral_ratio);
-CREATE INDEX idx_price_feeds_active ON price_feeds(is_active);
+CREATE INDEX IF NOT EXISTS idx_asset_price_history_asset_code ON asset_price_history(asset_code);
+CREATE INDEX IF NOT EXISTS idx_asset_price_history_timestamp ON asset_price_history(price_timestamp DESC);
+
+-- Only create plan indexes if table exists
+DO $$
+BEGIN
+    IF EXISTS (SELECT FROM information_schema.tables WHERE table_name = 'plans') THEN
+        CREATE INDEX IF NOT EXISTS idx_plans_asset_code ON plans(asset_code);
+        CREATE INDEX IF NOT EXISTS idx_plans_collateral_ratio ON plans(collateral_ratio);
+    END IF;
+END $$;
+
+CREATE INDEX IF NOT EXISTS idx_price_feeds_active ON price_feeds(is_active);
