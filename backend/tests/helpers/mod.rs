@@ -73,3 +73,37 @@ impl TestContext {
         otp.to_string()
     }
 }
+
+/// Create a test user and return their ID
+pub async fn create_test_user(pool: &PgPool, email: &str) -> sqlx::Result<uuid::Uuid> {
+    let user_id = uuid::Uuid::new_v4();
+    let wallet = format!("G{}", &user_id.to_string().replace("-", "")[..55]);
+    
+    sqlx::query(
+        "INSERT INTO users (id, email, wallet_address, kyc_status) VALUES ($1, $2, $3, 'approved')"
+    )
+    .bind(user_id)
+    .bind(email)
+    .bind(wallet)
+    .execute(pool)
+    .await?;
+    
+    Ok(user_id)
+}
+
+/// Create a test admin and return their ID
+pub async fn create_test_admin(pool: &PgPool, email: &str) -> sqlx::Result<uuid::Uuid> {
+    let admin_id = uuid::Uuid::new_v4();
+    let password_hash = bcrypt::hash("test_password", bcrypt::DEFAULT_COST).unwrap();
+    
+    sqlx::query(
+        "INSERT INTO admins (id, email, password_hash, status) VALUES ($1, $2, $3, 'active')"
+    )
+    .bind(admin_id)
+    .bind(email)
+    .bind(password_hash)
+    .execute(pool)
+    .await?;
+    
+    Ok(admin_id)
+}
