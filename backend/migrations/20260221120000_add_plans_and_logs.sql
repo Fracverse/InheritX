@@ -1,20 +1,15 @@
--- Migration: Add plans and plan_logs tables
-
-CREATE TABLE plans (
-    id SERIAL PRIMARY KEY,
-    user_id INTEGER NOT NULL,
-    amount NUMERIC(20, 6) NOT NULL,
-    fee NUMERIC(20, 6) NOT NULL,
-    net_amount NUMERIC(20, 6) NOT NULL,
-    status VARCHAR(32) NOT NULL,
-    created_at TIMESTAMP NOT NULL DEFAULT NOW(),
-    updated_at TIMESTAMP NOT NULL DEFAULT NOW()
-);
+-- Migration: Add plan_logs table
+-- NOTE:
+-- The plans table is already created in the initial migration.
+-- This migration should only add the dependent plan_logs table.
 
 CREATE TABLE plan_logs (
     id SERIAL PRIMARY KEY,
-    plan_id INTEGER NOT NULL REFERENCES plans(id),
+    plan_id UUID NOT NULL REFERENCES plans(id) ON DELETE CASCADE,
     action VARCHAR(64) NOT NULL,
-    performed_by INTEGER NOT NULL,
-    timestamp TIMESTAMP NOT NULL DEFAULT NOW()
+    performed_by UUID NOT NULL,
+    timestamp TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT NOW()
 );
+
+CREATE INDEX idx_plan_logs_plan_id ON plan_logs(plan_id);
+CREATE INDEX idx_plan_logs_performed_by ON plan_logs(performed_by);
