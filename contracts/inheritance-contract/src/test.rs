@@ -4412,6 +4412,7 @@ fn test_update_legacy_message_unauthorized() {
     };
     let result = client.try_update_legacy_message(&stranger, &update_params);
     assert_eq!(result, Err(Ok(InheritanceError::Unauthorized)));
+}
 // --- Issue #71: KYC Verification for Plan Creation and Claiming ---
 
 #[test]
