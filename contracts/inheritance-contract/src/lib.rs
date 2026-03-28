@@ -352,8 +352,10 @@ pub struct LegacyMessageMetadata {
     pub message_id: u64,          // Unique message identifier
     pub message_hash: BytesN<32>, // Cryptographic hash of message content (off-chain)
     pub creator: Address,         // Message creator (vault owner)
+    pub key_reference: String,    // Reference for decryption key (#364)
     pub unlock_timestamp: u64,    // Timestamp when message becomes accessible
     pub is_unlocked: bool,        // Whether message has been unlocked
+    pub is_finalized: bool,       // Whether message has been finalized (#363)
     pub created_at: u64,          // Message creation timestamp
 }
 
@@ -364,6 +366,7 @@ pub struct CreateLegacyMessageParams {
     pub vault_id: u64,
     pub message_hash: BytesN<32>,
     pub unlock_timestamp: u64,
+    pub key_reference: String, // Addition for #364
 }
 
 /// Event emitted when a legacy message is created
@@ -372,8 +375,23 @@ pub struct CreateLegacyMessageParams {
 pub struct MessageCreatedEvent {
     pub vault_id: u64,
     pub message_id: u64,
-    pub creator: Address,
-    pub unlock_timestamp: u64,
+    pub timestamp: u64,
+}
+
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct MessageUpdatedEvent {
+    pub vault_id: u64,
+    pub message_id: u64,
+    pub timestamp: u64,
+}
+
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct MessageFinalizedEvent {
+    pub vault_id: u64,
+    pub message_id: u64,
+    pub timestamp: u64,
 }
 
 /// Event emitted when a message is unlocked
@@ -382,8 +400,15 @@ pub struct MessageCreatedEvent {
 pub struct MessageUnlockedEvent {
     pub vault_id: u64,
     pub message_id: u64,
-    pub unlocked_at: u64,
-    pub unlock_reason: Symbol, // "timestamp" or "inheritance"
+    pub timestamp: u64,
+}
+
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct MessageAccessedEvent {
+    pub vault_id: u64,
+    pub message_id: u64,
+    pub timestamp: u64,
 }
 
 #[contracttype]
@@ -593,6 +618,7 @@ impl InheritanceContract {
 
     // Validation functions
     pub fn validate_plan_inputs(
+        env: &Env,
         plan_name: String,
         description: String,
         asset_type: Symbol,
@@ -609,7 +635,7 @@ impl InheritanceContract {
         }
 
         // Validate asset type (only USDC allowed)
-        if asset_type != Symbol::new(&Env::default(), "USDC") {
+        if asset_type != Symbol::new(env, "USDC") {
             return Err(InheritanceError::InvalidAssetType);
         }
 
@@ -637,6 +663,32 @@ impl InheritanceContract {
         let total_allocation: u32 = beneficiaries_data.iter().map(|(_, _, _, _, bp)| bp).sum();
         if total_allocation != 10000 {
             return Err(InheritanceError::AllocationPercentageMismatch);
+        }
+
+        Ok(())
+    }
+
+    /// Check if a user has approved KYC status
+    ///
+    /// # Arguments
+    /// * `env` - The environment
+    /// * `user` - The user address to check
+    ///
+    /// # Returns
+    /// Ok(()) if user has approved KYC, Err(InheritanceError) otherwise
+    ///
+    /// # Errors
+    /// - KycNotSubmitted: If user has not submitted KYC
+    fn check_kyc_approved(env: &Env, user: &Address) -> Result<(), InheritanceError> {
+        let key = DataKey::Kyc(user.clone());
+        let status: KycStatus = env
+            .storage()
+            .persistent()
+            .get(&key)
+            .ok_or(InheritanceError::KycNotSubmitted)?;
+
+        if !status.approved {
+            return Err(InheritanceError::KycNotSubmitted);
         }
 
         Ok(())
@@ -1039,6 +1091,9 @@ impl InheritanceContract {
         // Require owner authorization
         owner.require_auth();
 
+        // Check KYC approval - only approved users can create plans
+        Self::check_kyc_approved(&env, &owner)?;
+
         // Admin must be set to receive the fee
         let admin = Self::get_admin(&env).ok_or(InheritanceError::AdminNotSet)?;
 
@@ -1058,6 +1113,7 @@ impl InheritanceContract {
         // Validate plan inputs using user input for "full amount" validation
         let usdc_symbol = Symbol::new(&env, "USDC");
         Self::validate_plan_inputs(
+            &env,
             plan_name.clone(),
             description.clone(),
             usdc_symbol.clone(),
@@ -1326,9 +1382,16 @@ impl InheritanceContract {
     pub fn claim_inheritance_plan(
         env: Env,
         plan_id: u64,
+        claimer: Address,
         email: String,
         claim_code: u32,
     ) -> Result<(), InheritanceError> {
+        // Require claimer authorization
+        claimer.require_auth();
+
+        // Check KYC approval - only approved users can claim plans
+        Self::check_kyc_approved(&env, &claimer)?;
+
         // Fetch the plan
         let plan = Self::get_plan(&env, plan_id).ok_or(InheritanceError::PlanNotFound)?;
 
@@ -2885,8 +2948,10 @@ impl InheritanceContract {
             message_id,
             message_hash: params.message_hash,
             creator: creator.clone(),
+            key_reference: params.key_reference,
             unlock_timestamp: params.unlock_timestamp,
             is_unlocked: false,
+            is_finalized: false,
             created_at: current_timestamp,
         };
 
@@ -2913,16 +2978,98 @@ impl InheritanceContract {
 
         // Emit event
         env.events().publish(
-            (Symbol::new(&env, "message_created"),),
+            (Symbol::new(&env, "message_created"), params.vault_id),
             MessageCreatedEvent {
                 vault_id: params.vault_id,
                 message_id,
-                creator,
-                unlock_timestamp: params.unlock_timestamp,
+                timestamp: current_timestamp,
             },
         );
 
         Ok(message_id)
+    }
+
+    pub fn update_legacy_message(
+        env: Env,
+        creator: Address,
+        message_id: u64,
+        params: CreateLegacyMessageParams,
+    ) -> Result<(), InheritanceError> {
+        creator.require_auth();
+
+        let mut message = env
+            .storage()
+            .persistent()
+            .get::<_, LegacyMessageMetadata>(&DataKey::LegacyMessage(message_id))
+            .ok_or(InheritanceError::PlanNotFound)?;
+
+        if message.creator != creator {
+            return Err(InheritanceError::Unauthorized);
+        }
+
+        if message.is_finalized {
+            return Err(InheritanceError::WillAlreadyFinalized);
+        }
+
+        if message.is_unlocked {
+            return Err(InheritanceError::AlreadyClaimed);
+        }
+
+        message.message_hash = params.message_hash;
+        message.unlock_timestamp = params.unlock_timestamp;
+        message.key_reference = params.key_reference;
+
+        env.storage()
+            .persistent()
+            .set(&DataKey::LegacyMessage(message_id), &message);
+
+        env.events().publish(
+            (Symbol::new(&env, "message_updated"), message.vault_id),
+            MessageUpdatedEvent {
+                vault_id: message.vault_id,
+                message_id,
+                timestamp: env.ledger().timestamp(),
+            },
+        );
+        Ok(())
+    }
+
+    pub fn finalize_legacy_message(
+        env: Env,
+        creator: Address,
+        message_id: u64,
+    ) -> Result<(), InheritanceError> {
+        creator.require_auth();
+
+        let mut message = env
+            .storage()
+            .persistent()
+            .get::<_, LegacyMessageMetadata>(&DataKey::LegacyMessage(message_id))
+            .ok_or(InheritanceError::PlanNotFound)?;
+
+        if message.creator != creator {
+            return Err(InheritanceError::Unauthorized);
+        }
+
+        if message.is_finalized {
+            return Err(InheritanceError::WillAlreadyFinalized);
+        }
+
+        message.is_finalized = true;
+
+        env.storage()
+            .persistent()
+            .set(&DataKey::LegacyMessage(message_id), &message);
+
+        env.events().publish(
+            (Symbol::new(&env, "message_finalized"), message.vault_id),
+            MessageFinalizedEvent {
+                vault_id: message.vault_id,
+                message_id,
+                timestamp: env.ledger().timestamp(),
+            },
+        );
+        Ok(())
     }
 
     /// Get metadata for a specific legacy message
@@ -2984,12 +3131,11 @@ impl InheritanceContract {
 
                 // Emit unlock event
                 env.events().publish(
-                    (Symbol::new(&env, "message_unlocked"),),
+                    (Symbol::new(&env, "message_unlocked"), message.vault_id),
                     MessageUnlockedEvent {
                         vault_id: message.vault_id,
                         message_id,
-                        unlocked_at: current_timestamp,
-                        unlock_reason: symbol_short!("time"),
+                        timestamp: current_timestamp,
                     },
                 );
             } else {
@@ -3010,12 +3156,11 @@ impl InheritanceContract {
 
                     // Emit unlock event
                     env.events().publish(
-                        (Symbol::new(&env, "message_unlocked"),),
+                        (Symbol::new(&env, "message_unlocked"), message.vault_id),
                         MessageUnlockedEvent {
                             vault_id: message.vault_id,
                             message_id,
-                            unlocked_at: current_timestamp,
-                            unlock_reason: symbol_short!("inherit"),
+                            timestamp: current_timestamp,
                         },
                     );
                 } else {
@@ -3046,8 +3191,18 @@ impl InheritanceContract {
         }
 
         if !is_beneficiary {
-            return Err(InheritanceError::Unauthorized); // Reuse for not beneficiary
+            return Err(InheritanceError::Unauthorized);
         }
+
+        // Emit access event
+        env.events().publish(
+            (Symbol::new(&env, "message_accessed"), message.vault_id),
+            MessageAccessedEvent {
+                vault_id: message.vault_id,
+                message_id,
+                timestamp: env.ledger().timestamp(),
+            },
+        );
 
         Ok(message)
     }
@@ -3093,12 +3248,11 @@ impl InheritanceContract {
 
                 // Emit unlock event
                 env.events().publish(
-                    (Symbol::new(&env, "message_unlocked"),),
+                    (Symbol::new(&env, "message_unlocked"), vault_id),
                     MessageUnlockedEvent {
                         vault_id,
                         message_id,
-                        unlocked_at: current_timestamp,
-                        unlock_reason: symbol_short!("inherit"),
+                        timestamp: current_timestamp,
                     },
                 );
             }
@@ -3323,4 +3477,6 @@ impl InheritanceContract {
     }
 }
 
+#[cfg(test)]
+mod message_test;
 mod test;

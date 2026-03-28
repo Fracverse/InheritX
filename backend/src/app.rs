@@ -20,6 +20,7 @@ use crate::document_storage::DocumentStorageService;
 use crate::governance::{
     CreateProposalRequest, GovernanceService, ParameterUpdateRequest, Proposal, VoteRequest,
 };
+use crate::insurance_fund::{CreateInsuranceClaimRequest, ProcessInsuranceClaimRequest};
 use crate::loan_lifecycle::{CreateLoanRequest, LoanLifecycleService, LoanListFilters};
 use crate::secure_messages::{
     CreateLegacyMessageRequest, LegacyMessageDeliveryService, MessageEncryptionService,
@@ -49,6 +50,7 @@ pub struct AppState {
     pub config: Config,
     pub yield_service: Arc<dyn OnChainYieldService>,
     pub stress_testing_engine: Arc<StressTestingEngine>,
+    pub insurance_fund_service: Arc<crate::insurance_fund::InsuranceFundService>,
 }
 
 pub async fn create_app(db: PgPool, config: Config) -> Result<Router, ApiError> {
@@ -75,11 +77,16 @@ pub async fn create_app(db: PgPool, config: Config) -> Result<Router, ApiError> 
         risk_engine,
     ));
 
+    let insurance_fund_service =
+        Arc::new(crate::insurance_fund::InsuranceFundService::new(db.clone()));
+    insurance_fund_service.clone().start();
+
     let state = Arc::new(AppState {
         db: db.clone(),
         config,
         yield_service,
         stress_testing_engine,
+        insurance_fund_service,
     });
 
     // Rate limiting configuration
@@ -261,6 +268,40 @@ pub async fn create_app(db: PgPool, config: Config) -> Result<Router, ApiError> 
         .route(
             "/api/admin/governance/parameters/update",
             post(update_protocol_parameter),
+        )
+        // ── Insurance Fund Monitoring (Issue #249) ───────────────────────────
+        .route(
+            "/api/admin/insurance-fund",
+            get(get_insurance_fund_dashboard),
+        )
+        .route("/api/admin/insurance-funds", get(get_all_insurance_funds))
+        .route(
+            "/api/admin/insurance-fund/:fund_id",
+            get(get_insurance_fund),
+        )
+        .route(
+            "/api/admin/insurance-fund/:fund_id/metrics",
+            get(get_insurance_fund_metrics_history),
+        )
+        .route(
+            "/api/admin/insurance-fund/:fund_id/transactions",
+            get(get_insurance_fund_transactions),
+        )
+        .route(
+            "/api/admin/insurance-fund/:fund_id/claims",
+            post(create_insurance_claim).get(get_insurance_claims),
+        )
+        .route(
+            "/api/admin/insurance-fund/claims/:claim_id",
+            get(get_insurance_claim),
+        )
+        .route(
+            "/api/admin/insurance-fund/claims/:claim_id/process",
+            post(process_insurance_claim),
+        )
+        .route(
+            "/api/admin/insurance-fund/claims/:claim_id/payout",
+            post(payout_insurance_claim),
         )
         .merge(analytics_router())
         // ── Will PDF & Template Engine (Tasks 1 & 2) ─────────────────────────
@@ -1823,5 +1864,239 @@ async fn get_my_audit_activity(
     Ok(Json(json!({
         "status": "success",
         "data": activity
+    })))
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Insurance Fund Monitoring (Issue #249)
+// ─────────────────────────────────────────────────────────────────────────────
+
+/// Admin: Get insurance fund dashboard
+///
+/// `GET /api/admin/insurance-fund`
+async fn get_insurance_fund_dashboard(
+    State(state): State<Arc<AppState>>,
+    AuthenticatedAdmin(_admin): AuthenticatedAdmin,
+) -> Result<Json<Value>, ApiError> {
+    let fund = state.insurance_fund_service.get_primary_fund().await?;
+    let dashboard = state.insurance_fund_service.get_dashboard(fund.id).await?;
+
+    Ok(Json(json!({
+        "status": "success",
+        "data": dashboard
+    })))
+}
+
+/// Admin: Get all insurance funds
+///
+/// `GET /api/admin/insurance-funds`
+async fn get_all_insurance_funds(
+    State(state): State<Arc<AppState>>,
+    AuthenticatedAdmin(_admin): AuthenticatedAdmin,
+) -> Result<Json<Value>, ApiError> {
+    let funds = state.insurance_fund_service.get_all_funds().await?;
+
+    Ok(Json(json!({
+        "status": "success",
+        "data": funds,
+        "count": funds.len()
+    })))
+}
+
+/// Admin: Get insurance fund by ID
+///
+/// `GET /api/admin/insurance-fund/:fund_id`
+async fn get_insurance_fund(
+    State(state): State<Arc<AppState>>,
+    Path(fund_id): Path<Uuid>,
+    AuthenticatedAdmin(_admin): AuthenticatedAdmin,
+) -> Result<Json<Value>, ApiError> {
+    let fund = state.insurance_fund_service.get_fund_by_id(fund_id).await?;
+
+    Ok(Json(json!({
+        "status": "success",
+        "data": fund
+    })))
+}
+
+/// Admin: Get insurance fund metrics history
+///
+/// `GET /api/admin/insurance-fund/:fund_id/metrics?days=30`
+#[derive(serde::Deserialize)]
+struct MetricsHistoryQuery {
+    days: Option<i64>,
+}
+
+async fn get_insurance_fund_metrics_history(
+    State(state): State<Arc<AppState>>,
+    Path(fund_id): Path<Uuid>,
+    Query(query): Query<MetricsHistoryQuery>,
+    AuthenticatedAdmin(_admin): AuthenticatedAdmin,
+) -> Result<Json<Value>, ApiError> {
+    let days = query.days.unwrap_or(30);
+    let history = state
+        .insurance_fund_service
+        .get_metrics_history(fund_id, days)
+        .await?;
+
+    Ok(Json(json!({
+        "status": "success",
+        "data": history,
+        "count": history.len()
+    })))
+}
+
+/// Admin: Get insurance fund transactions
+///
+/// `GET /api/admin/insurance-fund/:fund_id/transactions?limit=50`
+#[derive(serde::Deserialize)]
+struct TransactionsQuery {
+    limit: Option<i64>,
+}
+
+async fn get_insurance_fund_transactions(
+    State(state): State<Arc<AppState>>,
+    Path(fund_id): Path<Uuid>,
+    Query(query): Query<TransactionsQuery>,
+    AuthenticatedAdmin(_admin): AuthenticatedAdmin,
+) -> Result<Json<Value>, ApiError> {
+    let limit = query.limit.unwrap_or(50);
+
+    let transactions = sqlx::query_as::<_, crate::insurance_fund::InsuranceFundTransaction>(
+        "SELECT * FROM insurance_fund_transactions WHERE fund_id = $1 ORDER BY created_at DESC LIMIT $2",
+    )
+    .bind(fund_id)
+    .bind(limit)
+    .fetch_all(&state.db)
+    .await
+    .map_err(|e| ApiError::Internal(anyhow::anyhow!("DB error fetching transactions: {}", e)))?;
+
+    Ok(Json(json!({
+        "status": "success",
+        "data": transactions,
+        "count": transactions.len()
+    })))
+}
+
+/// Admin: Get insurance claims
+///
+/// `GET /api/admin/insurance-fund/:fund_id/claims?status=pending&limit=50`
+#[derive(serde::Deserialize)]
+struct ClaimsQuery {
+    status: Option<String>,
+    limit: Option<i64>,
+}
+
+async fn get_insurance_claims(
+    State(state): State<Arc<AppState>>,
+    Path(fund_id): Path<Uuid>,
+    Query(query): Query<ClaimsQuery>,
+    AuthenticatedAdmin(_admin): AuthenticatedAdmin,
+) -> Result<Json<Value>, ApiError> {
+    let limit = query.limit.unwrap_or(50);
+
+    let query_builder = if let Some(status) = &query.status {
+        sqlx::query_as::<_, crate::insurance_fund::InsuranceClaim>(
+            "SELECT * FROM insurance_claims WHERE fund_id = $1 AND status = $2 ORDER BY created_at DESC LIMIT $3",
+        )
+        .bind(fund_id)
+        .bind(status)
+        .bind(limit)
+    } else {
+        sqlx::query_as::<_, crate::insurance_fund::InsuranceClaim>(
+            "SELECT * FROM insurance_claims WHERE fund_id = $1 ORDER BY created_at DESC LIMIT $2",
+        )
+        .bind(fund_id)
+        .bind(limit)
+    };
+
+    let claims = query_builder
+        .fetch_all(&state.db)
+        .await
+        .map_err(|e| ApiError::Internal(anyhow::anyhow!("DB error fetching claims: {}", e)))?;
+
+    Ok(Json(json!({
+        "status": "success",
+        "data": claims,
+        "count": claims.len()
+    })))
+}
+
+/// Admin: Get insurance claim by ID
+///
+/// `GET /api/admin/insurance-fund/claims/:claim_id`
+async fn get_insurance_claim(
+    State(state): State<Arc<AppState>>,
+    Path(claim_id): Path<Uuid>,
+    AuthenticatedAdmin(_admin): AuthenticatedAdmin,
+) -> Result<Json<Value>, ApiError> {
+    let claim = sqlx::query_as::<_, crate::insurance_fund::InsuranceClaim>(
+        "SELECT * FROM insurance_claims WHERE id = $1",
+    )
+    .bind(claim_id)
+    .fetch_optional(&state.db)
+    .await
+    .map_err(|e| ApiError::Internal(anyhow::anyhow!("DB error fetching claim: {}", e)))?
+    .ok_or_else(|| ApiError::NotFound(format!("Insurance claim {} not found", claim_id)))?;
+
+    Ok(Json(json!({
+        "status": "success",
+        "data": claim
+    })))
+}
+
+/// Admin: Create insurance claim
+///
+/// `POST /api/admin/insurance-fund/:fund_id/claims`
+async fn create_insurance_claim(
+    State(state): State<Arc<AppState>>,
+    Path(fund_id): Path<Uuid>,
+    AuthenticatedAdmin(admin): AuthenticatedAdmin,
+    Json(req): Json<CreateInsuranceClaimRequest>,
+) -> Result<Json<Value>, ApiError> {
+    let claim = state
+        .insurance_fund_service
+        .create_claim(fund_id, admin.admin_id, &req)
+        .await?;
+
+    Ok(Json(json!({
+        "status": "success",
+        "data": claim
+    })))
+}
+
+/// Admin: Process insurance claim (approve/reject)
+///
+/// `POST /api/admin/insurance-fund/claims/:claim_id/process`
+async fn process_insurance_claim(
+    State(state): State<Arc<AppState>>,
+    Path(claim_id): Path<Uuid>,
+    AuthenticatedAdmin(admin): AuthenticatedAdmin,
+    Json(req): Json<ProcessInsuranceClaimRequest>,
+) -> Result<Json<Value>, ApiError> {
+    let claim = state
+        .insurance_fund_service
+        .process_claim(claim_id, admin.admin_id, &req)
+        .await?;
+
+    Ok(Json(json!({
+        "status": "success",
+        "data": claim
+    })))
+}
+
+/// Admin: Payout approved insurance claim
+///
+/// `POST /api/admin/insurance-fund/claims/:claim_id/payout`
+async fn payout_insurance_claim(
+    State(state): State<Arc<AppState>>,
+    Path(claim_id): Path<Uuid>,
+    AuthenticatedAdmin(_admin): AuthenticatedAdmin,
+) -> Result<Json<Value>, ApiError> {
+    state.insurance_fund_service.payout_claim(claim_id).await?;
+
+    Ok(Json(json!({
+        "status": "success",
+        "message": "Claim paid out successfully"
     })))
 }
