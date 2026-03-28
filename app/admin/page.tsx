@@ -5,6 +5,7 @@ import { StatsCards } from "@/components/admin/StatsCards";
 import { RecentActivity } from "@/components/admin/RecentActivity";
 import { KYCOverview } from "@/components/admin/KYCOverview";
 import { QuickActions } from "@/components/admin/QuickActions";
+import { InsuranceFundMonitoring } from "@/components/admin/InsuranceFundMonitoring";
 import { motion } from "framer-motion";
 
 export default function AdminDashboardPage() {
@@ -34,6 +35,7 @@ export default function AdminDashboardPage() {
                     <RecentActivity />
                 </div>
                 <div className="space-y-8">
+                    <InsuranceFundMonitoring />
                     <KYCOverview />
                     <QuickActions />
                 </div>
