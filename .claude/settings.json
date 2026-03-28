@@ -1,8 +1,0 @@
-{
-  "permissions": {
-    "allow": [
-      "Bash(ls -la /home/ljtwp/Desktop/drips/InheritX/backend/src/*.rs)",
-      "Bash(cargo check:*)"
-    ]
-  }
-}
