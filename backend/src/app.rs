@@ -400,6 +400,27 @@ pub async fn create_app(db: PgPool, config: Config) -> Result<Router, ApiError> 
             get(get_plan_audit_summary),
         )
         .route("/api/will/audit/my-activity", get(get_my_audit_activity))
+        // -- Legacy Content Upload (Issue #XXX) -------------------------------
+        .route(
+            "/api/content/upload",
+            post(upload_legacy_content),
+        )
+        .route(
+            "/api/content",
+            get(list_user_content),
+        )
+        .route(
+            "/api/content/:content_id",
+            get(get_content_by_id).delete(delete_content),
+        )
+        .route(
+            "/api/content/:content_id/download",
+            get(download_content),
+        )
+        .route(
+            "/api/content/stats",
+            get(get_storage_stats),
+        )
         .with_state(state);
 
     // Add price feed routes with separate state
@@ -1823,5 +1844,149 @@ async fn get_my_audit_activity(
     Ok(Json(json!({
         "status": "success",
         "data": activity
+    })))
+}
+
+
+// -- Legacy Content Upload Handlers --------------------------------------------
+
+use crate::legacy_content::{ContentListFilters, LegacyContentService, UploadMetadata, FileStorageService};
+use axum::extract::Multipart;
+
+async fn upload_legacy_content(
+    State(state): State<Arc<AppState>>,
+    AuthenticatedUser(user): AuthenticatedUser,
+    mut multipart: Multipart,
+) -> Result<Json<Value>, ApiError> {
+    let mut file_data: Option<Vec<u8>> = None;
+    let mut metadata: Option<UploadMetadata> = None;
+
+    while let Some(field) = multipart.next_field().await.map_err(|e| {
+        ApiError::BadRequest(format!("Failed to read multipart field: {}", e))
+    })? {
+        let name = field.name().unwrap_or("").to_string();
+
+        match name.as_str() {
+            "file" => {
+                let data = field.bytes().await.map_err(|e| {
+                    ApiError::BadRequest(format!("Failed to read file data: {}", e))
+                })?;
+                file_data = Some(data.to_vec());
+            }
+            "metadata" => {
+                let text = field.text().await.map_err(|e| {
+                    ApiError::BadRequest(format!("Failed to read metadata: {}", e))
+                })?;
+                metadata = Some(serde_json::from_str(&text).map_err(|e| {
+                    ApiError::BadRequest(format!("Invalid metadata JSON: {}", e))
+                })?);
+            }
+            _ => {}
+        }
+    }
+
+    let file_data = file_data.ok_or_else(|| ApiError::BadRequest("No file provided".to_string()))?;
+    let metadata = metadata.ok_or_else(|| ApiError::BadRequest("No metadata provided".to_string()))?;
+
+    LegacyContentService::validate_content_type(&metadata.content_type)?;
+    LegacyContentService::validate_file_size(file_data.len())?;
+
+    let file_hash = LegacyContentService::calculate_file_hash(&file_data);
+    let storage_path = LegacyContentService::generate_storage_path(user.user_id, &metadata.original_filename);
+
+    let storage_service = FileStorageService::new(std::path::PathBuf::from("./storage"));
+    storage_service.save_file(&storage_path, &file_data).await?;
+
+    let record = LegacyContentService::create_content_record(
+        &state.db,
+        user.user_id,
+        &metadata,
+        storage_path,
+        file_hash,
+    )
+    .await?;
+
+    Ok(Json(json!({
+        "status": "success",
+        "message": "File uploaded successfully",
+        "data": record
+    })))
+}
+
+async fn list_user_content(
+    State(state): State<Arc<AppState>>,
+    AuthenticatedUser(user): AuthenticatedUser,
+    Query(filters): Query<ContentListFilters>,
+) -> Result<Json<Value>, ApiError> {
+    let content = LegacyContentService::list_user_content(&state.db, user.user_id, &filters).await?;
+    Ok(Json(json!({
+        "status": "success",
+        "data": content,
+        "count": content.len()
+    })))
+}
+
+async fn get_content_by_id(
+    State(state): State<Arc<AppState>>,
+    Path(content_id): Path<Uuid>,
+    AuthenticatedUser(user): AuthenticatedUser,
+) -> Result<Json<Value>, ApiError> {
+    let content = LegacyContentService::get_content_by_id(&state.db, content_id, user.user_id).await?;
+    Ok(Json(json!({
+        "status": "success",
+        "data": content
+    })))
+}
+
+async fn delete_content(
+    State(state): State<Arc<AppState>>,
+    Path(content_id): Path<Uuid>,
+    AuthenticatedUser(user): AuthenticatedUser,
+) -> Result<Json<Value>, ApiError> {
+    let content = LegacyContentService::get_content_by_id(&state.db, content_id, user.user_id).await?;
+    
+    let storage_service = FileStorageService::new(std::path::PathBuf::from("./storage"));
+    storage_service.delete_file(&content.storage_path).await?;
+    
+    LegacyContentService::delete_content(&state.db, content_id, user.user_id).await?;
+    
+    Ok(Json(json!({
+        "status": "success",
+        "message": "Content deleted successfully"
+    })))
+}
+
+async fn download_content(
+    State(state): State<Arc<AppState>>,
+    Path(content_id): Path<Uuid>,
+    AuthenticatedUser(user): AuthenticatedUser,
+) -> Result<axum::response::Response, ApiError> {
+    let content = LegacyContentService::get_content_by_id(&state.db, content_id, user.user_id).await?;
+    
+    let storage_service = FileStorageService::new(std::path::PathBuf::from("./storage"));
+    let file_data = storage_service.read_file(&content.storage_path).await?;
+    
+    use axum::body::Body;
+    use axum::http::{header, Response, StatusCode};
+    
+    let content_disposition = format!("attachment; filename=\"{}\"", content.original_filename);
+    
+    Response::builder()
+        .status(StatusCode::OK)
+        .header(header::CONTENT_TYPE, content.content_type)
+        .header(header::CONTENT_DISPOSITION, content_disposition)
+        .header(header::CACHE_CONTROL, "no-cache, no-store, must-revalidate")
+        .body(Body::from(file_data))
+        .map_err(|e| ApiError::Internal(anyhow::anyhow!("Failed to build response: {}", e)))
+}
+
+async fn get_storage_stats(
+    State(state): State<Arc<AppState>>,
+    AuthenticatedUser(user): AuthenticatedUser,
+) -> Result<Json<Value>, ApiError> {
+    let stats = LegacyContentService::get_user_storage_stats(&state.db, user.user_id).await?;
+    Ok(Json(json!({
+        "status": "success",
+        "data": stats
     })))
 }
