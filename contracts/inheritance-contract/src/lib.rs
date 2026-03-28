@@ -642,6 +642,32 @@ impl InheritanceContract {
         Ok(())
     }
 
+    /// Check if a user has approved KYC status
+    ///
+    /// # Arguments
+    /// * `env` - The environment
+    /// * `user` - The user address to check
+    ///
+    /// # Returns
+    /// Ok(()) if user has approved KYC, Err(InheritanceError) otherwise
+    ///
+    /// # Errors
+    /// - KycNotSubmitted: If user has not submitted KYC
+    fn check_kyc_approved(env: &Env, user: &Address) -> Result<(), InheritanceError> {
+        let key = DataKey::Kyc(user.clone());
+        let status: KycStatus = env
+            .storage()
+            .persistent()
+            .get(&key)
+            .ok_or(InheritanceError::KycNotSubmitted)?;
+
+        if !status.approved {
+            return Err(InheritanceError::KycNotSubmitted);
+        }
+
+        Ok(())
+    }
+
     // Storage functions
     fn get_next_plan_id(env: &Env) -> u64 {
         let key = DataKey::NextPlanId;
@@ -1039,6 +1065,9 @@ impl InheritanceContract {
         // Require owner authorization
         owner.require_auth();
 
+        // Check KYC approval - only approved users can create plans
+        Self::check_kyc_approved(&env, &owner)?;
+
         // Admin must be set to receive the fee
         let admin = Self::get_admin(&env).ok_or(InheritanceError::AdminNotSet)?;
 
@@ -1326,9 +1355,16 @@ impl InheritanceContract {
     pub fn claim_inheritance_plan(
         env: Env,
         plan_id: u64,
+        claimer: Address,
         email: String,
         claim_code: u32,
     ) -> Result<(), InheritanceError> {
+        // Require claimer authorization
+        claimer.require_auth();
+
+        // Check KYC approval - only approved users can claim plans
+        Self::check_kyc_approved(&env, &claimer)?;
+
         // Fetch the plan
         let plan = Self::get_plan(&env, plan_id).ok_or(InheritanceError::PlanNotFound)?;
 
