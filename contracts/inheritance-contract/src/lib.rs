@@ -394,6 +394,15 @@ pub struct MessageFinalizedEvent {
     pub timestamp: u64,
 }
 
+/// Event emitted when a legacy message is deleted
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct MessageDeletedEvent {
+    pub vault_id: u64,
+    pub message_id: u64,
+    pub timestamp: u64,
+}
+
 /// Event emitted when a message is unlocked
 #[contracttype]
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -3095,6 +3104,71 @@ impl InheritanceContract {
             .unwrap_or_else(|| vec![&env])
     }
 
+    /// Delete a legacy message before it has been finalized.
+    ///
+    /// # Arguments
+    /// * `env` - The Soroban environment
+    /// * `owner` - The vault owner requesting deletion
+    /// * `message_id` - The message to delete
+    ///
+    /// # Errors
+    /// - `PlanNotFound` if the message does not exist
+    /// - `Unauthorized` if caller is not the message creator
+    /// - `WillAlreadyFinalized` if the message has been finalized
+    pub fn delete_legacy_message(
+        env: Env,
+        owner: Address,
+        message_id: u64,
+    ) -> Result<(), InheritanceError> {
+        owner.require_auth();
+
+        let message: LegacyMessageMetadata = env
+            .storage()
+            .persistent()
+            .get(&DataKey::LegacyMessage(message_id))
+            .ok_or(InheritanceError::PlanNotFound)?;
+
+        if message.creator != owner {
+            return Err(InheritanceError::Unauthorized);
+        }
+
+        if message.is_finalized {
+            return Err(InheritanceError::WillAlreadyFinalized);
+        }
+
+        // Remove message metadata
+        env.storage()
+            .persistent()
+            .remove(&DataKey::LegacyMessage(message_id));
+
+        // Remove from vault's message list
+        let vault_messages: Vec<u64> = env
+            .storage()
+            .persistent()
+            .get(&DataKey::VaultMessages(message.vault_id))
+            .unwrap_or_else(|| vec![&env]);
+        let mut updated: Vec<u64> = vec![&env];
+        for id in vault_messages.iter() {
+            if id != message_id {
+                updated.push_back(id);
+            }
+        }
+        env.storage()
+            .persistent()
+            .set(&DataKey::VaultMessages(message.vault_id), &updated);
+
+        env.events().publish(
+            (Symbol::new(&env, "message_deleted"), message.vault_id),
+            MessageDeletedEvent {
+                vault_id: message.vault_id,
+                message_id,
+                timestamp: env.ledger().timestamp(),
+            },
+        );
+
+        Ok(())
+    }
+
     /// Access a legacy message (returns metadata if accessible)
     ///
     /// # Arguments
@@ -3478,5 +3552,6 @@ impl InheritanceContract {
 }
 
 #[cfg(test)]
+#[allow(clippy::duplicated_attributes)]
 mod message_test;
 mod test;

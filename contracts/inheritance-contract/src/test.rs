@@ -4582,3 +4582,88 @@ fn test_claim_plan_with_approved_kyc_succeeds() {
 
     // Verify claim was recorded (no error means success)
 }
+
+// --- Message Deletion Option ---
+
+fn make_message(
+    env: &Env,
+    client: &InheritanceContractClient<'_>,
+    owner: &Address,
+    vault_id: u64,
+) -> u64 {
+    client.create_legacy_message(
+        owner,
+        &CreateLegacyMessageParams {
+            vault_id,
+            message_hash: BytesN::from_array(env, &[1u8; 32]),
+            unlock_timestamp: env.ledger().timestamp() + 10_000,
+            key_reference: soroban_sdk::String::from_str(env, "ref_1"),
+        },
+    )
+}
+
+#[test]
+fn test_delete_legacy_message_before_lock() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let (client, token_id, _admin, owner) = setup_with_token_and_admin(&env);
+    let plan_id = create_plan_and_get_id(&env, &client, &token_id, &owner);
+    let message_id = make_message(&env, &client, &owner, plan_id);
+
+    client.delete_legacy_message(&owner, &message_id);
+
+    // Message is gone
+    assert!(client.get_legacy_message(&message_id).is_none());
+    // Removed from vault list
+    let vault_messages = client.get_vault_messages(&plan_id);
+    assert!(!vault_messages.contains(message_id));
+}
+
+#[test]
+fn test_delete_legacy_message_removes_from_vault_list() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let (client, token_id, _admin, owner) = setup_with_token_and_admin(&env);
+    let plan_id = create_plan_and_get_id(&env, &client, &token_id, &owner);
+
+    let id_a = make_message(&env, &client, &owner, plan_id);
+    let id_b = make_message(&env, &client, &owner, plan_id);
+
+    assert_eq!(client.get_vault_messages(&plan_id).len(), 2);
+
+    client.delete_legacy_message(&owner, &id_a);
+
+    let remaining = client.get_vault_messages(&plan_id);
+    assert_eq!(remaining.len(), 1);
+    assert_eq!(remaining.get(0).unwrap(), id_b);
+}
+
+#[test]
+fn test_delete_legacy_message_fails_after_lock() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let (client, token_id, _admin, owner) = setup_with_token_and_admin(&env);
+    let plan_id = create_plan_and_get_id(&env, &client, &token_id, &owner);
+    let message_id = make_message(&env, &client, &owner, plan_id);
+
+    client.finalize_legacy_message(&owner, &message_id);
+
+    let result = client.try_delete_legacy_message(&owner, &message_id);
+    assert_eq!(result, Err(Ok(InheritanceError::WillAlreadyFinalized)));
+    // Message still present
+    assert!(client.get_legacy_message(&message_id).is_some());
+}
+
+#[test]
+fn test_delete_legacy_message_unauthorized() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let (client, token_id, _admin, owner) = setup_with_token_and_admin(&env);
+    let plan_id = create_plan_and_get_id(&env, &client, &token_id, &owner);
+    let message_id = make_message(&env, &client, &owner, plan_id);
+
+    let stranger = Address::generate(&env);
+    let result = client.try_delete_legacy_message(&stranger, &message_id);
+    assert_eq!(result, Err(Ok(InheritanceError::Unauthorized)));
+    assert!(client.get_legacy_message(&message_id).is_some());
+}
