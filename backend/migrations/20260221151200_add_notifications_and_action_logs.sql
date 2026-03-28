@@ -1,4 +1,7 @@
 -- Issue #76: Notifications & Logging
+-- Ensure UUID extension is available
+CREATE EXTENSION IF NOT EXISTS "uuid-ossp";
+
 -- Add `type` column to existing notifications table
 ALTER TABLE notifications
     ADD COLUMN IF NOT EXISTS type VARCHAR(100) NOT NULL DEFAULT 'general';

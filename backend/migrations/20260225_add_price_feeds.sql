@@ -1,5 +1,8 @@
 -- Add price feed and collateral valuation support
 
+-- Ensure UUID extension is available
+CREATE EXTENSION IF NOT EXISTS "uuid-ossp";
+
 -- Price Feed Configuration Table
 CREATE TABLE price_feeds (
     id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
