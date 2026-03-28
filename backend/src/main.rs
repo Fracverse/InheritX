@@ -1,4 +1,6 @@
-use inheritx_backend::{create_app, db, telemetry, Config};
+use inheritx_backend::{
+    create_app, db, telemetry, Config, LegacyMessageDeliveryService, MessageKeyService,
+};
 use std::net::SocketAddr;
 use std::sync::Arc;
 use tracing::info;
@@ -16,6 +18,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     // Run database migrations
     db::run_migrations(&db_pool).await?;
+
+    // Ensure there is always one active message encryption key.
+    MessageKeyService::ensure_active_key(&db_pool).await?;
 
     // Create application
     let app = create_app(db_pool.clone(), config.clone()).await?;
@@ -42,6 +47,11 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         inheritx_backend::LendingNotificationService::new(db_pool.clone()),
     );
     lending_notification_service.start();
+
+    // Start legacy message delivery worker.
+    let legacy_message_delivery_service =
+        Arc::new(LegacyMessageDeliveryService::new(db_pool.clone()));
+    legacy_message_delivery_service.start();
 
     // Start server
     let addr = SocketAddr::from(([0, 0, 0, 0], config.port));

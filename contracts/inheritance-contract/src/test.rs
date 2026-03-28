@@ -3859,3 +3859,350 @@ fn test_get_will_signature_none() {
     let result = client.get_will_signature(&1u64);
     assert_eq!(result, None);
 }
+
+// --- Issue #319: Will Finalization ---
+
+#[test]
+fn test_finalize_will_success() {
+    let env = Env::default();
+    let (client, token_id, _admin, owner) = setup_with_token_and_admin(&env);
+    let plan_id = create_plan_and_get_id(&env, &client, &token_id, &owner);
+    let will_hash = test_will_hash(&env);
+
+    let version = client.create_will_version(&owner, &plan_id, &will_hash);
+    client.sign_will(&owner, &plan_id, &will_hash);
+
+    client.finalize_will(&owner, &plan_id, &version);
+
+    assert!(client.is_will_finalized(&plan_id, &version));
+    assert!(client.get_will_finalized_at(&plan_id, &version).is_some());
+}
+
+#[test]
+fn test_finalize_will_emits_event() {
+    let env = Env::default();
+    let (client, token_id, _admin, owner) = setup_with_token_and_admin(&env);
+    let plan_id = create_plan_and_get_id(&env, &client, &token_id, &owner);
+    let will_hash = test_will_hash(&env);
+
+    let version = client.create_will_version(&owner, &plan_id, &will_hash);
+    client.sign_will(&owner, &plan_id, &will_hash);
+    client.finalize_will(&owner, &plan_id, &version);
+
+    let events = env.events().all();
+    let found = events.iter().any(|e| {
+        let topics: soroban_sdk::Vec<soroban_sdk::Val> = e.1;
+        topics.len() >= 2
+    });
+    assert!(found);
+}
+
+#[test]
+fn test_finalize_will_without_signature_fails() {
+    let env = Env::default();
+    let (client, token_id, _admin, owner) = setup_with_token_and_admin(&env);
+    let plan_id = create_plan_and_get_id(&env, &client, &token_id, &owner);
+    let will_hash = test_will_hash(&env);
+
+    let version = client.create_will_version(&owner, &plan_id, &will_hash);
+
+    let result = client.try_finalize_will(&owner, &plan_id, &version);
+    assert!(result.is_err());
+}
+
+#[test]
+fn test_finalize_will_already_finalized_fails() {
+    let env = Env::default();
+    let (client, token_id, _admin, owner) = setup_with_token_and_admin(&env);
+    let plan_id = create_plan_and_get_id(&env, &client, &token_id, &owner);
+    let will_hash = test_will_hash(&env);
+
+    let version = client.create_will_version(&owner, &plan_id, &will_hash);
+    client.sign_will(&owner, &plan_id, &will_hash);
+    client.finalize_will(&owner, &plan_id, &version);
+
+    let result = client.try_finalize_will(&owner, &plan_id, &version);
+    assert!(result.is_err());
+}
+
+#[test]
+fn test_finalize_will_unauthorized() {
+    let env = Env::default();
+    let (client, token_id, _admin, owner) = setup_with_token_and_admin(&env);
+    let plan_id = create_plan_and_get_id(&env, &client, &token_id, &owner);
+    let will_hash = test_will_hash(&env);
+
+    let version = client.create_will_version(&owner, &plan_id, &will_hash);
+    client.sign_will(&owner, &plan_id, &will_hash);
+
+    let attacker = Address::generate(&env);
+    let result = client.try_finalize_will(&attacker, &plan_id, &version);
+    assert!(result.is_err());
+}
+
+#[test]
+fn test_finalize_will_version_not_found() {
+    let env = Env::default();
+    let (client, token_id, _admin, owner) = setup_with_token_and_admin(&env);
+    let plan_id = create_plan_and_get_id(&env, &client, &token_id, &owner);
+    let will_hash = test_will_hash(&env);
+
+    client.sign_will(&owner, &plan_id, &will_hash);
+
+    let result = client.try_finalize_will(&owner, &plan_id, &99u32);
+    assert!(result.is_err());
+}
+
+#[test]
+fn test_is_will_finalized_false_by_default() {
+    let env = Env::default();
+    let (client, token_id, _admin, owner) = setup_with_token_and_admin(&env);
+    let plan_id = create_plan_and_get_id(&env, &client, &token_id, &owner);
+
+    assert!(!client.is_will_finalized(&plan_id, &1u32));
+}
+
+#[test]
+fn test_finalized_will_blocks_new_version() {
+    let env = Env::default();
+    let (client, token_id, _admin, owner) = setup_with_token_and_admin(&env);
+    let plan_id = create_plan_and_get_id(&env, &client, &token_id, &owner);
+    let will_hash = test_will_hash(&env);
+
+    let version = client.create_will_version(&owner, &plan_id, &will_hash);
+    client.sign_will(&owner, &plan_id, &will_hash);
+    client.finalize_will(&owner, &plan_id, &version);
+
+    let result = client.try_create_will_version(&owner, &plan_id, &test_will_hash_2(&env));
+    assert!(result.is_err());
+}
+
+// --- Issue #320: Legal Witness Verification ---
+
+#[test]
+fn test_add_witness_success() {
+    let env = Env::default();
+    let (client, token_id, _admin, owner) = setup_with_token_and_admin(&env);
+    let plan_id = create_plan_and_get_id(&env, &client, &token_id, &owner);
+    let witness = Address::generate(&env);
+
+    client.add_witness(&owner, &plan_id, &witness);
+
+    let witnesses = client.get_witnesses(&plan_id);
+    assert_eq!(witnesses.len(), 1);
+    assert_eq!(witnesses.get(0).unwrap(), witness);
+}
+
+#[test]
+fn test_add_witness_emits_event() {
+    let env = Env::default();
+    let (client, token_id, _admin, owner) = setup_with_token_and_admin(&env);
+    let plan_id = create_plan_and_get_id(&env, &client, &token_id, &owner);
+    let witness = Address::generate(&env);
+
+    client.add_witness(&owner, &plan_id, &witness);
+
+    let events = env.events().all();
+    let found = events.iter().any(|e| {
+        let topics: soroban_sdk::Vec<soroban_sdk::Val> = e.1;
+        topics.len() >= 2
+    });
+    assert!(found);
+}
+
+#[test]
+fn test_add_witness_duplicate_fails() {
+    let env = Env::default();
+    let (client, token_id, _admin, owner) = setup_with_token_and_admin(&env);
+    let plan_id = create_plan_and_get_id(&env, &client, &token_id, &owner);
+    let witness = Address::generate(&env);
+
+    client.add_witness(&owner, &plan_id, &witness);
+
+    let result = client.try_add_witness(&owner, &plan_id, &witness);
+    assert!(result.is_err());
+}
+
+#[test]
+fn test_add_witness_unauthorized() {
+    let env = Env::default();
+    let (client, token_id, _admin, owner) = setup_with_token_and_admin(&env);
+    let plan_id = create_plan_and_get_id(&env, &client, &token_id, &owner);
+    let witness = Address::generate(&env);
+    let attacker = Address::generate(&env);
+
+    let result = client.try_add_witness(&attacker, &plan_id, &witness);
+    assert!(result.is_err());
+}
+
+#[test]
+fn test_add_multiple_witnesses() {
+    let env = Env::default();
+    let (client, token_id, _admin, owner) = setup_with_token_and_admin(&env);
+    let plan_id = create_plan_and_get_id(&env, &client, &token_id, &owner);
+    let w1 = Address::generate(&env);
+    let w2 = Address::generate(&env);
+
+    client.add_witness(&owner, &plan_id, &w1);
+    client.add_witness(&owner, &plan_id, &w2);
+
+    let witnesses = client.get_witnesses(&plan_id);
+    assert_eq!(witnesses.len(), 2);
+}
+
+#[test]
+fn test_sign_as_witness_success() {
+    let env = Env::default();
+    let (client, token_id, _admin, owner) = setup_with_token_and_admin(&env);
+    let plan_id = create_plan_and_get_id(&env, &client, &token_id, &owner);
+    let witness = Address::generate(&env);
+
+    client.add_witness(&owner, &plan_id, &witness);
+    client.sign_as_witness(&witness, &plan_id);
+
+    let signed_at = client.get_witness_signature(&plan_id, &witness);
+    assert!(signed_at.is_some());
+}
+
+#[test]
+fn test_sign_as_witness_emits_event() {
+    let env = Env::default();
+    let (client, token_id, _admin, owner) = setup_with_token_and_admin(&env);
+    let plan_id = create_plan_and_get_id(&env, &client, &token_id, &owner);
+    let witness = Address::generate(&env);
+
+    client.add_witness(&owner, &plan_id, &witness);
+    client.sign_as_witness(&witness, &plan_id);
+
+    let events = env.events().all();
+    let found = events.iter().any(|e| {
+        let topics: soroban_sdk::Vec<soroban_sdk::Val> = e.1;
+        topics.len() >= 2
+    });
+    assert!(found);
+}
+
+#[test]
+fn test_sign_as_witness_not_registered_fails() {
+    let env = Env::default();
+    let (client, token_id, _admin, owner) = setup_with_token_and_admin(&env);
+    let plan_id = create_plan_and_get_id(&env, &client, &token_id, &owner);
+    let stranger = Address::generate(&env);
+
+    let result = client.try_sign_as_witness(&stranger, &plan_id);
+    assert!(result.is_err());
+}
+
+#[test]
+fn test_sign_as_witness_double_sign_fails() {
+    let env = Env::default();
+    let (client, token_id, _admin, owner) = setup_with_token_and_admin(&env);
+    let plan_id = create_plan_and_get_id(&env, &client, &token_id, &owner);
+    let witness = Address::generate(&env);
+
+    client.add_witness(&owner, &plan_id, &witness);
+    client.sign_as_witness(&witness, &plan_id);
+
+    let result = client.try_sign_as_witness(&witness, &plan_id);
+    assert!(result.is_err());
+}
+
+#[test]
+fn test_finalize_fails_when_witness_not_signed() {
+    let env = Env::default();
+    let (client, token_id, _admin, owner) = setup_with_token_and_admin(&env);
+    let plan_id = create_plan_and_get_id(&env, &client, &token_id, &owner);
+    let will_hash = test_will_hash(&env);
+    let witness = Address::generate(&env);
+
+    let version = client.create_will_version(&owner, &plan_id, &will_hash);
+    client.sign_will(&owner, &plan_id, &will_hash);
+    client.add_witness(&owner, &plan_id, &witness);
+
+    let result = client.try_finalize_will(&owner, &plan_id, &version);
+    assert!(result.is_err());
+}
+
+#[test]
+fn test_finalize_succeeds_after_all_witnesses_sign() {
+    let env = Env::default();
+    let (client, token_id, _admin, owner) = setup_with_token_and_admin(&env);
+    let plan_id = create_plan_and_get_id(&env, &client, &token_id, &owner);
+    let will_hash = test_will_hash(&env);
+    let witness = Address::generate(&env);
+
+    let version = client.create_will_version(&owner, &plan_id, &will_hash);
+    client.sign_will(&owner, &plan_id, &will_hash);
+    client.add_witness(&owner, &plan_id, &witness);
+    client.sign_as_witness(&witness, &plan_id);
+
+    client.finalize_will(&owner, &plan_id, &version);
+    assert!(client.is_will_finalized(&plan_id, &version));
+}
+
+#[test]
+fn test_get_witnesses_empty() {
+    let env = Env::default();
+    let (client, token_id, _admin, owner) = setup_with_token_and_admin(&env);
+    let plan_id = create_plan_and_get_id(&env, &client, &token_id, &owner);
+
+    let witnesses = client.get_witnesses(&plan_id);
+    assert_eq!(witnesses.len(), 0);
+}
+
+#[test]
+fn test_get_witness_signature_none() {
+    let env = Env::default();
+    let (client, token_id, _admin, owner) = setup_with_token_and_admin(&env);
+    let plan_id = create_plan_and_get_id(&env, &client, &token_id, &owner);
+    let witness = Address::generate(&env);
+
+    let result = client.get_witness_signature(&plan_id, &witness);
+    assert_eq!(result, None);
+}
+
+// --- Issue #321: Will Update Restrictions ---
+
+#[test]
+fn test_finalized_will_cannot_be_modified() {
+    let env = Env::default();
+    let (client, token_id, _admin, owner) = setup_with_token_and_admin(&env);
+    let plan_id = create_plan_and_get_id(&env, &client, &token_id, &owner);
+    let will_hash = test_will_hash(&env);
+
+    let version = client.create_will_version(&owner, &plan_id, &will_hash);
+    client.sign_will(&owner, &plan_id, &will_hash);
+    client.finalize_will(&owner, &plan_id, &version);
+
+    let result = client.try_create_will_version(&owner, &plan_id, &test_will_hash_2(&env));
+    assert!(result.is_err());
+}
+
+#[test]
+fn test_unfinalized_will_can_be_updated() {
+    let env = Env::default();
+    let (client, token_id, _admin, owner) = setup_with_token_and_admin(&env);
+    let plan_id = create_plan_and_get_id(&env, &client, &token_id, &owner);
+
+    let v1 = client.create_will_version(&owner, &plan_id, &test_will_hash(&env));
+    assert_eq!(v1, 1);
+
+    let v2 = client.create_will_version(&owner, &plan_id, &test_will_hash_2(&env));
+    assert_eq!(v2, 2);
+}
+
+#[test]
+fn test_finalized_version_is_immutable() {
+    let env = Env::default();
+    let (client, token_id, _admin, owner) = setup_with_token_and_admin(&env);
+    let plan_id = create_plan_and_get_id(&env, &client, &token_id, &owner);
+    let will_hash = test_will_hash(&env);
+
+    let version = client.create_will_version(&owner, &plan_id, &will_hash);
+    client.sign_will(&owner, &plan_id, &will_hash);
+    client.finalize_will(&owner, &plan_id, &version);
+
+    let ver_info = client.get_will_version(&plan_id, &version).unwrap();
+    assert_eq!(ver_info.will_hash, will_hash);
+    assert!(client.is_will_finalized(&plan_id, &version));
+}

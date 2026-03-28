@@ -21,7 +21,10 @@ use crate::governance::{
     CreateProposalRequest, GovernanceService, ParameterUpdateRequest, Proposal, VoteRequest,
 };
 use crate::loan_lifecycle::{CreateLoanRequest, LoanLifecycleService, LoanListFilters};
-use crate::reserve_health::ReserveHealthEngine;
+use crate::secure_messages::{
+    CreateLegacyMessageRequest, LegacyMessageDeliveryService, MessageEncryptionService,
+    MessageKeyService,
+};
 use crate::service::{
     ClaimPlanRequest, CreateEmergencyAccessGrantRequest, CreateEmergencyContactRequest,
     CreatePlanRequest, EmergencyAccessAuditLogFilters, EmergencyAccessService,
@@ -123,6 +126,16 @@ pub async fn create_app(db: PgPool, config: Config) -> Result<Router, ApiError> 
         .route("/api/plans/:plan_id/claim", post(claim_plan))
         .route("/api/plans/:plan_id", get(get_plan))
         .route("/api/plans", post(create_plan))
+        .route(
+            "/api/messages/legacy",
+            post(create_legacy_message).get(list_legacy_messages),
+        )
+        .route("/api/admin/messages/keys", get(list_message_keys))
+        .route("/api/admin/messages/keys/rotate", post(rotate_message_key))
+        .route(
+            "/api/admin/messages/delivery/process",
+            post(process_legacy_message_delivery),
+        )
         .route(
             "/api/emergency/contacts",
             get(list_emergency_contacts).post(create_emergency_contact),
@@ -515,6 +528,57 @@ async fn get_due_for_claim_plan(
             plan_id
         ))),
     }
+}
+
+async fn create_legacy_message(
+    State(state): State<Arc<AppState>>,
+    AuthenticatedUser(user): AuthenticatedUser,
+    Json(req): Json<CreateLegacyMessageRequest>,
+) -> Result<Json<Value>, ApiError> {
+    let message =
+        MessageEncryptionService::create_encrypted_message(&state.db, user.user_id, &req).await?;
+    Ok(Json(json!({ "status": "success", "data": message })))
+}
+
+async fn list_legacy_messages(
+    State(state): State<Arc<AppState>>,
+    AuthenticatedUser(user): AuthenticatedUser,
+) -> Result<Json<Value>, ApiError> {
+    let messages = MessageEncryptionService::list_owner_messages(&state.db, user.user_id).await?;
+    Ok(Json(
+        json!({ "status": "success", "data": messages, "count": messages.len() }),
+    ))
+}
+
+async fn list_message_keys(
+    State(state): State<Arc<AppState>>,
+    AuthenticatedAdmin(_admin): AuthenticatedAdmin,
+) -> Result<Json<Value>, ApiError> {
+    let keys = MessageKeyService::list_keys(&state.db).await?;
+    Ok(Json(
+        json!({ "status": "success", "data": keys, "count": keys.len() }),
+    ))
+}
+
+async fn rotate_message_key(
+    State(state): State<Arc<AppState>>,
+    AuthenticatedAdmin(admin): AuthenticatedAdmin,
+) -> Result<Json<Value>, ApiError> {
+    let key = MessageKeyService::rotate_active_key(&state.db, admin.admin_id).await?;
+    Ok(Json(json!({
+        "status": "success",
+        "message": "Message encryption key rotated",
+        "data": key
+    })))
+}
+
+async fn process_legacy_message_delivery(
+    State(state): State<Arc<AppState>>,
+    AuthenticatedAdmin(_admin): AuthenticatedAdmin,
+) -> Result<Json<Value>, ApiError> {
+    let delivery_service = LegacyMessageDeliveryService::new(state.db.clone());
+    let result = delivery_service.process_due_messages().await?;
+    Ok(Json(json!({ "status": "success", "data": result })))
 }
 
 async fn get_all_due_for_claim_plans_user(
