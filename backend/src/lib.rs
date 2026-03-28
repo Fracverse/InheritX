@@ -19,6 +19,7 @@ pub mod insurance_fund;
 pub mod interest_reconciliation;
 pub mod lending_notification_service;
 pub mod loan_lifecycle;
+pub mod message_access_audit;
 pub mod middleware;
 pub mod notifications;
 pub mod price_feed;
