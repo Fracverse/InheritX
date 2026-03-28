@@ -36,6 +36,7 @@ rust_decimal_macros = "1.33"
 jsonwebtoken = "9.0"
 bcrypt = "0.15"
 ring = "0.17"
+sha2 = "0.10"
 postgres-types = { version = "0.2", features = ["with-chrono-0_4", "with-uuid-1", "with-serde_json-1"] }
 
 # Stellar SDK - TODO: Use correct Stellar Rust SDK

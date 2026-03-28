@@ -1,5 +1,8 @@
 -- Add fields to plans table to support due-for-claim queries
 
+-- Ensure UUID extension is available
+CREATE EXTENSION IF NOT EXISTS "uuid-ossp";
+
 ALTER TABLE plans
 ADD COLUMN IF NOT EXISTS contract_plan_id BIGINT,
 ADD COLUMN IF NOT EXISTS distribution_method VARCHAR(20),

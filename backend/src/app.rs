@@ -21,7 +21,11 @@ use crate::governance::{
     CreateProposalRequest, GovernanceService, ParameterUpdateRequest, Proposal, VoteRequest,
 };
 use crate::insurance_fund::{CreateInsuranceClaimRequest, ProcessInsuranceClaimRequest};
+use crate::legacy_content::{ContentListFilters, LegacyContentService};
 use crate::loan_lifecycle::{CreateLoanRequest, LoanLifecycleService, LoanListFilters};
+use crate::message_access_audit::{
+    MessageAccessAuditService, MessageAuditFilters,
+};
 use crate::secure_messages::{
     CreateLegacyMessageRequest, LegacyMessageDeliveryService, MessageEncryptionService,
     MessageKeyService,
@@ -132,11 +136,35 @@ pub async fn create_app(db: PgPool, config: Config) -> Result<Router, ApiError> 
             "/api/messages/legacy",
             post(create_legacy_message).get(list_legacy_messages),
         )
+        .route(
+            "/api/messages/legacy/vault/:vault_id",
+            get(list_vault_legacy_messages),
+        )
         .route("/api/admin/messages/keys", get(list_message_keys))
         .route("/api/admin/messages/keys/rotate", post(rotate_message_key))
         .route(
             "/api/admin/messages/delivery/process",
             post(process_legacy_message_delivery),
+        )
+        .route(
+            "/api/admin/messages/audit",
+            get(get_message_audit_logs),
+        )
+        .route(
+            "/api/admin/messages/audit/summary",
+            get(get_message_audit_summary),
+        )
+        .route(
+            "/api/admin/messages/audit/search",
+            get(search_message_audit_logs),
+        )
+        .route(
+            "/api/messages/:message_id/audit",
+            get(get_message_access_history),
+        )
+        .route(
+            "/api/messages/audit/my-activity",
+            get(get_my_message_activity),
         )
         .route(
             "/api/emergency/contacts",
@@ -441,6 +469,27 @@ pub async fn create_app(db: PgPool, config: Config) -> Result<Router, ApiError> 
             get(get_plan_audit_summary),
         )
         .route("/api/will/audit/my-activity", get(get_my_audit_activity))
+        // -- Legacy Content Upload (Issue #XXX) -------------------------------
+        .route(
+            "/api/content/upload",
+            post(upload_legacy_content),
+        )
+        .route(
+            "/api/content",
+            get(list_user_content),
+        )
+        .route(
+            "/api/content/:content_id",
+            get(get_content_by_id).delete(delete_content),
+        )
+        .route(
+            "/api/content/:content_id/download",
+            get(download_content),
+        )
+        .route(
+            "/api/content/stats",
+            get(get_storage_stats),
+        )
         .with_state(state);
 
     // Add price feed routes with separate state
@@ -579,6 +628,18 @@ async fn list_legacy_messages(
     ))
 }
 
+async fn list_vault_legacy_messages(
+    State(state): State<Arc<AppState>>,
+    Path(vault_id): Path<i64>,
+    AuthenticatedUser(user): AuthenticatedUser,
+) -> Result<Json<Value>, ApiError> {
+    let messages =
+        MessageEncryptionService::list_vault_messages(&state.db, user.user_id, vault_id).await?;
+    Ok(Json(
+        json!({ "status": "success", "data": messages, "count": messages.len() }),
+    ))
+}
+
 async fn list_message_keys(
     State(state): State<Arc<AppState>>,
     AuthenticatedAdmin(_admin): AuthenticatedAdmin,
@@ -608,6 +669,61 @@ async fn process_legacy_message_delivery(
     let delivery_service = LegacyMessageDeliveryService::new(state.db.clone());
     let result = delivery_service.process_due_messages().await?;
     Ok(Json(json!({ "status": "success", "data": result })))
+}
+
+// ─── Message Access Audit Handlers ───────────────────────────────────────────
+
+async fn get_message_audit_logs(
+    State(state): State<Arc<AppState>>,
+    AuthenticatedAdmin(_admin): AuthenticatedAdmin,
+    Query(filters): Query<MessageAuditFilters>,
+) -> Result<Json<Value>, ApiError> {
+    let logs = MessageAccessAuditService::get_logs(&state.db, &filters).await?;
+    Ok(Json(json!({ "status": "success", "data": logs, "count": logs.len() })))
+}
+
+async fn get_message_audit_summary(
+    State(state): State<Arc<AppState>>,
+    AuthenticatedAdmin(_admin): AuthenticatedAdmin,
+) -> Result<Json<Value>, ApiError> {
+    let summary = MessageAccessAuditService::get_summary(&state.db).await?;
+    Ok(Json(json!({ "status": "success", "data": summary })))
+}
+
+async fn search_message_audit_logs(
+    State(state): State<Arc<AppState>>,
+    AuthenticatedAdmin(_admin): AuthenticatedAdmin,
+    Query(params): Query<SearchAuditParams>,
+) -> Result<Json<Value>, ApiError> {
+    let limit = params.limit.unwrap_or(100);
+    let logs =
+        MessageAccessAuditService::search_logs(&state.db, &params.q, limit).await?;
+    Ok(Json(json!({ "status": "success", "data": logs, "count": logs.len() })))
+}
+
+#[derive(Debug, serde::Deserialize)]
+struct SearchAuditParams {
+    q: String,
+    limit: Option<i64>,
+}
+
+async fn get_message_access_history(
+    State(state): State<Arc<AppState>>,
+    AuthenticatedUser(_user): AuthenticatedUser,
+    Path(message_id): Path<Uuid>,
+) -> Result<Json<Value>, ApiError> {
+    let logs =
+        MessageAccessAuditService::get_message_logs(&state.db, message_id, None).await?;
+    Ok(Json(json!({ "status": "success", "data": logs, "count": logs.len() })))
+}
+
+async fn get_my_message_activity(
+    State(state): State<Arc<AppState>>,
+    AuthenticatedUser(user): AuthenticatedUser,
+) -> Result<Json<Value>, ApiError> {
+    let activity =
+        MessageAccessAuditService::get_user_activity(&state.db, user.user_id).await?;
+    Ok(Json(json!({ "status": "success", "data": activity })))
 }
 
 async fn get_all_due_for_claim_plans_user(
@@ -2098,5 +2214,139 @@ async fn payout_insurance_claim(
     Ok(Json(json!({
         "status": "success",
         "message": "Claim paid out successfully"
+    })))
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Legacy Content Handlers (Issue #XXX)
+// ─────────────────────────────────────────────────────────────────────────────
+
+#[derive(serde::Deserialize)]
+pub struct UploadContentRequest {
+    pub original_filename: String,
+    pub content_type: String,
+    pub description: Option<String>,
+}
+
+/// User: Upload legacy content
+///
+/// `POST /api/content/upload`
+async fn upload_legacy_content(
+    State(state): State<Arc<AppState>>,
+    AuthenticatedUser(user): AuthenticatedUser,
+    Json(req): Json<UploadContentRequest>,
+) -> Result<Json<Value>, ApiError> {
+    // Validate the content type
+    LegacyContentService::validate_content_type(&req.content_type)?;
+    
+    // For now, we'll create a metadata record. Full implementation would handle file upload.
+    let metadata = crate::legacy_content::UploadMetadata {
+        original_filename: req.original_filename,
+        content_type: req.content_type.clone(),
+        file_size: 0, // Would be set from actual file upload
+        description: req.description,
+    };
+    
+    let storage_path = LegacyContentService::generate_storage_path(user.user_id, &metadata.original_filename);
+    let file_hash = "pending".to_string(); // Would be calculated from file content
+    
+    let content = LegacyContentService::create_content_record(
+        &state.db,
+        user.user_id,
+        &metadata,
+        storage_path,
+        file_hash,
+    )
+    .await?;
+    
+    Ok(Json(json!({
+        "status": "success",
+        "data": content
+    })))
+}
+
+/// User: List legacy content
+///
+/// `GET /api/content?content_type_prefix=video&limit=50&offset=0`
+async fn list_user_content(
+    State(state): State<Arc<AppState>>,
+    AuthenticatedUser(user): AuthenticatedUser,
+    Query(filters): Query<ContentListFilters>,
+) -> Result<Json<Value>, ApiError> {
+    let contents = LegacyContentService::list_user_content(&state.db, user.user_id, &filters).await?;
+    Ok(Json(json!({
+        "status": "success",
+        "data": contents,
+        "count": contents.len()
+    })))
+}
+
+/// User: Get content by ID
+///
+/// `GET /api/content/:content_id`
+async fn get_content_by_id(
+    State(state): State<Arc<AppState>>,
+    Path(content_id): Path<Uuid>,
+    AuthenticatedUser(user): AuthenticatedUser,
+) -> Result<Json<Value>, ApiError> {
+    let content = LegacyContentService::get_content_by_id(&state.db, content_id, user.user_id).await?;
+    Ok(Json(json!({
+        "status": "success",
+        "data": content
+    })))
+}
+
+/// User: Delete content (soft delete)
+///
+/// `DELETE /api/content/:content_id`
+async fn delete_content(
+    State(state): State<Arc<AppState>>,
+    Path(content_id): Path<Uuid>,
+    AuthenticatedUser(user): AuthenticatedUser,
+) -> Result<Json<Value>, ApiError> {
+    LegacyContentService::delete_content(&state.db, content_id, user.user_id).await?;
+    Ok(Json(json!({
+        "status": "success",
+        "message": "Content deleted successfully"
+    })))
+}
+
+/// User: Download content
+///
+/// `GET /api/content/:content_id/download`
+async fn download_content(
+    State(state): State<Arc<AppState>>,
+    Path(content_id): Path<Uuid>,
+    AuthenticatedUser(user): AuthenticatedUser,
+) -> Result<axum::response::Response, ApiError> {
+    let content = LegacyContentService::get_content_by_id(&state.db, content_id, user.user_id).await?;
+    
+    // In a full implementation, this would read from the FileStorageService
+    // For now, return a placeholder response
+    use axum::body::Body;
+    use axum::http::{header, Response, StatusCode};
+    
+    let content_disposition = format!("attachment; filename=\"{}\"", content.original_filename);
+    
+    Response::builder()
+        .status(StatusCode::OK)
+        .header(header::CONTENT_TYPE, &content.content_type)
+        .header(header::CONTENT_DISPOSITION, content_disposition)
+        .header(header::CACHE_CONTROL, "no-cache, no-store, must-revalidate")
+        .body(Body::empty())
+        .map_err(|e| ApiError::Internal(anyhow::anyhow!("Failed to build response: {}", e)))
+}
+
+/// User: Get storage statistics
+///
+/// `GET /api/content/stats`
+async fn get_storage_stats(
+    State(state): State<Arc<AppState>>,
+    AuthenticatedUser(user): AuthenticatedUser,
+) -> Result<Json<Value>, ApiError> {
+    let stats = LegacyContentService::get_user_storage_stats(&state.db, user.user_id).await?;
+    Ok(Json(json!({
+        "status": "success",
+        "data": stats
     })))
 }
