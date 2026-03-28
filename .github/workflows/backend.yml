@@ -15,6 +15,25 @@ jobs:
     name: Build and Test
     runs-on: ubuntu-latest
 
+    services:
+      postgres:
+        image: postgres:15
+        env:
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: inheritx_test
+        options: >-
+          --health-cmd pg_isready
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+        ports:
+          - 5432:5432
+
+    env:
+      DATABASE_URL: postgres://postgres:postgres@localhost:5432/inheritx_test
+      MESSAGE_KEY_ENCRYPTION_KEY: test-key-for-ci-only-not-production-use
+
     defaults:
       run:
         working-directory: backend
@@ -32,6 +51,12 @@ jobs:
         uses: Swatinem/rust-cache@v2
         with:
           workspaces: backend -> target
+
+      - name: Install sqlx-cli
+        run: cargo install sqlx-cli --no-default-features --features postgres
+
+      - name: Run migrations
+        run: sqlx migrate run
 
       - name: Check formatting
         run: cargo fmt --all -- --check
