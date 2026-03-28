@@ -22,6 +22,9 @@ use crate::governance::{
 };
 use crate::insurance_fund::{CreateInsuranceClaimRequest, ProcessInsuranceClaimRequest};
 use crate::loan_lifecycle::{CreateLoanRequest, LoanLifecycleService, LoanListFilters};
+use crate::message_access_audit::{
+    MessageAccessAuditService, MessageAuditFilters,
+};
 use crate::secure_messages::{
     CreateLegacyMessageRequest, LegacyMessageDeliveryService, MessageEncryptionService,
     MessageKeyService,
@@ -137,6 +140,26 @@ pub async fn create_app(db: PgPool, config: Config) -> Result<Router, ApiError> 
         .route(
             "/api/admin/messages/delivery/process",
             post(process_legacy_message_delivery),
+        )
+        .route(
+            "/api/admin/messages/audit",
+            get(get_message_audit_logs),
+        )
+        .route(
+            "/api/admin/messages/audit/summary",
+            get(get_message_audit_summary),
+        )
+        .route(
+            "/api/admin/messages/audit/search",
+            get(search_message_audit_logs),
+        )
+        .route(
+            "/api/messages/:message_id/audit",
+            get(get_message_access_history),
+        )
+        .route(
+            "/api/messages/audit/my-activity",
+            get(get_my_message_activity),
         )
         .route(
             "/api/emergency/contacts",
@@ -608,6 +631,61 @@ async fn process_legacy_message_delivery(
     let delivery_service = LegacyMessageDeliveryService::new(state.db.clone());
     let result = delivery_service.process_due_messages().await?;
     Ok(Json(json!({ "status": "success", "data": result })))
+}
+
+// ─── Message Access Audit Handlers ───────────────────────────────────────────
+
+async fn get_message_audit_logs(
+    State(state): State<Arc<AppState>>,
+    AuthenticatedAdmin(_admin): AuthenticatedAdmin,
+    Query(filters): Query<MessageAuditFilters>,
+) -> Result<Json<Value>, ApiError> {
+    let logs = MessageAccessAuditService::get_logs(&state.db, &filters).await?;
+    Ok(Json(json!({ "status": "success", "data": logs, "count": logs.len() })))
+}
+
+async fn get_message_audit_summary(
+    State(state): State<Arc<AppState>>,
+    AuthenticatedAdmin(_admin): AuthenticatedAdmin,
+) -> Result<Json<Value>, ApiError> {
+    let summary = MessageAccessAuditService::get_summary(&state.db).await?;
+    Ok(Json(json!({ "status": "success", "data": summary })))
+}
+
+async fn search_message_audit_logs(
+    State(state): State<Arc<AppState>>,
+    AuthenticatedAdmin(_admin): AuthenticatedAdmin,
+    Query(params): Query<SearchAuditParams>,
+) -> Result<Json<Value>, ApiError> {
+    let limit = params.limit.unwrap_or(100);
+    let logs =
+        MessageAccessAuditService::search_logs(&state.db, &params.q, limit).await?;
+    Ok(Json(json!({ "status": "success", "data": logs, "count": logs.len() })))
+}
+
+#[derive(Debug, serde::Deserialize)]
+struct SearchAuditParams {
+    q: String,
+    limit: Option<i64>,
+}
+
+async fn get_message_access_history(
+    State(state): State<Arc<AppState>>,
+    AuthenticatedUser(_user): AuthenticatedUser,
+    Path(message_id): Path<Uuid>,
+) -> Result<Json<Value>, ApiError> {
+    let logs =
+        MessageAccessAuditService::get_message_logs(&state.db, message_id, None).await?;
+    Ok(Json(json!({ "status": "success", "data": logs, "count": logs.len() })))
+}
+
+async fn get_my_message_activity(
+    State(state): State<Arc<AppState>>,
+    AuthenticatedUser(user): AuthenticatedUser,
+) -> Result<Json<Value>, ApiError> {
+    let activity =
+        MessageAccessAuditService::get_user_activity(&state.db, user.user_id).await?;
+    Ok(Json(json!({ "status": "success", "data": activity })))
 }
 
 async fn get_all_due_for_claim_plans_user(
