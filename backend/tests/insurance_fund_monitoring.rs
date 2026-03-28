@@ -5,7 +5,6 @@ use axum::{
     http::{Request, StatusCode},
 };
 use helpers::TestContext;
-use inheritx_backend::{create_app, Config};
 use rust_decimal::Decimal;
 use serde_json::{json, Value};
 use sqlx::Row;
@@ -78,7 +77,7 @@ async fn test_get_insurance_fund_dashboard_success() {
 
 #[tokio::test]
 async fn test_insurance_fund_coverage_ratio_calculation() {
-    let Some(test_context) = TestContext::from_env().await else {
+    let Some(_test_context) = TestContext::from_env().await else {
         return;
     };
 
