@@ -125,6 +125,10 @@ pub async fn create_app(db: PgPool, config: Config) -> Result<Router, ApiError> 
             "/api/messages/legacy",
             post(create_legacy_message).get(list_legacy_messages),
         )
+        .route(
+            "/api/messages/legacy/vault/:vault_id",
+            get(list_vault_legacy_messages),
+        )
         .route("/api/admin/messages/keys", get(list_message_keys))
         .route("/api/admin/messages/keys/rotate", post(rotate_message_key))
         .route(
@@ -533,6 +537,18 @@ async fn list_legacy_messages(
     AuthenticatedUser(user): AuthenticatedUser,
 ) -> Result<Json<Value>, ApiError> {
     let messages = MessageEncryptionService::list_owner_messages(&state.db, user.user_id).await?;
+    Ok(Json(
+        json!({ "status": "success", "data": messages, "count": messages.len() }),
+    ))
+}
+
+async fn list_vault_legacy_messages(
+    State(state): State<Arc<AppState>>,
+    Path(vault_id): Path<i64>,
+    AuthenticatedUser(user): AuthenticatedUser,
+) -> Result<Json<Value>, ApiError> {
+    let messages =
+        MessageEncryptionService::list_vault_messages(&state.db, user.user_id, vault_id).await?;
     Ok(Json(
         json!({ "status": "success", "data": messages, "count": messages.len() }),
     ))
