@@ -1,8 +1,10 @@
 // This file is a placeholder for helper functions and structs.
-use axum::Router;
+use axum::{body::Body, http::Request, Router};
 use inheritx_backend::{create_app, Config};
+use serde_json::json;
 use sqlx::{postgres::PgPoolOptions, PgPool};
 use std::env;
+use tower::ServiceExt;
 
 pub struct TestContext {
     pub app: Router,
@@ -72,4 +74,56 @@ impl TestContext {
 
         otp.to_string()
     }
+}
+
+/// Helper function to create an admin user and get authentication token
+#[allow(dead_code)]
+pub async fn create_admin_and_get_token(ctx: &mut TestContext) -> String {
+    use uuid::Uuid;
+
+    let admin_id = Uuid::new_v4();
+    let email = format!("test_admin_{}@example.com", admin_id);
+    let password_hash = bcrypt::hash("testpassword", bcrypt::DEFAULT_COST).unwrap();
+
+    // Create admin user
+    sqlx::query(
+        r#"
+        INSERT INTO admins (id, email, password_hash, role, status)
+        VALUES ($1, $2, $3, 'super_admin', 'active')
+        ON CONFLICT (id) DO UPDATE SET email = $2, password_hash = $3, role = 'super_admin', status = 'active'
+        "#
+    )
+    .bind(admin_id)
+    .bind(&email)
+    .bind(&password_hash)
+    .execute(&ctx.pool)
+    .await
+    .expect("failed to create admin");
+
+    // Login to get token
+    let login_request = json!({
+        "email": email,
+        "password": "testpassword",
+    });
+
+    let response = ctx
+        .app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .uri("/admin/login")
+                .method("POST")
+                .header("Content-Type", "application/json")
+                .body(Body::from(serde_json::to_string(&login_request).unwrap()))
+                .unwrap(),
+        )
+        .await
+        .expect("login request failed");
+
+    let body = axum::body::to_bytes(response.into_body(), usize::MAX)
+        .await
+        .unwrap();
+    let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
+
+    json["token"].as_str().unwrap().to_string()
 }

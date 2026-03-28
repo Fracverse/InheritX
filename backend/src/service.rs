@@ -315,7 +315,15 @@ impl PlanService {
         crate::safe_math::SafeMath::ensure_non_negative(req.fee, "fee")?;
         crate::safe_math::SafeMath::ensure_non_negative(req.net_amount, "net_amount")?;
 
-        // 2. Start Transaction
+        // 2. Check KYC status - only approved users can create plans
+        let kyc_record = KycService::get_kyc_status(pool, user_id).await?;
+        if kyc_record.status != "approved" {
+            return Err(ApiError::Forbidden(
+                "KYC not approved: cannot create plan".to_string(),
+            ));
+        }
+
+        // 3. Start Transaction
         let mut tx = pool.begin().await?;
 
         let currency = CurrencyPreference::from_str(req.currency_preference.trim())?;
@@ -441,10 +449,18 @@ impl PlanService {
         user_id: Uuid,
         req: &ClaimPlanRequest,
     ) -> Result<PlanWithBeneficiary, ApiError> {
-        // 1. Start the transaction
+        // 1. Check KYC status - only approved users can claim plans
+        let kyc_record = KycService::get_kyc_status(pool, user_id).await?;
+        if kyc_record.status != "approved" {
+            return Err(ApiError::Forbidden(
+                "KYC not approved: cannot claim plan".to_string(),
+            ));
+        }
+
+        // 2. Start the transaction
         let mut tx = pool.begin().await?;
 
-        // 2. Use SELECT FOR UPDATE to lock the plan row and prevent concurrent claims
+        // 3. Use SELECT FOR UPDATE to lock the plan row and prevent concurrent claims
         let row = sqlx::query_as::<_, PlanRowFull>(
             r#"
             SELECT id, user_id, title, description, fee, net_amount, status,

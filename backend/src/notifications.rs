@@ -27,6 +27,9 @@ pub mod notif_type {
     pub const EMERGENCY_ACCESS_REVOKED: &str = "emergency_access_revoked";
     pub const EMERGENCY_ACCESS_EXPIRING: &str = "emergency_access_expiring";
     pub const SUSPICIOUS_ACTIVITY_FLAGGED: &str = "suspicious_activity_flagged";
+    // Insurance fund monitoring (Issue #249)
+    pub const ADMIN_ALERT: &str = "admin_alert";
+    pub const FUND_STATUS_CHANGE: &str = "fund_status_change";
 }
 
 // ─── Notification ────────────────────────────────────────────────────────────
@@ -248,6 +251,11 @@ pub mod audit_action {
     pub const EMERGENCY_ACCESS_EXPIRED: &str = "emergency_access_expired";
     pub const REPAYMENT_REMINDER_SENT: &str = "repayment_reminder_sent";
     pub const YIELD_UPDATE_SENT: &str = "yield_update_sent";
+    // Insurance fund monitoring (Issue #249)
+    pub const FUND_STATUS_CHANGE: &str = "fund_status_change";
+    pub const INSURANCE_CLAIM_CREATED: &str = "insurance_claim_created";
+    pub const INSURANCE_CLAIM_PROCESSED: &str = "insurance_claim_processed";
+    pub const INSURANCE_CLAIM_PAID: &str = "insurance_claim_paid";
 }
 
 /// Entity type constants — stored in `entity_type` column of `action_logs`.
@@ -255,6 +263,9 @@ pub mod entity_type {
     pub const USER: &str = "user";
     pub const PLAN: &str = "plan";
     pub const LOAN: &str = "loan";
+    // Insurance fund monitoring (Issue #249)
+    pub const INSURANCE_FUND: &str = "insurance_fund";
+    pub const INSURANCE_CLAIM: &str = "insurance_claim";
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, sqlx::FromRow)]
