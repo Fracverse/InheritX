@@ -411,24 +411,6 @@ pub struct MessageAccessedEvent {
     pub timestamp: u64,
 }
 
-/// Parameters for updating a legacy message before it is unlocked
-#[contracttype]
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub struct UpdateLegacyMessageParams {
-    pub message_id: u64,
-    pub message_hash: BytesN<32>,
-    pub unlock_timestamp: u64,
-}
-
-/// Event emitted when a legacy message is updated
-#[contracttype]
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub struct MessageUpdatedEvent {
-    pub vault_id: u64,
-    pub message_id: u64,
-    pub updated_at: u64,
-}
-
 #[contracttype]
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct EmergencyContactRemovedEvent {
@@ -3111,58 +3093,6 @@ impl InheritanceContract {
             .persistent()
             .get(&DataKey::VaultMessages(vault_id))
             .unwrap_or_else(|| vec![&env])
-    }
-
-    /// Update a legacy message's hash and unlock timestamp before it has been unlocked.
-    ///
-    /// # Arguments
-    /// * `env` - The Soroban environment
-    /// * `creator` - The vault owner updating the message
-    /// * `params` - The update parameters (message_id, new hash, new unlock_timestamp)
-    ///
-    /// # Errors
-    /// - `PlanNotFound` if the associated vault does not exist
-    /// - `Unauthorized` if caller is not the original message creator
-    /// - `MessageAlreadyUnlocked` if the message has already been unlocked
-    pub fn update_legacy_message(
-        env: Env,
-        creator: Address,
-        params: UpdateLegacyMessageParams,
-    ) -> Result<(), InheritanceError> {
-        creator.require_auth();
-
-        let mut message: LegacyMessageMetadata = env
-            .storage()
-            .persistent()
-            .get(&DataKey::LegacyMessage(params.message_id))
-            .ok_or(InheritanceError::PlanNotFound)?;
-
-        if message.creator != creator {
-            return Err(InheritanceError::Unauthorized);
-        }
-
-        if message.is_unlocked {
-            return Err(InheritanceError::AlreadyClaimed); // Reuse: message is in terminal unlocked state
-        }
-
-        let updated_at = env.ledger().timestamp();
-        message.message_hash = params.message_hash;
-        message.unlock_timestamp = params.unlock_timestamp;
-
-        env.storage()
-            .persistent()
-            .set(&DataKey::LegacyMessage(params.message_id), &message);
-
-        env.events().publish(
-            (Symbol::new(&env, "message_updated"),),
-            MessageUpdatedEvent {
-                vault_id: message.vault_id,
-                message_id: params.message_id,
-                updated_at,
-            },
-        );
-
-        Ok(())
     }
 
     /// Access a legacy message (returns metadata if accessible)

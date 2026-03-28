@@ -1,5 +1,3 @@
-#![cfg(test)]
-
 use super::*;
 use mock_token::MockToken;
 use soroban_sdk::{

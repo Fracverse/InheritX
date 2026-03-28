@@ -1888,7 +1888,7 @@
             "data": {
               "vec": [
                 {
-                  "string": "caught panic 'called `Result::unwrap()` on an `Err` value: ConversionError' from contract function 'Symbol(obj#407)'"
+                  "string": "caught panic 'called `Result::unwrap()` on an `Err` value: ConversionError' from contract function 'Symbol(obj#417)'"
                 },
                 {
                   "address": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAK3IM"
