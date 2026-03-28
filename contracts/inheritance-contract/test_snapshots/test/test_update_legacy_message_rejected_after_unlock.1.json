@@ -31,47 +31,6 @@
           "function": {
             "contract_fn": {
               "contract_address": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAD2KM",
-              "function_name": "submit_kyc",
-              "args": [
-                {
-                  "address": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAITA4"
-                }
-              ]
-            }
-          },
-          "sub_invocations": []
-        }
-      ]
-    ],
-    [
-      [
-        "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAHK3M",
-        {
-          "function": {
-            "contract_fn": {
-              "contract_address": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAD2KM",
-              "function_name": "approve_kyc",
-              "args": [
-                {
-                  "address": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAHK3M"
-                },
-                {
-                  "address": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAITA4"
-                }
-              ]
-            }
-          },
-          "sub_invocations": []
-        }
-      ]
-    ],
-    [
-      [
-        "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAITA4",
-        {
-          "function": {
-            "contract_fn": {
-              "contract_address": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAD2KM",
               "function_name": "create_inheritance_plan",
               "args": [
                 {
@@ -223,18 +182,18 @@
     [],
     [
       [
-        "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAITA4",
+        "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAHK3M",
         {
           "function": {
             "contract_fn": {
               "contract_address": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAD2KM",
-              "function_name": "finalize_legacy_message",
+              "function_name": "trigger_inheritance",
               "args": [
                 {
-                  "address": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAITA4"
+                  "address": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAHK3M"
                 },
                 {
-                  "u64": 0
+                  "u64": 1
                 }
               ]
             }
@@ -244,12 +203,13 @@
       ]
     ],
     [],
+    [],
     []
   ],
   "ledger": {
     "protocol_version": 21,
     "sequence_number": 0,
-    "timestamp": 0,
+    "timestamp": 1000000,
     "network_id": "0000000000000000000000000000000000000000000000000000000000000000",
     "base_reserve": 0,
     "min_persistent_entry_ttl": 4096,
@@ -263,10 +223,10 @@
             "key": {
               "vec": [
                 {
-                  "symbol": "Kyc"
+                  "symbol": "InheritanceTrigger"
                 },
                 {
-                  "address": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAITA4"
+                  "u64": 1
                 }
               ]
             },
@@ -283,10 +243,10 @@
                 "key": {
                   "vec": [
                     {
-                      "symbol": "Kyc"
+                      "symbol": "InheritanceTrigger"
                     },
                     {
-                      "address": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAITA4"
+                      "u64": 1
                     }
                   ]
                 },
@@ -295,23 +255,7 @@
                   "map": [
                     {
                       "key": {
-                        "symbol": "approved"
-                      },
-                      "val": {
-                        "bool": true
-                      }
-                    },
-                    {
-                      "key": {
-                        "symbol": "approved_at"
-                      },
-                      "val": {
-                        "u64": 0
-                      }
-                    },
-                    {
-                      "key": {
-                        "symbol": "rejected"
+                        "symbol": "liquidation_triggered"
                       },
                       "val": {
                         "bool": false
@@ -319,15 +263,7 @@
                     },
                     {
                       "key": {
-                        "symbol": "rejected_at"
-                      },
-                      "val": {
-                        "u64": 0
-                      }
-                    },
-                    {
-                      "key": {
-                        "symbol": "submitted"
+                        "symbol": "loan_freeze_active"
                       },
                       "val": {
                         "bool": true
@@ -335,10 +271,42 @@
                     },
                     {
                       "key": {
-                        "symbol": "submitted_at"
+                        "symbol": "original_loaned"
                       },
                       "val": {
                         "u64": 0
+                      }
+                    },
+                    {
+                      "key": {
+                        "symbol": "recall_attempted"
+                      },
+                      "val": {
+                        "bool": false
+                      }
+                    },
+                    {
+                      "key": {
+                        "symbol": "recalled_amount"
+                      },
+                      "val": {
+                        "u64": 0
+                      }
+                    },
+                    {
+                      "key": {
+                        "symbol": "settled_amount"
+                      },
+                      "val": {
+                        "u64": 0
+                      }
+                    },
+                    {
+                      "key": {
+                        "symbol": "triggered_at"
+                      },
+                      "val": {
+                        "u64": 1000000
                       }
                     }
                   ]
@@ -392,7 +360,7 @@
                         "symbol": "created_at"
                       },
                       "val": {
-                        "u64": 0
+                        "u64": 1000000
                       }
                     },
                     {
@@ -405,26 +373,10 @@
                     },
                     {
                       "key": {
-                        "symbol": "is_finalized"
-                      },
-                      "val": {
-                        "bool": true
-                      }
-                    },
-                    {
-                      "key": {
                         "symbol": "is_unlocked"
                       },
                       "val": {
-                        "bool": false
-                      }
-                    },
-                    {
-                      "key": {
-                        "symbol": "key_reference"
-                      },
-                      "val": {
-                        "string": "ref_1"
+                        "bool": true
                       }
                     },
                     {
@@ -448,7 +400,7 @@
                         "symbol": "unlock_timestamp"
                       },
                       "val": {
-                        "u64": 10000
+                        "u64": 1001000
                       }
                     },
                     {
@@ -610,7 +562,7 @@
                         "symbol": "created_at"
                       },
                       "val": {
-                        "u64": 0
+                        "u64": 1000000
                       }
                     },
                     {
@@ -646,7 +598,7 @@
                         "symbol": "is_lendable"
                       },
                       "val": {
-                        "bool": true
+                        "bool": false
                       }
                     },
                     {
@@ -1012,72 +964,6 @@
             "contract": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAITA4",
             "key": {
               "ledger_key_nonce": {
-                "nonce": 2032731177588607455
-              }
-            },
-            "durability": "temporary"
-          }
-        },
-        [
-          {
-            "last_modified_ledger_seq": 0,
-            "data": {
-              "contract_data": {
-                "ext": "v0",
-                "contract": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAITA4",
-                "key": {
-                  "ledger_key_nonce": {
-                    "nonce": 2032731177588607455
-                  }
-                },
-                "durability": "temporary",
-                "val": "void"
-              }
-            },
-            "ext": "v0"
-          },
-          6311999
-        ]
-      ],
-      [
-        {
-          "contract_data": {
-            "contract": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAITA4",
-            "key": {
-              "ledger_key_nonce": {
-                "nonce": 4837995959683129791
-              }
-            },
-            "durability": "temporary"
-          }
-        },
-        [
-          {
-            "last_modified_ledger_seq": 0,
-            "data": {
-              "contract_data": {
-                "ext": "v0",
-                "contract": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAITA4",
-                "key": {
-                  "ledger_key_nonce": {
-                    "nonce": 4837995959683129791
-                  }
-                },
-                "durability": "temporary",
-                "val": "void"
-              }
-            },
-            "ext": "v0"
-          },
-          6311999
-        ]
-      ],
-      [
-        {
-          "contract_data": {
-            "contract": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAITA4",
-            "key": {
-              "ledger_key_nonce": {
                 "nonce": 5541220902715666415
               }
             },
@@ -1225,147 +1111,6 @@
               },
               {
                 "symbol": "mint"
-              }
-            ],
-            "data": "void"
-          }
-        }
-      },
-      "failed_call": false
-    },
-    {
-      "event": {
-        "ext": "v0",
-        "contract_id": null,
-        "type_": "diagnostic",
-        "body": {
-          "v0": {
-            "topics": [
-              {
-                "symbol": "fn_call"
-              },
-              {
-                "bytes": "0000000000000000000000000000000000000000000000000000000000000001"
-              },
-              {
-                "symbol": "submit_kyc"
-              }
-            ],
-            "data": {
-              "address": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAITA4"
-            }
-          }
-        }
-      },
-      "failed_call": false
-    },
-    {
-      "event": {
-        "ext": "v0",
-        "contract_id": "0000000000000000000000000000000000000000000000000000000000000001",
-        "type_": "diagnostic",
-        "body": {
-          "v0": {
-            "topics": [
-              {
-                "symbol": "fn_return"
-              },
-              {
-                "symbol": "submit_kyc"
-              }
-            ],
-            "data": "void"
-          }
-        }
-      },
-      "failed_call": false
-    },
-    {
-      "event": {
-        "ext": "v0",
-        "contract_id": null,
-        "type_": "diagnostic",
-        "body": {
-          "v0": {
-            "topics": [
-              {
-                "symbol": "fn_call"
-              },
-              {
-                "bytes": "0000000000000000000000000000000000000000000000000000000000000001"
-              },
-              {
-                "symbol": "approve_kyc"
-              }
-            ],
-            "data": {
-              "vec": [
-                {
-                  "address": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAHK3M"
-                },
-                {
-                  "address": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAITA4"
-                }
-              ]
-            }
-          }
-        }
-      },
-      "failed_call": false
-    },
-    {
-      "event": {
-        "ext": "v0",
-        "contract_id": "0000000000000000000000000000000000000000000000000000000000000001",
-        "type_": "contract",
-        "body": {
-          "v0": {
-            "topics": [
-              {
-                "symbol": "KYC"
-              },
-              {
-                "symbol": "APPROV"
-              }
-            ],
-            "data": {
-              "map": [
-                {
-                  "key": {
-                    "symbol": "approved_at"
-                  },
-                  "val": {
-                    "u64": 0
-                  }
-                },
-                {
-                  "key": {
-                    "symbol": "user"
-                  },
-                  "val": {
-                    "address": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAITA4"
-                  }
-                }
-              ]
-            }
-          }
-        }
-      },
-      "failed_call": false
-    },
-    {
-      "event": {
-        "ext": "v0",
-        "contract_id": "0000000000000000000000000000000000000000000000000000000000000001",
-        "type_": "diagnostic",
-        "body": {
-          "v0": {
-            "topics": [
-              {
-                "symbol": "fn_return"
-              },
-              {
-                "symbol": "approve_kyc"
               }
             ],
             "data": "void"
@@ -1738,14 +1483,6 @@
                   "map": [
                     {
                       "key": {
-                        "symbol": "key_reference"
-                      },
-                      "val": {
-                        "string": "ref_1"
-                      }
-                    },
-                    {
-                      "key": {
                         "symbol": "message_hash"
                       },
                       "val": {
@@ -1757,7 +1494,7 @@
                         "symbol": "unlock_timestamp"
                       },
                       "val": {
-                        "u64": 10000
+                        "u64": 1001000
                       }
                     },
                     {
@@ -1787,13 +1524,18 @@
             "topics": [
               {
                 "symbol": "message_created"
-              },
-              {
-                "u64": 1
               }
             ],
             "data": {
               "map": [
+                {
+                  "key": {
+                    "symbol": "creator"
+                  },
+                  "val": {
+                    "address": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAITA4"
+                  }
+                },
                 {
                   "key": {
                     "symbol": "message_id"
@@ -1804,10 +1546,10 @@
                 },
                 {
                   "key": {
-                    "symbol": "timestamp"
+                    "symbol": "unlock_timestamp"
                   },
                   "val": {
-                    "u64": 0
+                    "u64": 1001000
                   }
                 },
                 {
@@ -1863,16 +1605,16 @@
                 "bytes": "0000000000000000000000000000000000000000000000000000000000000001"
               },
               {
-                "symbol": "finalize_legacy_message"
+                "symbol": "trigger_inheritance"
               }
             ],
             "data": {
               "vec": [
                 {
-                  "address": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAITA4"
+                  "address": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAHK3M"
                 },
                 {
-                  "u64": 0
+                  "u64": 1
                 }
               ]
             }
@@ -1890,10 +1632,172 @@
           "v0": {
             "topics": [
               {
-                "symbol": "message_finalized"
+                "symbol": "INHERIT"
               },
               {
-                "u64": 1
+                "symbol": "TRIGGER"
+              }
+            ],
+            "data": {
+              "map": [
+                {
+                  "key": {
+                    "symbol": "outstanding_loans"
+                  },
+                  "val": {
+                    "u64": 0
+                  }
+                },
+                {
+                  "key": {
+                    "symbol": "plan_id"
+                  },
+                  "val": {
+                    "u64": 1
+                  }
+                },
+                {
+                  "key": {
+                    "symbol": "triggered_at"
+                  },
+                  "val": {
+                    "u64": 1000000
+                  }
+                }
+              ]
+            }
+          }
+        }
+      },
+      "failed_call": false
+    },
+    {
+      "event": {
+        "ext": "v0",
+        "contract_id": "0000000000000000000000000000000000000000000000000000000000000001",
+        "type_": "contract",
+        "body": {
+          "v0": {
+            "topics": [
+              {
+                "symbol": "LOAN"
+              },
+              {
+                "symbol": "FREEZE"
+              }
+            ],
+            "data": {
+              "map": [
+                {
+                  "key": {
+                    "symbol": "frozen_at"
+                  },
+                  "val": {
+                    "u64": 1000000
+                  }
+                },
+                {
+                  "key": {
+                    "symbol": "plan_id"
+                  },
+                  "val": {
+                    "u64": 1
+                  }
+                }
+              ]
+            }
+          }
+        }
+      },
+      "failed_call": false
+    },
+    {
+      "event": {
+        "ext": "v0",
+        "contract_id": "0000000000000000000000000000000000000000000000000000000000000001",
+        "type_": "diagnostic",
+        "body": {
+          "v0": {
+            "topics": [
+              {
+                "symbol": "log"
+              }
+            ],
+            "data": {
+              "vec": [
+                {
+                  "string": "Inheritance triggered for plan {} \\xe2\\x80\\x94 loans frozen, outstanding: {}"
+                },
+                {
+                  "u64": 1
+                },
+                {
+                  "u64": 0
+                }
+              ]
+            }
+          }
+        }
+      },
+      "failed_call": false
+    },
+    {
+      "event": {
+        "ext": "v0",
+        "contract_id": "0000000000000000000000000000000000000000000000000000000000000001",
+        "type_": "diagnostic",
+        "body": {
+          "v0": {
+            "topics": [
+              {
+                "symbol": "fn_return"
+              },
+              {
+                "symbol": "trigger_inheritance"
+              }
+            ],
+            "data": "void"
+          }
+        }
+      },
+      "failed_call": false
+    },
+    {
+      "event": {
+        "ext": "v0",
+        "contract_id": null,
+        "type_": "diagnostic",
+        "body": {
+          "v0": {
+            "topics": [
+              {
+                "symbol": "fn_call"
+              },
+              {
+                "bytes": "0000000000000000000000000000000000000000000000000000000000000001"
+              },
+              {
+                "symbol": "unlock_messages_on_inheritance"
+              }
+            ],
+            "data": {
+              "u64": 1
+            }
+          }
+        }
+      },
+      "failed_call": false
+    },
+    {
+      "event": {
+        "ext": "v0",
+        "contract_id": "0000000000000000000000000000000000000000000000000000000000000001",
+        "type_": "contract",
+        "body": {
+          "v0": {
+            "topics": [
+              {
+                "symbol": "message_unlocked"
               }
             ],
             "data": {
@@ -1908,10 +1812,18 @@
                 },
                 {
                   "key": {
-                    "symbol": "timestamp"
+                    "symbol": "unlock_reason"
                   },
                   "val": {
-                    "u64": 0
+                    "symbol": "inherit"
+                  }
+                },
+                {
+                  "key": {
+                    "symbol": "unlocked_at"
+                  },
+                  "val": {
+                    "u64": 1000000
                   }
                 },
                 {
@@ -1941,7 +1853,7 @@
                 "symbol": "fn_return"
               },
               {
-                "symbol": "finalize_legacy_message"
+                "symbol": "unlock_messages_on_inheritance"
               }
             ],
             "data": "void"
@@ -1998,7 +1910,7 @@
                     "symbol": "created_at"
                   },
                   "val": {
-                    "u64": 0
+                    "u64": 1000000
                   }
                 },
                 {
@@ -2011,26 +1923,10 @@
                 },
                 {
                   "key": {
-                    "symbol": "is_finalized"
-                  },
-                  "val": {
-                    "bool": true
-                  }
-                },
-                {
-                  "key": {
                     "symbol": "is_unlocked"
                   },
                   "val": {
-                    "bool": false
-                  }
-                },
-                {
-                  "key": {
-                    "symbol": "key_reference"
-                  },
-                  "val": {
-                    "string": "ref_1"
+                    "bool": true
                   }
                 },
                 {
@@ -2054,7 +1950,7 @@
                     "symbol": "unlock_timestamp"
                   },
                   "val": {
-                    "u64": 10000
+                    "u64": 1001000
                   }
                 },
                 {
@@ -2096,18 +1992,7 @@
                   "address": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAITA4"
                 },
                 {
-                  "u64": 0
-                },
-                {
                   "map": [
-                    {
-                      "key": {
-                        "symbol": "key_reference"
-                      },
-                      "val": {
-                        "string": "ref_new"
-                      }
-                    },
                     {
                       "key": {
                         "symbol": "message_hash"
@@ -2118,18 +2003,18 @@
                     },
                     {
                       "key": {
-                        "symbol": "unlock_timestamp"
+                        "symbol": "message_id"
                       },
                       "val": {
-                        "u64": 10000
+                        "u64": 0
                       }
                     },
                     {
                       "key": {
-                        "symbol": "vault_id"
+                        "symbol": "unlock_timestamp"
                       },
                       "val": {
-                        "u64": 1
+                        "u64": 1010000
                       }
                     }
                   ]
@@ -2158,7 +2043,7 @@
             ],
             "data": {
               "error": {
-                "contract": 49
+                "contract": 16
               }
             }
           }
@@ -2179,7 +2064,7 @@
               },
               {
                 "error": {
-                  "contract": 49
+                  "contract": 16
                 }
               }
             ],
@@ -2204,7 +2089,7 @@
               },
               {
                 "error": {
-                  "contract": 49
+                  "contract": 16
                 }
               }
             ],
@@ -2222,18 +2107,7 @@
                       "address": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAITA4"
                     },
                     {
-                      "u64": 0
-                    },
-                    {
                       "map": [
-                        {
-                          "key": {
-                            "symbol": "key_reference"
-                          },
-                          "val": {
-                            "string": "ref_new"
-                          }
-                        },
                         {
                           "key": {
                             "symbol": "message_hash"
@@ -2244,18 +2118,18 @@
                         },
                         {
                           "key": {
-                            "symbol": "unlock_timestamp"
+                            "symbol": "message_id"
                           },
                           "val": {
-                            "u64": 10000
+                            "u64": 0
                           }
                         },
                         {
                           "key": {
-                            "symbol": "vault_id"
+                            "symbol": "unlock_timestamp"
                           },
                           "val": {
-                            "u64": 1
+                            "u64": 1010000
                           }
                         }
                       ]

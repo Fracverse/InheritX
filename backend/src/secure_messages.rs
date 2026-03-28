@@ -15,6 +15,7 @@ const KEY_LEN: usize = 32;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct CreateLegacyMessageRequest {
+    pub vault_id: Option<i64>,
     pub beneficiary_contact: String,
     pub message: String,
     pub unlock_at: DateTime<Utc>,
@@ -24,6 +25,7 @@ pub struct CreateLegacyMessageRequest {
 pub struct LegacyMessage {
     pub id: Uuid,
     pub owner_user_id: Uuid,
+    pub vault_id: Option<i64>,
     pub beneficiary_contact: String,
     pub key_version: i32,
     pub unlock_at: DateTime<Utc>,
@@ -324,6 +326,7 @@ impl MessageEncryptionService {
         struct Row {
             id: Uuid,
             owner_user_id: Uuid,
+            vault_id: Option<i64>,
             beneficiary_contact: String,
             key_version: i32,
             unlock_at: DateTime<Utc>,
@@ -334,11 +337,12 @@ impl MessageEncryptionService {
 
         let row = sqlx::query_as::<_, Row>(
             "INSERT INTO legacy_messages \
-             (owner_user_id, beneficiary_contact, encrypted_payload, payload_nonce, key_version, unlock_at, status) \
-             VALUES ($1, $2, $3, $4, $5, $6, 'pending') \
-             RETURNING id, owner_user_id, beneficiary_contact, key_version, unlock_at, status, delivered_at, created_at",
+             (owner_user_id, vault_id, beneficiary_contact, encrypted_payload, payload_nonce, key_version, unlock_at, status) \
+             VALUES ($1, $2, $3, $4, $5, $6, $7, 'pending') \
+             RETURNING id, owner_user_id, vault_id, beneficiary_contact, key_version, unlock_at, status, delivered_at, created_at",
         )
         .bind(owner_user_id)
+        .bind(req.vault_id)
         .bind(req.beneficiary_contact.trim())
         .bind(&encrypted_payload)
         .bind(&payload_nonce)
@@ -350,6 +354,7 @@ impl MessageEncryptionService {
         Ok(LegacyMessage {
             id: row.id,
             owner_user_id: row.owner_user_id,
+            vault_id: row.vault_id,
             beneficiary_contact: row.beneficiary_contact,
             key_version: row.key_version,
             unlock_at: row.unlock_at,
@@ -367,6 +372,7 @@ impl MessageEncryptionService {
         struct Row {
             id: Uuid,
             owner_user_id: Uuid,
+            vault_id: Option<i64>,
             beneficiary_contact: String,
             key_version: i32,
             unlock_at: DateTime<Utc>,
@@ -376,7 +382,7 @@ impl MessageEncryptionService {
         }
 
         let rows = sqlx::query_as::<_, Row>(
-            "SELECT id, owner_user_id, beneficiary_contact, key_version, unlock_at, status, delivered_at, created_at \
+            "SELECT id, owner_user_id, vault_id, beneficiary_contact, key_version, unlock_at, status, delivered_at, created_at \
              FROM legacy_messages WHERE owner_user_id = $1 ORDER BY created_at DESC",
         )
         .bind(owner_user_id)
@@ -388,6 +394,50 @@ impl MessageEncryptionService {
             .map(|r| LegacyMessage {
                 id: r.id,
                 owner_user_id: r.owner_user_id,
+                vault_id: r.vault_id,
+                beneficiary_contact: r.beneficiary_contact,
+                key_version: r.key_version,
+                unlock_at: r.unlock_at,
+                status: r.status,
+                delivered_at: r.delivered_at,
+                created_at: r.created_at,
+            })
+            .collect())
+    }
+
+    pub async fn list_vault_messages(
+        db: &PgPool,
+        owner_user_id: Uuid,
+        vault_id: i64,
+    ) -> Result<Vec<LegacyMessage>, ApiError> {
+        #[derive(sqlx::FromRow)]
+        struct Row {
+            id: Uuid,
+            owner_user_id: Uuid,
+            vault_id: Option<i64>,
+            beneficiary_contact: String,
+            key_version: i32,
+            unlock_at: DateTime<Utc>,
+            status: String,
+            delivered_at: Option<DateTime<Utc>>,
+            created_at: DateTime<Utc>,
+        }
+
+        let rows = sqlx::query_as::<_, Row>(
+            "SELECT id, owner_user_id, vault_id, beneficiary_contact, key_version, unlock_at, status, delivered_at, created_at \
+             FROM legacy_messages WHERE owner_user_id = $1 AND vault_id = $2 ORDER BY created_at DESC",
+        )
+        .bind(owner_user_id)
+        .bind(vault_id)
+        .fetch_all(db)
+        .await?;
+
+        Ok(rows
+            .into_iter()
+            .map(|r| LegacyMessage {
+                id: r.id,
+                owner_user_id: r.owner_user_id,
+                vault_id: r.vault_id,
                 beneficiary_contact: r.beneficiary_contact,
                 key_version: r.key_version,
                 unlock_at: r.unlock_at,

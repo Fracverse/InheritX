@@ -259,7 +259,7 @@
                         "symbol": "unlock_timestamp"
                       },
                       "val": {
-                        "u64": 20000
+                        "u64": 15000
                       }
                     },
                     {
@@ -483,7 +483,7 @@
                         "symbol": "unlock_timestamp"
                       },
                       "val": {
-                        "u64": 20000
+                        "u64": 15000
                       }
                     },
                     {
@@ -1932,7 +1932,7 @@
                         "symbol": "unlock_timestamp"
                       },
                       "val": {
-                        "u64": 20000
+                        "u64": 15000
                       }
                     },
                     {
@@ -2125,7 +2125,7 @@
                     "symbol": "unlock_timestamp"
                   },
                   "val": {
-                    "u64": 20000
+                    "u64": 15000
                   }
                 },
                 {

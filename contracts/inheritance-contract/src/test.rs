@@ -4339,6 +4339,7 @@ fn create_message(
         },
     )
 }
+// --- Issue #360: Message Update Before Lock ---
 
 #[test]
 fn test_update_legacy_message_before_lock() {
@@ -4346,10 +4347,21 @@ fn test_update_legacy_message_before_lock() {
     env.mock_all_auths();
     let (client, token_id, _admin, owner) = setup_with_token_and_admin(&env);
     let plan_id = create_plan_and_get_id(&env, &client, &token_id, &owner);
-    let message_id = create_message(&env, &client, &owner, plan_id);
+
+    let original_hash = BytesN::from_array(&env, &[1u8; 32]);
+    let future_ts = env.ledger().timestamp() + 10_000;
+    let message_id = client.create_legacy_message(
+        &owner,
+        &CreateLegacyMessageParams {
+            vault_id: plan_id,
+            message_hash: original_hash,
+            unlock_timestamp: future_ts,
+            key_reference: soroban_sdk::String::from_str(&env, "ref_1"),
+        },
+    );
 
     let updated_hash = BytesN::from_array(&env, &[2u8; 32]);
-    let new_unlock_ts = env.ledger().timestamp() + 20_000;
+    let new_unlock_ts = future_ts + 5_000;
     client.update_legacy_message(
         &owner,
         &message_id,
@@ -4390,17 +4402,30 @@ fn test_update_legacy_message_rejected_after_lock() {
     env.mock_all_auths();
     let (client, token_id, _admin, owner) = setup_with_token_and_admin(&env);
     let plan_id = create_plan_and_get_id(&env, &client, &token_id, &owner);
-    let message_id = create_message(&env, &client, &owner, plan_id);
 
+    let future_ts = env.ledger().timestamp() + 10_000;
+    let message_id = client.create_legacy_message(
+        &owner,
+        &CreateLegacyMessageParams {
+            vault_id: plan_id,
+            message_hash: BytesN::from_array(&env, &[1u8; 32]),
+            unlock_timestamp: future_ts,
+            key_reference: soroban_sdk::String::from_str(&env, "ref_1"),
+        },
+    );
+
+    // Finalize (lock) the message
     client.finalize_legacy_message(&owner, &message_id);
+    assert!(client.get_legacy_message(&message_id).unwrap().is_finalized);
 
+    // Update after finalization must fail
     let result = client.try_update_legacy_message(
         &owner,
         &message_id,
         &CreateLegacyMessageParams {
             vault_id: plan_id,
             message_hash: BytesN::from_array(&env, &[3u8; 32]),
-            unlock_timestamp: env.ledger().timestamp() + 10_000,
+            unlock_timestamp: future_ts,
             key_reference: soroban_sdk::String::from_str(&env, "ref_new"),
         },
     );
@@ -4426,7 +4451,17 @@ fn test_update_legacy_message_unauthorized() {
     env.mock_all_auths();
     let (client, token_id, _admin, owner) = setup_with_token_and_admin(&env);
     let plan_id = create_plan_and_get_id(&env, &client, &token_id, &owner);
-    let message_id = create_message(&env, &client, &owner, plan_id);
+
+    let future_ts = env.ledger().timestamp() + 10_000;
+    let message_id = client.create_legacy_message(
+        &owner,
+        &CreateLegacyMessageParams {
+            vault_id: plan_id,
+            message_hash: BytesN::from_array(&env, &[1u8; 32]),
+            unlock_timestamp: future_ts,
+            key_reference: soroban_sdk::String::from_str(&env, "ref_1"),
+        },
+    );
 
     let stranger = Address::generate(&env);
     let result = client.try_update_legacy_message(
@@ -4435,7 +4470,7 @@ fn test_update_legacy_message_unauthorized() {
         &CreateLegacyMessageParams {
             vault_id: plan_id,
             message_hash: BytesN::from_array(&env, &[9u8; 32]),
-            unlock_timestamp: env.ledger().timestamp() + 10_000,
+            unlock_timestamp: future_ts,
             key_reference: soroban_sdk::String::from_str(&env, "ref_9"),
         },
     );
