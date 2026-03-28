@@ -87,6 +87,10 @@ fn full_setup(env: &Env) -> (InheritanceContractClient<'_>, Address, u64) {
     let client = InheritanceContractClient::new(env, &contract_id);
     client.initialize_admin(&admin);
 
+    // Submit and approve KYC for owner
+    client.submit_kyc(&owner);
+    client.approve_kyc(&admin, &owner);
+
     // Mint tokens to owner
     let mock_token_client = mock_token::MockTokenClient::new(env, &token_id);
     mock_token_client.mint(&owner, &10_000_000i128);
@@ -246,6 +250,10 @@ fn test_message_accessed_event() {
     let alice = Address::generate(&env);
     let client = InheritanceContractClient::new(&env, &contract_id);
     client.initialize_admin(&admin);
+
+    // Submit and approve KYC for owner
+    client.submit_kyc(&owner);
+    client.approve_kyc(&admin, &owner);
 
     mock_token::MockTokenClient::new(&env, &token_id).mint(&owner, &10_000_000i128);
 
