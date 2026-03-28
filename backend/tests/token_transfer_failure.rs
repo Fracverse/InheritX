@@ -23,7 +23,7 @@ fn generate_user_token(user_id: Uuid) -> String {
         &Header::default(),
         &UserClaims {
             user_id,
-            email: format!("user-{}@example.com", user_id),
+            email: format!("user-{user_id}@example.com"),
             exp,
         },
         &EncodingKey::from_secret(b"secret_key_change_in_production"),
@@ -36,7 +36,7 @@ async fn setup_user_with_kyc(pool: &sqlx::PgPool) -> Uuid {
 
     sqlx::query("INSERT INTO users (id, email, password_hash) VALUES ($1, $2, $3)")
         .bind(user_id)
-        .bind(format!("user-{}@example.com", user_id))
+        .bind(format!("user-{user_id}@example.com"))
         .bind("hash")
         .execute(pool)
         .await
@@ -75,7 +75,7 @@ fn build_create_plan_request(token: &str, body: &Value, simulate_revert: &str) -
     Request::builder()
         .method("POST")
         .uri("/api/plans")
-        .header("Authorization", format!("Bearer {}", token))
+        .header("Authorization", format!("Bearer {token}"))
         .header("Content-Type", "application/json")
         .header("X-Simulate-Revert", simulate_revert)
         .body(Body::from(body.to_string()))
@@ -419,7 +419,7 @@ async fn plan_creation_succeeds_without_revert_header() {
     let request = Request::builder()
         .method("POST")
         .uri("/api/plans")
-        .header("Authorization", format!("Bearer {}", token))
+        .header("Authorization", format!("Bearer {token}"))
         .header("Content-Type", "application/json")
         .body(Body::from(plan_request_body().to_string()))
         .expect("Failed to build request");

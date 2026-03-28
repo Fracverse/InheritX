@@ -20,7 +20,7 @@ async fn reject_success() {
 
     let req = Request::builder()
         .method("POST")
-        .uri(format!("/claims/{}/reject", claim_id))
+        .uri(format!("/claims/{claim_id}/reject"))
         .header("Content-Type", "application/json")
         .body(Body::from(serde_json::to_string(&json!({})).unwrap()))
         .unwrap();
@@ -40,7 +40,7 @@ async fn cannot_reject_twice() {
 
     let req1 = Request::builder()
         .method("POST")
-        .uri(format!("/claims/{}/reject", claim_id))
+        .uri(format!("/claims/{claim_id}/reject"))
         .header("Content-Type", "application/json")
         .body(Body::from(serde_json::to_string(&json!({})).unwrap()))
         .unwrap();
@@ -50,7 +50,7 @@ async fn cannot_reject_twice() {
 
     let req2 = Request::builder()
         .method("POST")
-        .uri(format!("/claims/{}/reject", claim_id))
+        .uri(format!("/claims/{claim_id}/reject"))
         .header("Content-Type", "application/json")
         .body(Body::from(serde_json::to_string(&json!({})).unwrap()))
         .unwrap();
@@ -70,7 +70,7 @@ async fn cannot_approve_after_reject_without_reset() {
 
     let req_reject = Request::builder()
         .method("POST")
-        .uri(format!("/claims/{}/reject", claim_id))
+        .uri(format!("/claims/{claim_id}/reject"))
         .header("Content-Type", "application/json")
         .body(Body::from(serde_json::to_string(&json!({})).unwrap()))
         .unwrap();
@@ -85,7 +85,7 @@ async fn cannot_approve_after_reject_without_reset() {
 
     let req_approve = Request::builder()
         .method("POST")
-        .uri(format!("/claims/{}/approve", claim_id))
+        .uri(format!("/claims/{claim_id}/approve"))
         .header("Content-Type", "application/json")
         .body(Body::from(serde_json::to_string(&json!({})).unwrap()))
         .unwrap();

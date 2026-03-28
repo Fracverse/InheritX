@@ -48,7 +48,7 @@ impl ReputationService {
         .bind(user_id)
         .fetch_optional(pool)
         .await
-        .map_err(|e| ApiError::Internal(anyhow::anyhow!("DB Error: {}", e)))?;
+        .map_err(|e| ApiError::Internal(anyhow::anyhow!("DB Error: {e}")))?;
 
         if let Some(row) = rep_row {
             Ok(BorrowerReputation {
@@ -133,7 +133,7 @@ impl ReputationService {
         .bind(add_liquidation)
         .fetch_one(&mut **tx)
         .await
-        .map_err(|e| ApiError::Internal(anyhow::anyhow!("DB Error updating reputation: {}", e)))?;
+        .map_err(|e| ApiError::Internal(anyhow::anyhow!("DB Error updating reputation: {e}")))?;
 
         Ok(BorrowerReputation {
             user_id: row.user_id,

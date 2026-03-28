@@ -22,7 +22,7 @@ async fn test_login_invalid_signature() {
         .clone()
         .oneshot(
             Request::builder()
-                .uri(format!("/api/auth/nonce/{}", wallet_address))
+                .uri(format!("/api/auth/nonce/{wallet_address}"))
                 .body(Body::empty())
                 .unwrap(),
         )
@@ -69,7 +69,7 @@ async fn test_login_replayed_nonce() {
         .clone()
         .oneshot(
             Request::builder()
-                .uri(format!("/api/auth/nonce/{}", wallet_address))
+                .uri(format!("/api/auth/nonce/{wallet_address}"))
                 .body(Body::empty())
                 .unwrap(),
         )
@@ -171,7 +171,7 @@ async fn test_login_expired_nonce() {
         .clone()
         .oneshot(
             Request::builder()
-                .uri(format!("/api/auth/nonce/{}", wallet_address))
+                .uri(format!("/api/auth/nonce/{wallet_address}"))
                 .body(Body::empty())
                 .unwrap(),
         )

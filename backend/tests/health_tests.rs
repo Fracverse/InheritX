@@ -89,7 +89,7 @@ async fn test_health_endpoint() {
 
     // Client
     let client = reqwest::Client::new();
-    let url = format!("http://{}/health", addr);
+    let url = format!("http://{addr}/health");
 
     // Give it a moment to start
     tokio::time::sleep(std::time::Duration::from_millis(50)).await;
@@ -102,9 +102,7 @@ async fn test_health_endpoint() {
     assert_eq!(
         status,
         reqwest::StatusCode::OK,
-        "Status was {}, body: {}",
-        status,
-        body_text
+        "Status was {status}, body: {body_text}"
     );
 
     let body: Value = serde_json::from_str(&body_text).expect("Failed to parse JSON");

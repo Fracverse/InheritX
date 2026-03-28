@@ -14,7 +14,7 @@ fn generate_admin_token(admin_id: Uuid) -> String {
     let exp = (chrono::Utc::now() + chrono::Duration::hours(24)).timestamp() as usize;
     let claims = AdminClaims {
         admin_id,
-        email: format!("admin-{}@example.com", admin_id),
+        email: format!("admin-{admin_id}@example.com"),
         role: "admin".to_string(),
         exp,
     };
@@ -30,7 +30,7 @@ fn generate_user_token(user_id: Uuid) -> String {
     let exp = (chrono::Utc::now() + chrono::Duration::hours(24)).timestamp() as usize;
     let claims = UserClaims {
         user_id,
-        email: format!("user-{}@example.com", user_id),
+        email: format!("user-{user_id}@example.com"),
         exp,
     };
     encode(
@@ -45,7 +45,7 @@ fn build_get_request(uri: &str, token: &str) -> Request<Body> {
     Request::builder()
         .method("GET")
         .uri(uri)
-        .header("Authorization", format!("Bearer {}", token))
+        .header("Authorization", format!("Bearer {token}"))
         .body(Body::empty())
         .unwrap()
 }

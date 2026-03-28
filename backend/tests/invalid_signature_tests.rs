@@ -35,7 +35,7 @@ async fn fetch_nonce(app: axum::Router, wallet_address: &str) -> String {
     let resp = app
         .oneshot(
             Request::builder()
-                .uri(format!("/api/auth/nonce/{}", wallet_address))
+                .uri(format!("/api/auth/nonce/{wallet_address}"))
                 .body(Body::empty())
                 .unwrap(),
         )

@@ -17,7 +17,7 @@ const JWT_SECRET: &[u8] = b"test-jwt-secret";
 fn user_token(user_id: Uuid) -> String {
     let claims = UserClaims {
         user_id,
-        email: format!("user-{}@example.com", user_id),
+        email: format!("user-{user_id}@example.com"),
         // Use a far-future timestamp so the token never expires in tests
         exp: 9_999_999_999,
     };
@@ -41,7 +41,7 @@ async fn submit_kyc_returns_pending_for_authenticated_user() {
     let user_id = Uuid::new_v4();
     sqlx::query("INSERT INTO users (id, email, password_hash) VALUES ($1, $2, $3)")
         .bind(user_id)
-        .bind(format!("kyc-submit-{}@example.com", user_id))
+        .bind(format!("kyc-submit-{user_id}@example.com"))
         .bind("hashed_password")
         .execute(&ctx.pool)
         .await
@@ -55,7 +55,7 @@ async fn submit_kyc_returns_pending_for_authenticated_user() {
             Request::builder()
                 .method("POST")
                 .uri("/api/kyc/submit")
-                .header(header::AUTHORIZATION, format!("Bearer {}", token))
+                .header(header::AUTHORIZATION, format!("Bearer {token}"))
                 .header(header::CONTENT_TYPE, "application/json")
                 .body(Body::empty())
                 .unwrap(),
@@ -135,7 +135,7 @@ async fn submit_kyc_is_idempotent_for_same_user() {
     let user_id = Uuid::new_v4();
     sqlx::query("INSERT INTO users (id, email, password_hash) VALUES ($1, $2, $3)")
         .bind(user_id)
-        .bind(format!("kyc-idem-{}@example.com", user_id))
+        .bind(format!("kyc-idem-{user_id}@example.com"))
         .bind("hashed_password")
         .execute(&ctx.pool)
         .await
@@ -151,7 +151,7 @@ async fn submit_kyc_is_idempotent_for_same_user() {
             Request::builder()
                 .method("POST")
                 .uri("/api/kyc/submit")
-                .header(header::AUTHORIZATION, format!("Bearer {}", token))
+                .header(header::AUTHORIZATION, format!("Bearer {token}"))
                 .body(Body::empty())
                 .unwrap(),
         )
@@ -165,7 +165,7 @@ async fn submit_kyc_is_idempotent_for_same_user() {
             Request::builder()
                 .method("POST")
                 .uri("/api/kyc/submit")
-                .header(header::AUTHORIZATION, format!("Bearer {}", token))
+                .header(header::AUTHORIZATION, format!("Bearer {token}"))
                 .body(Body::empty())
                 .unwrap(),
         )
@@ -195,7 +195,7 @@ async fn submit_kyc_response_contains_expected_fields() {
     let user_id = Uuid::new_v4();
     sqlx::query("INSERT INTO users (id, email, password_hash) VALUES ($1, $2, $3)")
         .bind(user_id)
-        .bind(format!("kyc-fields-{}@example.com", user_id))
+        .bind(format!("kyc-fields-{user_id}@example.com"))
         .bind("hashed_password")
         .execute(&ctx.pool)
         .await
@@ -209,7 +209,7 @@ async fn submit_kyc_response_contains_expected_fields() {
             Request::builder()
                 .method("POST")
                 .uri("/api/kyc/submit")
-                .header(header::AUTHORIZATION, format!("Bearer {}", token))
+                .header(header::AUTHORIZATION, format!("Bearer {token}"))
                 .body(Body::empty())
                 .unwrap(),
         )

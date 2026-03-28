@@ -36,7 +36,7 @@ async fn test_full_lifecycle_flow() {
         .clone()
         .oneshot(
             Request::builder()
-                .uri(format!("/api/auth/nonce/{}", wallet_address))
+                .uri(format!("/api/auth/nonce/{wallet_address}"))
                 .body(Body::empty())
                 .unwrap(),
         )
@@ -87,7 +87,7 @@ async fn test_full_lifecycle_flow() {
             Request::builder()
                 .method("POST")
                 .uri("/api/kyc/submit")
-                .header("Authorization", format!("Bearer {}", user_token))
+                .header("Authorization", format!("Bearer {user_token}"))
                 .body(Body::empty())
                 .unwrap(),
         )
@@ -139,7 +139,7 @@ async fn test_full_lifecycle_flow() {
             Request::builder()
                 .method("POST")
                 .uri("/api/admin/kyc/approve")
-                .header("Authorization", format!("Bearer {}", admin_token))
+                .header("Authorization", format!("Bearer {admin_token}"))
                 .header("Content-Type", "application/json")
                 .body(Body::from(
                     json!({
@@ -162,7 +162,7 @@ async fn test_full_lifecycle_flow() {
             Request::builder()
                 .method("POST")
                 .uri("/api/plans")
-                .header("Authorization", format!("Bearer {}", user_token))
+                .header("Authorization", format!("Bearer {user_token}"))
                 .header("Content-Type", "application/json")
                 .body(Body::from(
                     json!({
@@ -203,8 +203,8 @@ async fn test_full_lifecycle_flow() {
         .oneshot(
             Request::builder()
                 .method("POST")
-                .uri(format!("/api/plans/{}/claim", plan_id))
-                .header("Authorization", format!("Bearer {}", user_token))
+                .uri(format!("/api/plans/{plan_id}/claim"))
+                .header("Authorization", format!("Bearer {user_token}"))
                 .header("Content-Type", "application/json")
                 .body(Body::from(
                     json!({
@@ -226,7 +226,7 @@ async fn test_full_lifecycle_flow() {
         .oneshot(
             Request::builder()
                 .uri("/api/admin/logs")
-                .header("Authorization", format!("Bearer {}", admin_token))
+                .header("Authorization", format!("Bearer {admin_token}"))
                 .body(Body::empty())
                 .unwrap(),
         )
@@ -251,7 +251,7 @@ async fn test_full_lifecycle_flow() {
         .oneshot(
             Request::builder()
                 .uri("/api/notifications")
-                .header("Authorization", format!("Bearer {}", user_token))
+                .header("Authorization", format!("Bearer {user_token}"))
                 .body(Body::empty())
                 .unwrap(),
         )

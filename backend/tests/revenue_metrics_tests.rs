@@ -14,7 +14,7 @@ fn generate_admin_token(admin_id: Uuid) -> String {
     let exp = (chrono::Utc::now() + chrono::Duration::hours(24)).timestamp() as usize;
     let claims = AdminClaims {
         admin_id,
-        email: format!("admin-{}@example.com", admin_id),
+        email: format!("admin-{admin_id}@example.com"),
         role: "admin".to_string(),
         exp,
     };
@@ -30,7 +30,7 @@ fn generate_user_token(user_id: Uuid) -> String {
     let exp = (chrono::Utc::now() + chrono::Duration::hours(24)).timestamp() as usize;
     let claims = UserClaims {
         user_id,
-        email: format!("user-{}@example.com", user_id),
+        email: format!("user-{user_id}@example.com"),
         exp,
     };
     encode(
@@ -57,7 +57,7 @@ async fn admin_can_fetch_revenue_metrics() {
             Request::builder()
                 .method("GET")
                 .uri("/admin/metrics/revenue")
-                .header("Authorization", format!("Bearer {}", token))
+                .header("Authorization", format!("Bearer {token}"))
                 .body(Body::empty())
                 .unwrap(),
         )
@@ -82,7 +82,7 @@ async fn admin_can_fetch_revenue_metrics() {
             Request::builder()
                 .method("GET")
                 .uri("/admin/metrics/revenue?range=weekly")
-                .header("Authorization", format!("Bearer {}", token))
+                .header("Authorization", format!("Bearer {token}"))
                 .body(Body::empty())
                 .unwrap(),
         )
@@ -103,7 +103,7 @@ async fn admin_can_fetch_revenue_metrics() {
             Request::builder()
                 .method("GET")
                 .uri("/admin/metrics/revenue?range=monthly")
-                .header("Authorization", format!("Bearer {}", token))
+                .header("Authorization", format!("Bearer {token}"))
                 .body(Body::empty())
                 .unwrap(),
         )
@@ -132,7 +132,7 @@ async fn user_cannot_fetch_revenue_metrics() {
             Request::builder()
                 .method("GET")
                 .uri("/admin/metrics/revenue")
-                .header("Authorization", format!("Bearer {}", token))
+                .header("Authorization", format!("Bearer {token}"))
                 .body(Body::empty())
                 .unwrap(),
         )
@@ -156,7 +156,7 @@ async fn admin_metrics_revenue_invalid_range() {
             Request::builder()
                 .method("GET")
                 .uri("/admin/metrics/revenue?range=yearly")
-                .header("Authorization", format!("Bearer {}", token))
+                .header("Authorization", format!("Bearer {token}"))
                 .body(Body::empty())
                 .unwrap(),
         )

@@ -25,7 +25,7 @@ async fn governor_rate_limit_burst_and_reset() {
         .unwrap();
     });
     let client = reqwest::Client::new();
-    let url = format!("http://{}/health", addr);
+    let url = format!("http://{addr}/health");
     let mut statuses = Vec::new();
     for _ in 0..6 {
         let resp = client.get(&url).send().await.expect("req");

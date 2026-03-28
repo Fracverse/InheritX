@@ -21,7 +21,7 @@ fn generate_user_token(user_id: Uuid) -> String {
 
     let claims = UserClaims {
         user_id,
-        email: format!("test-{}@example.com", user_id),
+        email: format!("test-{user_id}@example.com"),
         exp,
     };
 
@@ -111,7 +111,7 @@ async fn test_claim_before_maturity_returns_400() {
     let app = test_context.app.clone();
 
     let user_id = Uuid::new_v4();
-    let email = format!("test_{}@example.com", user_id);
+    let email = format!("test_{user_id}@example.com");
     sqlx::query("INSERT INTO users (id, email, password_hash) VALUES ($1, $2, $3)")
         .bind(user_id)
         .bind(&email)
@@ -169,8 +169,8 @@ async fn test_claim_before_maturity_returns_400() {
     let token = generate_test_token(user_id, &email);
     let client = reqwest::Client::new();
     let response = client
-        .post(format!("http://{}/api/plans/{}/claim", addr, plan_id))
-        .header("Authorization", format!("Bearer {}", token))
+        .post(format!("http://{addr}/api/plans/{plan_id}/claim"))
+        .header("Authorization", format!("Bearer {token}"))
         .json(&json!({
             "beneficiary_email": "beneficiary@example.com",
             "two_fa_code": otp
@@ -213,8 +213,8 @@ async fn test_claim_plan_is_due() {
         .oneshot(
             Request::builder()
                 .method("POST")
-                .uri(format!("/api/plans/{}/claim", plan_id))
-                .header("Authorization", format!("Bearer {}", token))
+                .uri(format!("/api/plans/{plan_id}/claim"))
+                .header("Authorization", format!("Bearer {token}"))
                 .header("Content-Type", "application/json")
                 .body(Body::from(
                     serde_json::to_string(&body).expect("Failed to serialize request body"),
@@ -253,8 +253,8 @@ async fn test_claim_requires_kyc_approved() {
         .oneshot(
             Request::builder()
                 .method("POST")
-                .uri(format!("/api/plans/{}/claim", plan_id))
-                .header("Authorization", format!("Bearer {}", token))
+                .uri(format!("/api/plans/{plan_id}/claim"))
+                .header("Authorization", format!("Bearer {token}"))
                 .header("Content-Type", "application/json")
                 .body(Body::from(
                     serde_json::to_string(&body).expect("Failed to serialize request body"),
@@ -290,8 +290,8 @@ async fn test_claim_recorded_on_success() {
         .oneshot(
             Request::builder()
                 .method("POST")
-                .uri(format!("/api/plans/{}/claim", plan_id))
-                .header("Authorization", format!("Bearer {}", token))
+                .uri(format!("/api/plans/{plan_id}/claim"))
+                .header("Authorization", format!("Bearer {token}"))
                 .header("Content-Type", "application/json")
                 .body(Body::from(
                     serde_json::to_string(&body).expect("Failed to serialize request body"),
@@ -341,8 +341,8 @@ async fn test_claim_audit_log_inserted() {
         .oneshot(
             Request::builder()
                 .method("POST")
-                .uri(format!("/api/plans/{}/claim", plan_id))
-                .header("Authorization", format!("Bearer {}", token))
+                .uri(format!("/api/plans/{plan_id}/claim"))
+                .header("Authorization", format!("Bearer {token}"))
                 .header("Content-Type", "application/json")
                 .body(Body::from(
                     serde_json::to_string(&body).expect("Failed to serialize request body"),
@@ -403,8 +403,8 @@ async fn test_claim_notification_created() {
         .oneshot(
             Request::builder()
                 .method("POST")
-                .uri(format!("/api/plans/{}/claim", plan_id))
-                .header("Authorization", format!("Bearer {}", token))
+                .uri(format!("/api/plans/{plan_id}/claim"))
+                .header("Authorization", format!("Bearer {token}"))
                 .header("Content-Type", "application/json")
                 .body(Body::from(
                     serde_json::to_string(&body).expect("Failed to serialize request body"),

@@ -134,7 +134,7 @@ async fn get_plan(
             "status": "success",
             "data": p
         }))),
-        None => Err(ApiError::NotFound(format!("Plan {} not found", plan_id))),
+        None => Err(ApiError::NotFound(format!("Plan {plan_id} not found"))),
     }
 }
 
@@ -164,10 +164,7 @@ async fn get_due_for_claim_plan(
             "status": "success",
             "data": plan
         }))),
-        None => Err(ApiError::NotFound(format!(
-            "Plan {} not found or not due for claim",
-            plan_id
-        ))),
+        None => Err(ApiError::NotFound(format!("Plan {plan_id} not found or not due for claim"))),
     }
 }
 
@@ -286,10 +283,7 @@ async fn get_simulation(
             "status": "success",
             "data": sim
         }))),
-        None => Err(ApiError::NotFound(format!(
-            "Simulation {} not found",
-            simulation_id
-        ))),
+        None => Err(ApiError::NotFound(format!("Simulation {simulation_id} not found"))),
     }
 }
 

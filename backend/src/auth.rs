@@ -353,7 +353,7 @@ pub async fn send_2fa(
 
     // 3. Hash OTP
     let otp_hash = bcrypt::hash(&otp, bcrypt::DEFAULT_COST)
-        .map_err(|e| ApiError::Internal(anyhow::anyhow!("Failed to hash OTP: {}", e)))?;
+        .map_err(|e| ApiError::Internal(anyhow::anyhow!("Failed to hash OTP: {e}")))?;
 
     let expires_at = Utc::now() + Duration::minutes(5);
 
@@ -439,7 +439,7 @@ pub async fn verify_2fa_internal(db: &PgPool, user_id: Uuid, otp: &str) -> Resul
 
     // 4. Verify OTP
     let valid = bcrypt::verify(otp, &otp_hash)
-        .map_err(|e| ApiError::Internal(anyhow::anyhow!("Failed to verify OTP: {}", e)))?;
+        .map_err(|e| ApiError::Internal(anyhow::anyhow!("Failed to verify OTP: {e}")))?;
 
     if !valid {
         // Increment attempts

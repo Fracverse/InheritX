@@ -38,7 +38,7 @@ async fn test_web3_login_success() {
     });
 
     let client = reqwest::Client::new();
-    let base_url = format!("http://{}", addr);
+    let base_url = format!("http://{addr}");
 
     // 1. Generate a dummy Stellar-like Ed25519 keypair
     let rng = ring::rand::SystemRandom::new();
@@ -55,7 +55,7 @@ async fn test_web3_login_success() {
 
     // 2. Request Nonce
     let response = client
-        .post(format!("{}/api/auth/nonce", base_url))
+        .post(format!("{base_url}/api/auth/nonce"))
         .json(&NonceRequest {
             wallet_address: wallet_address.to_string(),
         })
@@ -73,7 +73,7 @@ async fn test_web3_login_success() {
 
     // 4. Web3 Login
     let response = client
-        .post(format!("{}/api/auth/web3-login", base_url))
+        .post(format!("{base_url}/api/auth/web3-login"))
         .json(&Web3LoginRequest {
             wallet_address: wallet_address.to_string(),
             signature: signature_hex,
@@ -126,7 +126,7 @@ async fn test_get_nonce_returns_unique_nonce() {
         .clone()
         .oneshot(
             Request::builder()
-                .uri(format!("/api/auth/nonce/{}", wallet))
+                .uri(format!("/api/auth/nonce/{wallet}"))
                 .body(Body::empty())
                 .unwrap(),
         )
@@ -156,7 +156,7 @@ async fn test_nonce_stored_in_db() {
         .clone()
         .oneshot(
             Request::builder()
-                .uri(format!("/api/auth/nonce/{}", wallet))
+                .uri(format!("/api/auth/nonce/{wallet}"))
                 .body(Body::empty())
                 .unwrap(),
         )
@@ -195,7 +195,7 @@ async fn test_two_requests_generate_different_nonces() {
         .clone()
         .oneshot(
             Request::builder()
-                .uri(format!("/api/auth/nonce/{}", wallet))
+                .uri(format!("/api/auth/nonce/{wallet}"))
                 .body(Body::empty())
                 .unwrap(),
         )
@@ -214,7 +214,7 @@ async fn test_two_requests_generate_different_nonces() {
         .clone()
         .oneshot(
             Request::builder()
-                .uri(format!("/api/auth/nonce/{}", wallet))
+                .uri(format!("/api/auth/nonce/{wallet}"))
                 .body(Body::empty())
                 .unwrap(),
         )

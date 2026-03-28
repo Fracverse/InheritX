@@ -56,7 +56,7 @@ async fn test_concurrent_claim_same_email_only_one_succeeds() {
     let app = test_context.app;
 
     let user_id = Uuid::new_v4();
-    let email = format!("test_{}@example.com", user_id);
+    let email = format!("test_{user_id}@example.com");
 
     // Insert user
     sqlx::query("INSERT INTO users (id, email, password_hash) VALUES ($1, $2, $3)")
@@ -82,7 +82,7 @@ async fn test_concurrent_claim_same_email_only_one_succeeds() {
     let claim_req = || {
         Request::builder()
             .method("POST")
-            .uri(format!("/api/plans/{}/claim", plan_id))
+            .uri(format!("/api/plans/{plan_id}/claim"))
             .header("Content-Type", "application/json")
             .header("X-User-Id", user_id.to_string())
             .body(Body::from(
@@ -104,8 +104,7 @@ async fn test_concurrent_claim_same_email_only_one_succeeds() {
     let success_count = (status1 == StatusCode::OK) as i32 + (status2 == StatusCode::OK) as i32;
     assert_eq!(
         success_count, 1,
-        "Exactly one claim should succeed with same email. Got status1: {}, status2: {}",
-        status1, status2
+        "Exactly one claim should succeed with same email. Got status1: {status1}, status2: {status2}"
     );
 
     // Verify only one claim record exists in database
@@ -133,7 +132,7 @@ async fn test_concurrent_claim_different_emails_only_one_succeeds() {
     let app = test_context.app;
 
     let user_id = Uuid::new_v4();
-    let email = format!("test_{}@example.com", user_id);
+    let email = format!("test_{user_id}@example.com");
 
     // Insert user
     sqlx::query("INSERT INTO users (id, email, password_hash) VALUES ($1, $2, $3)")
@@ -158,7 +157,7 @@ async fn test_concurrent_claim_different_emails_only_one_succeeds() {
     let claim_req_with_email = |email: &str| {
         Request::builder()
             .method("POST")
-            .uri(format!("/api/plans/{}/claim", plan_id))
+            .uri(format!("/api/plans/{plan_id}/claim"))
             .header("Content-Type", "application/json")
             .header("X-User-Id", user_id.to_string())
             .body(Body::from(
@@ -182,8 +181,7 @@ async fn test_concurrent_claim_different_emails_only_one_succeeds() {
     let success_count = (status1 == StatusCode::OK) as i32 + (status2 == StatusCode::OK) as i32;
     assert_eq!(
         success_count, 1,
-        "Exactly one claim should succeed with different emails. Got status1: {}, status2: {}",
-        status1, status2
+        "Exactly one claim should succeed with different emails. Got status1: {status1}, status2: {status2}"
     );
 
     // Verify only one claim record exists in database (no duplicate payout)
@@ -210,7 +208,7 @@ async fn test_concurrent_claim_updates_plan_status() {
     let app = test_context.app;
 
     let user_id = Uuid::new_v4();
-    let email = format!("test_{}@example.com", user_id);
+    let email = format!("test_{user_id}@example.com");
 
     // Insert user
     sqlx::query("INSERT INTO users (id, email, password_hash) VALUES ($1, $2, $3)")
@@ -234,7 +232,7 @@ async fn test_concurrent_claim_updates_plan_status() {
     // Submit a claim request
     let claim_req = Request::builder()
         .method("POST")
-        .uri(format!("/api/plans/{}/claim", plan_id))
+        .uri(format!("/api/plans/{plan_id}/claim"))
         .header("Content-Type", "application/json")
         .header("X-User-Id", user_id.to_string())
         .body(Body::from(
@@ -273,7 +271,7 @@ async fn test_claim_after_concurrent_claims_fails() {
     let app = test_context.app;
 
     let user_id = Uuid::new_v4();
-    let email = format!("test_{}@example.com", user_id);
+    let email = format!("test_{user_id}@example.com");
 
     // Insert user
     sqlx::query("INSERT INTO users (id, email, password_hash) VALUES ($1, $2, $3)")
@@ -297,7 +295,7 @@ async fn test_claim_after_concurrent_claims_fails() {
     // Submit first claim (should succeed)
     let claim_req = Request::builder()
         .method("POST")
-        .uri(format!("/api/plans/{}/claim", plan_id))
+        .uri(format!("/api/plans/{plan_id}/claim"))
         .header("Content-Type", "application/json")
         .header("X-User-Id", user_id.to_string())
         .body(Body::from(
@@ -316,7 +314,7 @@ async fn test_claim_after_concurrent_claims_fails() {
     // Submit second claim with different email (should fail - already claimed)
     let claim_req2 = Request::builder()
         .method("POST")
-        .uri(format!("/api/plans/{}/claim", plan_id))
+        .uri(format!("/api/plans/{plan_id}/claim"))
         .header("Content-Type", "application/json")
         .header("X-User-Id", user_id.to_string())
         .body(Body::from(
@@ -352,7 +350,7 @@ async fn test_concurrent_claim_creates_single_audit_log() {
     let app = test_context.app;
 
     let user_id = Uuid::new_v4();
-    let email = format!("test_{}@example.com", user_id);
+    let email = format!("test_{user_id}@example.com");
 
     // Insert user
     sqlx::query("INSERT INTO users (id, email, password_hash) VALUES ($1, $2, $3)")
@@ -377,7 +375,7 @@ async fn test_concurrent_claim_creates_single_audit_log() {
     let claim_req_with_email = |email: &str| {
         Request::builder()
             .method("POST")
-            .uri(format!("/api/plans/{}/claim", plan_id))
+            .uri(format!("/api/plans/{plan_id}/claim"))
             .header("Content-Type", "application/json")
             .header("X-User-Id", user_id.to_string())
             .body(Body::from(

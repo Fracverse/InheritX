@@ -15,7 +15,7 @@ fn generate_admin_token(admin_id: Uuid) -> String {
     let exp = (Utc::now() + Duration::hours(24)).timestamp() as usize;
     let claims = AdminClaims {
         admin_id,
-        email: format!("admin-{}@example.com", admin_id),
+        email: format!("admin-{admin_id}@example.com"),
         role: "admin".to_string(),
         exp,
     };
@@ -36,7 +36,7 @@ async fn seed_user(ctx: &helpers::TestContext) -> Uuid {
         "#,
     )
     .bind(user_id)
-    .bind(format!("{}@example.com", user_id))
+    .bind(format!("{user_id}@example.com"))
     .bind("hashed-password")
     .execute(&ctx.pool)
     .await
@@ -55,7 +55,7 @@ async fn seed_plan(ctx: &helpers::TestContext, user_id: Uuid, asset_code: &str) 
     )
     .bind(plan_id)
     .bind(user_id)
-    .bind(format!("Yield Plan {}", plan_id))
+    .bind(format!("Yield Plan {plan_id}"))
     .bind("10.00")
     .bind("1000.00")
     .bind(asset_code)
@@ -159,7 +159,7 @@ async fn admin_can_fetch_yield_summary_for_asset_vault() {
             Request::builder()
                 .method("GET")
                 .uri(format!("/api/admin/analytics/yield?assetCode={asset_code}"))
-                .header("Authorization", format!("Bearer {}", token))
+                .header("Authorization", format!("Bearer {token}"))
                 .body(Body::empty())
                 .unwrap(),
         )
@@ -247,7 +247,7 @@ async fn admin_can_fetch_filtered_earnings_history() {
                 .uri(format!(
                     "/api/admin/analytics/yield/history?range=daily&assetCode={asset_code}&userId={user_id}&planId={plan_id}"
                 ))
-                .header("Authorization", format!("Bearer {}", token))
+                .header("Authorization", format!("Bearer {token}"))
                 .body(Body::empty())
                 .unwrap(),
         )

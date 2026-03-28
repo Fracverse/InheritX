@@ -16,7 +16,7 @@ fn generate_admin_token(admin_id: Uuid) -> String {
     let exp = (chrono::Utc::now() + chrono::Duration::hours(24)).timestamp() as usize;
     let claims = AdminClaims {
         admin_id,
-        email: format!("admin-{}@example.com", admin_id),
+        email: format!("admin-{admin_id}@example.com"),
         role: "admin".to_string(),
         exp,
     };
@@ -32,7 +32,7 @@ fn generate_user_token(user_id: Uuid) -> String {
     let exp = (chrono::Utc::now() + chrono::Duration::hours(24)).timestamp() as usize;
     let claims = UserClaims {
         user_id,
-        email: format!("user-{}@example.com", user_id),
+        email: format!("user-{user_id}@example.com"),
         exp,
     };
     encode(
@@ -59,7 +59,7 @@ async fn fetch_claim_metrics(app: &Router, token: &str) -> (StatusCode, Value) {
             Request::builder()
                 .method("GET")
                 .uri("/admin/metrics/claims")
-                .header("Authorization", format!("Bearer {}", token))
+                .header("Authorization", format!("Bearer {token}"))
                 .body(Body::empty())
                 .expect("failed to build request"),
         )
@@ -225,7 +225,7 @@ async fn claim_metrics_count_and_average_change_with_new_rows() {
     .expect("failed to count baseline processed claims");
 
     let user_id = Uuid::new_v4();
-    let email = format!("claim-metrics-{}@example.com", user_id);
+    let email = format!("claim-metrics-{user_id}@example.com");
     sqlx::query("INSERT INTO users (id, email, password_hash) VALUES ($1, $2, $3)")
         .bind(user_id)
         .bind(email)

@@ -17,7 +17,7 @@ async fn wallet_balance_less_than_required_returns_400_and_no_plan_or_audit_log(
     let user_id = Uuid::new_v4();
     sqlx::query("INSERT INTO users (id, email, password_hash) VALUES ($1, $2, $3)")
         .bind(user_id)
-        .bind(format!("user-{}@example.com", user_id))
+        .bind(format!("user-{user_id}@example.com"))
         .bind("hash")
         .execute(&ctx.pool)
         .await
@@ -36,7 +36,7 @@ async fn wallet_balance_less_than_required_returns_400_and_no_plan_or_audit_log(
         &Header::default(),
         &inheritx_backend::auth::UserClaims {
             user_id,
-            email: format!("user-{}@example.com", user_id),
+            email: format!("user-{user_id}@example.com"),
             exp: 0,
         },
         &EncodingKey::from_secret(b"secret_key_change_in_production"),
@@ -60,7 +60,7 @@ async fn wallet_balance_less_than_required_returns_400_and_no_plan_or_audit_log(
             Request::builder()
                 .method("POST")
                 .uri("/api/plans")
-                .header("Authorization", format!("Bearer {}", token))
+                .header("Authorization", format!("Bearer {token}"))
                 .header("Content-Type", "application/json")
                 .header("X-Simulate-Wallet-Balance", "low") // Simulate low wallet balance
                 .body(Body::from(body.to_string()))

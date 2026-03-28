@@ -54,7 +54,7 @@ async fn admin_can_get_all_due_plans_returns_200() {
         .oneshot(
             Request::builder()
                 .uri("/api/admin/plans/due-for-claim")
-                .header("Authorization", format!("Bearer {}", token))
+                .header("Authorization", format!("Bearer {token}"))
                 .body(Body::empty())
                 .unwrap(),
         )
@@ -77,7 +77,7 @@ async fn user_token_rejected_returns_401_or_403() {
         .oneshot(
             Request::builder()
                 .uri("/api/admin/plans/due-for-claim")
-                .header("Authorization", format!("Bearer {}", token))
+                .header("Authorization", format!("Bearer {token}"))
                 .body(Body::empty())
                 .unwrap(),
         )

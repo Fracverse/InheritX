@@ -9,8 +9,7 @@ impl SafeMath {
     pub fn add(a: Decimal, b: Decimal) -> Result<Decimal, ApiError> {
         a.checked_add(b).ok_or_else(|| {
             ApiError::BadRequest(format!(
-                "Arithmetic overflow: {} + {} exceeds maximum value",
-                a, b
+                "Arithmetic overflow: {a} + {b} exceeds maximum value"
             ))
         })
     }
@@ -19,16 +18,14 @@ impl SafeMath {
     pub fn sub(a: Decimal, b: Decimal) -> Result<Decimal, ApiError> {
         let result = a.checked_sub(b).ok_or_else(|| {
             ApiError::BadRequest(format!(
-                "Arithmetic underflow: {} - {} results in overflow",
-                a, b
+                "Arithmetic underflow: {a} - {b} results in overflow"
             ))
         })?;
 
         // Also check if result is negative (which we consider underflow for financial operations)
         if result.is_sign_negative() {
             return Err(ApiError::BadRequest(format!(
-                "Arithmetic underflow: {} - {} results in negative value {}",
-                a, b, result
+                "Arithmetic underflow: {a} - {b} results in negative value {result}"
             )));
         }
 
@@ -39,8 +36,7 @@ impl SafeMath {
     pub fn mul(a: Decimal, b: Decimal) -> Result<Decimal, ApiError> {
         a.checked_mul(b).ok_or_else(|| {
             ApiError::BadRequest(format!(
-                "Arithmetic overflow: {} * {} exceeds maximum value",
-                a, b
+                "Arithmetic overflow: {a} * {b} exceeds maximum value"
             ))
         })
     }
@@ -55,8 +51,7 @@ impl SafeMath {
 
         a.checked_div(b).ok_or_else(|| {
             ApiError::BadRequest(format!(
-                "Arithmetic overflow: {} / {} exceeds maximum value",
-                a, b
+                "Arithmetic overflow: {a} / {b} exceeds maximum value"
             ))
         })
     }
@@ -84,8 +79,7 @@ impl SafeMath {
     pub fn ensure_non_negative(value: Decimal, field_name: &str) -> Result<Decimal, ApiError> {
         if value.is_sign_negative() {
             return Err(ApiError::BadRequest(format!(
-                "{} cannot be negative: {}",
-                field_name, value
+                "{field_name} cannot be negative: {value}"
             )));
         }
         Ok(value)
@@ -95,8 +89,7 @@ impl SafeMath {
     pub fn ensure_positive(value: Decimal, field_name: &str) -> Result<Decimal, ApiError> {
         if value.is_zero() || value.is_sign_negative() {
             return Err(ApiError::BadRequest(format!(
-                "{} must be positive: {}",
-                field_name, value
+                "{field_name} must be positive: {value}"
             )));
         }
         Ok(value)

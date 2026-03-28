@@ -18,7 +18,7 @@ async fn test_2fa_full_flow() {
 
     // 1. Create a test user
     let user_id = Uuid::new_v4();
-    let email = format!("test-{}@example.com", user_id);
+    let email = format!("test-{user_id}@example.com");
     sqlx::query("INSERT INTO users (id, email, password_hash) VALUES ($1, $2, $3)")
         .bind(user_id)
         .bind(&email)
@@ -98,7 +98,7 @@ async fn test_verify_2fa_invalid_otp() {
     let user_id = Uuid::new_v4();
     sqlx::query("INSERT INTO users (id, email, password_hash) VALUES ($1, $2, $3)")
         .bind(user_id)
-        .bind(format!("test-{}@example.com", user_id))
+        .bind(format!("test-{user_id}@example.com"))
         .bind("dummy-hash")
         .execute(&ctx.pool)
         .await
@@ -161,7 +161,7 @@ async fn test_verify_2fa_too_many_attempts() {
     let user_id = Uuid::new_v4();
     sqlx::query("INSERT INTO users (id, email, password_hash) VALUES ($1, $2, $3)")
         .bind(user_id)
-        .bind(format!("test-{}@example.com", user_id))
+        .bind(format!("test-{user_id}@example.com"))
         .bind("dummy-hash")
         .execute(&ctx.pool)
         .await
@@ -220,7 +220,7 @@ async fn test_verify_2fa_expired() {
     let user_id = Uuid::new_v4();
     sqlx::query("INSERT INTO users (id, email, password_hash) VALUES ($1, $2, $3)")
         .bind(user_id)
-        .bind(format!("test-{}@example.com", user_id))
+        .bind(format!("test-{user_id}@example.com"))
         .bind("dummy-hash")
         .execute(&ctx.pool)
         .await

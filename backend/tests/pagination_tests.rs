@@ -14,7 +14,7 @@ fn user_token(user_id: Uuid) -> String {
     let exp = (chrono::Utc::now() + chrono::Duration::hours(24)).timestamp() as usize;
     let claims = UserClaims {
         user_id,
-        email: format!("user-{}@example.com", user_id),
+        email: format!("user-{user_id}@example.com"),
         exp,
     };
 
@@ -30,7 +30,7 @@ fn admin_token(admin_id: Uuid) -> String {
     let exp = (chrono::Utc::now() + chrono::Duration::hours(24)).timestamp() as usize;
     let claims = AdminClaims {
         admin_id,
-        email: format!("admin-{}@example.com", admin_id),
+        email: format!("admin-{admin_id}@example.com"),
         role: "admin".to_string(),
         exp,
     };
@@ -46,7 +46,7 @@ fn admin_token(admin_id: Uuid) -> String {
 async fn create_user(pool: &sqlx::PgPool, user_id: Uuid) {
     sqlx::query("INSERT INTO users (id, email, password_hash) VALUES ($1, $2, $3)")
         .bind(user_id)
-        .bind(format!("user-{}@example.com", user_id))
+        .bind(format!("user-{user_id}@example.com"))
         .bind("hash")
         .execute(pool)
         .await
@@ -84,7 +84,7 @@ async fn notifications_endpoint_supports_page_and_limit() {
             Request::builder()
                 .method("GET")
                 .uri("/api/notifications?page=1&limit=10")
-                .header("Authorization", format!("Bearer {}", token))
+                .header("Authorization", format!("Bearer {token}"))
                 .body(Body::empty())
                 .expect("failed to build request"),
         )
@@ -133,7 +133,7 @@ async fn admin_logs_endpoint_supports_page_and_limit() {
             Request::builder()
                 .method("GET")
                 .uri("/api/admin/logs?page=1&limit=10")
-                .header("Authorization", format!("Bearer {}", token))
+                .header("Authorization", format!("Bearer {token}"))
                 .body(Body::empty())
                 .expect("failed to build request"),
         )
@@ -200,7 +200,7 @@ async fn due_plans_endpoint_supports_page_and_limit() {
             Request::builder()
                 .method("GET")
                 .uri("/api/plans/due-for-claim?page=1&limit=10")
-                .header("Authorization", format!("Bearer {}", token))
+                .header("Authorization", format!("Bearer {token}"))
                 .body(Body::empty())
                 .expect("failed to build request"),
         )
@@ -262,7 +262,7 @@ async fn create_plan_accepts_query_pagination_params() {
             Request::builder()
                 .method("POST")
                 .uri("/api/plans?page=1&limit=10")
-                .header("Authorization", format!("Bearer {}", token))
+                .header("Authorization", format!("Bearer {token}"))
                 .header("Content-Type", "application/json")
                 .body(Body::from(body.to_string()))
                 .expect("failed to build request"),

@@ -15,7 +15,7 @@ fn generate_user_token(user_id: Uuid) -> String {
     let exp = (Utc::now() + chrono::Duration::hours(24)).timestamp() as usize;
     let claims = UserClaims {
         user_id,
-        email: format!("due-test-{}@example.com", user_id),
+        email: format!("due-test-{user_id}@example.com"),
         exp,
     };
     encode(
@@ -126,7 +126,7 @@ async fn user_with_no_plans_returns_empty_array() {
         .oneshot(
             Request::builder()
                 .uri("/api/plans/due-for-claim")
-                .header("Authorization", format!("Bearer {}", token))
+                .header("Authorization", format!("Bearer {token}"))
                 .body(Body::empty())
                 .unwrap(),
         )
@@ -172,7 +172,7 @@ async fn only_due_plans_returned() {
         .oneshot(
             Request::builder()
                 .uri("/api/plans/due-for-claim")
-                .header("Authorization", format!("Bearer {}", token))
+                .header("Authorization", format!("Bearer {token}"))
                 .body(Body::empty())
                 .unwrap(),
         )
@@ -217,7 +217,7 @@ async fn count_matches_data_length() {
         .oneshot(
             Request::builder()
                 .uri("/api/plans/due-for-claim")
-                .header("Authorization", format!("Bearer {}", token))
+                .header("Authorization", format!("Bearer {token}"))
                 .body(Body::empty())
                 .unwrap(),
         )
@@ -269,7 +269,7 @@ async fn claimed_plan_excluded_from_due_plans() {
         .oneshot(
             Request::builder()
                 .uri("/api/plans/due-for-claim")
-                .header("Authorization", format!("Bearer {}", token))
+                .header("Authorization", format!("Bearer {token}"))
                 .body(Body::empty())
                 .unwrap(),
         )
@@ -334,7 +334,7 @@ async fn user_cannot_see_other_users_due_plans() {
         .oneshot(
             Request::builder()
                 .uri("/api/plans/due-for-claim")
-                .header("Authorization", format!("Bearer {}", token_b))
+                .header("Authorization", format!("Bearer {token_b}"))
                 .body(Body::empty())
                 .unwrap(),
         )

@@ -144,7 +144,7 @@ impl NotificationService {
         .fetch_optional(db)
         .await?;
 
-        row.ok_or_else(|| ApiError::NotFound(format!("Notification {} not found", notif_id)))
+        row.ok_or_else(|| ApiError::NotFound(format!("Notification {notif_id} not found")))
     }
 }
 // ─── Audit Log ───────────────────────────────────────────────────────────────
@@ -199,6 +199,7 @@ pub struct ActionLog {
 pub struct AuditLogService;
 
 impl AuditLogService {
+    #[allow(clippy::too_many_arguments)]
     pub async fn log(
         executor: impl sqlx::PgExecutor<'_>,
         user_id: Option<Uuid>,
@@ -450,8 +451,7 @@ mod tests {
         // The `#[serde(rename = "type")]` on notif_type must produce `"type"` in JSON
         assert!(
             json.get("type").is_some(),
-            "Expected JSON key 'type', got: {}",
-            json
+            "Expected JSON key 'type', got: {json}"
         );
         assert_eq!(json["type"], notif_type::KYC_APPROVED);
         // `notif_type` key must NOT appear (it's renamed)
@@ -476,9 +476,13 @@ mod tests {
         let log = ActionLog {
             id: Uuid::new_v4(),
             user_id: Some(Uuid::new_v4()),
+            admin_id: None,
             action: audit_action::PLAN_CLAIMED.to_string(),
             entity_id: Some(Uuid::new_v4()),
             entity_type: Some(entity_type::PLAN.to_string()),
+            old_value: None,
+            new_value: None,
+            metadata: None,
             timestamp: Utc::now(),
         };
         let json = serde_json::to_value(&log).unwrap();
@@ -491,9 +495,13 @@ mod tests {
         let log = ActionLog {
             id: Uuid::new_v4(),
             user_id: None,
+            admin_id: None,
             action: audit_action::KYC_APPROVED.to_string(),
             entity_id: None,
             entity_type: None,
+            old_value: None,
+            new_value: None,
+            metadata: None,
             timestamp: Utc::now(),
         };
         let json = serde_json::to_value(&log).unwrap();

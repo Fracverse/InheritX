@@ -36,7 +36,7 @@ async fn mark_notification_read_success() {
     let user_id = Uuid::new_v4();
     sqlx::query("INSERT INTO users (id, email, password_hash) VALUES ($1, $2, $3)")
         .bind(user_id)
-        .bind(format!("test-{}@example.com", user_id))
+        .bind(format!("test-{user_id}@example.com"))
         .bind("hash")
         .execute(&ctx.pool)
         .await
@@ -63,7 +63,7 @@ async fn mark_notification_read_success() {
     // 3. Generate token
     let claims = UserClaims {
         user_id,
-        email: format!("test-{}@example.com", user_id),
+        email: format!("test-{user_id}@example.com"),
         exp: expiration as usize,
     };
     let token = encode(
@@ -79,8 +79,8 @@ async fn mark_notification_read_success() {
         .oneshot(
             Request::builder()
                 .method("PATCH")
-                .uri(format!("/api/notifications/{}/read", notif_id))
-                .header("Authorization", format!("Bearer {}", token))
+                .uri(format!("/api/notifications/{notif_id}/read"))
+                .header("Authorization", format!("Bearer {token}"))
                 .body(Body::empty())
                 .unwrap(),
         )
@@ -112,7 +112,7 @@ async fn test_retrieve_notifications_returns_only_users_notifications() {
     for &id in &[user_a_id, user_b_id] {
         sqlx::query("INSERT INTO users (id, email, password_hash) VALUES ($1, $2, $3)")
             .bind(id)
-            .bind(format!("test-{}@example.com", id))
+            .bind(format!("test-{id}@example.com"))
             .bind("hash")
             .execute(&ctx.pool)
             .await
@@ -128,7 +128,7 @@ async fn test_retrieve_notifications_returns_only_users_notifications() {
         .bind(notif_id)
         .bind(user_a_id)
         .bind("plan_created")
-        .bind(format!("User A notification {}", i))
+        .bind(format!("User A notification {i}"))
         .execute(&ctx.pool)
         .await
         .expect("Failed to create notification");
@@ -143,14 +143,14 @@ async fn test_retrieve_notifications_returns_only_users_notifications() {
         .bind(notif_id)
         .bind(user_b_id)
         .bind("plan_created")
-        .bind(format!("User B notification {}", i))
+        .bind(format!("User B notification {i}"))
         .execute(&ctx.pool)
         .await
         .expect("Failed to create notification");
     }
 
     // 4. Generate token for user A
-    let token = generate_user_token(user_a_id, format!("test-{}@example.com", user_a_id));
+    let token = generate_user_token(user_a_id, format!("test-{user_a_id}@example.com"));
 
     // 5. Call list notifications endpoint
     let response = ctx
@@ -159,7 +159,7 @@ async fn test_retrieve_notifications_returns_only_users_notifications() {
             Request::builder()
                 .method("GET")
                 .uri("/api/notifications")
-                .header("Authorization", format!("Bearer {}", token))
+                .header("Authorization", format!("Bearer {token}"))
                 .body(Body::empty())
                 .unwrap(),
         )
@@ -203,7 +203,7 @@ async fn test_retrieve_notifications_count_matches() {
     let user_id = Uuid::new_v4();
     sqlx::query("INSERT INTO users (id, email, password_hash) VALUES ($1, $2, $3)")
         .bind(user_id)
-        .bind(format!("test-{}@example.com", user_id))
+        .bind(format!("test-{user_id}@example.com"))
         .bind("hash")
         .execute(&ctx.pool)
         .await
@@ -219,7 +219,7 @@ async fn test_retrieve_notifications_count_matches() {
         .bind(notif_id)
         .bind(user_id)
         .bind("plan_created")
-        .bind(format!("Notification {}", i))
+        .bind(format!("Notification {i}"))
         .bind(i % 2 == 0) // Some read, some unread
         .execute(&ctx.pool)
         .await
@@ -227,7 +227,7 @@ async fn test_retrieve_notifications_count_matches() {
     }
 
     // 3. Generate token
-    let token = generate_user_token(user_id, format!("test-{}@example.com", user_id));
+    let token = generate_user_token(user_id, format!("test-{user_id}@example.com"));
 
     // 4. Call list notifications endpoint
     let response = ctx
@@ -236,7 +236,7 @@ async fn test_retrieve_notifications_count_matches() {
             Request::builder()
                 .method("GET")
                 .uri("/api/notifications")
-                .header("Authorization", format!("Bearer {}", token))
+                .header("Authorization", format!("Bearer {token}"))
                 .body(Body::empty())
                 .unwrap(),
         )
@@ -263,8 +263,7 @@ async fn test_retrieve_notifications_count_matches() {
     );
     assert_eq!(
         count, notification_count,
-        "Should return all {} notifications",
-        notification_count
+        "Should return all {notification_count} notifications"
     );
 }
 
@@ -278,14 +277,14 @@ async fn test_retrieve_notifications_empty_list() {
     let user_id = Uuid::new_v4();
     sqlx::query("INSERT INTO users (id, email, password_hash) VALUES ($1, $2, $3)")
         .bind(user_id)
-        .bind(format!("test-{}@example.com", user_id))
+        .bind(format!("test-{user_id}@example.com"))
         .bind("hash")
         .execute(&ctx.pool)
         .await
         .expect("Failed to create user");
 
     // 2. Generate token
-    let token = generate_user_token(user_id, format!("test-{}@example.com", user_id));
+    let token = generate_user_token(user_id, format!("test-{user_id}@example.com"));
 
     // 3. Call list notifications endpoint
     let response = ctx
@@ -294,7 +293,7 @@ async fn test_retrieve_notifications_empty_list() {
             Request::builder()
                 .method("GET")
                 .uri("/api/notifications")
-                .header("Authorization", format!("Bearer {}", token))
+                .header("Authorization", format!("Bearer {token}"))
                 .body(Body::empty())
                 .unwrap(),
         )
@@ -350,7 +349,7 @@ async fn test_retrieve_notifications_ordered_by_created_at() {
     let user_id = Uuid::new_v4();
     sqlx::query("INSERT INTO users (id, email, password_hash) VALUES ($1, $2, $3)")
         .bind(user_id)
-        .bind(format!("test-{}@example.com", user_id))
+        .bind(format!("test-{user_id}@example.com"))
         .bind("hash")
         .execute(&ctx.pool)
         .await
@@ -367,7 +366,7 @@ async fn test_retrieve_notifications_ordered_by_created_at() {
         .bind(notif_id)
         .bind(user_id)
         .bind("plan_created")
-        .bind(format!("Notification {}", i))
+        .bind(format!("Notification {i}"))
         .execute(&ctx.pool)
         .await
         .expect("Failed to create notification");
@@ -377,7 +376,7 @@ async fn test_retrieve_notifications_ordered_by_created_at() {
     }
 
     // 3. Generate token
-    let token = generate_user_token(user_id, format!("test-{}@example.com", user_id));
+    let token = generate_user_token(user_id, format!("test-{user_id}@example.com"));
 
     // 4. Call list notifications endpoint
     let response = ctx
@@ -386,7 +385,7 @@ async fn test_retrieve_notifications_ordered_by_created_at() {
             Request::builder()
                 .method("GET")
                 .uri("/api/notifications")
-                .header("Authorization", format!("Bearer {}", token))
+                .header("Authorization", format!("Bearer {token}"))
                 .body(Body::empty())
                 .unwrap(),
         )
@@ -426,7 +425,7 @@ async fn cannot_mark_another_user_notification() {
     for &id in &[user_a_id, user_b_id] {
         sqlx::query("INSERT INTO users (id, email, password_hash) VALUES ($1, $2, $3)")
             .bind(id)
-            .bind(format!("test-{}@example.com", id))
+            .bind(format!("test-{id}@example.com"))
             .bind("hash")
             .execute(&ctx.pool)
             .await
@@ -454,7 +453,7 @@ async fn cannot_mark_another_user_notification() {
     // 3. Generate token for user A
     let claims = UserClaims {
         user_id: user_a_id,
-        email: format!("test-{}@example.com", user_a_id),
+        email: format!("test-{user_a_id}@example.com"),
         exp: expiration as usize,
     };
     let token = encode(
@@ -470,8 +469,8 @@ async fn cannot_mark_another_user_notification() {
         .oneshot(
             Request::builder()
                 .method("PATCH")
-                .uri(format!("/api/notifications/{}/read", notif_id))
-                .header("Authorization", format!("Bearer {}", token))
+                .uri(format!("/api/notifications/{notif_id}/read"))
+                .header("Authorization", format!("Bearer {token}"))
                 .body(Body::empty())
                 .unwrap(),
         )
@@ -501,7 +500,7 @@ async fn mark_already_read_notification_safe_handling() {
     let user_id = Uuid::new_v4();
     sqlx::query("INSERT INTO users (id, email, password_hash) VALUES ($1, $2, $3)")
         .bind(user_id)
-        .bind(format!("test-{}@example.com", user_id))
+        .bind(format!("test-{user_id}@example.com"))
         .bind("hash")
         .execute(&ctx.pool)
         .await
@@ -528,7 +527,7 @@ async fn mark_already_read_notification_safe_handling() {
     // 3. Generate token
     let claims = UserClaims {
         user_id,
-        email: format!("test-{}@example.com", user_id),
+        email: format!("test-{user_id}@example.com"),
         exp: expiration as usize,
     };
     let token = encode(
@@ -544,8 +543,8 @@ async fn mark_already_read_notification_safe_handling() {
         .oneshot(
             Request::builder()
                 .method("PATCH")
-                .uri(format!("/api/notifications/{}/read", notif_id))
-                .header("Authorization", format!("Bearer {}", token))
+                .uri(format!("/api/notifications/{notif_id}/read"))
+                .header("Authorization", format!("Bearer {token}"))
                 .body(Body::empty())
                 .unwrap(),
         )

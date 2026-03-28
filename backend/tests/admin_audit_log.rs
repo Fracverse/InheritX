@@ -14,7 +14,7 @@ fn generate_user_token(user_id: Uuid) -> String {
     let exp = (chrono::Utc::now() + chrono::Duration::hours(24)).timestamp() as usize;
     let claims = UserClaims {
         user_id,
-        email: format!("test-{}@example.com", user_id),
+        email: format!("test-{user_id}@example.com"),
         exp,
     };
     encode(
@@ -29,7 +29,7 @@ fn generate_admin_token(admin_id: Uuid) -> String {
     let exp = (chrono::Utc::now() + chrono::Duration::hours(24)).timestamp() as usize;
     let claims = AdminClaims {
         admin_id,
-        email: format!("admin-{}@example.com", admin_id),
+        email: format!("admin-{admin_id}@example.com"),
         role: "admin".to_string(),
         exp,
     };
@@ -56,7 +56,7 @@ async fn admin_can_fetch_logs() {
             Request::builder()
                 .method("GET")
                 .uri("/api/admin/logs")
-                .header("Authorization", format!("Bearer {}", token))
+                .header("Authorization", format!("Bearer {token}"))
                 .body(Body::empty())
                 .unwrap(),
         )
@@ -81,7 +81,7 @@ async fn user_cannot_fetch_logs() {
             Request::builder()
                 .method("GET")
                 .uri("/api/admin/logs")
-                .header("Authorization", format!("Bearer {}", token))
+                .header("Authorization", format!("Bearer {token}"))
                 .body(Body::empty())
                 .unwrap(),
         )
@@ -106,8 +106,8 @@ async fn user_cannot_access_kyc_status() {
         .oneshot(
             Request::builder()
                 .method("GET")
-                .uri(format!("/api/admin/kyc/{}", user_id))
-                .header("Authorization", format!("Bearer {}", token))
+                .uri(format!("/api/admin/kyc/{user_id}"))
+                .header("Authorization", format!("Bearer {token}"))
                 .body(Body::empty())
                 .unwrap(),
         )
@@ -133,7 +133,7 @@ async fn user_cannot_approve_kyc() {
             Request::builder()
                 .method("POST")
                 .uri("/api/admin/kyc/approve")
-                .header("Authorization", format!("Bearer {}", token))
+                .header("Authorization", format!("Bearer {token}"))
                 .header("Content-Type", "application/json")
                 .body(Body::from(json!({"user_id": user_id}).to_string()))
                 .unwrap(),
@@ -160,7 +160,7 @@ async fn user_cannot_reject_kyc() {
             Request::builder()
                 .method("POST")
                 .uri("/api/admin/kyc/reject")
-                .header("Authorization", format!("Bearer {}", token))
+                .header("Authorization", format!("Bearer {token}"))
                 .header("Content-Type", "application/json")
                 .body(Body::from(json!({"user_id": user_id}).to_string()))
                 .unwrap(),
@@ -184,7 +184,7 @@ async fn log_inserted_on_plan_create_and_claim() {
     // Insert user
     sqlx::query("INSERT INTO users (id, email, password_hash) VALUES ($1, $2, $3)")
         .bind(user_id)
-        .bind(format!("test-{}@example.com", user_id))
+        .bind(format!("test-{user_id}@example.com"))
         .bind("hash")
         .execute(&ctx.pool)
         .await
@@ -201,7 +201,7 @@ async fn log_inserted_on_plan_create_and_claim() {
             Request::builder()
                 .method("POST")
                 .uri("/api/admin/kyc/approve")
-                .header("Authorization", format!("Bearer {}", admin_token))
+                .header("Authorization", format!("Bearer {admin_token}"))
                 .header("Content-Type", "application/json")
                 .body(Body::from(kyc_req.to_string()))
                 .unwrap(),
@@ -239,7 +239,7 @@ async fn log_inserted_on_plan_create_and_claim() {
             Request::builder()
                 .method("POST")
                 .uri("/api/plans")
-                .header("Authorization", format!("Bearer {}", user_token))
+                .header("Authorization", format!("Bearer {user_token}"))
                 .header("Content-Type", "application/json")
                 .body(Body::from(plan_req.to_string()))
                 .unwrap(),
@@ -275,8 +275,8 @@ async fn log_inserted_on_plan_create_and_claim() {
         .oneshot(
             Request::builder()
                 .method("POST")
-                .uri(format!("/api/plans/{}/claim", plan_id))
-                .header("Authorization", format!("Bearer {}", user_token))
+                .uri(format!("/api/plans/{plan_id}/claim"))
+                .header("Authorization", format!("Bearer {user_token}"))
                 .header("Content-Type", "application/json")
                 .body(Body::from(claim_req.to_string()))
                 .unwrap(),

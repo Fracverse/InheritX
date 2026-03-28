@@ -151,9 +151,9 @@ fn plan_row_to_plan_with_beneficiary(row: &PlanRowFull) -> Result<PlanWithBenefi
         fee: row
             .fee
             .parse()
-            .map_err(|e| ApiError::Internal(anyhow::anyhow!("Failed to parse fee: {}", e)))?,
+            .map_err(|e| ApiError::Internal(anyhow::anyhow!("Failed to parse fee: {e}")))?,
         net_amount: row.net_amount.parse().map_err(|e| {
-            ApiError::Internal(anyhow::anyhow!("Failed to parse net_amount: {}", e))
+            ApiError::Internal(anyhow::anyhow!("Failed to parse net_amount: {e}"))
         })?,
         status: row.status.clone(),
         contract_plan_id: row.contract_plan_id,
@@ -364,7 +364,7 @@ impl PlanService {
 
         let plan = match row {
             Some(r) => plan_row_to_plan_with_beneficiary(&r)?,
-            None => return Err(ApiError::NotFound(format!("Plan {} not found", plan_id))),
+            None => return Err(ApiError::NotFound(format!("Plan {plan_id} not found"))),
         };
 
         // Check if plan is paused
@@ -553,10 +553,10 @@ impl PlanService {
                 title: row.title,
                 description: row.description,
                 fee: row.fee.parse().map_err(|e| {
-                    ApiError::Internal(anyhow::anyhow!("Failed to parse fee: {}", e))
+                    ApiError::Internal(anyhow::anyhow!("Failed to parse fee: {e}"))
                 })?,
                 net_amount: row.net_amount.parse().map_err(|e| {
-                    ApiError::Internal(anyhow::anyhow!("Failed to parse net_amount: {}", e))
+                    ApiError::Internal(anyhow::anyhow!("Failed to parse net_amount: {e}"))
                 })?,
                 status: row.status,
                 contract_plan_id: row.contract_plan_id,
@@ -647,10 +647,10 @@ impl PlanService {
                     title: row.title,
                     description: row.description,
                     fee: row.fee.parse().map_err(|e| {
-                        ApiError::Internal(anyhow::anyhow!("Failed to parse fee: {}", e))
+                        ApiError::Internal(anyhow::anyhow!("Failed to parse fee: {e}"))
                     })?,
                     net_amount: row.net_amount.parse().map_err(|e| {
-                        ApiError::Internal(anyhow::anyhow!("Failed to parse net_amount: {}", e))
+                        ApiError::Internal(anyhow::anyhow!("Failed to parse net_amount: {e}"))
                     })?,
                     status: row.status,
                     contract_plan_id: row.contract_plan_id,
@@ -740,10 +740,10 @@ impl PlanService {
                     title: row.title,
                     description: row.description,
                     fee: row.fee.parse().map_err(|e| {
-                        ApiError::Internal(anyhow::anyhow!("Failed to parse fee: {}", e))
+                        ApiError::Internal(anyhow::anyhow!("Failed to parse fee: {e}"))
                     })?,
                     net_amount: row.net_amount.parse().map_err(|e| {
-                        ApiError::Internal(anyhow::anyhow!("Failed to parse net_amount: {}", e))
+                        ApiError::Internal(anyhow::anyhow!("Failed to parse net_amount: {e}"))
                     })?,
                     status: row.status,
                     contract_plan_id: row.contract_plan_id,
@@ -798,7 +798,7 @@ impl PlanService {
         // Note: get_plan_by_id must also use the generic <'a, E> pattern
         let plan = Self::get_plan_by_id(&mut *tx, plan_id, user_id)
             .await?
-            .ok_or_else(|| ApiError::NotFound(format!("Plan {} not found", plan_id)))?;
+            .ok_or_else(|| ApiError::NotFound(format!("Plan {plan_id} not found")))?;
 
         // Business Logic Checks
         if plan.status == "deactivated" {
@@ -876,7 +876,7 @@ impl fmt::Display for KycStatus {
             KycStatus::Approved => "approved",
             KycStatus::Rejected => "rejected",
         };
-        write!(f, "{}", s)
+        write!(f, "{s}")
     }
 }
 
@@ -1332,14 +1332,13 @@ impl RevenueMetricsService {
         let query = format!(
             r#"
             SELECT 
-                DATE_TRUNC('{}', created_at)::DATE::TEXT as date,
+                DATE_TRUNC('{trunc}', created_at)::DATE::TEXT as date,
                 COALESCE(SUM(fee), 0)::FLOAT8 as amount
             FROM plans
-            WHERE created_at >= NOW() - INTERVAL '{}'
+            WHERE created_at >= NOW() - INTERVAL '{interval}'
             GROUP BY 1
             ORDER BY 1
-            "#,
-            trunc, interval
+            "#
         );
 
         let rows = sqlx::query_as::<_, Row>(&query).fetch_all(pool).await?;

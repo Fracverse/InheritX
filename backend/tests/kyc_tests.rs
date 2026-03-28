@@ -62,7 +62,7 @@ async fn admin_can_approve_kyc() {
             Request::builder()
                 .uri("/api/admin/kyc/approve")
                 .method("POST")
-                .header(header::AUTHORIZATION, format!("Bearer {}", token))
+                .header(header::AUTHORIZATION, format!("Bearer {token}"))
                 .header(header::CONTENT_TYPE, "application/json")
                 .body(Body::from(json!({ "user_id": user_id }).to_string()))
                 .unwrap(),
@@ -102,7 +102,7 @@ async fn user_cannot_approve_kyc() {
             Request::builder()
                 .uri("/api/admin/kyc/approve")
                 .method("POST")
-                .header(header::AUTHORIZATION, format!("Bearer {}", token))
+                .header(header::AUTHORIZATION, format!("Bearer {token}"))
                 .header(header::CONTENT_TYPE, "application/json")
                 .body(Body::from(json!({ "user_id": Uuid::new_v4() }).to_string()))
                 .unwrap(),
@@ -135,7 +135,7 @@ async fn invalid_uuid_rejected() {
             Request::builder()
                 .uri("/api/admin/kyc/approve")
                 .method("POST")
-                .header(header::AUTHORIZATION, format!("Bearer {}", token))
+                .header(header::AUTHORIZATION, format!("Bearer {token}"))
                 .header(header::CONTENT_TYPE, "application/json")
                 .body(Body::from(json!({ "user_id": "not-a-uuid" }).to_string()))
                 .unwrap(),

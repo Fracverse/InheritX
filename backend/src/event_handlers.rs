@@ -80,7 +80,7 @@ pub async fn get_plan_events(
     let plan =
         crate::service::PlanService::get_plan_by_id(&state.db, plan_id, user.user_id).await?;
     if plan.is_none() {
-        return Err(ApiError::NotFound(format!("Plan {} not found", plan_id)));
+        return Err(ApiError::NotFound(format!("Plan {plan_id} not found")));
     }
 
     let event_type = if let Some(et_str) = params.event_type {
@@ -131,8 +131,7 @@ fn parse_event_type(s: &str) -> Result<EventType, ApiError> {
         "liquidation" => Ok(EventType::Liquidation),
         "interest_accrual" => Ok(EventType::InterestAccrual),
         _ => Err(ApiError::BadRequest(format!(
-            "Invalid event type: {}. Valid types: deposit, borrow, repay, liquidation, interest_accrual",
-            s
+            "Invalid event type: {s}. Valid types: deposit, borrow, repay, liquidation, interest_accrual"
         ))),
     }
 }

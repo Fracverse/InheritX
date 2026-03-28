@@ -110,8 +110,8 @@ async fn test_fetch_own_plan() {
         .oneshot(
             Request::builder()
                 .method("GET")
-                .uri(format!("/api/plans/{}", plan_id))
-                .header("Authorization", format!("Bearer {}", token))
+                .uri(format!("/api/plans/{plan_id}"))
+                .header("Authorization", format!("Bearer {token}"))
                 .body(Body::empty())
                 .unwrap(),
         )
@@ -158,8 +158,8 @@ async fn test_fetch_other_user_plan() {
         .oneshot(
             Request::builder()
                 .method("GET")
-                .uri(format!("/api/plans/{}", plan_id))
-                .header("Authorization", format!("Bearer {}", visitor_token))
+                .uri(format!("/api/plans/{plan_id}"))
+                .header("Authorization", format!("Bearer {visitor_token}"))
                 .body(Body::empty())
                 .unwrap(),
         )
@@ -190,8 +190,8 @@ async fn test_fetch_nonexistent_plan() {
         .oneshot(
             Request::builder()
                 .method("GET")
-                .uri(format!("/api/plans/{}", non_existent_plan_id))
-                .header("Authorization", format!("Bearer {}", token))
+                .uri(format!("/api/plans/{non_existent_plan_id}"))
+                .header("Authorization", format!("Bearer {token}"))
                 .body(Body::empty())
                 .unwrap(),
         )
@@ -216,7 +216,7 @@ async fn test_fetch_invalid_uuid() {
             Request::builder()
                 .method("GET")
                 .uri("/api/plans/invalid-uuid-string")
-                .header("Authorization", format!("Bearer {}", token))
+                .header("Authorization", format!("Bearer {token}"))
                 .body(Body::empty())
                 .unwrap(),
         )

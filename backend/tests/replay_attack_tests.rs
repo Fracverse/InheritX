@@ -29,7 +29,7 @@ async fn wallet_signature_cannot_be_reused() {
         .clone()
         .oneshot(
             Request::builder()
-                .uri(format!("/api/auth/nonce/{}", wallet))
+                .uri(format!("/api/auth/nonce/{wallet}"))
                 .body(Body::empty())
                 .expect("failed to build nonce request"),
         )

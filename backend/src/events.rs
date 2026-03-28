@@ -60,7 +60,7 @@ impl TryFrom<LendingEventRow> for LendingEvent {
             plan_id: row.plan_id,
             asset_code: row.asset_code,
             amount: row.amount.parse().map_err(|e| {
-                ApiError::Internal(anyhow::anyhow!("Failed to parse amount: {}", e))
+                ApiError::Internal(anyhow::anyhow!("Failed to parse amount: {e}"))
             })?,
             metadata: row.metadata,
             transaction_hash: row.transaction_hash,
@@ -144,7 +144,7 @@ impl EventService {
         block_number: Option<i64>,
     ) -> Result<LendingEvent, ApiError> {
         let metadata_json = serde_json::to_value(metadata).map_err(|e| {
-            ApiError::Internal(anyhow::anyhow!("Failed to serialize metadata: {}", e))
+            ApiError::Internal(anyhow::anyhow!("Failed to serialize metadata: {e}"))
         })?;
 
         Self::emit_event(
@@ -176,7 +176,7 @@ impl EventService {
         block_number: Option<i64>,
     ) -> Result<LendingEvent, ApiError> {
         let metadata_json = serde_json::to_value(metadata).map_err(|e| {
-            ApiError::Internal(anyhow::anyhow!("Failed to serialize metadata: {}", e))
+            ApiError::Internal(anyhow::anyhow!("Failed to serialize metadata: {e}"))
         })?;
 
         Self::emit_event(
@@ -208,7 +208,7 @@ impl EventService {
         block_number: Option<i64>,
     ) -> Result<LendingEvent, ApiError> {
         let metadata_json = serde_json::to_value(metadata).map_err(|e| {
-            ApiError::Internal(anyhow::anyhow!("Failed to serialize metadata: {}", e))
+            ApiError::Internal(anyhow::anyhow!("Failed to serialize metadata: {e}"))
         })?;
 
         Self::emit_event(
@@ -240,7 +240,7 @@ impl EventService {
         block_number: Option<i64>,
     ) -> Result<LendingEvent, ApiError> {
         let metadata_json = serde_json::to_value(metadata).map_err(|e| {
-            ApiError::Internal(anyhow::anyhow!("Failed to serialize metadata: {}", e))
+            ApiError::Internal(anyhow::anyhow!("Failed to serialize metadata: {e}"))
         })?;
 
         Self::emit_event(
@@ -272,7 +272,7 @@ impl EventService {
         block_number: Option<i64>,
     ) -> Result<LendingEvent, ApiError> {
         let metadata_json = serde_json::to_value(metadata).map_err(|e| {
-            ApiError::Internal(anyhow::anyhow!("Failed to serialize metadata: {}", e))
+            ApiError::Internal(anyhow::anyhow!("Failed to serialize metadata: {e}"))
         })?;
 
         Self::emit_event(

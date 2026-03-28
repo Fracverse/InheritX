@@ -62,7 +62,7 @@ async fn test_create_loan_lifecycle_success() {
             Request::builder()
                 .method("POST")
                 .uri("/api/loans/lifecycle")
-                .header("Authorization", format!("Bearer {}", token))
+                .header("Authorization", format!("Bearer {token}"))
                 .header("Content-Type", "application/json")
                 .body(Body::from(
                     json!({
@@ -117,7 +117,7 @@ async fn test_get_loan_lifecycle_success() {
             Request::builder()
                 .method("POST")
                 .uri("/api/loans/lifecycle")
-                .header("Authorization", format!("Bearer {}", token))
+                .header("Authorization", format!("Bearer {token}"))
                 .header("Content-Type", "application/json")
                 .body(Body::from(
                     json!({
@@ -148,8 +148,8 @@ async fn test_get_loan_lifecycle_success() {
         .oneshot(
             Request::builder()
                 .method("GET")
-                .uri(format!("/api/loans/lifecycle/{}", loan_id))
-                .header("Authorization", format!("Bearer {}", token))
+                .uri(format!("/api/loans/lifecycle/{loan_id}"))
+                .header("Authorization", format!("Bearer {token}"))
                 .body(Body::empty())
                 .unwrap(),
         )
@@ -187,7 +187,7 @@ async fn test_list_loans_by_status() {
                 Request::builder()
                     .method("POST")
                     .uri("/api/loans/lifecycle")
-                    .header("Authorization", format!("Bearer {}", token))
+                    .header("Authorization", format!("Bearer {token}"))
                     .header("Content-Type", "application/json")
                     .body(Body::from(
                         json!({
@@ -214,7 +214,7 @@ async fn test_list_loans_by_status() {
             Request::builder()
                 .method("GET")
                 .uri("/api/loans/lifecycle?status=active")
-                .header("Authorization", format!("Bearer {}", token))
+                .header("Authorization", format!("Bearer {token}"))
                 .body(Body::empty())
                 .unwrap(),
         )
@@ -250,7 +250,7 @@ async fn test_lifecycle_summary() {
             Request::builder()
                 .method("POST")
                 .uri("/api/loans/lifecycle")
-                .header("Authorization", format!("Bearer {}", token))
+                .header("Authorization", format!("Bearer {token}"))
                 .header("Content-Type", "application/json")
                 .body(Body::from(
                     json!({
@@ -276,7 +276,7 @@ async fn test_lifecycle_summary() {
             Request::builder()
                 .method("GET")
                 .uri("/api/loans/lifecycle/summary")
-                .header("Authorization", format!("Bearer {}", token))
+                .header("Authorization", format!("Bearer {token}"))
                 .body(Body::empty())
                 .unwrap(),
         )
@@ -313,7 +313,7 @@ async fn test_repay_loan_partial() {
             Request::builder()
                 .method("POST")
                 .uri("/api/loans/lifecycle")
-                .header("Authorization", format!("Bearer {}", token))
+                .header("Authorization", format!("Bearer {token}"))
                 .header("Content-Type", "application/json")
                 .body(Body::from(
                     json!({
@@ -344,8 +344,8 @@ async fn test_repay_loan_partial() {
         .oneshot(
             Request::builder()
                 .method("POST")
-                .uri(format!("/api/loans/lifecycle/{}/repay", loan_id))
-                .header("Authorization", format!("Bearer {}", token))
+                .uri(format!("/api/loans/lifecycle/{loan_id}/repay"))
+                .header("Authorization", format!("Bearer {token}"))
                 .header("Content-Type", "application/json")
                 .body(Body::from(json!({"amount": "300.00"}).to_string()))
                 .unwrap(),
@@ -383,7 +383,7 @@ async fn test_repay_loan_full() {
             Request::builder()
                 .method("POST")
                 .uri("/api/loans/lifecycle")
-                .header("Authorization", format!("Bearer {}", token))
+                .header("Authorization", format!("Bearer {token}"))
                 .header("Content-Type", "application/json")
                 .body(Body::from(
                     json!({
@@ -414,8 +414,8 @@ async fn test_repay_loan_full() {
         .oneshot(
             Request::builder()
                 .method("POST")
-                .uri(format!("/api/loans/lifecycle/{}/repay", loan_id))
-                .header("Authorization", format!("Bearer {}", token))
+                .uri(format!("/api/loans/lifecycle/{loan_id}/repay"))
+                .header("Authorization", format!("Bearer {token}"))
                 .header("Content-Type", "application/json")
                 .body(Body::from(json!({"amount": "500.00"}).to_string()))
                 .unwrap(),
@@ -456,7 +456,7 @@ async fn test_liquidate_loan_as_admin() {
             Request::builder()
                 .method("POST")
                 .uri("/api/loans/lifecycle")
-                .header("Authorization", format!("Bearer {}", user_token))
+                .header("Authorization", format!("Bearer {user_token}"))
                 .header("Content-Type", "application/json")
                 .body(Body::from(
                     json!({
@@ -487,8 +487,8 @@ async fn test_liquidate_loan_as_admin() {
         .oneshot(
             Request::builder()
                 .method("POST")
-                .uri(format!("/api/admin/loans/lifecycle/{}/liquidate", loan_id))
-                .header("Authorization", format!("Bearer {}", admin_token))
+                .uri(format!("/api/admin/loans/lifecycle/{loan_id}/liquidate"))
+                .header("Authorization", format!("Bearer {admin_token}"))
                 .body(Body::empty())
                 .unwrap(),
         )
@@ -527,7 +527,7 @@ async fn test_mark_overdue_loans() {
             Request::builder()
                 .method("POST")
                 .uri("/api/loans/lifecycle")
-                .header("Authorization", format!("Bearer {}", user_token))
+                .header("Authorization", format!("Bearer {user_token}"))
                 .header("Content-Type", "application/json")
                 .body(Body::from(
                     json!({
@@ -553,7 +553,7 @@ async fn test_mark_overdue_loans() {
             Request::builder()
                 .method("POST")
                 .uri("/api/admin/loans/lifecycle/mark-overdue")
-                .header("Authorization", format!("Bearer {}", admin_token))
+                .header("Authorization", format!("Bearer {admin_token}"))
                 .body(Body::empty())
                 .unwrap(),
         )
@@ -589,7 +589,7 @@ async fn test_cannot_repay_already_repaid_loan() {
             Request::builder()
                 .method("POST")
                 .uri("/api/loans/lifecycle")
-                .header("Authorization", format!("Bearer {}", token))
+                .header("Authorization", format!("Bearer {token}"))
                 .header("Content-Type", "application/json")
                 .body(Body::from(
                     json!({
@@ -620,8 +620,8 @@ async fn test_cannot_repay_already_repaid_loan() {
         .oneshot(
             Request::builder()
                 .method("POST")
-                .uri(format!("/api/loans/lifecycle/{}/repay", loan_id))
-                .header("Authorization", format!("Bearer {}", token))
+                .uri(format!("/api/loans/lifecycle/{loan_id}/repay"))
+                .header("Authorization", format!("Bearer {token}"))
                 .header("Content-Type", "application/json")
                 .body(Body::from(json!({"amount": "100.00"}).to_string()))
                 .unwrap(),
@@ -636,8 +636,8 @@ async fn test_cannot_repay_already_repaid_loan() {
         .oneshot(
             Request::builder()
                 .method("POST")
-                .uri(format!("/api/loans/lifecycle/{}/repay", loan_id))
-                .header("Authorization", format!("Bearer {}", token))
+                .uri(format!("/api/loans/lifecycle/{loan_id}/repay"))
+                .header("Authorization", format!("Bearer {token}"))
                 .header("Content-Type", "application/json")
                 .body(Body::from(json!({"amount": "50.00"}).to_string()))
                 .unwrap(),

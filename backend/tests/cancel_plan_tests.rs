@@ -103,8 +103,8 @@ async fn test_cancel_plan_success() {
         .oneshot(
             Request::builder()
                 .method("DELETE")
-                .uri(format!("/api/plans/{}", plan_id))
-                .header("Authorization", format!("Bearer {}", token))
+                .uri(format!("/api/plans/{plan_id}"))
+                .header("Authorization", format!("Bearer {token}"))
                 .body(Body::empty())
                 .unwrap(),
         )
@@ -138,8 +138,8 @@ async fn test_cancel_plan_not_found() {
         .oneshot(
             Request::builder()
                 .method("DELETE")
-                .uri(format!("/api/plans/{}", non_existent_plan_id))
-                .header("Authorization", format!("Bearer {}", token))
+                .uri(format!("/api/plans/{non_existent_plan_id}"))
+                .header("Authorization", format!("Bearer {token}"))
                 .body(Body::empty())
                 .unwrap(),
         )
@@ -175,8 +175,8 @@ async fn test_cancel_plan_unauthorized_different_user() {
         .oneshot(
             Request::builder()
                 .method("DELETE")
-                .uri(format!("/api/plans/{}", plan_id))
-                .header("Authorization", format!("Bearer {}", token))
+                .uri(format!("/api/plans/{plan_id}"))
+                .header("Authorization", format!("Bearer {token}"))
                 .body(Body::empty())
                 .unwrap(),
         )
@@ -211,8 +211,8 @@ async fn test_cancel_plan_already_deactivated() {
         .oneshot(
             Request::builder()
                 .method("DELETE")
-                .uri(format!("/api/plans/{}", plan_id))
-                .header("Authorization", format!("Bearer {}", token))
+                .uri(format!("/api/plans/{plan_id}"))
+                .header("Authorization", format!("Bearer {token}"))
                 .body(Body::empty())
                 .unwrap(),
         )
@@ -257,8 +257,8 @@ async fn test_cancel_plan_already_claimed() {
         .oneshot(
             Request::builder()
                 .method("DELETE")
-                .uri(format!("/api/plans/{}", plan_id))
-                .header("Authorization", format!("Bearer {}", token))
+                .uri(format!("/api/plans/{plan_id}"))
+                .header("Authorization", format!("Bearer {token}"))
                 .body(Body::empty())
                 .unwrap(),
         )
@@ -291,7 +291,7 @@ async fn test_cancel_plan_without_auth() {
         .oneshot(
             Request::builder()
                 .method("DELETE")
-                .uri(format!("/api/plans/{}", plan_id))
+                .uri(format!("/api/plans/{plan_id}"))
                 .body(Body::empty())
                 .unwrap(),
         )
@@ -326,8 +326,8 @@ async fn test_cancel_plan_creates_audit_log() {
         .oneshot(
             Request::builder()
                 .method("DELETE")
-                .uri(format!("/api/plans/{}", plan_id))
-                .header("Authorization", format!("Bearer {}", token))
+                .uri(format!("/api/plans/{plan_id}"))
+                .header("Authorization", format!("Bearer {token}"))
                 .body(Body::empty())
                 .unwrap(),
         )
@@ -378,8 +378,8 @@ async fn test_cancel_plan_creates_notification() {
         .oneshot(
             Request::builder()
                 .method("DELETE")
-                .uri(format!("/api/plans/{}", plan_id))
-                .header("Authorization", format!("Bearer {}", token))
+                .uri(format!("/api/plans/{plan_id}"))
+                .header("Authorization", format!("Bearer {token}"))
                 .body(Body::empty())
                 .unwrap(),
         )
@@ -429,8 +429,8 @@ async fn test_cancel_plan_updates_database_correctly() {
         .oneshot(
             Request::builder()
                 .method("DELETE")
-                .uri(format!("/api/plans/{}", plan_id))
-                .header("Authorization", format!("Bearer {}", token))
+                .uri(format!("/api/plans/{plan_id}"))
+                .header("Authorization", format!("Bearer {token}"))
                 .body(Body::empty())
                 .unwrap(),
         )

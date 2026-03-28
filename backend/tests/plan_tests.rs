@@ -113,8 +113,8 @@ async fn test_retrieve_plan_success() {
         .oneshot(
             Request::builder()
                 .method("GET")
-                .uri(format!("/api/plans/{}", plan_id))
-                .header("Authorization", format!("Bearer {}", token))
+                .uri(format!("/api/plans/{plan_id}"))
+                .header("Authorization", format!("Bearer {token}"))
                 .body(Body::empty())
                 .unwrap(),
         )
@@ -151,8 +151,8 @@ async fn test_retrieve_plan_not_found() {
         .oneshot(
             Request::builder()
                 .method("GET")
-                .uri(format!("/api/plans/{}", non_existent_plan_id))
-                .header("Authorization", format!("Bearer {}", token))
+                .uri(format!("/api/plans/{non_existent_plan_id}"))
+                .header("Authorization", format!("Bearer {token}"))
                 .body(Body::empty())
                 .unwrap(),
         )
@@ -195,8 +195,8 @@ async fn test_retrieve_plan_unauthorized_different_user() {
         .oneshot(
             Request::builder()
                 .method("GET")
-                .uri(format!("/api/plans/{}", plan_id))
-                .header("Authorization", format!("Bearer {}", token))
+                .uri(format!("/api/plans/{plan_id}"))
+                .header("Authorization", format!("Bearer {token}"))
                 .body(Body::empty())
                 .unwrap(),
         )
@@ -219,7 +219,7 @@ async fn test_retrieve_plan_without_auth() {
         .oneshot(
             Request::builder()
                 .method("GET")
-                .uri(format!("/api/plans/{}", plan_id))
+                .uri(format!("/api/plans/{plan_id}"))
                 .body(Body::empty())
                 .unwrap(),
         )
@@ -261,8 +261,8 @@ async fn test_retrieve_plan_with_beneficiary_details() {
         .oneshot(
             Request::builder()
                 .method("GET")
-                .uri(format!("/api/plans/{}", plan_id))
-                .header("Authorization", format!("Bearer {}", token))
+                .uri(format!("/api/plans/{plan_id}"))
+                .header("Authorization", format!("Bearer {token}"))
                 .body(Body::empty())
                 .unwrap(),
         )
@@ -315,8 +315,8 @@ async fn test_retrieve_plan_fee_calculation_2_percent() {
         .oneshot(
             Request::builder()
                 .method("GET")
-                .uri(format!("/api/plans/{}", plan_id))
-                .header("Authorization", format!("Bearer {}", token))
+                .uri(format!("/api/plans/{plan_id}"))
+                .header("Authorization", format!("Bearer {token}"))
                 .body(Body::empty())
                 .unwrap(),
         )
@@ -386,7 +386,7 @@ async fn test_create_plan_wallet_balance_check() {
             Request::builder()
                 .method("POST")
                 .uri("/api/plans")
-                .header("Authorization", format!("Bearer {}", token))
+                .header("Authorization", format!("Bearer {token}"))
                 .header("Content-Type", "application/json")
                 .body(Body::from(serde_json::to_string(&create_request).unwrap()))
                 .unwrap(),
@@ -443,7 +443,7 @@ async fn test_create_plan_audit_log_inserted() {
             Request::builder()
                 .method("POST")
                 .uri("/api/plans")
-                .header("Authorization", format!("Bearer {}", token))
+                .header("Authorization", format!("Bearer {token}"))
                 .header("Content-Type", "application/json")
                 .body(Body::from(serde_json::to_string(&create_request).unwrap()))
                 .unwrap(),
@@ -529,7 +529,7 @@ async fn test_create_plan_notification_created() {
             Request::builder()
                 .method("POST")
                 .uri("/api/plans")
-                .header("Authorization", format!("Bearer {}", token))
+                .header("Authorization", format!("Bearer {token}"))
                 .header("Content-Type", "application/json")
                 .body(Body::from(serde_json::to_string(&create_request).unwrap()))
                 .unwrap(),
@@ -593,7 +593,7 @@ async fn test_create_plan_invalid_2fa() {
             Request::builder()
                 .method("POST")
                 .uri("/api/plans")
-                .header("Authorization", format!("Bearer {}", token))
+                .header("Authorization", format!("Bearer {token}"))
                 .header("Content-Type", "application/json")
                 .body(Body::from(serde_json::to_string(&create_request).unwrap()))
                 .unwrap(),

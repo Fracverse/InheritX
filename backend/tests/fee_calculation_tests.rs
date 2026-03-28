@@ -20,7 +20,7 @@ const JWT_SECRET: &[u8] = b"test-jwt-secret";
 fn user_token(user_id: Uuid) -> String {
     let claims = UserClaims {
         user_id,
-        email: format!("fee-test-{}@example.com", user_id),
+        email: format!("fee-test-{user_id}@example.com"),
         exp: 9_999_999_999,
     };
     encode(
@@ -32,7 +32,7 @@ fn user_token(user_id: Uuid) -> String {
 }
 
 async fn ensure_user_and_kyc(pool: &sqlx::PgPool, user_id: Uuid) {
-    let email = format!("fee-test-{}@example.com", user_id);
+    let email = format!("fee-test-{user_id}@example.com");
     sqlx::query(
         "INSERT INTO users (id, email, password_hash) VALUES ($1, $2, $3)
          ON CONFLICT (id) DO NOTHING",
@@ -83,7 +83,7 @@ async fn create_plan_via_app(
             Request::builder()
                 .method("POST")
                 .uri("/api/plans")
-                .header("Authorization", format!("Bearer {}", token))
+                .header("Authorization", format!("Bearer {token}"))
                 .header("Content-Type", "application/json")
                 .body(Body::from(serde_json::to_string(&body).unwrap()))
                 .unwrap(),
@@ -131,7 +131,7 @@ async fn fee_calculation_small_decimals() {
     let (status, json) =
         create_plan_via_app(&ctx.app, &token, "0.02", "1.09", "Small decimals plan").await;
 
-    assert_eq!(status, StatusCode::OK, "response: {:?}", json);
+    assert_eq!(status, StatusCode::OK, "response: {json:?}");
     assert_eq!(json["status"], "success");
 
     let (fee, net_amount) = fee_and_net_from_response(&json);
@@ -166,7 +166,7 @@ async fn fee_calculation_large_values() {
     )
     .await;
 
-    assert_eq!(status, StatusCode::OK, "response: {:?}", json);
+    assert_eq!(status, StatusCode::OK, "response: {json:?}");
     assert_eq!(json["status"], "success");
 
     let (fee, net_amount) = fee_and_net_from_response(&json);
@@ -196,7 +196,7 @@ async fn fee_calculation_no_rounding_error() {
     // Total 100 => fee 2, net 98 (exact)
     let (status, json) = create_plan_via_app(&ctx.app, &token, "2", "98", "No rounding plan").await;
 
-    assert_eq!(status, StatusCode::OK, "response: {:?}", json);
+    assert_eq!(status, StatusCode::OK, "response: {json:?}");
     assert_eq!(json["status"], "success");
 
     let (fee, net_amount) = fee_and_net_from_response(&json);
@@ -233,7 +233,7 @@ async fn fee_calculation_exactly_2_percent() {
     let (status, json) =
         create_plan_via_app(&ctx.app, &token, "10", "490", "Exactly 2% plan").await;
 
-    assert_eq!(status, StatusCode::OK, "response: {:?}", json);
+    assert_eq!(status, StatusCode::OK, "response: {json:?}");
     assert_eq!(json["status"], "success");
 
     let (fee, net_amount) = fee_and_net_from_response(&json);

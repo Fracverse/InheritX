@@ -185,7 +185,7 @@ impl PriceFeedService for DefaultPriceFeedService {
         })?
         .ok_or_else(|| {
             warn!("No price found for asset: {}", asset_code);
-            ApiError::NotFound(format!("Price not found for asset: {}", asset_code))
+            ApiError::NotFound(format!("Price not found for asset: {asset_code}"))
         })?;
 
         let price = Decimal::from_str(&price_record.0).map_err(|e| {
@@ -320,7 +320,7 @@ impl PriceFeedService for DefaultPriceFeedService {
             ApiError::Internal(anyhow::anyhow!("Database error"))
         })?
         .ok_or_else(|| {
-            ApiError::BadRequest(format!("Price feed not found for asset: {}", asset_code))
+            ApiError::BadRequest(format!("Price feed not found for asset: {asset_code}"))
         })?;
 
         let now = Utc::now();

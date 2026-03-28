@@ -93,7 +93,7 @@ async fn first_claim_succeeds_second_claim_fails() {
     };
 
     let user_id = Uuid::new_v4();
-    let email = format!("double-claim-{}@example.com", user_id);
+    let email = format!("double-claim-{user_id}@example.com");
     seed_user_and_kyc(&ctx.pool, user_id, &email).await;
     let plan_id = seed_due_plan(&ctx.pool, user_id).await;
     let token = generate_user_token(user_id, &email);
@@ -110,8 +110,8 @@ async fn first_claim_succeeds_second_claim_fails() {
         .oneshot(
             Request::builder()
                 .method("POST")
-                .uri(format!("/api/plans/{}/claim", plan_id))
-                .header("Authorization", format!("Bearer {}", token))
+                .uri(format!("/api/plans/{plan_id}/claim"))
+                .header("Authorization", format!("Bearer {token}"))
                 .header("Content-Type", "application/json")
                 .body(Body::from(claim_body_str.clone()))
                 .expect("Failed to build first claim request"),
@@ -127,8 +127,8 @@ async fn first_claim_succeeds_second_claim_fails() {
         .oneshot(
             Request::builder()
                 .method("POST")
-                .uri(format!("/api/plans/{}/claim", plan_id))
-                .header("Authorization", format!("Bearer {}", token))
+                .uri(format!("/api/plans/{plan_id}/claim"))
+                .header("Authorization", format!("Bearer {token}"))
                 .header("Content-Type", "application/json")
                 .body(Body::from(claim_body_str))
                 .expect("Failed to build second claim request"),

@@ -254,7 +254,7 @@ pub async fn get_plan_valuation(
         tracing::error!("Failed to fetch plan: {}", e);
         ApiError::Internal(anyhow::anyhow!("Database error"))
     })?
-    .ok_or_else(|| ApiError::NotFound(format!("Plan {} not found", plan_id)))?;
+    .ok_or_else(|| ApiError::NotFound(format!("Plan {plan_id} not found")))?;
 
     let asset_code = plan.0;
     let amount = Decimal::from_str(&plan.1).map_err(|e| {

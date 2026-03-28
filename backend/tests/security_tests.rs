@@ -82,7 +82,7 @@ async fn expired_user_token_rejected_on_plans_endpoint() {
             Request::builder()
                 .method("GET")
                 .uri("/api/plans/due-for-claim")
-                .header("Authorization", format!("Bearer {}", token))
+                .header("Authorization", format!("Bearer {token}"))
                 .body(Body::empty())
                 .unwrap(),
         )
@@ -111,7 +111,7 @@ async fn expired_user_token_rejected_on_notifications_endpoint() {
             Request::builder()
                 .method("GET")
                 .uri("/api/notifications")
-                .header("Authorization", format!("Bearer {}", token))
+                .header("Authorization", format!("Bearer {token}"))
                 .body(Body::empty())
                 .unwrap(),
         )
@@ -140,7 +140,7 @@ async fn expired_admin_token_rejected_on_admin_logs_endpoint() {
             Request::builder()
                 .method("GET")
                 .uri("/api/admin/logs")
-                .header("Authorization", format!("Bearer {}", token))
+                .header("Authorization", format!("Bearer {token}"))
                 .body(Body::empty())
                 .unwrap(),
         )
@@ -187,7 +187,7 @@ async fn test_modified_jwt_signature_rejected_on_admin_route() {
             Request::builder()
                 .method("GET")
                 .uri("/api/admin/logs")
-                .header("Authorization", format!("Bearer {}", tampered_token))
+                .header("Authorization", format!("Bearer {tampered_token}"))
                 .body(Body::empty())
                 .unwrap(),
         )
@@ -231,7 +231,7 @@ async fn test_valid_jwt_signature_accepted_on_admin_route() {
             Request::builder()
                 .method("GET")
                 .uri("/api/admin/logs")
-                .header("Authorization", format!("Bearer {}", valid_token))
+                .header("Authorization", format!("Bearer {valid_token}"))
                 .body(Body::empty())
                 .unwrap(),
         )
@@ -318,7 +318,7 @@ async fn test_malformed_jwt_rejected() {
             Request::builder()
                 .method("GET")
                 .uri("/api/admin/logs")
-                .header("Authorization", format!("Bearer {}", malformed_token))
+                .header("Authorization", format!("Bearer {malformed_token}"))
                 .body(Body::empty())
                 .unwrap(),
         )
@@ -365,7 +365,7 @@ async fn test_jwt_with_different_algorithm_rejected() {
             Request::builder()
                 .method("GET")
                 .uri("/api/admin/logs")
-                .header("Authorization", format!("Bearer {}", token))
+                .header("Authorization", format!("Bearer {token}"))
                 .body(Body::empty())
                 .unwrap(),
         )

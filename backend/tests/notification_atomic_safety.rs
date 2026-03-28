@@ -19,8 +19,8 @@ async fn test_update_kyc_rollback_on_notification_failure() {
     // 1. Setup: Create a user and an admin
     let user_id = Uuid::new_v4();
     let admin_id = Uuid::new_v4();
-    let user_email = format!("user-{}@example.com", user_id);
-    let admin_email = format!("admin-{}@example.com", admin_id);
+    let user_email = format!("user-{user_id}@example.com");
+    let admin_email = format!("admin-{admin_id}@example.com");
 
     // Insert user
     sqlx::query("INSERT INTO users (id, email, password_hash) VALUES ($1, $2, $3)")
@@ -66,8 +66,8 @@ async fn test_update_kyc_rollback_on_notification_failure() {
         .oneshot(
             Request::builder()
                 .method("POST")
-                .uri(format!("/api/admin/users/{}/kyc", user_id))
-                .header("Authorization", format!("Bearer {}", token))
+                .uri(format!("/api/admin/users/{user_id}/kyc"))
+                .header("Authorization", format!("Bearer {token}"))
                 .header("Content-Type", "application/json")
                 .body(Body::from(serde_json::to_vec(&payload).unwrap()))
                 .unwrap(),

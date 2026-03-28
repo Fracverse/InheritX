@@ -57,7 +57,7 @@ impl InterestReconciliationService {
         .fetch_all(&self.db)
         .await
         .map_err(|e| {
-            ApiError::Internal(anyhow::anyhow!("DB error loading expected yields: {}", e))
+            ApiError::Internal(anyhow::anyhow!("DB error loading expected yields: {e}"))
         })?;
 
         for row in asset_yields {
@@ -85,7 +85,7 @@ impl InterestReconciliationService {
 
                 let mut tx =
                     self.db.begin().await.map_err(|e| {
-                        ApiError::Internal(anyhow::anyhow!("Tx start error: {}", e))
+                        ApiError::Internal(anyhow::anyhow!("Tx start error: {e}"))
                     })?;
 
                 // Log discrepancy to audit logs
@@ -104,7 +104,7 @@ impl InterestReconciliationService {
 
                 tx.commit()
                     .await
-                    .map_err(|e| ApiError::Internal(anyhow::anyhow!("Tx commit error: {}", e)))?;
+                    .map_err(|e| ApiError::Internal(anyhow::anyhow!("Tx commit error: {e}")))?;
             } else {
                 info!(
                     "Yield reconciled for {}. Expected {}, On-Chain {}",

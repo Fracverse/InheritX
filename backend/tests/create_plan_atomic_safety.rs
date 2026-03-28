@@ -18,7 +18,7 @@ async fn test_create_plan_rollback_on_audit_failure() {
 
     // 1. Setup: Create a user
     let user_id = Uuid::new_v4();
-    let email = format!("safety-{}@example.com", user_id);
+    let email = format!("safety-{user_id}@example.com");
     sqlx::query("INSERT INTO users (id, email, password_hash) VALUES ($1, $2, $3)")
         .bind(user_id)
         .bind(&email)
@@ -67,7 +67,7 @@ async fn test_create_plan_rollback_on_audit_failure() {
             Request::builder()
                 .method("POST")
                 .uri("/api/plans") // Adjust to your actual route
-                .header("Authorization", format!("Bearer {}", token))
+                .header("Authorization", format!("Bearer {token}"))
                 .header("Content-Type", "application/json")
                 .body(Body::from(serde_json::to_vec(&payload).unwrap()))
                 .unwrap(),
