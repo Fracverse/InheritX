@@ -1,7 +1,10 @@
 -- Add migration script here
 
--- Enable UUID extension
+-- Enable UUID extension (for older PostgreSQL versions)
 CREATE EXTENSION IF NOT EXISTS "uuid-ossp";
+
+-- Enable pgcrypto for gen_random_uuid() (for PostgreSQL 13+)
+CREATE EXTENSION IF NOT EXISTS "pgcrypto";
 
 -- Users Table
 CREATE TABLE users (
