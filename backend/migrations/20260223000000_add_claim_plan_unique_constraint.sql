@@ -1,12 +1,12 @@
 -- Add unique constraint on plan_id in claims table to prevent duplicate claims
 -- This ensures only one claim per plan, preventing race condition vulnerabilities
 
--- First, remove any existing duplicate claims (keep the first one)
+-- First, remove any existing duplicate claims (keep the first one by created_at)
 DELETE FROM claims
 WHERE id NOT IN (
-    SELECT MIN(id)
+    SELECT DISTINCT ON (plan_id) id
     FROM claims
-    GROUP BY plan_id
+    ORDER BY plan_id, created_at ASC
 );
 
 -- Drop the existing unique constraint on (plan_id, beneficiary_email)
