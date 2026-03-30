@@ -1166,8 +1166,9 @@ fn test_liquidation_blocked_during_grace_period() {
     let result = client.try_liquidate(&liquidator, &borrower, &1_000u64);
     assert!(result.is_err()); // Should fail due to grace period, not health factor
 
-    // Jump past grace period (4 days)
-    env.ledger().set_timestamp(env.ledger().timestamp() + 4 * 24 * 60 * 60);
+    // Jump past grace period (4 days) - use absolute timestamp
+    let current_time = env.ledger().timestamp();
+    env.ledger().set_timestamp(current_time + 4 * 24 * 60 * 60);
 
     // Now liquidation can proceed (if health factor is bad)
     let result = client.try_liquidate(&liquidator, &borrower, &1_000u64);
