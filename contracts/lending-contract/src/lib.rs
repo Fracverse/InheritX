@@ -809,7 +809,10 @@ impl LendingContract {
 
     /// Calculate the total amount (principal + interest + late fees) required to repay the loan.
     pub fn get_repayment_amount(env: Env, borrower: Address) -> Result<u64, LendingError> {
-        let loan_opt: Option<LoanRecord> = env.storage().persistent().get(&DataKey::Loan(borrower.clone()));
+        let loan_opt: Option<LoanRecord> = env
+            .storage()
+            .persistent()
+            .get(&DataKey::Loan(borrower.clone()));
 
         match loan_opt {
             Some(loan) => {
@@ -1077,7 +1080,11 @@ impl LendingContract {
         pool.grace_period_seconds = grace_period_seconds;
         Self::set_pool(&env, &pool);
 
-        log!(&env, "Grace period updated to {} seconds", grace_period_seconds);
+        log!(
+            &env,
+            "Grace period updated to {} seconds",
+            grace_period_seconds
+        );
         Ok(())
     }
 
@@ -1094,7 +1101,11 @@ impl LendingContract {
         pool.late_fee_rate_bps = late_fee_rate_bps;
         Self::set_pool(&env, &pool);
 
-        log!(&env, "Late fee rate updated to {} bps per day", late_fee_rate_bps);
+        log!(
+            &env,
+            "Late fee rate updated to {} bps per day",
+            late_fee_rate_bps
+        );
         Ok(())
     }
 

@@ -1077,7 +1077,8 @@ fn test_no_late_fees_during_grace_period() {
 
     // Jump to just after due date (within grace period)
     // Grace period is 3 days (259200 seconds), so due_date + grace = due_date + 259200
-    env.ledger().set_timestamp(env.ledger().timestamp() + 2 * 24 * 60 * 60); // Jump 2 days
+    env.ledger()
+        .set_timestamp(env.ledger().timestamp() + 2 * 24 * 60 * 60); // Jump 2 days
 
     // Should still be in grace period
     let in_grace = client.is_in_grace_period(&borrower);
@@ -1122,7 +1123,8 @@ fn test_late_fees_after_grace_period() {
 
     // Jump to 3 days after due date (2 days past grace period)
     // late fees = 10000 * 0.05 * 2 = 1000
-    env.ledger().set_timestamp(env.ledger().timestamp() + 4 * 24 * 60 * 60);
+    env.ledger()
+        .set_timestamp(env.ledger().timestamp() + 4 * 24 * 60 * 60);
 
     // Should be out of grace period
     let in_grace = client.is_in_grace_period(&borrower);
@@ -1204,7 +1206,8 @@ fn test_late_fee_collected_on_repay() {
     );
 
     // Jump 3 days (1 day grace + 2 days late)
-    env.ledger().set_timestamp(env.ledger().timestamp() + 3 * 24 * 60 * 60);
+    env.ledger()
+        .set_timestamp(env.ledger().timestamp() + 3 * 24 * 60 * 60);
 
     // Late fees should be 5000 * 0.05 * 2 = 500
     let late_fee = client.calculate_late_fee(&borrower);
@@ -1255,11 +1258,13 @@ fn test_grace_period_expires_correctly() {
     );
 
     // At 1.5 days: should be in grace period
-    env.ledger().set_timestamp(env.ledger().timestamp() + 36 * 60 * 60);
+    env.ledger()
+        .set_timestamp(env.ledger().timestamp() + 36 * 60 * 60);
     assert!(client.is_in_grace_period(&borrower));
 
     // At 3 days: should be out of grace period
-    env.ledger().set_timestamp(env.ledger().timestamp() + 36 * 60 * 60); // Total 72 hours = 3 days
+    env.ledger()
+        .set_timestamp(env.ledger().timestamp() + 36 * 60 * 60); // Total 72 hours = 3 days
     assert!(!client.is_in_grace_period(&borrower));
 
     // Late fees should start accruing
@@ -1305,7 +1310,8 @@ fn test_multiple_loans_grace_period() {
     );
 
     // Jump 2 days
-    env.ledger().set_timestamp(env.ledger().timestamp() + 2 * 24 * 60 * 60);
+    env.ledger()
+        .set_timestamp(env.ledger().timestamp() + 2 * 24 * 60 * 60);
 
     // borrower1 should be out of grace period
     assert!(!client.is_in_grace_period(&borrower1));
