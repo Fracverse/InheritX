@@ -163,6 +163,14 @@
                       "val": {
                         "u64": 1000000
                       }
+                    },
+                    {
+                      "key": {
+                        "symbol": "waterfall_enabled"
+                      },
+                      "val": {
+                        "bool": false
+                      }
                     }
                   ]
                 }
@@ -417,6 +425,14 @@
                                 "val": {
                                   "bytes": "86eba947d50c2c01570fe1bb5ca552958dabbdbb59b0657f0f26e21ff011e5c7"
                                 }
+                              },
+                              {
+                                "key": {
+                                  "symbol": "priority"
+                                },
+                                "val": {
+                                  "u32": 0
+                                }
                               }
                             ]
                           }
@@ -505,6 +521,14 @@
                       },
                       "val": {
                         "u64": 0
+                      }
+                    },
+                    {
+                      "key": {
+                        "symbol": "waterfall_enabled"
+                      },
+                      "val": {
+                        "bool": false
                       }
                     }
                   ]
@@ -1216,6 +1240,14 @@
                   },
                   "val": {
                     "u64": 1000000
+                  }
+                },
+                {
+                  "key": {
+                    "symbol": "waterfall_enabled"
+                  },
+                  "val": {
+                    "bool": false
                   }
                 }
               ]

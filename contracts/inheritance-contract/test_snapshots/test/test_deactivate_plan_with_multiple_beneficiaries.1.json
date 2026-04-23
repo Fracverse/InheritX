@@ -182,6 +182,14 @@
                       "val": {
                         "u64": 2000000
                       }
+                    },
+                    {
+                      "key": {
+                        "symbol": "waterfall_enabled"
+                      },
+                      "val": {
+                        "bool": false
+                      }
                     }
                   ]
                 }
@@ -501,6 +509,14 @@
                                 "val": {
                                   "bytes": "08bb5e5d6eaac1049ede0893d30ed022b1a4d9b5b48db414871f51c9cb35283d"
                                 }
+                              },
+                              {
+                                "key": {
+                                  "symbol": "priority"
+                                },
+                                "val": {
+                                  "u32": 0
+                                }
                               }
                             ]
                           },
@@ -544,6 +560,14 @@
                                 },
                                 "val": {
                                   "bytes": "ae4b3280e56e2faf83f414a6e3dabe9d5fbe18976544c05fed121accb85b53fc"
+                                }
+                              },
+                              {
+                                "key": {
+                                  "symbol": "priority"
+                                },
+                                "val": {
+                                  "u32": 0
                                 }
                               }
                             ]
@@ -633,6 +657,14 @@
                       },
                       "val": {
                         "u64": 0
+                      }
+                    },
+                    {
+                      "key": {
+                        "symbol": "waterfall_enabled"
+                      },
+                      "val": {
+                        "bool": false
                       }
                     }
                   ]
@@ -1396,6 +1428,14 @@
                   },
                   "val": {
                     "u64": 2000000
+                  }
+                },
+                {
+                  "key": {
+                    "symbol": "waterfall_enabled"
+                  },
+                  "val": {
+                    "bool": false
                   }
                 }
               ]

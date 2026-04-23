@@ -796,6 +796,22 @@
                             },
                             {
                               "key": {
+                                "symbol": "grace_period_seconds"
+                              },
+                              "val": {
+                                "u64": 259200
+                              }
+                            },
+                            {
+                              "key": {
+                                "symbol": "late_fee_rate_bps"
+                              },
+                              "val": {
+                                "u32": 500
+                              }
+                            },
+                            {
+                              "key": {
                                 "symbol": "multiplier_bps"
                               },
                               "val": {
@@ -3272,7 +3288,7 @@
             "data": {
               "vec": [
                 {
-                  "string": "Loan {} repaid: {} total ({} principal + {} interest), {} collateral returned"
+                  "string": "Loan {} repaid: {} total ({} principal + {} interest + {} late fees), {} collateral returned"
                 },
                 {
                   "u64": 1
@@ -3282,6 +3298,9 @@
                 },
                 {
                   "u64": 1500
+                },
+                {
+                  "u64": 0
                 },
                 {
                   "u64": 0

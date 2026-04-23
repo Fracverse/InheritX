@@ -163,6 +163,14 @@
                       "val": {
                         "u64": 100000
                       }
+                    },
+                    {
+                      "key": {
+                        "symbol": "waterfall_enabled"
+                      },
+                      "val": {
+                        "bool": false
+                      }
                     }
                   ]
                 }
@@ -567,6 +575,14 @@
                                 "val": {
                                   "bytes": "08bb5e5d6eaac1049ede0893d30ed022b1a4d9b5b48db414871f51c9cb35283d"
                                 }
+                              },
+                              {
+                                "key": {
+                                  "symbol": "priority"
+                                },
+                                "val": {
+                                  "u32": 0
+                                }
                               }
                             ]
                           }
@@ -655,6 +671,14 @@
                       },
                       "val": {
                         "u64": 0
+                      }
+                    },
+                    {
+                      "key": {
+                        "symbol": "waterfall_enabled"
+                      },
+                      "val": {
+                        "bool": false
                       }
                     }
                   ]
@@ -1433,6 +1457,14 @@
                   "val": {
                     "u64": 100000
                   }
+                },
+                {
+                  "key": {
+                    "symbol": "waterfall_enabled"
+                  },
+                  "val": {
+                    "bool": false
+                  }
                 }
               ]
             }
@@ -1761,6 +1793,14 @@
                             "val": {
                               "bytes": "08bb5e5d6eaac1049ede0893d30ed022b1a4d9b5b48db414871f51c9cb35283d"
                             }
+                          },
+                          {
+                            "key": {
+                              "symbol": "priority"
+                            },
+                            "val": {
+                              "u32": 0
+                            }
                           }
                         ]
                       }
@@ -1849,6 +1889,14 @@
                   },
                   "val": {
                     "u64": 0
+                  }
+                },
+                {
+                  "key": {
+                    "symbol": "waterfall_enabled"
+                  },
+                  "val": {
+                    "bool": false
                   }
                 }
               ]
@@ -2263,6 +2311,14 @@
                             "val": {
                               "bytes": "08bb5e5d6eaac1049ede0893d30ed022b1a4d9b5b48db414871f51c9cb35283d"
                             }
+                          },
+                          {
+                            "key": {
+                              "symbol": "priority"
+                            },
+                            "val": {
+                              "u32": 0
+                            }
                           }
                         ]
                       }
@@ -2351,6 +2407,14 @@
                   },
                   "val": {
                     "u64": 0
+                  }
+                },
+                {
+                  "key": {
+                    "symbol": "waterfall_enabled"
+                  },
+                  "val": {
+                    "bool": false
                   }
                 }
               ]

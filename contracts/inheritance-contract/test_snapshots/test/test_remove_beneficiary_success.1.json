@@ -182,6 +182,14 @@
                       "val": {
                         "u64": 1000000
                       }
+                    },
+                    {
+                      "key": {
+                        "symbol": "waterfall_enabled"
+                      },
+                      "val": {
+                        "bool": false
+                      }
                     }
                   ]
                 }
@@ -319,6 +327,14 @@
                       },
                       "val": {
                         "string": "Charlie"
+                      }
+                    },
+                    {
+                      "key": {
+                        "symbol": "priority"
+                      },
+                      "val": {
+                        "u32": 0
                       }
                     }
                   ]
@@ -527,6 +543,14 @@
                                 "val": {
                                   "bytes": "ae4b3280e56e2faf83f414a6e3dabe9d5fbe18976544c05fed121accb85b53fc"
                                 }
+                              },
+                              {
+                                "key": {
+                                  "symbol": "priority"
+                                },
+                                "val": {
+                                  "u32": 0
+                                }
                               }
                             ]
                           },
@@ -570,6 +594,14 @@
                                 },
                                 "val": {
                                   "bytes": "57355ac3303c148f11aef7cb179456b9232cde33a818dfda2c2fcb9325749a6b"
+                                }
+                              },
+                              {
+                                "key": {
+                                  "symbol": "priority"
+                                },
+                                "val": {
+                                  "u32": 0
                                 }
                               }
                             ]
@@ -659,6 +691,14 @@
                       },
                       "val": {
                         "u64": 0
+                      }
+                    },
+                    {
+                      "key": {
+                        "symbol": "waterfall_enabled"
+                      },
+                      "val": {
+                        "bool": false
                       }
                     }
                   ]
@@ -1456,6 +1496,14 @@
                   "val": {
                     "u64": 1000000
                   }
+                },
+                {
+                  "key": {
+                    "symbol": "waterfall_enabled"
+                  },
+                  "val": {
+                    "bool": false
+                  }
                 }
               ]
             }
@@ -1884,6 +1932,14 @@
                       },
                       "val": {
                         "string": "Charlie"
+                      }
+                    },
+                    {
+                      "key": {
+                        "symbol": "priority"
+                      },
+                      "val": {
+                        "u32": 0
                       }
                     }
                   ]
