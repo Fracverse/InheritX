@@ -36,7 +36,17 @@ fn setup(env: &Env) -> (LendingContractClient<'_>, Address, Address, Address) {
 
     let contract_id = env.register_contract(None, LendingContract);
     let client = LendingContractClient::new(env, &contract_id);
-    client.initialize(&admin, &token_addr, &500u32, &2000u32, &15000u32, &10000u32); // 5% base, 20% multiplier, 150% collateral, 100% cap
+    client.initialize(
+        &admin,
+        &token_addr,
+        &500u32,   // base_rate
+        &8000u32,  // optimal_utilization
+        &1600u32,  // slope1
+        &3000u32,  // slope2
+        &1000u32,  // reserve_factor
+        &15000u32, // collateral_ratio
+        &10000u32, // utilization_cap
+    );
 
     // Whitelist collateral token
     client.whitelist_collateral(&admin, &collateral_addr);
@@ -55,8 +65,17 @@ fn test_initialize_once() {
     let (client, token_addr, collateral_addr, admin) = setup(&env);
 
     // Second init must fail
-    let result =
-        client.try_initialize(&admin, &token_addr, &500u32, &2000u32, &15000u32, &10000u32);
+    let result = client.try_initialize(
+        &admin,
+        &token_addr,
+        &500u32,
+        &8000u32,
+        &1600u32,
+        &3000u32,
+        &1000u32,
+        &15000u32,
+        &10000u32,
+    );
     assert!(result.is_err());
 }
 
@@ -836,7 +855,17 @@ fn test_utilization_cap_enforced() {
 
     let contract_id = env.register_contract(None, LendingContract);
     let client = LendingContractClient::new(&env, &contract_id);
-    client.initialize(&admin, &token_addr, &500u32, &2000u32, &15000u32, &8000u32); // 80% cap
+    client.initialize(
+        &admin,
+        &token_addr,
+        &500u32,
+        &8000u32,
+        &1600u32,
+        &3000u32,
+        &1000u32,
+        &15000u32,
+        &8000u32,
+    ); // 80% cap
     client.whitelist_collateral(&admin, &collateral_addr);
 
     let depositor = Address::generate(&env);
@@ -1697,4 +1726,84 @@ fn test_flash_loan_success() {
         pool_after.total_deposits,
         pool_before.total_deposits + expected_fee
     );
+}
+
+#[test]
+fn test_rate_model_query_and_update() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let (client, _token_addr, _collateral_addr, admin) = setup(&env);
+
+    // Initial values from setup
+    assert_eq!(client.get_base_rate(), 500u32);
+    assert_eq!(client.get_optimal_utilization(), 8000u32);
+    assert_eq!(client.get_slope1(), 1600u32);
+    assert_eq!(client.get_slope2(), 3000u32);
+
+    // Update rate model
+    client.set_rate_model(&admin, &400u32, &7000u32, &1500u32, &4000u32, &1500u32);
+
+    assert_eq!(client.get_base_rate(), 400u32);
+    assert_eq!(client.get_optimal_utilization(), 7000u32);
+    assert_eq!(client.get_slope1(), 1500u32);
+    assert_eq!(client.get_slope2(), 4000u32);
+}
+
+#[test]
+fn test_rate_model_unauthorized_update() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let (client, _token_addr, _collateral_addr, _admin) = setup(&env);
+
+    let attacker = Address::generate(&env);
+    let result = client.try_set_rate_model(&attacker, &400u32, &7000u32, &1500u32, &4000u32, &1500u32);
+    assert!(result.is_err());
+}
+
+#[test]
+fn test_rate_simulation() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let (client, _token_addr, _collateral_addr, _admin) = setup(&env);
+
+    // Below optimal (80%)
+    // Rate = 500 + (40% / 80%) * 1600 = 500 + 800 = 1300
+    assert_eq!(client.simulate_rate(&4000u32), 1300u32);
+
+    // At optimal
+    // Rate = 500 + 1600 = 2100
+    assert_eq!(client.simulate_rate(&8000u32), 2100u32);
+
+    // Above optimal
+    // Rate = 500 + 1600 + ((90% - 80%) / (100% - 80%)) * 3000
+    // Rate = 2100 + (10 / 20) * 3000 = 2100 + 1500 = 3600
+    assert_eq!(client.simulate_rate(&9000u32), 3600u32);
+}
+
+#[test]
+fn test_supply_rate_calculation() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let (client, token_addr, _collateral_addr, _admin) = setup(&env);
+
+    let depositor = Address::generate(&env);
+    mint_to(&env, &token_addr, &depositor, 10_000);
+    client.deposit(&depositor, &10_000u64);
+
+    // At 0 utilization, supply rate is 0
+    assert_eq!(client.get_supply_rate(), 0u32);
+
+    // Mock some borrowing to get 50% utilization
+    let borrower = Address::generate(&env);
+    let collateral_addr = create_token_addr(&env);
+    client.whitelist_collateral(&Address::generate(&env), &collateral_addr);
+    mint_to(&env, &collateral_addr, &borrower, 100_000);
+    client.borrow(&borrower, &5000u64, &collateral_addr, &7500u64, &3600u64);
+
+    // Utilization = 50%
+    // Borrow Rate = 1500
+    // Reserve Factor = 10% (1000)
+    // Supply Rate = Borrow Rate * Utilization * (1 - Reserve Factor)
+    // Supply Rate = 1500 * 0.5 * 0.9 = 1500 * 0.45 = 675
+    assert_eq!(client.get_supply_rate(), 675u32);
 }

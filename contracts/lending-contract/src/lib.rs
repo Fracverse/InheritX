@@ -21,12 +21,21 @@ const REFINANCING_FEE_BPS: u32 = 50; // 0.5% refinancing fee
 
 #[contracttype]
 #[derive(Clone, Debug, Eq, PartialEq)]
+pub struct RateModel {
+    pub base_rate_bps: u32,
+    pub optimal_utilization_bps: u32,
+    pub slope1_bps: u32,
+    pub slope2_bps: u32,
+    pub reserve_factor_bps: u32,
+}
+
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
 pub struct PoolState {
     pub total_deposits: u64, // Total underlying tokens deposited (net, tracks repayments too)
     pub total_shares: u64,   // Total pool shares outstanding
     pub total_borrowed: u64, // Total principal currently on loan
-    pub base_rate_bps: u32,  // Base interest rate in basis points (1/10000)
-    pub multiplier_bps: u32, // Multiplier applied to utilization to get variable rate
+    pub rate_model: RateModel, // Interest rate model parameters
     pub utilization_cap_bps: u32, // Maximum utilization allowed in basis points (e.g., 8000 = 80%)
     pub retained_yield: u64, // Yield reserved for protocol/priority payouts
     pub bad_debt_reserve: u64, // Reserve bucket for bad debt coverage
@@ -226,6 +235,16 @@ pub struct LoanSplitEvent {
     pub timestamp: u64,
 }
 
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct RateModelUpdated {
+    pub base_rate_bps: u32,
+    pub optimal_utilization_bps: u32,
+    pub slope1_bps: u32,
+    pub slope2_bps: u32,
+    pub reserve_factor_bps: u32,
+}
+
 // ─────────────────────────────────────────────────
 // Errors
 // ─────────────────────────────────────────────────
@@ -296,7 +315,10 @@ impl LendingContract {
         admin: Address,
         token: Address,
         base_rate_bps: u32,
-        multiplier_bps: u32,
+        optimal_utilization_bps: u32,
+        slope1_bps: u32,
+        slope2_bps: u32,
+        reserve_factor_bps: u32,
         collateral_ratio_bps: u32,
         utilization_cap_bps: u32,
     ) -> Result<(), LendingError> {
@@ -315,8 +337,13 @@ impl LendingContract {
                 total_deposits: 0,
                 total_shares: 0,
                 total_borrowed: 0,
-                base_rate_bps,
-                multiplier_bps,
+                rate_model: RateModel {
+                    base_rate_bps,
+                    optimal_utilization_bps,
+                    slope1_bps,
+                    slope2_bps,
+                    reserve_factor_bps,
+                },
                 utilization_cap_bps,
                 retained_yield: 0,
                 bad_debt_reserve: 0,
@@ -537,17 +564,37 @@ impl LendingContract {
         utilization as u32
     }
 
-    /// Calculate the dynamic interest rate based on utilization
-    fn calculate_dynamic_rate(
-        base_rate_bps: u32,
-        multiplier_bps: u32,
-        utilization_bps: u32,
-    ) -> u32 {
-        let variable_rate = (utilization_bps as u64)
-            .checked_mul(multiplier_bps as u64)
-            .unwrap_or(0)
-            / 10000;
-        base_rate_bps.saturating_add(variable_rate as u32)
+    /// Calculate the dynamic interest rate based on utilization using a two-slope model
+    fn calculate_dynamic_rate(model: &RateModel, utilization_bps: u32) -> u32 {
+        if utilization_bps <= model.optimal_utilization_bps {
+            // Rate = base_rate + (utilization / optimal) * slope1
+            if model.optimal_utilization_bps == 0 {
+                return model.base_rate_bps.saturating_add(model.slope1_bps);
+            }
+            let slope = (utilization_bps as u64)
+                .checked_mul(model.slope1_bps as u64)
+                .and_then(|v| v.checked_div(model.optimal_utilization_bps as u64))
+                .unwrap_or(0) as u32;
+            model.base_rate_bps.saturating_add(slope)
+        } else {
+            // Rate = base_rate + slope1 + ((utilization - optimal) / (10000 - optimal)) * slope2
+            let excess_utilization = utilization_bps.saturating_sub(model.optimal_utilization_bps);
+            let denominator = 10000u32.saturating_sub(model.optimal_utilization_bps);
+            if denominator == 0 {
+                return model
+                    .base_rate_bps
+                    .saturating_add(model.slope1_bps)
+                    .saturating_add(model.slope2_bps);
+            }
+            let slope = (excess_utilization as u64)
+                .checked_mul(model.slope2_bps as u64)
+                .and_then(|v| v.checked_div(denominator as u64))
+                .unwrap_or(0) as u32;
+            model
+                .base_rate_bps
+                .saturating_add(model.slope1_bps)
+                .saturating_add(slope)
+        }
     }
 
     // ─── Public Functions ────────────────────────────
@@ -724,7 +771,7 @@ impl LendingContract {
 
         let utilization_bps = Self::get_utilization_bps(pool.total_borrowed, pool.total_deposits);
         let dynamic_rate_bps =
-            Self::calculate_dynamic_rate(pool.base_rate_bps, pool.multiplier_bps, utilization_bps);
+            Self::calculate_dynamic_rate(&pool.rate_model, utilization_bps);
 
         Self::set_pool(&env, &pool);
 
@@ -836,9 +883,9 @@ impl LendingContract {
         let mut pool = Self::get_pool(&env);
         pool.total_borrowed -= loan.principal;
 
-        // Retain 10% of interest for protocol buckets, with part routed to bad-debt reserve.
+        // Retain reserve_factor_bps of interest for protocol buckets, with part routed to bad-debt reserve.
         let protocol_share = ((interest as u128)
-            .checked_mul(PROTOCOL_INTEREST_BPS as u128)
+            .checked_mul(pool.rate_model.reserve_factor_bps as u128)
             .and_then(|v| v.checked_div(10000))
             .unwrap_or(0)) as u64;
         let reserve_share = ((protocol_share as u128)
@@ -1055,11 +1102,52 @@ impl LendingContract {
         Self::require_initialized(&env)?;
         let pool = Self::get_pool(&env);
         let utilization_bps = Self::get_utilization_bps(pool.total_borrowed, pool.total_deposits);
-        Ok(Self::calculate_dynamic_rate(
-            pool.base_rate_bps,
-            pool.multiplier_bps,
-            utilization_bps,
-        ))
+        Ok(Self::calculate_dynamic_rate(&pool.rate_model, utilization_bps))
+    }
+
+    pub fn get_base_rate(env: Env) -> Result<u32, LendingError> {
+        Self::require_initialized(&env)?;
+        Ok(Self::get_pool(&env).rate_model.base_rate_bps)
+    }
+
+    pub fn get_optimal_utilization(env: Env) -> Result<u32, LendingError> {
+        Self::require_initialized(&env)?;
+        Ok(Self::get_pool(&env).rate_model.optimal_utilization_bps)
+    }
+
+    pub fn get_slope1(env: Env) -> Result<u32, LendingError> {
+        Self::require_initialized(&env)?;
+        Ok(Self::get_pool(&env).rate_model.slope1_bps)
+    }
+
+    pub fn get_slope2(env: Env) -> Result<u32, LendingError> {
+        Self::require_initialized(&env)?;
+        Ok(Self::get_pool(&env).rate_model.slope2_bps)
+    }
+
+    pub fn get_borrow_rate(env: Env) -> Result<u32, LendingError> {
+        Self::get_current_interest_rate(env)
+    }
+
+    pub fn get_supply_rate(env: Env) -> Result<u32, LendingError> {
+        Self::require_initialized(&env)?;
+        let pool = Self::get_pool(&env);
+        let utilization_bps = Self::get_utilization_bps(pool.total_borrowed, pool.total_deposits);
+        let borrow_rate = Self::calculate_dynamic_rate(&pool.rate_model, utilization_bps);
+
+        let net_multiplier = 10000u32.saturating_sub(pool.rate_model.reserve_factor_bps);
+        let supply_rate = (borrow_rate as u128)
+            .checked_mul(utilization_bps as u128)
+            .and_then(|v| v.checked_mul(net_multiplier as u128))
+            .and_then(|v| v.checked_div(100_000_000)) // 10000 * 10000
+            .unwrap_or(0) as u32;
+        Ok(supply_rate)
+    }
+
+    pub fn simulate_rate(env: Env, utilization_bps: u32) -> Result<u32, LendingError> {
+        Self::require_initialized(&env)?;
+        let pool = Self::get_pool(&env);
+        Ok(Self::calculate_dynamic_rate(&pool.rate_model, utilization_bps))
     }
 
     // ─── Grace Period & Late Fee Functions ────────────
@@ -1178,6 +1266,51 @@ impl LendingContract {
     /// Get the current collateral ratio in basis points
     pub fn get_collateral_ratio_bps(env: Env) -> u32 {
         Self::get_collateral_ratio(&env)
+    }
+
+    /// Set the interest rate model (admin only)
+    pub fn set_rate_model(
+        env: Env,
+        admin: Address,
+        base_rate_bps: u32,
+        optimal_utilization_bps: u32,
+        slope1_bps: u32,
+        slope2_bps: u32,
+        reserve_factor_bps: u32,
+    ) -> Result<(), LendingError> {
+        Self::require_admin(&env, &admin)?;
+
+        let mut pool = Self::get_pool(&env);
+        pool.rate_model = RateModel {
+            base_rate_bps,
+            optimal_utilization_bps,
+            slope1_bps,
+            slope2_bps,
+            reserve_factor_bps,
+        };
+        Self::set_pool(&env, &pool);
+
+        env.events().publish(
+            (symbol_short!("POOL"), symbol_short!("RATEMOD")),
+            RateModelUpdated {
+                base_rate_bps,
+                optimal_utilization_bps,
+                slope1_bps,
+                slope2_bps,
+                reserve_factor_bps,
+            },
+        );
+
+        log!(
+            &env,
+            "Rate model updated: base={}, optimal={}, slope1={}, slope2={}, reserve={}",
+            base_rate_bps,
+            optimal_utilization_bps,
+            slope1_bps,
+            slope2_bps,
+            reserve_factor_bps
+        );
+        Ok(())
     }
 
     /// Set the grace period for loans (admin only)
@@ -1444,7 +1577,7 @@ impl LendingContract {
         let pool = Self::get_pool(&env);
         let utilization_bps = Self::get_utilization_bps(pool.total_borrowed, pool.total_deposits);
         let new_interest_rate_bps =
-            Self::calculate_dynamic_rate(pool.base_rate_bps, pool.multiplier_bps, utilization_bps);
+            Self::calculate_dynamic_rate(&pool.rate_model, utilization_bps);
 
         Ok(RefinanceTerms {
             outstanding_balance,
@@ -1666,7 +1799,7 @@ impl LendingContract {
         let pool = Self::get_pool(&env);
         let utilization_bps = Self::get_utilization_bps(pool.total_borrowed, pool.total_deposits);
         let new_interest_rate_bps =
-            Self::calculate_dynamic_rate(pool.base_rate_bps, pool.multiplier_bps, utilization_bps);
+            Self::calculate_dynamic_rate(&pool.rate_model, utilization_bps);
 
         let new_loan = LoanRecord {
             loan_id: new_loan_id,
@@ -1802,7 +1935,7 @@ impl LendingContract {
         let pool = Self::get_pool(&env);
         let utilization_bps = Self::get_utilization_bps(pool.total_borrowed, pool.total_deposits);
         let new_interest_rate_bps =
-            Self::calculate_dynamic_rate(pool.base_rate_bps, pool.multiplier_bps, utilization_bps);
+            Self::calculate_dynamic_rate(&pool.rate_model, utilization_bps);
 
         // Distribute collateral proportionally
         for amount in split_amounts.iter() {
