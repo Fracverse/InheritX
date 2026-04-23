@@ -16,6 +16,8 @@ const BAD_DEBT_RESERVE_BPS: u32 = 5000; // 50% of protocol share routed to reser
 const DEFAULT_GRACE_PERIOD_SECONDS: u64 = 259_200; // 3 days
 const DEFAULT_LATE_FEE_RATE_BPS: u32 = 500; // 5% per day = 0.058% per second (approx)
 const REFINANCING_FEE_BPS: u32 = 50; // 0.5% refinancing fee
+const DEFAULT_REWARD_RATE: u64 = 1_000_000_000; // Default reward rate per second (1 reward per second with 9 decimals)
+const REWARD_PRECISION: u64 = 1_000_000_000; // 9 decimals for reward calculations
 
 // ─────────────────────────────────────────────────
 // Data Types
@@ -231,6 +233,62 @@ pub struct LoanSplitEvent {
 }
 
 // ─────────────────────────────────────────────────
+// Yield Farming Data Types
+// ─────────────────────────────────────────────────
+
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct RewardPool {
+    pub total_staked: u64,
+    pub reward_rate: u64, // Rewards per second per staked token
+    pub last_update_time: u64,
+    pub reward_per_token_stored: u64,
+    pub total_rewards_distributed: u64,
+}
+
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct UserStake {
+    pub amount: u64,
+    pub reward_per_token_paid: u64,
+    pub rewards: u64,
+    pub stake_time: u64,
+}
+
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct StakedEvent {
+    pub user: Address,
+    pub amount: u64,
+    pub timestamp: u64,
+}
+
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct UnstakedEvent {
+    pub user: Address,
+    pub amount: u64,
+    pub rewards_claimed: u64,
+    pub timestamp: u64,
+}
+
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct RewardsClaimedEvent {
+    pub user: Address,
+    pub rewards: u64,
+    pub timestamp: u64,
+}
+
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct RewardRateUpdatedEvent {
+    pub old_rate: u64,
+    pub new_rate: u64,
+    pub timestamp: u64,
+}
+
+// ─────────────────────────────────────────────────
 // Errors
 // ─────────────────────────────────────────────────
 
@@ -257,6 +315,9 @@ pub enum LendingError {
     LoanNotFound = 18,
     TooManyLoans = 19,
     InvalidSplitAmounts = 20,
+    InsufficientStake = 21,
+    NoRewardsToClaim = 22,
+    InvalidRewardRate = 23,
 }
 
 // ─────────────────────────────────────────────────
@@ -280,6 +341,8 @@ pub enum DataKey {
     LateFeesAccrued(u64), // Track late fees for a specific loan_id
     FlashLoanFeeBps,
     UserLoans(Address), // Track multiple loans per user (Vec<u64>)
+    RewardPool,
+    UserStake(Address), // Track user's staking position
 }
 
 // ─────────────────────────────────────────────────
@@ -330,6 +393,19 @@ impl LendingContract {
                 total_protocol_revenue: 0,
             },
         );
+
+        // Initialize reward pool
+        env.storage().instance().set(
+            &DataKey::RewardPool,
+            &RewardPool {
+                total_staked: 0,
+                reward_rate: DEFAULT_REWARD_RATE,
+                last_update_time: env.ledger().timestamp(),
+                reward_per_token_stored: 0,
+                total_rewards_distributed: 0,
+            },
+        );
+
         Ok(())
     }
 
@@ -454,6 +530,133 @@ impl LendingContract {
                 .persistent()
                 .set(&DataKey::UserLoans(user.clone()), &new_loans);
         }
+    }
+
+    // ─── Reward Farming Helpers ────────────────────────
+
+    /// Update reward pool state and calculate new reward per token
+    fn update_reward_pool(env: &Env) {
+        let mut reward_pool: RewardPool = env
+            .storage()
+            .instance()
+            .get(&DataKey::RewardPool)
+            .unwrap_or_else(|| RewardPool {
+                total_staked: 0,
+                reward_rate: DEFAULT_REWARD_RATE,
+                last_update_time: env.ledger().timestamp(),
+                reward_per_token_stored: 0,
+                total_rewards_distributed: 0,
+            });
+
+        let current_time = env.ledger().timestamp();
+
+        if reward_pool.total_staked > 0 {
+            let time_elapsed = current_time.saturating_sub(reward_pool.last_update_time);
+            if time_elapsed > 0 && reward_pool.total_staked > 0 {
+                // Calculate rewards per token for this time period
+                // reward_rate is already per token per second with precision
+                let rewards_per_token = time_elapsed
+                    .checked_mul(reward_pool.reward_rate)
+                    .unwrap_or(0);
+
+                reward_pool.reward_per_token_stored = reward_pool
+                    .reward_per_token_stored
+                    .checked_add(rewards_per_token)
+                    .unwrap_or(0);
+
+                // Calculate total new rewards distributed
+                let new_rewards = rewards_per_token
+                    .checked_mul(reward_pool.total_staked)
+                    .and_then(|v| v.checked_div(REWARD_PRECISION))
+                    .unwrap_or(0);
+
+                reward_pool.total_rewards_distributed = reward_pool
+                    .total_rewards_distributed
+                    .checked_add(new_rewards)
+                    .unwrap_or(0);
+            }
+        }
+
+        reward_pool.last_update_time = current_time;
+        env.storage()
+            .instance()
+            .set(&DataKey::RewardPool, &reward_pool);
+    }
+
+    /// Update user's reward debt
+    fn update_user_reward_debt(env: &Env, user: &Address) {
+        let reward_pool: RewardPool = env
+            .storage()
+            .instance()
+            .get(&DataKey::RewardPool)
+            .unwrap_or_else(|| RewardPool {
+                total_staked: 0,
+                reward_rate: DEFAULT_REWARD_RATE,
+                last_update_time: env.ledger().timestamp(),
+                reward_per_token_stored: 0,
+                total_rewards_distributed: 0,
+            });
+
+        let mut user_stake: UserStake = env
+            .storage()
+            .instance()
+            .get(&DataKey::UserStake(user.clone()))
+            .unwrap_or(UserStake {
+                amount: 0,
+                reward_per_token_paid: 0,
+                rewards: 0,
+                stake_time: 0,
+            });
+
+        user_stake.reward_per_token_paid = reward_pool.reward_per_token_stored;
+        user_stake.rewards = Self::calculate_pending_rewards(env, user);
+
+        env.storage()
+            .instance()
+            .set(&DataKey::UserStake(user.clone()), &user_stake);
+    }
+
+    /// Get user's pending rewards (internal helper)
+    fn calculate_pending_rewards(env: &Env, user: &Address) -> u64 {
+        Self::update_reward_pool(env);
+
+        let reward_pool: RewardPool = env
+            .storage()
+            .instance()
+            .get(&DataKey::RewardPool)
+            .unwrap_or_else(|| RewardPool {
+                total_staked: 0,
+                reward_rate: DEFAULT_REWARD_RATE,
+                last_update_time: env.ledger().timestamp(),
+                reward_per_token_stored: 0,
+                total_rewards_distributed: 0,
+            });
+
+        let user_stake: UserStake = env
+            .storage()
+            .instance()
+            .get(&DataKey::UserStake(user.clone()))
+            .unwrap_or(UserStake {
+                amount: 0,
+                reward_per_token_paid: 0,
+                rewards: 0,
+                stake_time: 0,
+            });
+
+        if user_stake.amount == 0 {
+            return user_stake.rewards;
+        }
+
+        let diff = reward_pool
+            .reward_per_token_stored
+            .saturating_sub(user_stake.reward_per_token_paid);
+
+        let pending = diff
+            .checked_mul(user_stake.amount)
+            .and_then(|v| v.checked_div(REWARD_PRECISION))
+            .unwrap_or(0);
+
+        user_stake.rewards.checked_add(pending).unwrap_or(0)
     }
 
     fn require_admin(env: &Env, caller: &Address) -> Result<(), LendingError> {
@@ -1315,6 +1518,281 @@ impl LendingContract {
     /// Get the refinancing fee rate in basis points
     pub fn get_refinancing_fee_rate() -> u32 {
         REFINANCING_FEE_BPS
+    }
+
+    // ─── Yield Farming Functions ───────────────────────
+
+    /// Stake LP tokens (shares) for rewards
+    pub fn stake_lp_tokens(env: Env, user: Address, amount: u64) -> Result<(), LendingError> {
+        Self::require_initialized(&env)?;
+        user.require_auth();
+
+        if amount == 0 {
+            return Err(LendingError::InvalidAmount);
+        }
+
+        // Check user has enough shares to stake
+        let user_shares = Self::get_shares_of(env.clone(), user.clone());
+        if user_shares < amount {
+            return Err(LendingError::InsufficientShares);
+        }
+
+        // Update reward pool first
+        Self::update_reward_pool(&env);
+        let mut reward_pool: RewardPool =
+            env.storage().instance().get(&DataKey::RewardPool).unwrap();
+
+        // Update user stake
+        let mut user_stake: UserStake = env
+            .storage()
+            .instance()
+            .get(&DataKey::UserStake(user.clone()))
+            .unwrap_or(UserStake {
+                amount: 0,
+                reward_per_token_paid: reward_pool.reward_per_token_stored,
+                rewards: 0,
+                stake_time: 0,
+            });
+
+        // Update user's reward debt - set to current rate and reset rewards
+        user_stake.reward_per_token_paid = reward_pool.reward_per_token_stored;
+        user_stake.rewards = 0; // Reset rewards for new stake
+
+        // Update stake amount
+        user_stake.amount = user_stake.amount.checked_add(amount).unwrap_or(0);
+        if user_stake.stake_time == 0 {
+            user_stake.stake_time = env.ledger().timestamp();
+        }
+
+        // Update totals
+        reward_pool.total_staked = reward_pool.total_staked.checked_add(amount).unwrap_or(0);
+
+        // Save state
+        env.storage()
+            .instance()
+            .set(&DataKey::RewardPool, &reward_pool);
+        env.storage()
+            .instance()
+            .set(&DataKey::UserStake(user.clone()), &user_stake);
+
+        // Emit event
+        env.events().publish(
+            (symbol_short!("STAKE"), symbol_short!("LP")),
+            StakedEvent {
+                user: user.clone(),
+                amount,
+                timestamp: env.ledger().timestamp(),
+            },
+        );
+
+        log!(&env, "Staked {} LP tokens for user {:?}", amount, user);
+        Ok(())
+    }
+
+    /// Unstake LP tokens and claim pending rewards
+    pub fn unstake_lp_tokens(env: Env, user: Address, amount: u64) -> Result<(), LendingError> {
+        Self::require_initialized(&env)?;
+        user.require_auth();
+
+        if amount == 0 {
+            return Err(LendingError::InvalidAmount);
+        }
+
+        // Get user stake
+        let mut user_stake: UserStake = env
+            .storage()
+            .instance()
+            .get(&DataKey::UserStake(user.clone()))
+            .ok_or(LendingError::InsufficientStake)?;
+
+        if user_stake.amount < amount {
+            return Err(LendingError::InsufficientStake);
+        }
+
+        // Update rewards before unstaking
+        Self::update_user_reward_debt(&env, &user);
+        user_stake = env
+            .storage()
+            .instance()
+            .get(&DataKey::UserStake(user.clone()))
+            .unwrap();
+
+        let rewards_to_claim = user_stake.rewards;
+
+        // Update user stake
+        user_stake.amount = user_stake.amount.saturating_sub(amount);
+        if user_stake.amount == 0 {
+            // Reset reward tracking if fully unstaked
+            user_stake.reward_per_token_paid = 0;
+            user_stake.stake_time = 0;
+        }
+
+        // Update reward pool
+        let mut reward_pool: RewardPool =
+            env.storage().instance().get(&DataKey::RewardPool).unwrap();
+        reward_pool.total_staked = reward_pool.total_staked.saturating_sub(amount);
+
+        // Save state
+        env.storage()
+            .instance()
+            .set(&DataKey::RewardPool, &reward_pool);
+        env.storage()
+            .instance()
+            .set(&DataKey::UserStake(user.clone()), &user_stake);
+
+        // Emit event
+        env.events().publish(
+            (symbol_short!("UNSTAKE"), symbol_short!("LP")),
+            UnstakedEvent {
+                user: user.clone(),
+                amount,
+                rewards_claimed: rewards_to_claim,
+                timestamp: env.ledger().timestamp(),
+            },
+        );
+
+        log!(
+            &env,
+            "Unstaked {} LP tokens for user {:?}, claimed {} rewards",
+            amount,
+            user,
+            rewards_to_claim
+        );
+        Ok(())
+    }
+
+    /// Claim accumulated rewards without unstaking
+    pub fn claim_rewards(env: Env, user: Address) -> Result<u64, LendingError> {
+        Self::require_initialized(&env)?;
+        user.require_auth();
+
+        // Update rewards
+        Self::update_user_reward_debt(&env, &user);
+
+        let mut user_stake: UserStake = env
+            .storage()
+            .instance()
+            .get(&DataKey::UserStake(user.clone()))
+            .ok_or(LendingError::NoRewardsToClaim)?;
+
+        let rewards_to_claim = user_stake.rewards;
+        if rewards_to_claim == 0 {
+            return Err(LendingError::NoRewardsToClaim);
+        }
+
+        // Reset claimed rewards
+        user_stake.rewards = 0;
+        env.storage()
+            .instance()
+            .set(&DataKey::UserStake(user.clone()), &user_stake);
+
+        // Emit event
+        env.events().publish(
+            (symbol_short!("CLAIM"), symbol_short!("REWARDS")),
+            RewardsClaimedEvent {
+                user: user.clone(),
+                rewards: rewards_to_claim,
+                timestamp: env.ledger().timestamp(),
+            },
+        );
+        log!(
+            &env,
+            "Claimed {} rewards for user {:?}",
+            rewards_to_claim,
+            user
+        );
+        Ok(rewards_to_claim)
+    }
+
+    /// Get total staked in the reward pool
+    pub fn get_total_staked(env: Env) -> u64 {
+        let reward_pool: RewardPool = env
+            .storage()
+            .instance()
+            .get(&DataKey::RewardPool)
+            .unwrap_or_else(|| RewardPool {
+                total_staked: 0,
+                reward_rate: DEFAULT_REWARD_RATE,
+                last_update_time: env.ledger().timestamp(),
+                reward_per_token_stored: 0,
+                total_rewards_distributed: 0,
+            });
+        reward_pool.total_staked
+    }
+
+    /// Get current reward rate
+    pub fn get_reward_rate(env: Env) -> u64 {
+        let reward_pool: RewardPool = env
+            .storage()
+            .instance()
+            .get(&DataKey::RewardPool)
+            .unwrap_or_else(|| RewardPool {
+                total_staked: 0,
+                reward_rate: DEFAULT_REWARD_RATE,
+                last_update_time: env.ledger().timestamp(),
+                reward_per_token_stored: 0,
+                total_rewards_distributed: 0,
+            });
+        reward_pool.reward_rate
+    }
+
+    /// Get user's staked balance
+    pub fn get_staked_balance(env: Env, user: Address) -> u64 {
+        let user_stake: UserStake = env
+            .storage()
+            .instance()
+            .get(&DataKey::UserStake(user))
+            .unwrap_or(UserStake {
+                amount: 0,
+                reward_per_token_paid: 0,
+                rewards: 0,
+                stake_time: 0,
+            });
+        user_stake.amount
+    }
+
+    /// Get pending rewards for a user
+    pub fn get_pending_rewards(env: Env, user: Address) -> u64 {
+        Self::calculate_pending_rewards(&env, &user)
+    }
+
+    /// Set reward rate (admin only)
+    pub fn set_reward_rate(env: Env, admin: Address, new_rate: u64) -> Result<(), LendingError> {
+        Self::require_admin(&env, &admin)?;
+
+        if new_rate == 0 {
+            return Err(LendingError::InvalidRewardRate);
+        }
+
+        // Update rewards before changing rate
+        Self::update_reward_pool(&env);
+
+        let mut reward_pool: RewardPool =
+            env.storage().instance().get(&DataKey::RewardPool).unwrap();
+        let old_rate = reward_pool.reward_rate;
+        reward_pool.reward_rate = new_rate;
+
+        env.storage()
+            .instance()
+            .set(&DataKey::RewardPool, &reward_pool);
+
+        // Emit event
+        env.events().publish(
+            (symbol_short!("REWARD"), symbol_short!("RATE_UPD")),
+            RewardRateUpdatedEvent {
+                old_rate,
+                new_rate,
+                timestamp: env.ledger().timestamp(),
+            },
+        );
+
+        log!(
+            &env,
+            "Reward rate updated from {} to {}",
+            old_rate,
+            new_rate
+        );
+        Ok(())
     }
 
     /// Liquidate an underwater loan by paying part of the debt and seizing collateral
