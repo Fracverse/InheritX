@@ -5,7 +5,6 @@ use soroban_sdk::{
 };
 
 mod reserves;
-use reserves::*;
 
 // ─────────────────────────────────────────────────
 // Constants
@@ -327,6 +326,8 @@ impl LendingContract {
                 bad_debt_reserve: 0,
                 grace_period_seconds: DEFAULT_GRACE_PERIOD_SECONDS,
                 late_fee_rate_bps: DEFAULT_LATE_FEE_RATE_BPS,
+                reserve_factor_bps: 1000, // 10% default
+                total_protocol_revenue: 0,
             },
         );
         Ok(())
@@ -1896,87 +1897,110 @@ impl LendingContract {
     // Reserve Fund Management Functions
     // ─────────────────────────────────────────────────
 
-    pub fn set_reserve_factor(env: Env, admin: Address, reserve_factor_bps: u32) -> Result<(), InvokeError> {
+    pub fn set_reserve_factor(
+        env: Env,
+        admin: Address,
+        reserve_factor_bps: u32,
+    ) -> Result<(), LendingError> {
         admin.require_auth();
 
         // Verify admin
         let admin_key = DataKey::Admin;
         let stored_admin = env.storage().instance().get::<_, Address>(&admin_key);
         if stored_admin != Some(admin.clone()) {
-            return Err(InvokeError::from_contract_error(1)); // Unauthorized
+            return Err(LendingError::Unauthorized);
         }
 
         // Validate reserve factor (0-10000 basis points = 0-100%)
         if reserve_factor_bps > 10000 {
-            return Err(InvokeError::from_contract_error(2)); // Invalid reserve factor
+            return Err(LendingError::InvalidAmount);
         }
 
-        let mut pool = Self::get_pool_state(&env);
+        let mut pool = Self::get_pool_state(env.clone())?;
         pool.reserve_factor_bps = reserve_factor_bps;
-        Self::set_pool_state(&env, &pool);
+        Self::set_pool(&env, &pool);
 
-        log!(&env, "ReserveFactorUpdated: new_reserve_factor_bps={}", reserve_factor_bps);
+        log!(
+            &env,
+            "ReserveFactorUpdated: new_reserve_factor_bps={}",
+            reserve_factor_bps
+        );
 
         Ok(())
     }
 
-    pub fn get_reserve_factor(env: Env) -> u32 {
-        let pool = Self::get_pool_state(&env);
-        pool.reserve_factor_bps
+    pub fn get_reserve_factor(env: Env) -> Result<u32, LendingError> {
+        let pool = Self::get_pool_state(env)?;
+        Ok(pool.reserve_factor_bps)
     }
 
-    pub fn get_reserve_balance(env: Env) -> u64 {
-        let pool = Self::get_pool_state(&env);
-        pool.bad_debt_reserve
+    pub fn get_reserve_balance(env: Env) -> Result<u64, LendingError> {
+        let pool = Self::get_pool_state(env)?;
+        Ok(pool.bad_debt_reserve)
     }
 
-    pub fn get_protocol_revenue(env: Env) -> u64 {
-        let pool = Self::get_pool_state(&env);
-        pool.total_protocol_revenue
+    pub fn get_protocol_revenue(env: Env) -> Result<u64, LendingError> {
+        let pool = Self::get_pool_state(env)?;
+        Ok(pool.total_protocol_revenue)
     }
 
-    pub fn withdraw_reserves(env: Env, admin: Address, amount: u64) -> Result<(), InvokeError> {
+    pub fn withdraw_reserves(env: Env, admin: Address, amount: u64) -> Result<(), LendingError> {
         admin.require_auth();
 
         // Verify admin
         let admin_key = DataKey::Admin;
         let stored_admin = env.storage().instance().get::<_, Address>(&admin_key);
         if stored_admin != Some(admin.clone()) {
-            return Err(InvokeError::from_contract_error(1)); // Unauthorized
+            return Err(LendingError::Unauthorized);
         }
 
-        let mut pool = Self::get_pool_state(&env);
+        let mut pool = Self::get_pool_state(env.clone())?;
         if pool.bad_debt_reserve < amount {
-            return Err(InvokeError::from_contract_error(3)); // Insufficient reserve balance
+            return Err(LendingError::InsufficientLiquidity);
         }
 
         pool.bad_debt_reserve = pool.bad_debt_reserve.saturating_sub(amount);
-        Self::set_pool_state(&env, &pool);
+        Self::set_pool(&env, &pool);
 
-        log!(&env, "ReservesWithdrawn: amount={}, withdrawn_by={}", amount, admin);
+        log!(
+            &env,
+            "ReservesWithdrawn: amount={}, withdrawn_by={}",
+            amount,
+            admin
+        );
 
         Ok(())
     }
 
-    pub fn allocate_reserves(env: Env, admin: Address, amount: u64, insurance_fund: Address) -> Result<(), InvokeError> {
+    pub fn allocate_reserves(
+        env: Env,
+        admin: Address,
+        amount: u64,
+        insurance_fund: Address,
+    ) -> Result<(), LendingError> {
         admin.require_auth();
 
         // Verify admin
         let admin_key = DataKey::Admin;
         let stored_admin = env.storage().instance().get::<_, Address>(&admin_key);
         if stored_admin != Some(admin.clone()) {
-            return Err(InvokeError::from_contract_error(1)); // Unauthorized
+            return Err(LendingError::Unauthorized);
         }
 
-        let mut pool = Self::get_pool_state(&env);
+        let mut pool = Self::get_pool_state(env.clone())?;
         if pool.bad_debt_reserve < amount {
-            return Err(InvokeError::from_contract_error(3)); // Insufficient reserve balance
+            return Err(LendingError::InsufficientLiquidity);
         }
 
         pool.bad_debt_reserve = pool.bad_debt_reserve.saturating_sub(amount);
-        Self::set_pool_state(&env, &pool);
+        Self::set_pool(&env, &pool);
 
-        log!(&env, "ReservesAllocated: amount={}, allocated_to={}", amount, insurance_fund);
+        log!(
+            &env,
+            "ReservesAllocated: amount={}, allocated_to={}",
+            amount,
+            insurance_fund
+        );
 
         Ok(())
     }
@@ -1994,26 +2018,39 @@ impl LendingContract {
     }
 
     /// Accrue interest and split between depositors and protocol
-    pub fn accrue_interest_with_reserve(env: Env, loan_id: u64) -> Result<(), InvokeError> {
-        let loan_key = DataKey::Loan(loan_id);
-        let mut loan = env.storage().instance().get::<_, LoanRecord>(&loan_key)
-            .ok_or(InvokeError::from_contract_error(4))?; // Loan not found
+    pub fn accrue_interest_with_reserve(env: Env, loan_id: u64) -> Result<(), LendingError> {
+        let loan_key = DataKey::LoanById(loan_id);
+        let loan = env
+            .storage()
+            .instance()
+            .get::<_, LoanRecord>(&loan_key)
+            .ok_or(LendingError::LoanNotFound)?; // Loan not found
 
         let elapsed = env.ledger().timestamp().saturating_sub(loan.borrow_time);
-        let total_interest = Self::calculate_interest(loan.principal, loan.interest_rate_bps, elapsed);
+        let total_interest =
+            Self::calculate_interest(loan.principal, loan.interest_rate_bps, elapsed);
 
-        let mut pool = Self::get_pool_state(&env);
-        let (depositor_interest, protocol_interest) = Self::calculate_interest_split(total_interest, pool.reserve_factor_bps);
+        let mut pool = Self::get_pool_state(env.clone())?;
+        let (depositor_interest, protocol_interest) =
+            Self::calculate_interest_split(total_interest, pool.reserve_factor_bps);
 
         // Update pool state
         pool.retained_yield = pool.retained_yield.saturating_add(depositor_interest);
         pool.bad_debt_reserve = pool.bad_debt_reserve.saturating_add(protocol_interest);
-        pool.total_protocol_revenue = pool.total_protocol_revenue.saturating_add(protocol_interest);
+        pool.total_protocol_revenue = pool
+            .total_protocol_revenue
+            .saturating_add(protocol_interest);
 
-        Self::set_pool_state(&env, &pool);
+        Self::set_pool(&env, &pool);
 
-        log!(&env, "InterestAccrued: loan_id={}, total_interest={}, depositor_share={}, protocol_share={}", 
-            loan_id, total_interest, depositor_interest, protocol_interest);
+        log!(
+            &env,
+            "InterestAccrued: loan_id={}, total_interest={}, depositor_share={}, protocol_share={}",
+            loan_id,
+            total_interest,
+            depositor_interest,
+            protocol_interest
+        );
 
         Ok(())
     }
