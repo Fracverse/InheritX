@@ -573,8 +573,9 @@ impl BorrowingContract {
             return Ok(auction.max_discount_bps);
         }
 
-        let discount_diff =
-            auction.max_discount_bps.saturating_sub(auction.initial_discount_bps);
+        let discount_diff = auction
+            .max_discount_bps
+            .saturating_sub(auction.initial_discount_bps);
 
         let current_addition = (discount_diff as u64)
             .checked_mul(elapsed)
