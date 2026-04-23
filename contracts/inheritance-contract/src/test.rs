@@ -4943,8 +4943,7 @@ fn test_update_beneficiary_bank_account_success() {
     let plan_id = two_beneficiary_plan_id(&env, &client, &token, &owner);
 
     let new_account = create_test_bytes(&env, "9999999999999999");
-    let result =
-        client.try_update_beneficiary_bank_account(&owner, &plan_id, &0u32, &new_account);
+    let result = client.try_update_beneficiary_bank_account(&owner, &plan_id, &0u32, &new_account);
     assert!(result.is_ok());
 
     let plan = client.get_plan_details(&plan_id).unwrap();
@@ -4982,8 +4981,7 @@ fn test_update_beneficiary_bank_account_invalid_index() {
     let plan_id = two_beneficiary_plan_id(&env, &client, &token, &owner);
 
     let new_account = create_test_bytes(&env, "9999999999999999");
-    let result =
-        client.try_update_beneficiary_bank_account(&owner, &plan_id, &99u32, &new_account);
+    let result = client.try_update_beneficiary_bank_account(&owner, &plan_id, &99u32, &new_account);
     assert_eq!(result, Err(Ok(InheritanceError::InvalidBeneficiaryIndex)));
 }
 
@@ -5002,7 +5000,11 @@ fn test_update_beneficiary_claim_code_success() {
     let plan_before_hash = client.get_plan_details(&plan_id).unwrap();
     let old_hash = InheritanceContract::hash_claim_code(&env, 111111u32).unwrap();
     assert_ne!(
-        plan_before_hash.beneficiaries.get(0).unwrap().hashed_claim_code,
+        plan_before_hash
+            .beneficiaries
+            .get(0)
+            .unwrap()
+            .hashed_claim_code,
         old_hash
     );
 }
@@ -5013,8 +5015,7 @@ fn test_update_beneficiary_claim_code_out_of_range() {
     let (client, token, _admin, owner) = setup_with_token_and_admin(&env);
     let plan_id = two_beneficiary_plan_id(&env, &client, &token, &owner);
 
-    let result =
-        client.try_update_beneficiary_claim_code(&owner, &plan_id, &0u32, &1_000_000u32);
+    let result = client.try_update_beneficiary_claim_code(&owner, &plan_id, &0u32, &1_000_000u32);
     assert_eq!(result, Err(Ok(InheritanceError::InvalidClaimCodeRange)));
 }
 
@@ -5025,8 +5026,7 @@ fn test_update_beneficiary_claim_code_unauthorized() {
     let plan_id = two_beneficiary_plan_id(&env, &client, &token, &owner);
     let stranger = Address::generate(&env);
 
-    let result =
-        client.try_update_beneficiary_claim_code(&stranger, &plan_id, &0u32, &999999u32);
+    let result = client.try_update_beneficiary_claim_code(&stranger, &plan_id, &0u32, &999999u32);
     assert!(result.is_err());
 }
 
@@ -5053,15 +5053,13 @@ fn test_update_beneficiary_email_success() {
     assert!(result.is_ok());
 
     // Old email no longer finds the beneficiary
-    let old_lookup = client.try_get_beneficiary_by_email(
-        &plan_id,
-        &String::from_str(&env, "alice@example.com"),
-    );
+    let old_lookup =
+        client.try_get_beneficiary_by_email(&plan_id, &String::from_str(&env, "alice@example.com"));
     assert_eq!(old_lookup, Err(Ok(InheritanceError::BeneficiaryNotFound)));
 
     // New email finds it at index 0
-    let new_lookup =
-        client.try_get_beneficiary_by_email(&plan_id, &String::from_str(&env, "alice.new@example.com"));
+    let new_lookup = client
+        .try_get_beneficiary_by_email(&plan_id, &String::from_str(&env, "alice.new@example.com"));
     assert!(new_lookup.is_ok());
     assert_eq!(new_lookup.unwrap().unwrap().0, 0u32);
 }
@@ -5072,12 +5070,8 @@ fn test_update_beneficiary_email_empty() {
     let (client, token, _admin, owner) = setup_with_token_and_admin(&env);
     let plan_id = two_beneficiary_plan_id(&env, &client, &token, &owner);
 
-    let result = client.try_update_beneficiary_email(
-        &owner,
-        &plan_id,
-        &0u32,
-        &String::from_str(&env, ""),
-    );
+    let result =
+        client.try_update_beneficiary_email(&owner, &plan_id, &0u32, &String::from_str(&env, ""));
     assert_eq!(result, Err(Ok(InheritanceError::InvalidBeneficiaryData)));
 }
 
@@ -5127,8 +5121,14 @@ fn test_swap_beneficiary_order_success() {
     client.swap_beneficiary_order(&owner, &plan_id, &0u32, &1u32);
 
     let plan_after = client.get_plan_details(&plan_id).unwrap();
-    assert_eq!(plan_after.beneficiaries.get(0).unwrap().hashed_email, bob_hash);
-    assert_eq!(plan_after.beneficiaries.get(1).unwrap().hashed_email, alice_hash);
+    assert_eq!(
+        plan_after.beneficiaries.get(0).unwrap().hashed_email,
+        bob_hash
+    );
+    assert_eq!(
+        plan_after.beneficiaries.get(1).unwrap().hashed_email,
+        alice_hash
+    );
     // Allocations unchanged
     assert_eq!(plan_after.total_allocation_bp, 10000);
 }
@@ -5176,8 +5176,8 @@ fn test_get_beneficiary_by_email_success() {
     let (client, token, _admin, owner) = setup_with_token_and_admin(&env);
     let plan_id = two_beneficiary_plan_id(&env, &client, &token, &owner);
 
-    let result = client
-        .try_get_beneficiary_by_email(&plan_id, &String::from_str(&env, "bob@example.com"));
+    let result =
+        client.try_get_beneficiary_by_email(&plan_id, &String::from_str(&env, "bob@example.com"));
     assert!(result.is_ok());
     let (index, beneficiary) = result.unwrap().unwrap();
     assert_eq!(index, 1u32);
@@ -5200,8 +5200,7 @@ fn test_get_beneficiary_by_email_plan_not_found() {
     let env = Env::default();
     let (client, _token, _admin, _owner) = setup_with_token_and_admin(&env);
 
-    let result =
-        client.try_get_beneficiary_by_email(&9999u64, &String::from_str(&env, "x@x.com"));
+    let result = client.try_get_beneficiary_by_email(&9999u64, &String::from_str(&env, "x@x.com"));
     assert_eq!(result, Err(Ok(InheritanceError::PlanNotFound)));
 }
 
@@ -5217,8 +5216,7 @@ fn test_update_blocked_after_trigger() {
     client.trigger_inheritance(&admin, &plan_id);
 
     // All update functions should now fail with PlanNotActive
-    let alloc_result =
-        client.try_update_beneficiary_allocation(&owner, &plan_id, &0u32, &4000u32);
+    let alloc_result = client.try_update_beneficiary_allocation(&owner, &plan_id, &0u32, &4000u32);
     assert_eq!(alloc_result, Err(Ok(InheritanceError::PlanNotActive)));
 
     let bank_result = client.try_update_beneficiary_bank_account(
@@ -5229,8 +5227,7 @@ fn test_update_blocked_after_trigger() {
     );
     assert_eq!(bank_result, Err(Ok(InheritanceError::PlanNotActive)));
 
-    let code_result =
-        client.try_update_beneficiary_claim_code(&owner, &plan_id, &0u32, &999999u32);
+    let code_result = client.try_update_beneficiary_claim_code(&owner, &plan_id, &0u32, &999999u32);
     assert_eq!(code_result, Err(Ok(InheritanceError::PlanNotActive)));
 
     let email_result = client.try_update_beneficiary_email(
