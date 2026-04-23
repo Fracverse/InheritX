@@ -85,7 +85,7 @@ pub async fn create_app(db: PgPool, config: Config) -> Result<Router, ApiError> 
 
     let state = Arc::new(AppState {
         db: db.clone(),
-        config,
+        config: config.clone(),
         yield_service,
         stress_testing_engine,
         insurance_fund_service,
@@ -455,6 +455,8 @@ pub async fn create_app(db: PgPool, config: Config) -> Result<Router, ApiError> 
             get(get_admin_event_types),
         )
         .route("/api/admin/will/audit/search", get(search_admin_audit_logs))
+        .route("/api/admin/logs", get(get_admin_logs))
+        .route("/api/notifications", get(get_notifications))
         .route(
             "/api/admin/will/audit/user/:user_id",
             get(get_user_audit_activity),
@@ -473,6 +475,7 @@ pub async fn create_app(db: PgPool, config: Config) -> Result<Router, ApiError> 
         )
         .route("/api/content/:content_id/download", get(download_content))
         .route("/api/content/stats", get(get_storage_stats))
+        .layer(axum::Extension(config.clone()))
         .with_state(state);
 
     // Add price feed routes with separate state
@@ -2336,5 +2339,30 @@ async fn get_storage_stats(
     Ok(Json(json!({
         "status": "success",
         "data": stats
+    })))
+}
+
+/// User: Get notifications
+async fn get_notifications(
+    State(state): State<Arc<AppState>>,
+    AuthenticatedUser(user): AuthenticatedUser,
+) -> Result<Json<Value>, ApiError> {
+    let notifications =
+        crate::notifications::NotificationService::list_for_user(&state.db, user.user_id).await?;
+    Ok(Json(json!({
+        "status": "success",
+        "data": notifications
+    })))
+}
+
+/// Admin: Get audit logs
+async fn get_admin_logs(
+    State(state): State<Arc<AppState>>,
+    AuthenticatedAdmin(_admin): AuthenticatedAdmin,
+) -> Result<Json<Value>, ApiError> {
+    let logs = crate::notifications::AuditLogService::list_all(&state.db).await?;
+    Ok(Json(json!({
+        "status": "success",
+        "data": logs
     })))
 }

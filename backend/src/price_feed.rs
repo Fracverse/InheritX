@@ -143,6 +143,7 @@ impl DefaultPriceFeedService {
                 r#"
                 INSERT INTO price_feeds (asset_code, source, feed_id, is_active)
                 VALUES ('USDC', 'custom', 'usdc-usd', true)
+                ON CONFLICT (asset_code) DO NOTHING
                 "#,
             )
             .execute(&self.db)

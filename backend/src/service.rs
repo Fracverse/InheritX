@@ -1110,7 +1110,11 @@ impl KycService {
             r#"
         INSERT INTO kyc_status (user_id, status, reviewed_by, reviewed_at, created_at)
         VALUES ($1, $2, $3, $4, $5)
-        ON CONFLICT (user_id) DO UPDATE SET ...
+        ON CONFLICT (user_id) DO UPDATE SET 
+            status = EXCLUDED.status,
+            reviewed_by = EXCLUDED.reviewed_by,
+            reviewed_at = EXCLUDED.reviewed_at,
+            updated_at = EXCLUDED.created_at
         RETURNING user_id, status, reviewed_by, reviewed_at, created_at
         "#,
         )
