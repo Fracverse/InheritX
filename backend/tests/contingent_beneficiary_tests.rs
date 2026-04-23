@@ -76,10 +76,9 @@ mod tests {
     #[test]
     fn test_allocation_percent_validation() {
         let plan_id = Uuid::new_v4();
-        
+
         // Valid allocation
-        let valid = MockBeneficiary::new_contingent(plan_id, 1)
-            .with_allocation(dec!(50.00));
+        let valid = MockBeneficiary::new_contingent(plan_id, 1).with_allocation(dec!(50.00));
         assert!(valid.allocation_percent > rust_decimal::Decimal::ZERO);
         assert!(valid.allocation_percent <= dec!(100.00));
 
@@ -179,10 +178,8 @@ mod tests {
             MockBeneficiary::new_contingent(plan_id, 3).with_allocation(dec!(20.00)),
         ];
 
-        let total_allocation: rust_decimal::Decimal = beneficiaries
-            .iter()
-            .map(|b| b.allocation_percent)
-            .sum();
+        let total_allocation: rust_decimal::Decimal =
+            beneficiaries.iter().map(|b| b.allocation_percent).sum();
 
         assert_eq!(total_allocation, dec!(100.00));
     }

@@ -4,7 +4,9 @@
 //! when primary beneficiaries cannot claim.
 
 use crate::api_error::ApiError;
-use crate::notifications::{audit_action, entity_type, notif_type, AuditLogService, NotificationService};
+use crate::notifications::{
+    audit_action, entity_type, notif_type, AuditLogService, NotificationService,
+};
 use chrono::{DateTime, Utc};
 use rust_decimal::Decimal;
 use serde::{Deserialize, Serialize};
@@ -304,16 +306,18 @@ impl ContingentBeneficiaryService {
         let mut tx = pool.begin().await?;
 
         // Verify plan exists and belongs to user
-        let plan_exists: Option<bool> = sqlx::query_scalar(
-            "SELECT EXISTS(SELECT 1 FROM plans WHERE id = $1 AND user_id = $2)"
-        )
-        .bind(req.plan_id)
-        .bind(user_id)
-        .fetch_one(&mut *tx)
-        .await?;
+        let plan_exists: Option<bool> =
+            sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM plans WHERE id = $1 AND user_id = $2)")
+                .bind(req.plan_id)
+                .bind(user_id)
+                .fetch_one(&mut *tx)
+                .await?;
 
         if plan_exists != Some(true) {
-            return Err(ApiError::NotFound(format!("Plan {} not found", req.plan_id)));
+            return Err(ApiError::NotFound(format!(
+                "Plan {} not found",
+                req.plan_id
+            )));
         }
 
         // Insert contingent beneficiary
@@ -467,16 +471,18 @@ impl ContingentBeneficiaryService {
         let mut tx = pool.begin().await?;
 
         // Verify plan belongs to user
-        let plan_exists: Option<bool> = sqlx::query_scalar(
-            "SELECT EXISTS(SELECT 1 FROM plans WHERE id = $1 AND user_id = $2)"
-        )
-        .bind(req.plan_id)
-        .bind(user_id)
-        .fetch_one(&mut *tx)
-        .await?;
+        let plan_exists: Option<bool> =
+            sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM plans WHERE id = $1 AND user_id = $2)")
+                .bind(req.plan_id)
+                .bind(user_id)
+                .fetch_one(&mut *tx)
+                .await?;
 
         if plan_exists != Some(true) {
-            return Err(ApiError::NotFound(format!("Plan {} not found", req.plan_id)));
+            return Err(ApiError::NotFound(format!(
+                "Plan {} not found",
+                req.plan_id
+            )));
         }
 
         // Insert or update contingency condition
@@ -683,9 +689,17 @@ impl ContingentBeneficiaryService {
 
         for (plan_id, _timeout_days) in expired_plans {
             // Activate contingent beneficiaries for this plan
-            match Self::activate_contingent_for_plan(pool, plan_id, ContingencyCondition::PrimaryTimeout).await {
+            match Self::activate_contingent_for_plan(
+                pool,
+                plan_id,
+                ContingencyCondition::PrimaryTimeout,
+            )
+            .await
+            {
                 Ok(_) => activated_plan_ids.push(plan_id),
-                Err(e) => tracing::error!("Failed to activate contingent for plan {}: {}", plan_id, e),
+                Err(e) => {
+                    tracing::error!("Failed to activate contingent for plan {}: {}", plan_id, e)
+                }
             }
         }
 

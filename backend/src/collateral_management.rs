@@ -8,7 +8,7 @@
 //! - Determine safe withdrawal amounts
 
 use crate::api_error::ApiError;
-use crate::events::{EventService, DepositMetadata};
+use crate::events::{DepositMetadata, EventService};
 use crate::loan_lifecycle::{LoanLifecycleRecord, LoanLifecycleService};
 use crate::notifications::{audit_action, entity_type, AuditLogService};
 use crate::price_feed::PriceFeedService;
@@ -294,8 +294,9 @@ impl CollateralManagementService {
         .await?;
 
         // Verify health factor remains >= 150% (1.5)
-        let min_health_factor = Decimal::from_str_exact("1.5")
-            .map_err(|e| ApiError::Internal(anyhow::anyhow!("Failed to parse min health factor: {e}")))?;
+        let min_health_factor = Decimal::from_str_exact("1.5").map_err(|e| {
+            ApiError::Internal(anyhow::anyhow!("Failed to parse min health factor: {e}"))
+        })?;
 
         if health_factor_after < min_health_factor {
             return Err(ApiError::BadRequest(format!(
@@ -443,8 +444,9 @@ impl CollateralManagementService {
         .await?;
 
         // Verify health factor remains >= 150% (1.5)
-        let min_health_factor = Decimal::from_str_exact("1.5")
-            .map_err(|e| ApiError::Internal(anyhow::anyhow!("Failed to parse min health factor: {e}")))?;
+        let min_health_factor = Decimal::from_str_exact("1.5").map_err(|e| {
+            ApiError::Internal(anyhow::anyhow!("Failed to parse min health factor: {e}"))
+        })?;
 
         if health_factor_after < min_health_factor {
             return Err(ApiError::BadRequest(format!(
@@ -565,8 +567,9 @@ impl CollateralManagementService {
         // max_collateral_value = debt_value * 1.5
         // max_collateral_amount = max_collateral_value / collateral_price
 
-        let min_health_factor = Decimal::from_str_exact("1.5")
-            .map_err(|e| ApiError::Internal(anyhow::anyhow!("Failed to parse min health factor: {e}")))?;
+        let min_health_factor = Decimal::from_str_exact("1.5").map_err(|e| {
+            ApiError::Internal(anyhow::anyhow!("Failed to parse min health factor: {e}"))
+        })?;
 
         let min_collateral_value = debt_value_usd * min_health_factor;
         let max_collateral_amount = min_collateral_value / collateral_price.price;
@@ -620,8 +623,9 @@ impl CollateralManagementService {
         let debt_value_usd = remaining_debt * borrow_price.price;
 
         // Required collateral value = debt_value * 1.5 (for 150% health factor)
-        let min_health_factor = Decimal::from_str_exact("1.5")
-            .map_err(|e| ApiError::Internal(anyhow::anyhow!("Failed to parse min health factor: {e}")))?;
+        let min_health_factor = Decimal::from_str_exact("1.5").map_err(|e| {
+            ApiError::Internal(anyhow::anyhow!("Failed to parse min health factor: {e}"))
+        })?;
 
         let required_collateral_value = debt_value_usd * min_health_factor;
         let required_collateral_amount = required_collateral_value / collateral_price.price;

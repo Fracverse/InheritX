@@ -234,12 +234,30 @@ pub async fn create_app(db: PgPool, config: Config) -> Result<Router, ApiError> 
             post(mark_overdue_loans),
         )
         // ── Collateral Management ──────────────────────────────────────────────
-        .route("/api/loans/lifecycle/:id/collateral/add", post(add_collateral))
-        .route("/api/loans/lifecycle/:id/collateral/remove", post(remove_collateral))
-        .route("/api/loans/lifecycle/:id/collateral/swap", post(swap_collateral))
-        .route("/api/loans/lifecycle/:id/collateral/value", get(get_collateral_value))
-        .route("/api/loans/lifecycle/:id/collateral/max-withdrawable", get(get_max_withdrawable_collateral))
-        .route("/api/loans/lifecycle/:id/collateral/requirements", get(get_collateral_requirements))
+        .route(
+            "/api/loans/lifecycle/:id/collateral/add",
+            post(add_collateral),
+        )
+        .route(
+            "/api/loans/lifecycle/:id/collateral/remove",
+            post(remove_collateral),
+        )
+        .route(
+            "/api/loans/lifecycle/:id/collateral/swap",
+            post(swap_collateral),
+        )
+        .route(
+            "/api/loans/lifecycle/:id/collateral/value",
+            get(get_collateral_value),
+        )
+        .route(
+            "/api/loans/lifecycle/:id/collateral/max-withdrawable",
+            get(get_max_withdrawable_collateral),
+        )
+        .route(
+            "/api/loans/lifecycle/:id/collateral/requirements",
+            get(get_collateral_requirements),
+        )
         .route(
             "/api/admin/plans/due-for-claim",
             get(get_all_due_for_claim_plans_admin),
@@ -2437,7 +2455,8 @@ async fn remove_collateral(
         state.db.clone(),
         3600,
     ));
-    let record = CollateralManagementService::remove_collateral(&state.db, price_feed, &req).await?;
+    let record =
+        CollateralManagementService::remove_collateral(&state.db, price_feed, &req).await?;
     Ok(Json(json!({ "status": "success", "data": record })))
 }
 
@@ -2488,7 +2507,9 @@ async fn get_max_withdrawable_collateral(
         state.db.clone(),
         3600,
     ));
-    let info = CollateralManagementService::get_max_withdrawable_collateral(&state.db, price_feed, id).await?;
+    let info =
+        CollateralManagementService::get_max_withdrawable_collateral(&state.db, price_feed, id)
+            .await?;
     Ok(Json(json!({ "status": "success", "data": info })))
 }
 
@@ -2504,7 +2525,8 @@ async fn get_collateral_requirements(
         state.db.clone(),
         3600,
     ));
-    let reqs = CollateralManagementService::get_required_collateral(&state.db, price_feed, id).await?;
+    let reqs =
+        CollateralManagementService::get_required_collateral(&state.db, price_feed, id).await?;
     Ok(Json(json!({ "status": "success", "data": reqs })))
 }
 
@@ -2522,12 +2544,9 @@ async fn add_contingent_beneficiary(
     Json(mut req): Json<AddContingentBeneficiaryRequest>,
 ) -> Result<Json<Value>, ApiError> {
     req.plan_id = plan_id;
-    let beneficiary = ContingentBeneficiaryService::add_contingent_beneficiary(
-        &state.db,
-        user.user_id,
-        &req,
-    )
-    .await?;
+    let beneficiary =
+        ContingentBeneficiaryService::add_contingent_beneficiary(&state.db, user.user_id, &req)
+            .await?;
     Ok(Json(json!({ "status": "success", "data": beneficiary })))
 }
 
@@ -2542,7 +2561,9 @@ async fn remove_contingent_beneficiary(
     let req = RemoveContingentBeneficiaryRequest { beneficiary_id };
     ContingentBeneficiaryService::remove_contingent_beneficiary(&state.db, user.user_id, &req)
         .await?;
-    Ok(Json(json!({ "status": "success", "message": "Contingent beneficiary removed" })))
+    Ok(Json(
+        json!({ "status": "success", "message": "Contingent beneficiary removed" }),
+    ))
 }
 
 /// Get all contingent beneficiaries for a plan.
@@ -2585,9 +2606,10 @@ async fn set_contingency_conditions(
     Json(mut req): Json<SetContingencyConditionsRequest>,
 ) -> Result<Json<Value>, ApiError> {
     req.plan_id = plan_id;
-    ContingentBeneficiaryService::set_contingency_conditions(&state.db, user.user_id, &req)
-        .await?;
-    Ok(Json(json!({ "status": "success", "message": "Contingency conditions set" })))
+    ContingentBeneficiaryService::set_contingency_conditions(&state.db, user.user_id, &req).await?;
+    Ok(Json(
+        json!({ "status": "success", "message": "Contingency conditions set" }),
+    ))
 }
 
 /// Get contingency configuration for a plan.
