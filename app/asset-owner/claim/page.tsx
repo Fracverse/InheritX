@@ -77,7 +77,6 @@ export default function ClaimPage() {
         onBack={() => setViewState("list")}
         onWithdraw={() => {
           // Handle withdraw action
-          console.log("Withdraw clicked");
         }}
       />
     );
@@ -105,7 +104,6 @@ export default function ClaimPage() {
         onTabChange={setActiveTab}
         onFilterClick={() => {
           // Handle filter click
-          console.log("Filter clicked");
         }}
       />
 

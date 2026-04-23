@@ -1160,7 +1160,7 @@ fn test_liquidation_blocked_during_grace_period() {
         &borrower,
         &5_000u64,
         &collateral_addr,
-        &6_000u64, // Just barely above 150% collateral ratio
+        &7_500u64, // Exactly 150% collateral ratio
         &(24 * 60 * 60),
     );
 
@@ -1205,9 +1205,9 @@ fn test_late_fee_collected_on_repay() {
         &(24 * 60 * 60),
     );
 
-    // Jump 3 days (1 day grace + 2 days late)
+    // Jump 4 days (1 day maturity + 1 day grace + 2 days late)
     env.ledger()
-        .set_timestamp(env.ledger().timestamp() + 3 * 24 * 60 * 60);
+        .set_timestamp(env.ledger().timestamp() + 4 * 24 * 60 * 60);
 
     // Late fees should be 5000 * 0.05 * 2 = 500
     let late_fee = client.calculate_late_fee(&borrower);
@@ -1262,9 +1262,9 @@ fn test_grace_period_expires_correctly() {
         .set_timestamp(env.ledger().timestamp() + 36 * 60 * 60);
     assert!(client.is_in_grace_period(&borrower));
 
-    // At 3 days: should be out of grace period
+    // At 4.5 days: should be out of grace period (3 days) and have at least 1 day overdue
     env.ledger()
-        .set_timestamp(env.ledger().timestamp() + 36 * 60 * 60); // Total 72 hours = 3 days
+        .set_timestamp(env.ledger().timestamp() + 3 * 24 * 60 * 60); // Total 4.5 days
     assert!(!client.is_in_grace_period(&borrower));
 
     // Late fees should start accruing
@@ -1309,9 +1309,9 @@ fn test_multiple_loans_grace_period() {
         &(2 * 24 * 60 * 60),
     );
 
-    // Jump 2 days
+    // Jump 3 days to ensure borrower1 is past grace period
     env.ledger()
-        .set_timestamp(env.ledger().timestamp() + 2 * 24 * 60 * 60);
+        .set_timestamp(env.ledger().timestamp() + 3 * 24 * 60 * 60);
 
     // borrower1 should be out of grace period
     assert!(!client.is_in_grace_period(&borrower1));

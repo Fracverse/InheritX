@@ -18,7 +18,6 @@ export default function ContactPage() {
   const handleSubmit = (e: React.FormEvent) => {
     e.preventDefault();
     // Handle form submission
-    console.log({ fullName, subject, message });
   };
 
   return (

@@ -151,7 +151,7 @@ CREATE INDEX idx_insurance_claims_user_id ON insurance_claims(user_id);
 CREATE INDEX idx_insurance_claims_plan_id ON insurance_claims(plan_id);
 
 -- ── Auto-update updated_at via trigger ───────────────────────────────────────
-CREATE OR REPLACE FUNCTION update_insurance_fund_updated_at()
+CREATE OR REPLACE FUNCTION update_insurance_updated_at()
 RETURNS TRIGGER LANGUAGE plpgsql AS $$
 BEGIN
     NEW.updated_at = NOW();
@@ -161,11 +161,11 @@ $$;
 
 CREATE TRIGGER trg_insurance_fund_updated_at
 BEFORE UPDATE ON insurance_fund
-FOR EACH ROW EXECUTE FUNCTION update_insurance_fund_updated_at();
+FOR EACH ROW EXECUTE FUNCTION update_insurance_updated_at();
 
 CREATE TRIGGER trg_insurance_claims_updated_at
 BEFORE UPDATE ON insurance_claims
-FOR EACH ROW EXECUTE FUNCTION update_insurance_claims_updated_at();
+FOR EACH ROW EXECUTE FUNCTION update_insurance_updated_at();
 
 -- ── Comments ─────────────────────────────────────────────────────────────────
 COMMENT ON TABLE insurance_fund IS 'Tracks insurance/reserve funds for platform risk coverage';

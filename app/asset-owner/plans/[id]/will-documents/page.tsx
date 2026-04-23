@@ -39,7 +39,7 @@ export default function WillDocumentsPage() {
       }
 
       const data = await response.json();
-      const versions = data.data.map((doc: any) => doc.version);
+      const versions = data.data.map((doc: { version: string }) => doc.version);
 
       if (versions.length === 0) {
         setBatchResult("No documents to download");
