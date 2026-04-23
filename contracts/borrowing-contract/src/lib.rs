@@ -567,21 +567,14 @@ impl BorrowingContract {
         }
 
         let current_time = env.ledger().timestamp();
-        let elapsed = if current_time > auction.start_time {
-            current_time - auction.start_time
-        } else {
-            0
-        };
+        let elapsed = current_time.saturating_sub(auction.start_time);
 
         if elapsed >= auction.duration {
             return Ok(auction.max_discount_bps);
         }
 
-        let discount_diff = if auction.max_discount_bps > auction.initial_discount_bps {
-            auction.max_discount_bps - auction.initial_discount_bps
-        } else {
-            0
-        };
+        let discount_diff =
+            auction.max_discount_bps.saturating_sub(auction.initial_discount_bps);
 
         let current_addition = (discount_diff as u64)
             .checked_mul(elapsed)
