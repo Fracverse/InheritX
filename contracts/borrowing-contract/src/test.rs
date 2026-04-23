@@ -186,11 +186,11 @@ fn test_liquidation_auction() {
     let client = BorrowingContractClient::new(&env, &contract_id);
     client.initialize(&admin, &12000, &13000, &500);
     client.whitelist_collateral(&admin, &collateral_addr);
-    
+
     let borrower = Address::generate(&env);
     let liquidator = Address::generate(&env);
     sac_client(&env, &collateral_addr).mint(&borrower, &1200);
-    
+
     let loan_id = client.create_loan(&borrower, &1000, &5, &1000000, &collateral_addr, &1200);
 
     let hf = client.get_health_factor(&loan_id);
