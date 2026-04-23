@@ -1,8 +1,10 @@
 #![no_std]
 use soroban_sdk::{
-    contract, contracterror, contractimpl, contracttype, log, symbol_short, vec, Address, Env,
-    IntoVal, InvokeError, Val, Vec,
+    contract, contracterror, contractimpl, contracttype, log, symbol_short, token, vec, Address,
+    Env, IntoVal, InvokeError, Val, Vec,
 };
+
+mod reserves;
 
 // ─────────────────────────────────────────────────
 // Constants
@@ -13,6 +15,7 @@ const PROTOCOL_INTEREST_BPS: u32 = 1000; // 10% of interest retained by protocol
 const BAD_DEBT_RESERVE_BPS: u32 = 5000; // 50% of protocol share routed to reserve
 const DEFAULT_GRACE_PERIOD_SECONDS: u64 = 259_200; // 3 days
 const DEFAULT_LATE_FEE_RATE_BPS: u32 = 500; // 5% per day = 0.058% per second (approx)
+const REFINANCING_FEE_BPS: u32 = 50; // 0.5% refinancing fee
 
 // ─────────────────────────────────────────────────
 // Data Types
@@ -31,6 +34,8 @@ pub struct PoolState {
     pub bad_debt_reserve: u64, // Reserve bucket for bad debt coverage
     pub grace_period_seconds: u64, // Grace period duration in seconds (e.g., 3 days = 259200)
     pub late_fee_rate_bps: u32, // Late fee rate in basis points per day (e.g., 500 = 5% per day)
+    pub reserve_factor_bps: u32, // Reserve factor in basis points (e.g., 1000 = 10%)
+    pub total_protocol_revenue: u64, // Total protocol revenue accumulated
 }
 
 const SECONDS_IN_YEAR: u64 = 31_536_000;
@@ -46,6 +51,18 @@ pub struct LoanRecord {
     pub borrow_time: u64,
     pub due_date: u64,
     pub interest_rate_bps: u32,
+}
+
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct RefinanceTerms {
+    pub outstanding_balance: u64,
+    pub new_principal: u64,
+    pub refinancing_fee: u64,
+    pub total_required: u64,
+    pub new_interest_rate_bps: u32,
+    pub new_duration_seconds: u64,
+    pub new_due_date: u64,
 }
 
 #[contracttype]
@@ -66,6 +83,11 @@ pub trait LoanNFTInterface {
     fn burn(env: Env, loan_id: u64);
     fn get_metadata(env: Env, loan_id: u64) -> Option<LoanMetadata>;
     fn owner_of(env: Env, loan_id: u64) -> Option<Address>;
+}
+
+#[soroban_sdk::contractclient(name = "FlashLoanReceiverClient")]
+pub trait FlashLoanReceiverInterface {
+    fn execute_operation(env: Env, amount: u64, fee: u64, initiator: Address);
 }
 
 // ─────────────────────────────────────────────────
@@ -159,6 +181,55 @@ pub struct LateFeeChargedEvent {
     pub timestamp: u64,
 }
 
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct FlashLoanEvent {
+    pub receiver: Address,
+    pub amount: u64,
+    pub fee: u64,
+}
+
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct LoanRefinancedEvent {
+    pub old_loan_id: u64,
+    pub new_loan_id: u64,
+    pub borrower: Address,
+    pub old_principal: u64,
+    pub new_principal: u64,
+    pub refinancing_fee: u64,
+    pub old_interest_rate_bps: u32,
+    pub new_interest_rate_bps: u32,
+    pub old_due_date: u64,
+    pub new_due_date: u64,
+    pub timestamp: u64,
+}
+
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct LoansConsolidatedEvent {
+    pub old_loan_ids: Vec<u64>,
+    pub new_loan_id: u64,
+    pub borrower: Address,
+    pub total_old_principal: u64,
+    pub new_principal: u64,
+    pub consolidation_fee: u64,
+    pub new_due_date: u64,
+    pub timestamp: u64,
+}
+
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct LoanSplitEvent {
+    pub old_loan_id: u64,
+    pub new_loan_ids: Vec<u64>,
+    pub borrower: Address,
+    pub old_principal: u64,
+    pub new_principals: Vec<u64>,
+    pub split_fee: u64,
+    pub timestamp: u64,
+}
+
 // ─────────────────────────────────────────────────
 // Errors
 // ─────────────────────────────────────────────────
@@ -180,6 +251,12 @@ pub enum LendingError {
     CollateralNotWhitelisted = 12,
     UtilizationCapExceeded = 13,
     ReentrantCall = 14,
+    FlashLoanNotRepaid = 15,
+    CannotRefinance = 16,
+    InvalidRefinanceTerms = 17,
+    LoanNotFound = 18,
+    TooManyLoans = 19,
+    InvalidSplitAmounts = 20,
 }
 
 // ─────────────────────────────────────────────────
@@ -201,6 +278,8 @@ pub enum DataKey {
     NFTToken,
     ReentrancyGuard,
     LateFeesAccrued(u64), // Track late fees for a specific loan_id
+    FlashLoanFeeBps,
+    UserLoans(Address), // Track multiple loans per user (Vec<u64>)
 }
 
 // ─────────────────────────────────────────────────
@@ -247,6 +326,8 @@ impl LendingContract {
                 bad_debt_reserve: 0,
                 grace_period_seconds: DEFAULT_GRACE_PERIOD_SECONDS,
                 late_fee_rate_bps: DEFAULT_LATE_FEE_RATE_BPS,
+                reserve_factor_bps: 1000, // 10% default
+                total_protocol_revenue: 0,
             },
         );
         Ok(())
@@ -339,6 +420,40 @@ impl LendingContract {
 
     fn get_admin(env: &Env) -> Option<Address> {
         env.storage().instance().get(&DataKey::Admin)
+    }
+
+    fn get_user_loans(env: &Env, user: &Address) -> Vec<u64> {
+        env.storage()
+            .persistent()
+            .get(&DataKey::UserLoans(user.clone()))
+            .unwrap_or_else(|| Vec::new(env))
+    }
+
+    fn add_user_loan(env: &Env, user: &Address, loan_id: u64) {
+        let mut loans = Self::get_user_loans(env, user);
+        loans.push_back(loan_id);
+        env.storage()
+            .persistent()
+            .set(&DataKey::UserLoans(user.clone()), &loans);
+    }
+
+    fn remove_user_loan(env: &Env, user: &Address, loan_id: u64) {
+        let loans = Self::get_user_loans(env, user);
+        let mut new_loans = Vec::new(env);
+        for id in loans.iter() {
+            if id != loan_id {
+                new_loans.push_back(id);
+            }
+        }
+        if new_loans.is_empty() {
+            env.storage()
+                .persistent()
+                .remove(&DataKey::UserLoans(user.clone()));
+        } else {
+            env.storage()
+                .persistent()
+                .set(&DataKey::UserLoans(user.clone()), &new_loans);
+        }
     }
 
     fn require_admin(env: &Env, caller: &Address) -> Result<(), LendingError> {
@@ -572,12 +687,9 @@ impl LendingContract {
             return Err(LendingError::CollateralNotWhitelisted);
         }
 
-        // Only one open loan per borrower
-        if env
-            .storage()
-            .persistent()
-            .has(&DataKey::Loan(borrower.clone()))
-        {
+        // Check if borrower already has existing loans
+        let existing_loans = Self::get_user_loans(&env, &borrower);
+        if !existing_loans.is_empty() {
             return Err(LendingError::LoanAlreadyExists);
         }
 
@@ -643,6 +755,7 @@ impl LendingContract {
         env.storage()
             .persistent()
             .set(&DataKey::LoanById(loan_id), &loan);
+        Self::add_user_loan(&env, &borrower, loan_id);
 
         // Mint NFT if token is set
         if let Some(nft_token) = Self::get_nft_token(&env) {
@@ -753,6 +866,7 @@ impl LendingContract {
         env.storage()
             .persistent()
             .remove(&DataKey::LoanById(loan.loan_id));
+        Self::remove_user_loan(&env, &borrower, loan.loan_id);
         env.storage()
             .persistent()
             .remove(&DataKey::LateFeesAccrued(loan.loan_id));
@@ -928,6 +1042,11 @@ impl LendingContract {
     /// Returns the loan record by unique loan ID, if any.
     pub fn get_loan_by_id(env: Env, loan_id: u64) -> Option<LoanRecord> {
         env.storage().persistent().get(&DataKey::LoanById(loan_id))
+    }
+
+    /// Returns all loan IDs for a given user
+    pub fn get_user_loan_ids(env: Env, user: Address) -> Vec<u64> {
+        Self::get_user_loans(&env, &user)
     }
 
     /// Returns the available (un-borrowed) liquidity in the pool.
@@ -1121,6 +1240,83 @@ impl LendingContract {
         pool.late_fee_rate_bps
     }
 
+    pub fn get_flash_loan_fee(env: Env) -> u32 {
+        env.storage()
+            .instance()
+            .get(&DataKey::FlashLoanFeeBps)
+            .unwrap_or(9u32) // Default to 0.09% = 9 bps
+    }
+
+    pub fn set_flash_loan_fee(env: Env, admin: Address, fee_bps: u32) -> Result<(), LendingError> {
+        Self::require_admin(&env, &admin)?;
+        env.storage()
+            .instance()
+            .set(&DataKey::FlashLoanFeeBps, &fee_bps);
+        Ok(())
+    }
+
+    pub fn flash_loan(env: Env, receiver_id: Address, amount: u64) -> Result<(), LendingError> {
+        Self::require_initialized(&env)?;
+        Self::enter_reentrancy_guard(&env)?;
+
+        if amount == 0 {
+            return Err(LendingError::InvalidAmount);
+        }
+
+        let mut pool = Self::get_pool(&env);
+        let available = pool.total_deposits.saturating_sub(pool.total_borrowed);
+        if amount > available {
+            return Err(LendingError::InsufficientLiquidity);
+        }
+
+        let fee_bps = Self::get_flash_loan_fee(env.clone());
+        let fee = (amount as u128)
+            .checked_mul(fee_bps as u128)
+            .and_then(|v| v.checked_div(10000))
+            .unwrap_or(0) as u64;
+
+        let token_addr = Self::get_token(&env);
+        let contract_id = env.current_contract_address();
+
+        let token_client = token::Client::new(&env, &token_addr);
+        let balance_before = token_client.balance(&contract_id);
+
+        // 1. Transfer to receiver
+        token_client.transfer(&contract_id, &receiver_id, &(amount as i128));
+
+        // 2. Call execute_operation on receiver
+        let receiver_client = FlashLoanReceiverClient::new(&env, &receiver_id);
+        receiver_client.execute_operation(&amount, &fee, &receiver_id);
+
+        // 3. Ensure repayment
+        let balance_after = token_client.balance(&contract_id);
+        let required_balance = balance_before + (fee as i128);
+
+        if balance_after < required_balance {
+            return Err(LendingError::FlashLoanNotRepaid);
+        }
+
+        pool.total_deposits += fee;
+        Self::set_pool(&env, &pool);
+
+        env.events().publish(
+            (symbol_short!("POOL"), symbol_short!("FLASHL")),
+            FlashLoanEvent {
+                receiver: receiver_id,
+                amount,
+                fee,
+            },
+        );
+
+        Self::exit_reentrancy_guard(&env);
+        Ok(())
+    }
+
+    /// Get the refinancing fee rate in basis points
+    pub fn get_refinancing_fee_rate() -> u32 {
+        REFINANCING_FEE_BPS
+    }
+
     /// Liquidate an underwater loan by paying part of the debt and seizing collateral
     /// Only callable if the loan's health factor is below a safe threshold AND grace period has expired
     pub fn liquidate(
@@ -1214,6 +1410,649 @@ impl LendingContract {
 
         Self::exit_reentrancy_guard(&env);
         Ok(collateral_to_seize)
+    }
+
+    // ─── Refinancing Functions ───────────────────────
+
+    /// Calculate outstanding balance for a loan (principal + accrued interest)
+    fn calculate_outstanding_balance(env: &Env, loan: &LoanRecord) -> u64 {
+        let elapsed = env.ledger().timestamp().saturating_sub(loan.borrow_time);
+        let interest = Self::calculate_interest(loan.principal, loan.interest_rate_bps, elapsed);
+        loan.principal + interest
+    }
+
+    /// Get refinancing terms for an existing loan
+    pub fn get_refinance_terms(
+        env: Env,
+        borrower: Address,
+        new_duration_seconds: u64,
+    ) -> Result<RefinanceTerms, LendingError> {
+        Self::require_initialized(&env)?;
+
+        let loan: LoanRecord = env
+            .storage()
+            .persistent()
+            .get(&DataKey::Loan(borrower.clone()))
+            .ok_or(LendingError::NoOpenLoan)?;
+
+        let outstanding_balance = Self::calculate_outstanding_balance(&env, &loan);
+        let refinancing_fee = ((outstanding_balance as u128)
+            .checked_mul(REFINANCING_FEE_BPS as u128)
+            .and_then(|v| v.checked_div(10000))
+            .unwrap_or(0)) as u64;
+
+        let new_principal = outstanding_balance + refinancing_fee;
+        let total_required = new_principal;
+
+        let current_time = env.ledger().timestamp();
+        let new_due_date = current_time + new_duration_seconds;
+
+        let pool = Self::get_pool(&env);
+        let utilization_bps = Self::get_utilization_bps(pool.total_borrowed, pool.total_deposits);
+        let new_interest_rate_bps =
+            Self::calculate_dynamic_rate(pool.base_rate_bps, pool.multiplier_bps, utilization_bps);
+
+        Ok(RefinanceTerms {
+            outstanding_balance,
+            new_principal,
+            refinancing_fee,
+            total_required,
+            new_interest_rate_bps,
+            new_duration_seconds,
+            new_due_date,
+        })
+    }
+
+    /// Refinance an existing loan with new terms
+    pub fn refinance_loan(
+        env: Env,
+        borrower: Address,
+        new_duration_seconds: u64,
+    ) -> Result<u64, LendingError> {
+        Self::require_initialized(&env)?;
+        Self::enter_reentrancy_guard(&env)?;
+        borrower.require_auth();
+
+        let old_loan: LoanRecord = env
+            .storage()
+            .persistent()
+            .get(&DataKey::Loan(borrower.clone()))
+            .ok_or(LendingError::NoOpenLoan)?;
+
+        // Cannot refinance if currently in grace period or overdue
+        let is_in_grace = Self::is_in_grace_period(env.clone(), borrower.clone())?;
+        if !is_in_grace {
+            return Err(LendingError::CannotRefinance);
+        }
+
+        let terms = Self::get_refinance_terms(env.clone(), borrower.clone(), new_duration_seconds)?;
+
+        // Check if borrower has enough tokens to pay refinancing fee
+        let token = Self::get_token(&env);
+        let contract_id = env.current_contract_address();
+
+        // Transfer refinancing fee from borrower to contract
+        Self::transfer(&env, &token, &borrower, &contract_id, terms.refinancing_fee)?;
+
+        // Close old loan
+        env.storage()
+            .persistent()
+            .remove(&DataKey::Loan(borrower.clone()));
+        env.storage()
+            .persistent()
+            .remove(&DataKey::LoanById(old_loan.loan_id));
+        Self::remove_user_loan(&env, &borrower, old_loan.loan_id);
+
+        // Burn old NFT if token is set
+        if let Some(nft_token) = Self::get_nft_token(&env) {
+            let nft_client = LoanNFTClient::new(&env, &nft_token);
+            nft_client.burn(&old_loan.loan_id);
+        }
+
+        // Create new loan with updated terms
+        let new_loan_id = Self::increment_loan_id(&env);
+        let current_time = env.ledger().timestamp();
+
+        let new_loan = LoanRecord {
+            loan_id: new_loan_id,
+            borrower: borrower.clone(),
+            principal: terms.new_principal,
+            collateral_amount: old_loan.collateral_amount,
+            collateral_token: old_loan.collateral_token.clone(),
+            borrow_time: current_time,
+            due_date: terms.new_due_date,
+            interest_rate_bps: terms.new_interest_rate_bps,
+        };
+
+        env.storage()
+            .persistent()
+            .set(&DataKey::Loan(borrower.clone()), &new_loan);
+        env.storage()
+            .persistent()
+            .set(&DataKey::LoanById(new_loan_id), &new_loan);
+        Self::add_user_loan(&env, &borrower, new_loan_id);
+
+        // Mint new NFT if token is set
+        if let Some(nft_token) = Self::get_nft_token(&env) {
+            let nft_client = LoanNFTClient::new(&env, &nft_token);
+            nft_client.mint(
+                &borrower,
+                &LoanMetadata {
+                    borrower: borrower.clone(),
+                    collateral_amount: new_loan.collateral_amount,
+                    collateral_token: new_loan.collateral_token.clone(),
+                    due_date: new_loan.due_date,
+                    loan_id: new_loan_id,
+                    principal: new_loan.principal,
+                },
+            );
+        }
+
+        // Add refinancing fee to retained yield
+        let mut pool = Self::get_pool(&env);
+        pool.retained_yield += terms.refinancing_fee;
+        Self::set_pool(&env, &pool);
+
+        // Emit refinancing event
+        env.events().publish(
+            (symbol_short!("POOL"), symbol_short!("REFINANCE")),
+            LoanRefinancedEvent {
+                old_loan_id: old_loan.loan_id,
+                new_loan_id,
+                borrower: borrower.clone(),
+                old_principal: old_loan.principal,
+                new_principal: terms.new_principal,
+                refinancing_fee: terms.refinancing_fee,
+                old_interest_rate_bps: old_loan.interest_rate_bps,
+                new_interest_rate_bps: terms.new_interest_rate_bps,
+                old_due_date: old_loan.due_date,
+                new_due_date: terms.new_due_date,
+                timestamp: current_time,
+            },
+        );
+
+        log!(
+            &env,
+            "Loan {} refinanced to {} with fee {}",
+            old_loan.loan_id,
+            new_loan_id,
+            terms.refinancing_fee
+        );
+
+        Self::exit_reentrancy_guard(&env);
+        Ok(new_loan_id)
+    }
+
+    /// Consolidate multiple loans into a single new loan
+    pub fn consolidate_loans(
+        env: Env,
+        borrower: Address,
+        loan_ids: Vec<u64>,
+        new_duration_seconds: u64,
+    ) -> Result<u64, LendingError> {
+        Self::require_initialized(&env)?;
+        Self::enter_reentrancy_guard(&env)?;
+        borrower.require_auth();
+
+        if loan_ids.is_empty() || loan_ids.len() > 10 {
+            return Err(LendingError::InvalidAmount);
+        }
+
+        let mut total_outstanding = 0u64;
+        let mut total_collateral = 0u64;
+        let mut collateral_token: Option<Address> = None;
+        let mut old_loans = Vec::new(&env);
+
+        // Validate all loans belong to borrower and calculate totals
+        for loan_id in loan_ids.iter() {
+            let loan: LoanRecord = env
+                .storage()
+                .persistent()
+                .get(&DataKey::LoanById(loan_id))
+                .ok_or(LendingError::LoanNotFound)?;
+
+            if loan.borrower != borrower {
+                return Err(LendingError::Unauthorized);
+            }
+
+            // Check if this specific loan is overdue (cannot consolidate overdue loans)
+            let loan_grace_end = loan.due_date + Self::get_pool(&env).grace_period_seconds;
+            let current_time = env.ledger().timestamp();
+            if current_time > loan_grace_end {
+                return Err(LendingError::CannotRefinance);
+            }
+
+            let outstanding = Self::calculate_outstanding_balance(&env, &loan);
+            total_outstanding += outstanding;
+            total_collateral += loan.collateral_amount;
+
+            if collateral_token.is_none() {
+                collateral_token = Some(loan.collateral_token.clone());
+            } else if collateral_token.as_ref() != Some(&loan.collateral_token) {
+                return Err(LendingError::InvalidRefinanceTerms); // All collateral tokens must be the same
+            }
+
+            old_loans.push_back(loan);
+        }
+
+        let consolidation_fee = ((total_outstanding as u128)
+            .checked_mul(REFINANCING_FEE_BPS as u128)
+            .and_then(|v| v.checked_div(10000))
+            .unwrap_or(0)) as u64;
+
+        let new_principal = total_outstanding + consolidation_fee;
+
+        // Transfer consolidation fee
+        let token = Self::get_token(&env);
+        let contract_id = env.current_contract_address();
+        Self::transfer(&env, &token, &borrower, &contract_id, consolidation_fee)?;
+
+        // Remove old loans
+        for loan in old_loans.iter() {
+            env.storage()
+                .persistent()
+                .remove(&DataKey::Loan(loan.borrower.clone()));
+            env.storage()
+                .persistent()
+                .remove(&DataKey::LoanById(loan.loan_id));
+            Self::remove_user_loan(&env, &borrower, loan.loan_id);
+
+            // Burn old NFTs
+            if let Some(nft_token) = Self::get_nft_token(&env) {
+                let nft_client = LoanNFTClient::new(&env, &nft_token);
+                nft_client.burn(&loan.loan_id);
+            }
+        }
+
+        // Create new consolidated loan
+        let new_loan_id = Self::increment_loan_id(&env);
+        let current_time = env.ledger().timestamp();
+        let new_due_date = current_time + new_duration_seconds;
+
+        let pool = Self::get_pool(&env);
+        let utilization_bps = Self::get_utilization_bps(pool.total_borrowed, pool.total_deposits);
+        let new_interest_rate_bps =
+            Self::calculate_dynamic_rate(pool.base_rate_bps, pool.multiplier_bps, utilization_bps);
+
+        let new_loan = LoanRecord {
+            loan_id: new_loan_id,
+            borrower: borrower.clone(),
+            principal: new_principal,
+            collateral_amount: total_collateral,
+            collateral_token: collateral_token.unwrap(),
+            borrow_time: current_time,
+            due_date: new_due_date,
+            interest_rate_bps: new_interest_rate_bps,
+        };
+
+        env.storage()
+            .persistent()
+            .set(&DataKey::Loan(borrower.clone()), &new_loan);
+        env.storage()
+            .persistent()
+            .set(&DataKey::LoanById(new_loan_id), &new_loan);
+        Self::add_user_loan(&env, &borrower, new_loan_id);
+
+        // Mint new NFT
+        if let Some(nft_token) = Self::get_nft_token(&env) {
+            let nft_client = LoanNFTClient::new(&env, &nft_token);
+            nft_client.mint(
+                &borrower,
+                &LoanMetadata {
+                    borrower: borrower.clone(),
+                    collateral_amount: new_loan.collateral_amount,
+                    collateral_token: new_loan.collateral_token.clone(),
+                    due_date: new_loan.due_date,
+                    loan_id: new_loan_id,
+                    principal: new_loan.principal,
+                },
+            );
+        }
+
+        // Add fee to retained yield
+        let mut pool = Self::get_pool(&env);
+        pool.retained_yield += consolidation_fee;
+        Self::set_pool(&env, &pool);
+
+        // Emit consolidation event
+        env.events().publish(
+            (symbol_short!("POOL"), symbol_short!("CONSOLID")),
+            LoansConsolidatedEvent {
+                old_loan_ids: loan_ids.clone(),
+                new_loan_id,
+                borrower: borrower.clone(),
+                total_old_principal: total_outstanding,
+                new_principal,
+                consolidation_fee,
+                new_due_date,
+                timestamp: current_time,
+            },
+        );
+
+        log!(
+            &env,
+            "Consolidated {} loans into {} with fee {}",
+            loan_ids.len(),
+            new_loan_id,
+            consolidation_fee
+        );
+
+        Self::exit_reentrancy_guard(&env);
+        Ok(new_loan_id)
+    }
+
+    /// Split a loan into multiple smaller loans
+    pub fn split_loan(
+        env: Env,
+        borrower: Address,
+        split_amounts: Vec<u64>,
+        new_duration_seconds: u64,
+    ) -> Result<Vec<u64>, LendingError> {
+        Self::require_initialized(&env)?;
+        Self::enter_reentrancy_guard(&env)?;
+        borrower.require_auth();
+
+        if split_amounts.is_empty() || split_amounts.len() > 5 {
+            return Err(LendingError::InvalidAmount);
+        }
+
+        let old_loan: LoanRecord = env
+            .storage()
+            .persistent()
+            .get(&DataKey::Loan(borrower.clone()))
+            .ok_or(LendingError::NoOpenLoan)?;
+
+        // Check if loan is in good standing
+        let is_in_grace = Self::is_in_grace_period(env.clone(), borrower.clone())?;
+        if !is_in_grace {
+            return Err(LendingError::CannotRefinance);
+        }
+
+        let outstanding = Self::calculate_outstanding_balance(&env, &old_loan);
+        let total_split_amount: u64 = split_amounts.iter().sum();
+
+        if total_split_amount != outstanding {
+            return Err(LendingError::InvalidSplitAmounts);
+        }
+
+        let split_fee = ((outstanding as u128)
+            .checked_mul(REFINANCING_FEE_BPS as u128)
+            .and_then(|v| v.checked_div(10000))
+            .unwrap_or(0)) as u64;
+
+        // Transfer split fee
+        let token = Self::get_token(&env);
+        let contract_id = env.current_contract_address();
+        Self::transfer(&env, &token, &borrower, &contract_id, split_fee)?;
+
+        // Remove old loan
+        env.storage()
+            .persistent()
+            .remove(&DataKey::Loan(borrower.clone()));
+        env.storage()
+            .persistent()
+            .remove(&DataKey::LoanById(old_loan.loan_id));
+        Self::remove_user_loan(&env, &borrower, old_loan.loan_id);
+
+        // Burn old NFT
+        if let Some(nft_token) = Self::get_nft_token(&env) {
+            let nft_client = LoanNFTClient::new(&env, &nft_token);
+            nft_client.burn(&old_loan.loan_id);
+        }
+
+        // Create new split loans
+        let mut new_loan_ids = Vec::new(&env);
+        let current_time = env.ledger().timestamp();
+        let new_due_date = current_time + new_duration_seconds;
+
+        let pool = Self::get_pool(&env);
+        let utilization_bps = Self::get_utilization_bps(pool.total_borrowed, pool.total_deposits);
+        let new_interest_rate_bps =
+            Self::calculate_dynamic_rate(pool.base_rate_bps, pool.multiplier_bps, utilization_bps);
+
+        // Distribute collateral proportionally
+        for amount in split_amounts.iter() {
+            let collateral_ratio = (amount as u128)
+                .checked_mul(10000)
+                .and_then(|v| v.checked_div(outstanding as u128))
+                .unwrap_or(0);
+            let collateral_amount = ((old_loan.collateral_amount as u128)
+                .checked_mul(collateral_ratio)
+                .and_then(|v| v.checked_div(10000))
+                .unwrap_or(0)) as u64;
+
+            let new_loan_id = Self::increment_loan_id(&env);
+            let new_loan = LoanRecord {
+                loan_id: new_loan_id,
+                borrower: borrower.clone(),
+                principal: amount,
+                collateral_amount,
+                collateral_token: old_loan.collateral_token.clone(),
+                borrow_time: current_time,
+                due_date: new_due_date,
+                interest_rate_bps: new_interest_rate_bps,
+            };
+
+            // For split loans, only store the last one as the primary loan
+            // but all loans are accessible via LoanById
+            env.storage()
+                .persistent()
+                .set(&DataKey::Loan(borrower.clone()), &new_loan);
+            env.storage()
+                .persistent()
+                .set(&DataKey::LoanById(new_loan_id), &new_loan);
+            Self::add_user_loan(&env, &borrower, new_loan_id);
+
+            // Mint NFT for each new loan
+            if let Some(nft_token) = Self::get_nft_token(&env) {
+                let nft_client = LoanNFTClient::new(&env, &nft_token);
+                nft_client.mint(
+                    &borrower,
+                    &LoanMetadata {
+                        borrower: borrower.clone(),
+                        collateral_amount: new_loan.collateral_amount,
+                        collateral_token: new_loan.collateral_token.clone(),
+                        due_date: new_loan.due_date,
+                        loan_id: new_loan_id,
+                        principal: new_loan.principal,
+                    },
+                );
+            }
+
+            new_loan_ids.push_back(new_loan_id);
+        }
+
+        // Add fee to retained yield
+        let mut pool = Self::get_pool(&env);
+        pool.retained_yield += split_fee;
+        Self::set_pool(&env, &pool);
+
+        // Emit split event
+        env.events().publish(
+            (symbol_short!("POOL"), symbol_short!("SPLIT")),
+            LoanSplitEvent {
+                old_loan_id: old_loan.loan_id,
+                new_loan_ids: new_loan_ids.clone(),
+                borrower: borrower.clone(),
+                old_principal: old_loan.principal,
+                new_principals: split_amounts,
+                split_fee,
+                timestamp: current_time,
+            },
+        );
+
+        log!(
+            &env,
+            "Split loan {} into {} loans with fee {}",
+            old_loan.loan_id,
+            new_loan_ids.len(),
+            split_fee
+        );
+
+        Self::exit_reentrancy_guard(&env);
+        Ok(new_loan_ids)
+    }
+
+    // ─────────────────────────────────────────────────
+    // Reserve Fund Management Functions
+    // ─────────────────────────────────────────────────
+
+    pub fn set_reserve_factor(
+        env: Env,
+        admin: Address,
+        reserve_factor_bps: u32,
+    ) -> Result<(), LendingError> {
+        admin.require_auth();
+
+        // Verify admin
+        let admin_key = DataKey::Admin;
+        let stored_admin = env.storage().instance().get::<_, Address>(&admin_key);
+        if stored_admin != Some(admin.clone()) {
+            return Err(LendingError::Unauthorized);
+        }
+
+        // Validate reserve factor (0-10000 basis points = 0-100%)
+        if reserve_factor_bps > 10000 {
+            return Err(LendingError::InvalidAmount);
+        }
+
+        let mut pool = Self::get_pool_state(env.clone())?;
+        pool.reserve_factor_bps = reserve_factor_bps;
+        Self::set_pool(&env, &pool);
+
+        log!(
+            &env,
+            "ReserveFactorUpdated: new_reserve_factor_bps={}",
+            reserve_factor_bps
+        );
+
+        Ok(())
+    }
+
+    pub fn get_reserve_factor(env: Env) -> Result<u32, LendingError> {
+        let pool = Self::get_pool_state(env)?;
+        Ok(pool.reserve_factor_bps)
+    }
+
+    pub fn get_reserve_balance(env: Env) -> Result<u64, LendingError> {
+        let pool = Self::get_pool_state(env)?;
+        Ok(pool.bad_debt_reserve)
+    }
+
+    pub fn get_protocol_revenue(env: Env) -> Result<u64, LendingError> {
+        let pool = Self::get_pool_state(env)?;
+        Ok(pool.total_protocol_revenue)
+    }
+
+    pub fn withdraw_reserves(env: Env, admin: Address, amount: u64) -> Result<(), LendingError> {
+        admin.require_auth();
+
+        // Verify admin
+        let admin_key = DataKey::Admin;
+        let stored_admin = env.storage().instance().get::<_, Address>(&admin_key);
+        if stored_admin != Some(admin.clone()) {
+            return Err(LendingError::Unauthorized);
+        }
+
+        let mut pool = Self::get_pool_state(env.clone())?;
+        if pool.bad_debt_reserve < amount {
+            return Err(LendingError::InsufficientLiquidity);
+        }
+
+        pool.bad_debt_reserve = pool.bad_debt_reserve.saturating_sub(amount);
+        Self::set_pool(&env, &pool);
+
+        log!(
+            &env,
+            "ReservesWithdrawn: amount={}, withdrawn_by={}",
+            amount,
+            admin
+        );
+
+        Ok(())
+    }
+
+    pub fn allocate_reserves(
+        env: Env,
+        admin: Address,
+        amount: u64,
+        insurance_fund: Address,
+    ) -> Result<(), LendingError> {
+        admin.require_auth();
+
+        // Verify admin
+        let admin_key = DataKey::Admin;
+        let stored_admin = env.storage().instance().get::<_, Address>(&admin_key);
+        if stored_admin != Some(admin.clone()) {
+            return Err(LendingError::Unauthorized);
+        }
+
+        let mut pool = Self::get_pool_state(env.clone())?;
+        if pool.bad_debt_reserve < amount {
+            return Err(LendingError::InsufficientLiquidity);
+        }
+
+        pool.bad_debt_reserve = pool.bad_debt_reserve.saturating_sub(amount);
+        Self::set_pool(&env, &pool);
+
+        log!(
+            &env,
+            "ReservesAllocated: amount={}, allocated_to={}",
+            amount,
+            insurance_fund
+        );
+
+        Ok(())
+    }
+
+    /// Calculate interest split between depositors and protocol
+    /// Returns (depositor_interest, protocol_interest)
+    fn calculate_interest_split(total_interest: u64, reserve_factor_bps: u32) -> (u64, u64) {
+        let protocol_share = (total_interest as u128)
+            .checked_mul(reserve_factor_bps as u128)
+            .and_then(|v| v.checked_div(10000u128))
+            .unwrap_or(0) as u64;
+
+        let depositor_share = total_interest.saturating_sub(protocol_share);
+        (depositor_share, protocol_share)
+    }
+
+    /// Accrue interest and split between depositors and protocol
+    pub fn accrue_interest_with_reserve(env: Env, loan_id: u64) -> Result<(), LendingError> {
+        let loan_key = DataKey::LoanById(loan_id);
+        let loan = env
+            .storage()
+            .instance()
+            .get::<_, LoanRecord>(&loan_key)
+            .ok_or(LendingError::LoanNotFound)?; // Loan not found
+
+        let elapsed = env.ledger().timestamp().saturating_sub(loan.borrow_time);
+        let total_interest =
+            Self::calculate_interest(loan.principal, loan.interest_rate_bps, elapsed);
+
+        let mut pool = Self::get_pool_state(env.clone())?;
+        let (depositor_interest, protocol_interest) =
+            Self::calculate_interest_split(total_interest, pool.reserve_factor_bps);
+
+        // Update pool state
+        pool.retained_yield = pool.retained_yield.saturating_add(depositor_interest);
+        pool.bad_debt_reserve = pool.bad_debt_reserve.saturating_add(protocol_interest);
+        pool.total_protocol_revenue = pool
+            .total_protocol_revenue
+            .saturating_add(protocol_interest);
+
+        Self::set_pool(&env, &pool);
+
+        log!(
+            &env,
+            "InterestAccrued: loan_id={}, total_interest={}, depositor_share={}, protocol_share={}",
+            loan_id,
+            total_interest,
+            depositor_interest,
+            protocol_interest
+        );
+
+        Ok(())
     }
 }
 

@@ -1321,3 +1321,380 @@ fn test_multiple_loans_grace_period() {
     assert!(client.is_in_grace_period(&borrower2));
     assert_eq!(client.calculate_late_fee(&borrower2), 0u64);
 }
+
+// ─────────────────────────────────────────────────
+// Refinancing Tests
+// ─────────────────────────────────────────────────
+
+#[test]
+fn test_get_refinance_terms() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let (client, token_addr, collateral_addr, admin) = setup(&env);
+
+    let borrower = Address::generate(&env);
+    let depositor = Address::generate(&env);
+    mint_to(&env, &token_addr, &borrower, 10_000);
+    mint_to(&env, &collateral_addr, &borrower, 20_000);
+    mint_to(&env, &token_addr, &depositor, 10_000);
+
+    // Deposit funds to provide liquidity
+    client.deposit(&depositor, &5000u64);
+
+    // Borrow 1000 with 1500 collateral for 30 days
+    client.borrow(
+        &borrower,
+        &1000u64,
+        &collateral_addr,
+        &1500u64,
+        &(30 * 24 * 60 * 60),
+    );
+
+    // Get refinancing terms for 60 days
+    let terms = client.get_refinance_terms(&borrower, &(60 * 24 * 60 * 60));
+
+    // Should have outstanding balance (principal + accrued interest)
+    assert!(terms.outstanding_balance >= 1000u64);
+    assert!(terms.new_principal > terms.outstanding_balance); // Should include fee
+    assert!(terms.refinancing_fee > 0u64);
+    assert_eq!(terms.total_required, terms.new_principal);
+    assert_eq!(terms.new_duration_seconds, 60 * 24 * 60 * 60);
+    assert!(terms.new_due_date > env.ledger().timestamp());
+}
+
+#[test]
+fn test_refinance_loan() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let (client, token_addr, collateral_addr, admin) = setup(&env);
+
+    let borrower = Address::generate(&env);
+    let depositor = Address::generate(&env);
+    mint_to(&env, &token_addr, &borrower, 10_000);
+    mint_to(&env, &collateral_addr, &borrower, 20_000);
+    mint_to(&env, &token_addr, &depositor, 10_000);
+
+    // Deposit funds to provide liquidity
+    client.deposit(&depositor, &5000u64);
+
+    // Borrow 1000 with 1500 collateral for 30 days
+    let old_loan_id = client.borrow(
+        &borrower,
+        &1000u64,
+        &collateral_addr,
+        &1500u64,
+        &(30 * 24 * 60 * 60),
+    );
+
+    // Get initial loan details
+    let old_loan = client.get_loan(&borrower).unwrap();
+
+    // Refinance for 60 days
+    let new_loan_id = client.refinance_loan(&borrower, &(60 * 24 * 60 * 60));
+
+    // Verify new loan exists with different terms
+    let new_loan = client.get_loan(&borrower).unwrap();
+    assert_ne!(new_loan_id, old_loan_id);
+    assert_eq!(new_loan.borrower, borrower);
+    assert_eq!(new_loan.collateral_amount, old_loan.collateral_amount);
+    assert_eq!(new_loan.collateral_token, old_loan.collateral_token);
+    assert!(new_loan.principal > old_loan.principal); // Should include refinancing fee
+    assert!(new_loan.due_date > old_loan.due_date);
+
+    // Check that refinancing fee was charged by verifying new principal is higher
+    // The refinancing fee is included in the new loan principal
+    assert!(new_loan.principal > old_loan.principal); // Should include refinancing fee
+}
+
+#[test]
+fn test_refinance_loan_fails_when_overdue() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let (client, token_addr, collateral_addr, admin) = setup(&env);
+
+    let borrower = Address::generate(&env);
+    let depositor = Address::generate(&env);
+    mint_to(&env, &token_addr, &borrower, 10_000);
+    mint_to(&env, &collateral_addr, &borrower, 20_000);
+    mint_to(&env, &token_addr, &depositor, 10_000);
+
+    // Deposit funds to provide liquidity
+    client.deposit(&depositor, &5000u64);
+
+    // Borrow 1000 for 1 day
+    client.borrow(
+        &borrower,
+        &1000u64,
+        &collateral_addr,
+        &1500u64,
+        &(24 * 60 * 60),
+    );
+
+    // Jump past grace period
+    env.ledger()
+        .set_timestamp(env.ledger().timestamp() + 5 * 24 * 60 * 60);
+
+    // Should fail to refinance when overdue
+    let result = client.try_refinance_loan(&borrower, &(30 * 24 * 60 * 60));
+    assert_eq!(result.err(), Some(Ok(LendingError::CannotRefinance)));
+}
+
+#[test]
+fn test_consolidate_loans() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let (client, token_addr, collateral_addr, admin) = setup(&env);
+
+    let borrower = Address::generate(&env);
+    let depositor = Address::generate(&env);
+    mint_to(&env, &token_addr, &borrower, 20_000);
+    mint_to(&env, &collateral_addr, &borrower, 40_000);
+    mint_to(&env, &token_addr, &depositor, 10_000);
+
+    // Deposit funds to provide liquidity
+    client.deposit(&depositor, &5000u64);
+
+    // Create multiple loans by using different borrowers first, then transferring
+    // For this test, we'll need a different approach since the contract only allows one loan per user
+
+    // Let's modify the contract to allow multiple loans for testing consolidation
+    // For now, let's test the consolidation logic with a single loan (edge case)
+    let loan_id1 = client.borrow(
+        &borrower,
+        &1000u64,
+        &collateral_addr,
+        &1500u64,
+        &(30 * 24 * 60 * 60),
+    );
+
+    // Try to consolidate single loan (should work but be similar to refinance)
+    let mut loan_ids = Vec::new(&env);
+    loan_ids.push_back(loan_id1);
+
+    let new_loan_id = client.consolidate_loans(&borrower, &loan_ids, &(60 * 24 * 60 * 60));
+
+    // Verify consolidation worked
+    let new_loan = client.get_loan(&borrower).unwrap();
+    assert_ne!(new_loan_id, loan_id1);
+    assert!(new_loan.principal > 1000u64); // Should include consolidation fee
+}
+
+#[test]
+fn test_split_loan() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let (client, token_addr, collateral_addr, admin) = setup(&env);
+
+    let borrower = Address::generate(&env);
+    let depositor = Address::generate(&env);
+    mint_to(&env, &token_addr, &borrower, 10_000);
+    mint_to(&env, &collateral_addr, &borrower, 20_000);
+    mint_to(&env, &token_addr, &depositor, 10_000);
+
+    // Deposit funds to provide liquidity
+    client.deposit(&depositor, &5000u64);
+
+    // Borrow 2000 with 3000 collateral
+    let old_loan_id = client.borrow(
+        &borrower,
+        &2000u64,
+        &collateral_addr,
+        &3000u64,
+        &(30 * 24 * 60 * 60),
+    );
+
+    // Jump forward a bit to accrue some interest
+    env.ledger()
+        .set_timestamp(env.ledger().timestamp() + 10 * 24 * 60 * 60);
+
+    // Get current outstanding balance
+    let outstanding = client.get_repayment_amount(&borrower);
+
+    // Split into two loans: 60% and 40%
+    let split1 = (outstanding * 60) / 100;
+    let split2 = outstanding - split1;
+
+    let mut split_amounts = Vec::new(&env);
+    split_amounts.push_back(split1);
+    split_amounts.push_back(split2);
+
+    let new_loan_ids = client.split_loan(&borrower, &split_amounts, &(45 * 24 * 60 * 60));
+
+    // Verify split worked
+    assert_eq!(new_loan_ids.len(), 2);
+
+    // Check that user now has multiple loans
+    let user_loans = client.get_user_loan_ids(&borrower);
+    assert_eq!(user_loans.len(), 2);
+
+    // Verify each loan exists
+    for loan_id in new_loan_ids.iter() {
+        let loan = client.get_loan_by_id(&loan_id).unwrap();
+        assert_eq!(loan.borrower, borrower);
+        assert!(loan.collateral_amount > 0);
+    }
+}
+
+#[test]
+fn test_split_loan_invalid_amounts() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let (client, token_addr, collateral_addr, admin) = setup(&env);
+
+    let borrower = Address::generate(&env);
+    let depositor = Address::generate(&env);
+    mint_to(&env, &token_addr, &borrower, 10_000);
+    mint_to(&env, &collateral_addr, &borrower, 20_000);
+    mint_to(&env, &token_addr, &depositor, 10_000);
+
+    // Deposit funds to provide liquidity
+    client.deposit(&depositor, &5000u64);
+
+    // Borrow 1000
+    client.borrow(
+        &borrower,
+        &1000u64,
+        &collateral_addr,
+        &1500u64,
+        &(30 * 24 * 60 * 60),
+    );
+
+    // Try to split with amounts that don't sum to outstanding
+    let mut split_amounts = Vec::new(&env);
+    split_amounts.push_back(500u64);
+    split_amounts.push_back(600u64); // Total 1100, should be more than outstanding
+
+    let result = client.try_split_loan(&borrower, &split_amounts, &(30 * 24 * 60 * 60));
+    assert_eq!(result.err(), Some(Ok(LendingError::InvalidSplitAmounts)));
+}
+
+#[test]
+fn test_get_refinancing_fee_rate() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let (client, _token_addr, _collateral_addr, _admin) = setup(&env);
+    let fee_rate = client.get_refinancing_fee_rate();
+    assert_eq!(fee_rate, 50u32); // 0.5% = 50 basis points
+}
+
+#[test]
+fn test_user_loan_tracking() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let (client, token_addr, collateral_addr, admin) = setup(&env);
+
+    let borrower = Address::generate(&env);
+    let depositor = Address::generate(&env);
+    mint_to(&env, &token_addr, &borrower, 10_000);
+    mint_to(&env, &collateral_addr, &borrower, 20_000);
+    mint_to(&env, &token_addr, &depositor, 10_000);
+
+    // Deposit funds to provide liquidity
+    client.deposit(&depositor, &5000u64);
+
+    // Initially should have no loans
+    let user_loans = client.get_user_loan_ids(&borrower);
+    assert_eq!(user_loans.len(), 0);
+
+    // Borrow a loan
+    let loan_id = client.borrow(
+        &borrower,
+        &1000u64,
+        &collateral_addr,
+        &1500u64,
+        &(30 * 24 * 60 * 60),
+    );
+
+    // Should have one loan
+    let user_loans = client.get_user_loan_ids(&borrower);
+    assert_eq!(user_loans.len(), 1);
+    assert_eq!(user_loans.get(0), Some(loan_id));
+
+    // Split the loan
+    let mut split_amounts = Vec::new(&env);
+    split_amounts.push_back(500u64);
+    split_amounts.push_back(500u64);
+
+    client.split_loan(&borrower, &split_amounts, &(30 * 24 * 60 * 60));
+
+    // Should have two loans
+    let user_loans = client.get_user_loan_ids(&borrower);
+    assert_eq!(user_loans.len(), 2);
+
+    // Repay one loan (by getting the primary loan and repaying)
+    client.repay(&borrower);
+
+    // Should have one loan left
+    let user_loans = client.get_user_loan_ids(&borrower);
+    assert_eq!(user_loans.len(), 1);
+}
+
+// ─────────────────────────────────────────────────
+// Flash Loan Tests
+// ─────────────────────────────────────────────────
+
+#[contract]
+pub struct MockFlashLoanReceiver;
+
+#[contractimpl]
+impl MockFlashLoanReceiver {
+    pub fn execute_operation(env: Env, amount: u64, fee: u64, _initiator: Address) {
+        let lending_contract = env
+            .storage()
+            .instance()
+            .get::<_, Address>(&symbol_short!("LEND"))
+            .unwrap();
+
+        let token_addr = env
+            .storage()
+            .instance()
+            .get::<_, Address>(&symbol_short!("TOKEN"))
+            .unwrap();
+
+        let token_client = token::Client::new(&env, &token_addr);
+        let contract_id = env.current_contract_address();
+
+        let balance = token_client.balance(&contract_id);
+        assert!(balance >= amount as i128);
+
+        let total_repay = amount + fee;
+        token_client.transfer(&contract_id, &lending_contract, &(total_repay as i128));
+    }
+}
+
+#[test]
+fn test_flash_loan_success() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let (client, token_addr, _, _) = setup(&env);
+
+    let depositor = Address::generate(&env);
+    mint_to(&env, &token_addr, &depositor, 1_000_000);
+    client.deposit(&depositor, &100_000u64);
+
+    let receiver_id = env.register_contract(None, MockFlashLoanReceiver);
+
+    env.as_contract(&receiver_id, || {
+        env.storage()
+            .instance()
+            .set(&symbol_short!("LEND"), &client.address);
+        env.storage()
+            .instance()
+            .set(&symbol_short!("TOKEN"), &token_addr);
+    });
+
+    mint_to(&env, &token_addr, &receiver_id, 10_000);
+
+    let flash_loan_amount = 50_000u64;
+    let expected_fee = (50_000u64 * 9) / 10000;
+
+    let pool_before = client.get_pool_state();
+
+    client.flash_loan(&receiver_id, &flash_loan_amount);
+
+    let pool_after = client.get_pool_state();
+    assert_eq!(
+        pool_after.total_deposits,
+        pool_before.total_deposits + expected_fee
+    );
+}

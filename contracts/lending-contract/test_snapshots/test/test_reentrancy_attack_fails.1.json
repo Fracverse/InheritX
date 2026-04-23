@@ -843,6 +843,55 @@
             "key": {
               "vec": [
                 {
+                  "symbol": "UserLoans"
+                },
+                {
+                  "address": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAATYON"
+                }
+              ]
+            },
+            "durability": "persistent"
+          }
+        },
+        [
+          {
+            "last_modified_ledger_seq": 0,
+            "data": {
+              "contract_data": {
+                "ext": "v0",
+                "contract": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAMDR4",
+                "key": {
+                  "vec": [
+                    {
+                      "symbol": "UserLoans"
+                    },
+                    {
+                      "address": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAATYON"
+                    }
+                  ]
+                },
+                "durability": "persistent",
+                "val": {
+                  "vec": [
+                    {
+                      "u64": 1
+                    }
+                  ]
+                }
+              }
+            },
+            "ext": "v0"
+          },
+          4095
+        ]
+      ],
+      [
+        {
+          "contract_data": {
+            "contract": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAMDR4",
+            "key": {
+              "vec": [
+                {
                   "symbol": "WhitelistedCollateral"
                 },
                 {
@@ -973,6 +1022,22 @@
                             {
                               "key": {
                                 "symbol": "base_rate_bps"
+                              },
+                              "val": {
+                                "u32": 500
+                              }
+                            },
+                            {
+                              "key": {
+                                "symbol": "grace_period_seconds"
+                              },
+                              "val": {
+                                "u64": 259200
+                              }
+                            },
+                            {
+                              "key": {
+                                "symbol": "late_fee_rate_bps"
                               },
                               "val": {
                                 "u32": 500
@@ -3222,6 +3287,22 @@
                 {
                   "key": {
                     "symbol": "base_rate_bps"
+                  },
+                  "val": {
+                    "u32": 500
+                  }
+                },
+                {
+                  "key": {
+                    "symbol": "grace_period_seconds"
+                  },
+                  "val": {
+                    "u64": 259200
+                  }
+                },
+                {
+                  "key": {
+                    "symbol": "late_fee_rate_bps"
                   },
                   "val": {
                     "u32": 500

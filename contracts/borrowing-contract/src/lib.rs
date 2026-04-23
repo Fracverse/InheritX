@@ -71,6 +71,60 @@ pub struct InterestAccrualEvent {
     pub timestamp: u64,
 }
 
+#[derive(Clone, Debug, Eq, PartialEq)]
+#[contracttype]
+pub enum AuctionStatus {
+    Active,
+    Executed,
+    Cancelled,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+#[contracttype]
+pub struct LiquidationAuction {
+    pub loan_id: u64,
+    pub start_time: u64,
+    pub duration: u64,
+    pub initial_discount_bps: u32,
+    pub max_discount_bps: u32,
+    pub status: AuctionStatus,
+    pub winning_bidder: Option<Address>,
+    pub winning_bid_amount: i128,
+    pub locked_discount_bps: u32,
+}
+
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct AuctionStartedEvent {
+    pub loan_id: u64,
+    pub start_time: u64,
+    pub duration: u64,
+}
+
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct AuctionBidEvent {
+    pub loan_id: u64,
+    pub bidder: Address,
+    pub bid_amount: i128,
+    pub discount_bps: u32,
+}
+
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct AuctionExecutedEvent {
+    pub loan_id: u64,
+    pub bidder: Address,
+    pub bid_amount: i128,
+    pub collateral_seized: i128,
+}
+
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct AuctionCancelledEvent {
+    pub loan_id: u64,
+}
+
 #[contracttype]
 pub enum DataKey {
     Admin,
@@ -82,6 +136,7 @@ pub enum DataKey {
     VaultPause(Address),
     LoanCounter,
     Loan(u64),
+    Auction(u64),
 }
 
 #[contracterror]
@@ -96,6 +151,10 @@ pub enum BorrowingError {
     LoanNotActive = 7,
     InvalidAmount = 8,
     Paused = 9,
+    AuctionNotFound = 10,
+    AuctionAlreadyActive = 11,
+    AuctionNotActive = 12,
+    StillUnhealthy = 13,
 }
 
 #[contract]
@@ -436,6 +495,254 @@ impl BorrowingContract {
         };
 
         Ok(health_factor)
+    }
+
+    pub fn start_liquidation_auction(
+        env: Env,
+        loan_id: u64,
+        duration: u64,
+        initial_discount_bps: u32,
+        max_discount_bps: u32,
+    ) -> Result<(), BorrowingError> {
+        let loan = Self::get_loan(env.clone(), loan_id);
+
+        let debt = loan.principal - loan.amount_repaid;
+        if debt <= 0 || !loan.is_active {
+            return Err(BorrowingError::LoanNotActive);
+        }
+
+        let health_factor = Self::get_health_factor(env.clone(), loan_id)?;
+        let liquidation_threshold = Self::get_liquidation_threshold(&env);
+        if health_factor >= liquidation_threshold {
+            return Err(BorrowingError::LoanHealthy);
+        }
+
+        if let Some(existing_auction) = env
+            .storage()
+            .persistent()
+            .get::<_, LiquidationAuction>(&DataKey::Auction(loan_id))
+        {
+            if existing_auction.status == AuctionStatus::Active {
+                return Err(BorrowingError::AuctionAlreadyActive);
+            }
+        }
+
+        let auction = LiquidationAuction {
+            loan_id,
+            start_time: env.ledger().timestamp(),
+            duration,
+            initial_discount_bps,
+            max_discount_bps,
+            status: AuctionStatus::Active,
+            winning_bidder: None,
+            winning_bid_amount: 0,
+            locked_discount_bps: 0,
+        };
+
+        env.storage()
+            .persistent()
+            .set(&DataKey::Auction(loan_id), &auction);
+
+        env.events().publish(
+            (symbol_short!("AUCTION"), symbol_short!("START")),
+            AuctionStartedEvent {
+                loan_id,
+                start_time: auction.start_time,
+                duration,
+            },
+        );
+
+        Ok(())
+    }
+
+    pub fn get_liquidation_discount(env: Env, loan_id: u64) -> Result<u32, BorrowingError> {
+        let auction: LiquidationAuction = env
+            .storage()
+            .persistent()
+            .get(&DataKey::Auction(loan_id))
+            .ok_or(BorrowingError::AuctionNotFound)?;
+
+        if auction.status != AuctionStatus::Active {
+            return Ok(auction.locked_discount_bps);
+        }
+
+        let current_time = env.ledger().timestamp();
+        let elapsed = current_time.saturating_sub(auction.start_time);
+
+        if elapsed >= auction.duration {
+            return Ok(auction.max_discount_bps);
+        }
+
+        let discount_diff = auction
+            .max_discount_bps
+            .saturating_sub(auction.initial_discount_bps);
+
+        let current_addition = (discount_diff as u64)
+            .checked_mul(elapsed)
+            .and_then(|v| v.checked_div(auction.duration))
+            .unwrap_or(0) as u32;
+
+        Ok(auction.initial_discount_bps + current_addition)
+    }
+
+    pub fn bid_on_liquidation(
+        env: Env,
+        bidder: Address,
+        loan_id: u64,
+        bid_amount: i128,
+    ) -> Result<(), BorrowingError> {
+        bidder.require_auth();
+
+        let mut auction: LiquidationAuction = env
+            .storage()
+            .persistent()
+            .get(&DataKey::Auction(loan_id))
+            .ok_or(BorrowingError::AuctionNotFound)?;
+
+        if auction.status != AuctionStatus::Active {
+            return Err(BorrowingError::AuctionNotActive);
+        }
+
+        let loan = Self::get_loan(env.clone(), loan_id);
+        let debt = loan.principal - loan.amount_repaid;
+
+        if bid_amount <= 0 || bid_amount > debt {
+            return Err(BorrowingError::InvalidAmount);
+        }
+
+        if auction.winning_bidder.is_some() {
+            return Err(BorrowingError::AuctionAlreadyActive);
+        }
+
+        let current_discount = Self::get_liquidation_discount(env.clone(), loan_id)?;
+
+        auction.winning_bidder = Some(bidder.clone());
+        auction.winning_bid_amount = bid_amount;
+        auction.locked_discount_bps = current_discount;
+
+        env.storage()
+            .persistent()
+            .set(&DataKey::Auction(loan_id), &auction);
+
+        env.events().publish(
+            (symbol_short!("AUCTION"), symbol_short!("BID")),
+            AuctionBidEvent {
+                loan_id,
+                bidder,
+                bid_amount,
+                discount_bps: current_discount,
+            },
+        );
+
+        Ok(())
+    }
+
+    pub fn execute_auction(env: Env, loan_id: u64) -> Result<(), BorrowingError> {
+        let mut auction: LiquidationAuction = env
+            .storage()
+            .persistent()
+            .get(&DataKey::Auction(loan_id))
+            .ok_or(BorrowingError::AuctionNotFound)?;
+
+        if auction.status != AuctionStatus::Active {
+            return Err(BorrowingError::AuctionNotActive);
+        }
+
+        let bidder = auction
+            .winning_bidder
+            .clone()
+            .ok_or(BorrowingError::InvalidAmount)?;
+        let bid_amount = auction.winning_bid_amount;
+        let discount = auction.locked_discount_bps;
+
+        let mut loan: Loan = env
+            .storage()
+            .persistent()
+            .get(&DataKey::Loan(loan_id))
+            .ok_or(BorrowingError::LoanNotFound)?;
+
+        let bonus_amount = (bid_amount as u128)
+            .checked_mul(discount as u128)
+            .and_then(|v| v.checked_div(10000))
+            .unwrap_or(0) as i128;
+
+        let liquidator_reward = bid_amount + bonus_amount;
+
+        if liquidator_reward > loan.collateral_amount {
+            return Err(BorrowingError::InvalidAmount);
+        }
+
+        let token_client = token::Client::new(&env, &loan.collateral_token);
+        token_client.transfer(&env.current_contract_address(), &bidder, &liquidator_reward);
+
+        loan.collateral_amount -= liquidator_reward;
+        loan.amount_repaid += bid_amount;
+
+        if loan.amount_repaid >= loan.principal {
+            loan.is_active = false;
+        }
+
+        auction.status = AuctionStatus::Executed;
+
+        env.storage()
+            .persistent()
+            .set(&DataKey::Loan(loan_id), &loan);
+        env.storage()
+            .persistent()
+            .set(&DataKey::Auction(loan_id), &auction);
+
+        env.events().publish(
+            (symbol_short!("AUCTION"), symbol_short!("EXECUTE")),
+            AuctionExecutedEvent {
+                loan_id,
+                bidder,
+                bid_amount,
+                collateral_seized: liquidator_reward,
+            },
+        );
+
+        Ok(())
+    }
+
+    pub fn get_auction_status(
+        env: Env,
+        loan_id: u64,
+    ) -> Result<LiquidationAuction, BorrowingError> {
+        env.storage()
+            .persistent()
+            .get(&DataKey::Auction(loan_id))
+            .ok_or(BorrowingError::AuctionNotFound)
+    }
+
+    pub fn cancel_auction(env: Env, loan_id: u64) -> Result<(), BorrowingError> {
+        let mut auction: LiquidationAuction = env
+            .storage()
+            .persistent()
+            .get(&DataKey::Auction(loan_id))
+            .ok_or(BorrowingError::AuctionNotFound)?;
+
+        if auction.status != AuctionStatus::Active {
+            return Err(BorrowingError::AuctionNotActive);
+        }
+
+        let health_factor = Self::get_health_factor(env.clone(), loan_id)?;
+        let liquidation_threshold = Self::get_liquidation_threshold(&env);
+
+        if health_factor < liquidation_threshold {
+            return Err(BorrowingError::StillUnhealthy);
+        }
+
+        auction.status = AuctionStatus::Cancelled;
+        env.storage()
+            .persistent()
+            .set(&DataKey::Auction(loan_id), &auction);
+
+        env.events().publish(
+            (symbol_short!("AUCTION"), symbol_short!("CANCEL")),
+            AuctionCancelledEvent { loan_id },
+        );
+
+        Ok(())
     }
 
     fn get_liquidation_threshold(env: &Env) -> u32 {
