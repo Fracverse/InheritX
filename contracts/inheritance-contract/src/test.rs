@@ -5241,3 +5241,182 @@ fn test_update_blocked_after_trigger() {
     let swap_result = client.try_swap_beneficiary_order(&owner, &plan_id, &0u32, &1u32);
     assert_eq!(swap_result, Err(Ok(InheritanceError::PlanNotActive)));
 }
+
+// --- Asset Freezing & Compliance Tests ---
+
+#[test]
+fn test_freeze_plan_blocks_withdraw() {
+    let env = Env::default();
+    let (client, token, admin, owner) = setup_with_token_and_admin(&env);
+
+    let plan_id = client.create_inheritance_plan(&plan_params(
+        &env,
+        &owner,
+        &token,
+        "Test Plan",
+        "Test Description",
+        1000000u64,
+        DistributionMethod::LumpSum,
+        &default_beneficiaries(&env),
+    ));
+
+    // Freeze the plan
+    client.freeze_plan(
+        &admin,
+        &plan_id,
+        &String::from_str(&env, "Suspicious activity"),
+    );
+    assert!(client.is_plan_frozen(&plan_id));
+    assert_eq!(
+        client.get_freeze_reason(&plan_id),
+        Some(String::from_str(&env, "Suspicious activity"))
+    );
+
+    // Try to withdraw - should fail with PlanFrozen
+    let result = client.try_withdraw(&owner, &token, &plan_id, &500000u64);
+    assert_eq!(result, Err(Ok(InheritanceError::PlanFrozen)));
+}
+
+#[test]
+fn test_freeze_plan_blocks_claim() {
+    let env = Env::default();
+    let (client, token, admin, owner) = setup_with_token_and_admin(&env);
+    let beneficiary = create_test_address(&env, 100);
+
+    let plan_id = client.create_inheritance_plan(&plan_params(
+        &env,
+        &owner,
+        &token,
+        "Test Plan",
+        "Test Description",
+        1000000u64,
+        DistributionMethod::LumpSum,
+        &default_beneficiaries(&env),
+    ));
+
+    // Approve KYC for beneficiary
+    client.submit_kyc(&beneficiary);
+    client.approve_kyc(&admin, &beneficiary);
+
+    // Freeze the plan
+    client.freeze_plan(&admin, &plan_id, &String::from_str(&env, "Legal Hold"));
+
+    // Try to claim - should fail with PlanFrozen
+    let result = client.try_claim_inheritance_plan(
+        &plan_id,
+        &beneficiary,
+        &String::from_str(&env, "alice@example.com"),
+        &111111u32,
+    );
+    assert_eq!(result, Err(Ok(InheritanceError::PlanFrozen)));
+}
+
+#[test]
+fn test_unfreeze_plan_restores_access() {
+    let env = Env::default();
+    let (client, token, admin, owner) = setup_with_token_and_admin(&env);
+
+    let plan_id = client.create_inheritance_plan(&plan_params(
+        &env,
+        &owner,
+        &token,
+        "Test Plan",
+        "Test Description",
+        1000000u64,
+        DistributionMethod::LumpSum,
+        &default_beneficiaries(&env),
+    ));
+
+    client.freeze_plan(&admin, &plan_id, &String::from_str(&env, "Temporary freeze"));
+    client.unfreeze_plan(&admin, &plan_id);
+    assert!(!client.is_plan_frozen(&plan_id));
+
+    // Withdraw should now work
+    let result = client.try_withdraw(&owner, &token, &plan_id, &100000u64);
+    assert!(result.is_ok());
+}
+
+#[test]
+fn test_legal_hold_mechanism() {
+    let env = Env::default();
+    let (client, _token, admin, owner) = setup_with_token_and_admin(&env);
+
+    let plan_id = client.create_inheritance_plan(&plan_params(
+        &env,
+        &owner,
+        &_token,
+        "Test Plan",
+        "Test Description",
+        1000000u64,
+        DistributionMethod::LumpSum,
+        &default_beneficiaries(&env),
+    ));
+
+    client.add_legal_hold(&admin, &plan_id);
+    assert!(client.is_plan_frozen(&plan_id));
+    assert_eq!(
+        client.get_freeze_reason(&plan_id),
+        Some(String::from_str(&env, "Legal Hold"))
+    );
+
+    client.remove_legal_hold(&admin, &plan_id);
+    assert!(!client.is_plan_frozen(&plan_id));
+}
+
+#[test]
+fn test_freeze_beneficiary_blocks_specific_claim() {
+    let env = Env::default();
+    let (client, token, admin, owner) = setup_with_token_and_admin(&env);
+    let beneficiary = create_test_address(&env, 100);
+
+    let plan_id = client.create_inheritance_plan(&plan_params(
+        &env,
+        &owner,
+        &token,
+        "Test Plan",
+        "Test Description",
+        1000000u64,
+        DistributionMethod::LumpSum,
+        &default_beneficiaries(&env),
+    ));
+
+    // Approve KYC for beneficiary
+    client.submit_kyc(&beneficiary);
+    client.approve_kyc(&admin, &beneficiary);
+
+    let email = String::from_str(&env, "alice@example.com");
+    let hashed_email = client.hash_string(&email);
+
+    // Freeze only this beneficiary
+    client.freeze_beneficiary(
+        &admin,
+        &plan_id,
+        &hashed_email,
+        &String::from_str(&env, "AML Check"),
+    );
+
+    // Try to claim - should fail with BeneficiaryFrozen
+    let result = client.try_claim_inheritance_plan(&plan_id, &beneficiary, &email, &111111u32);
+    assert_eq!(result, Err(Ok(InheritanceError::BeneficiaryFrozen)));
+}
+
+#[test]
+fn test_non_admin_cannot_freeze() {
+    let env = Env::default();
+    let (client, token, _admin, owner) = setup_with_token_and_admin(&env);
+
+    let plan_id = client.create_inheritance_plan(&plan_params(
+        &env,
+        &owner,
+        &token,
+        "Test Plan",
+        "Test Description",
+        1000000u64,
+        DistributionMethod::LumpSum,
+        &default_beneficiaries(&env),
+    ));
+
+    // Owner (non-admin) tries to freeze - should fail with NotAdmin
+    let result = client.try_freeze_plan(&owner, &plan_id, &String::from_str(&env, "Mine!"));
+    assert_eq!(result, Err(Ok(InheritanceError::NotAdmin)));
+}

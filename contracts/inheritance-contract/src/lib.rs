@@ -112,6 +112,8 @@ pub enum InheritanceError {
     WillVersionNotFound = 48,
     WillAlreadyFinalized = 49,
     WillNotVerified = 50,
+    PlanFrozen = 51,
+    BeneficiaryFrozen = 52,
 }
 
 #[contracttype]
@@ -149,6 +151,8 @@ pub enum DataKey {
     WillFinalizedAt(u64, u32),        // (plan_id, version) -> u64 timestamp
     WillWitnesses(u64),               // plan_id -> Vec<Address>
     WitnessSignature(u64, Address),   // (plan_id, witness) -> u64 (signed_at)
+    FreezeInfo(u64),                  // plan_id -> FreezeRecord
+    BeneficiaryFreeze(u64, BytesN<32>), // (plan_id, hashed_email) -> FreezeRecord
 }
 
 #[contracttype]
@@ -516,6 +520,51 @@ pub struct WitnessAddedEvent {
 pub struct WitnessSignedEvent {
     pub vault_id: u64,
     pub witness: Address,
+}
+
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct FreezeRecord {
+    pub plan_id: u64,
+    pub frozen_at: u64,
+    pub reason: String,
+    pub frozen_by: Address,
+}
+
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct PlanFrozenEvent {
+    pub plan_id: u64,
+    pub frozen_at: u64,
+    pub reason: String,
+    pub frozen_by: Address,
+}
+
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct PlanUnfrozenEvent {
+    pub plan_id: u64,
+    pub unfrozen_at: u64,
+    pub unfrozen_by: Address,
+}
+
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct BeneficiaryFrozenEvent {
+    pub plan_id: u64,
+    pub hashed_email: BytesN<32>,
+    pub frozen_at: u64,
+    pub reason: String,
+    pub frozen_by: Address,
+}
+
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct BeneficiaryUnfrozenEvent {
+    pub plan_id: u64,
+    pub hashed_email: BytesN<32>,
+    pub unfrozen_at: u64,
+    pub unfrozen_by: Address,
 }
 
 /// Parameters for creating an inheritance plan (groups args to satisfy Clippy).
@@ -1272,6 +1321,10 @@ impl InheritanceContract {
 
         let mut plan = Self::get_plan(&env, plan_id).ok_or(InheritanceError::PlanNotFound)?;
 
+        if Self::is_plan_frozen(env.clone(), plan_id) {
+            return Err(InheritanceError::PlanFrozen);
+        }
+
         // Authorization check: owner only
         if plan.owner != caller {
             return Err(InheritanceError::Unauthorized);
@@ -1412,6 +1465,10 @@ impl InheritanceContract {
         // Fetch the plan
         let plan = Self::get_plan(&env, plan_id).ok_or(InheritanceError::PlanNotFound)?;
 
+        if Self::is_plan_frozen(env.clone(), plan_id) {
+            return Err(InheritanceError::PlanFrozen);
+        }
+
         // Check if plan is active
         if !plan.is_active {
             return Err(InheritanceError::PlanNotActive);
@@ -1426,6 +1483,11 @@ impl InheritanceContract {
 
         // Hash email and claim code
         let hashed_email = Self::hash_string(&env, email.clone());
+
+        if Self::is_beneficiary_frozen(env.clone(), plan_id, hashed_email.clone()) {
+            return Err(InheritanceError::BeneficiaryFrozen);
+        }
+
         let hashed_claim_code = Self::hash_claim_code(&env, claim_code)?;
 
         // Build claim key including plan ID
@@ -3884,6 +3946,150 @@ impl InheritanceContract {
         }
 
         Err(InheritanceError::BeneficiaryNotFound)
+    }
+
+    pub fn freeze_plan(
+        env: Env,
+        admin: Address,
+        plan_id: u64,
+        reason: String,
+    ) -> Result<(), InheritanceError> {
+        Self::require_admin(&env, &admin)?;
+        if Self::get_plan(&env, plan_id).is_none() {
+            return Err(InheritanceError::PlanNotFound);
+        }
+
+        let record = FreezeRecord {
+            plan_id,
+            frozen_at: env.ledger().timestamp(),
+            reason: reason.clone(),
+            frozen_by: admin.clone(),
+        };
+
+        env.storage()
+            .persistent()
+            .set(&DataKey::FreezeInfo(plan_id), &record);
+
+        env.events().publish(
+            (symbol_short!("COMPL"), symbol_short!("FREEZE")),
+            PlanFrozenEvent {
+                plan_id,
+                frozen_at: record.frozen_at,
+                reason,
+                frozen_by: admin,
+            },
+        );
+
+        Ok(())
+    }
+
+    pub fn unfreeze_plan(env: Env, admin: Address, plan_id: u64) -> Result<(), InheritanceError> {
+        Self::require_admin(&env, &admin)?;
+
+        let key = DataKey::FreezeInfo(plan_id);
+        if !env.storage().persistent().has(&key) {
+            return Ok(()); // Not frozen
+        }
+
+        env.storage().persistent().remove(&key);
+
+        env.events().publish(
+            (symbol_short!("COMPL"), symbol_short!("UNFRZ")),
+            PlanUnfrozenEvent {
+                plan_id,
+                unfrozen_at: env.ledger().timestamp(),
+                unfrozen_by: admin,
+            },
+        );
+
+        Ok(())
+    }
+
+    pub fn is_plan_frozen(env: Env, plan_id: u64) -> bool {
+        env.storage().persistent().has(&DataKey::FreezeInfo(plan_id))
+    }
+
+    pub fn add_legal_hold(env: Env, admin: Address, plan_id: u64) -> Result<(), InheritanceError> {
+        Self::freeze_plan(env, admin, plan_id, String::from_str(&env, "Legal Hold"))
+    }
+
+    pub fn remove_legal_hold(env: Env, admin: Address, plan_id: u64) -> Result<(), InheritanceError> {
+        Self::unfreeze_plan(env, admin, plan_id)
+    }
+
+    pub fn get_freeze_reason(env: Env, plan_id: u64) -> Option<String> {
+        let record: Option<FreezeRecord> =
+            env.storage().persistent().get(&DataKey::FreezeInfo(plan_id));
+        record.map(|r| r.reason)
+    }
+
+    pub fn freeze_beneficiary(
+        env: Env,
+        admin: Address,
+        plan_id: u64,
+        hashed_email: BytesN<32>,
+        reason: String,
+    ) -> Result<(), InheritanceError> {
+        Self::require_admin(&env, &admin)?;
+
+        let record = FreezeRecord {
+            plan_id,
+            frozen_at: env.ledger().timestamp(),
+            reason: reason.clone(),
+            frozen_by: admin.clone(),
+        };
+
+        env.storage().persistent().set(
+            &DataKey::BeneficiaryFreeze(plan_id, hashed_email.clone()),
+            &record,
+        );
+
+        env.events().publish(
+            (symbol_short!("COMPL"), symbol_short!("B_FRZ")),
+            BeneficiaryFrozenEvent {
+                plan_id,
+                hashed_email,
+                frozen_at: record.frozen_at,
+                reason,
+                frozen_by: admin,
+            },
+        );
+
+        Ok(())
+    }
+
+    pub fn is_beneficiary_frozen(env: Env, plan_id: u64, hashed_email: BytesN<32>) -> bool {
+        env.storage()
+            .persistent()
+            .has(&DataKey::BeneficiaryFreeze(plan_id, hashed_email))
+    }
+
+    pub fn unfreeze_beneficiary(
+        env: Env,
+        admin: Address,
+        plan_id: u64,
+        hashed_email: BytesN<32>,
+    ) -> Result<(), InheritanceError> {
+        Self::require_admin(&env, &admin)?;
+
+        let key = DataKey::BeneficiaryFreeze(plan_id, hashed_email);
+        if !env.storage().persistent().has(&key) {
+            return Ok(());
+        }
+
+        env.storage().persistent().remove(&key);
+ 
+        env.events().publish(
+            (symbol_short!("COMPL"), symbol_short!("B_UNF")),
+            BeneficiaryUnfrozenEvent {
+                plan_id,
+                hashed_email,
+                unfrozen_at: env.ledger().timestamp(),
+                unfrozen_by: admin,
+            },
+        );
+
+        Ok(())
     }
 }
 
