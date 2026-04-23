@@ -15,13 +15,13 @@ mod tests {
     // Mock structures for testing
     #[derive(Debug, Clone)]
     struct MockLoan {
-        id: Uuid,
-        user_id: Uuid,
-        plan_id: Option<Uuid>,
-        borrow_asset: String,
-        collateral_asset: String,
+        _id: Uuid,
+        _user_id: Uuid,
+        _plan_id: Option<Uuid>,
+        _borrow_asset: String,
+        _collateral_asset: String,
         principal: rust_decimal::Decimal,
-        interest_rate_bps: i32,
+        _interest_rate_bps: i32,
         collateral_amount: rust_decimal::Decimal,
         amount_repaid: rust_decimal::Decimal,
         status: String,
@@ -30,13 +30,13 @@ mod tests {
     impl MockLoan {
         fn new() -> Self {
             Self {
-                id: Uuid::new_v4(),
-                user_id: Uuid::new_v4(),
-                plan_id: Some(Uuid::new_v4()),
-                borrow_asset: "USDC".to_string(),
-                collateral_asset: "ETH".to_string(),
+                _id: Uuid::new_v4(),
+                _user_id: Uuid::new_v4(),
+                _plan_id: Some(Uuid::new_v4()),
+                _borrow_asset: "USDC".to_string(),
+                _collateral_asset: "ETH".to_string(),
                 principal: dec!(10000.00),
-                interest_rate_bps: 800, // 8%
+                _interest_rate_bps: 800, // 8%
                 collateral_amount: dec!(5.0),
                 amount_repaid: dec!(0.00),
                 status: "active".to_string(),
@@ -266,7 +266,8 @@ mod tests {
         let new_hf = new_collateral_value / debt_value;
 
         let min_hf = dec!(1.5);
-        assert!(old_hf >= min_hf || old_hf < min_hf); // Old might be risky
+        // old_hf may or may not meet the minimum; new_hf must be safe
+        let _ = old_hf >= min_hf;
         assert!(new_hf >= min_hf); // New should be safe
     }
 
@@ -333,8 +334,8 @@ mod tests {
     #[test]
     fn test_zero_debt_health_factor() {
         // Test health factor when debt is zero (should be MAX)
-        let collateral_amount = dec!(5.0);
-        let collateral_price = dec!(2000.00);
+        let _collateral_amount = dec!(5.0);
+        let _collateral_price = dec!(2000.00);
         let debt_amount = rust_decimal::Decimal::ZERO;
 
         // When debt is zero, health factor should be infinite/MAX
@@ -366,13 +367,16 @@ mod tests {
         // Test adding collateral multiple times
         let mut loan = MockLoan::new().with_collateral(dec!(5.0));
 
-        loan = loan.with_collateral(loan.collateral_amount + dec!(1.0));
+        let amt = loan.collateral_amount;
+        loan = loan.with_collateral(amt + dec!(1.0));
         assert_eq!(loan.collateral_amount, dec!(6.0));
 
-        loan = loan.with_collateral(loan.collateral_amount + dec!(2.0));
+        let amt = loan.collateral_amount;
+        loan = loan.with_collateral(amt + dec!(2.0));
         assert_eq!(loan.collateral_amount, dec!(8.0));
 
-        loan = loan.with_collateral(loan.collateral_amount + dec!(0.5));
+        let amt = loan.collateral_amount;
+        loan = loan.with_collateral(amt + dec!(0.5));
         assert_eq!(loan.collateral_amount, dec!(8.5));
     }
 
@@ -382,15 +386,18 @@ mod tests {
         let mut loan = MockLoan::new().with_collateral(dec!(5.0));
 
         // Add 2
-        loan = loan.with_collateral(loan.collateral_amount + dec!(2.0));
+        let amt = loan.collateral_amount;
+        loan = loan.with_collateral(amt + dec!(2.0));
         assert_eq!(loan.collateral_amount, dec!(7.0));
 
         // Remove 1
-        loan = loan.with_collateral(loan.collateral_amount - dec!(1.0));
+        let amt = loan.collateral_amount;
+        loan = loan.with_collateral(amt - dec!(1.0));
         assert_eq!(loan.collateral_amount, dec!(6.0));
 
         // Add 3
-        loan = loan.with_collateral(loan.collateral_amount + dec!(3.0));
+        let amt = loan.collateral_amount;
+        loan = loan.with_collateral(amt + dec!(3.0));
         assert_eq!(loan.collateral_amount, dec!(9.0));
     }
 }

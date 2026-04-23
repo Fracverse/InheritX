@@ -635,7 +635,7 @@ impl ContingentBeneficiaryService {
             &mut tx,
             user_id,
             notif_type::CONTINGENT_PROMOTED,
-            format!("Contingent beneficiary promoted to primary"),
+            "Contingent beneficiary promoted to primary".to_string(),
         )
         .await?;
 

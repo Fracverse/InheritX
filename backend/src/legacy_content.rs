@@ -29,7 +29,7 @@ const ALLOWED_DOCUMENT_TYPES: &[&str] = &[
     "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
 ];
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, sqlx::FromRow)]
 pub struct LegacyContent {
     pub id: Uuid,
     pub owner_user_id: Uuid,
@@ -130,29 +130,27 @@ impl LegacyContentService {
             "uploaded_at": Utc::now()
         });
 
-        let record = sqlx::query_as!(
-            LegacyContent,
+        let record = sqlx::query_as::<_, LegacyContent>(
             r#"
-            INSERT INTO legacy_content 
-            (owner_user_id, filename, original_filename, content_type, file_size, 
+            INSERT INTO legacy_content
+            (owner_user_id, filename, original_filename, content_type, file_size,
              storage_path, file_hash, encrypted, status, metadata)
             VALUES ($1, $2, $3, $4, $5, $6, $7, false, 'active', $8)
-            RETURNING 
-                id, owner_user_id, filename, original_filename, content_type, 
-                file_size, storage_path, file_hash, encrypted, 
-                encryption_key_version, status, 
-                metadata as "metadata: serde_json::Value",
+            RETURNING
+                id, owner_user_id, filename, original_filename, content_type,
+                file_size, storage_path, file_hash, encrypted,
+                encryption_key_version, status, metadata,
                 created_at, updated_at
             "#,
-            owner_user_id,
-            filename,
-            metadata.original_filename,
-            metadata.content_type,
-            metadata.file_size as i64,
-            storage_path,
-            file_hash,
-            meta_json
         )
+        .bind(owner_user_id)
+        .bind(filename)
+        .bind(&metadata.original_filename)
+        .bind(&metadata.content_type)
+        .bind(metadata.file_size as i64)
+        .bind(storage_path)
+        .bind(file_hash)
+        .bind(meta_json)
         .fetch_one(db)
         .await?;
 
@@ -169,48 +167,44 @@ impl LegacyContentService {
         let offset = filters.offset.unwrap_or(0);
 
         let records = if let Some(ref prefix) = filters.content_type_prefix {
-            sqlx::query_as!(
-                LegacyContent,
+            sqlx::query_as::<_, LegacyContent>(
                 r#"
-                SELECT 
-                    id, owner_user_id, filename, original_filename, content_type, 
-                    file_size, storage_path, file_hash, encrypted, 
-                    encryption_key_version, status,
-                    metadata as "metadata: serde_json::Value",
+                SELECT
+                    id, owner_user_id, filename, original_filename, content_type,
+                    file_size, storage_path, file_hash, encrypted,
+                    encryption_key_version, status, metadata,
                     created_at, updated_at
                 FROM legacy_content
-                WHERE owner_user_id = $1 
+                WHERE owner_user_id = $1
                   AND status = 'active'
                   AND content_type LIKE $2
                 ORDER BY created_at DESC
                 LIMIT $3 OFFSET $4
                 "#,
-                owner_user_id,
-                format!("{}%", prefix),
-                limit,
-                offset
             )
+            .bind(owner_user_id)
+            .bind(format!("{}%", prefix))
+            .bind(limit)
+            .bind(offset)
             .fetch_all(db)
             .await?
         } else {
-            sqlx::query_as!(
-                LegacyContent,
+            sqlx::query_as::<_, LegacyContent>(
                 r#"
-                SELECT 
-                    id, owner_user_id, filename, original_filename, content_type, 
-                    file_size, storage_path, file_hash, encrypted, 
-                    encryption_key_version, status,
-                    metadata as "metadata: serde_json::Value",
+                SELECT
+                    id, owner_user_id, filename, original_filename, content_type,
+                    file_size, storage_path, file_hash, encrypted,
+                    encryption_key_version, status, metadata,
                     created_at, updated_at
                 FROM legacy_content
                 WHERE owner_user_id = $1 AND status = 'active'
                 ORDER BY created_at DESC
                 LIMIT $2 OFFSET $3
                 "#,
-                owner_user_id,
-                limit,
-                offset
             )
+            .bind(owner_user_id)
+            .bind(limit)
+            .bind(offset)
             .fetch_all(db)
             .await?
         };
@@ -224,21 +218,19 @@ impl LegacyContentService {
         content_id: Uuid,
         owner_user_id: Uuid,
     ) -> Result<LegacyContent, ApiError> {
-        let record = sqlx::query_as!(
-            LegacyContent,
+        let record = sqlx::query_as::<_, LegacyContent>(
             r#"
-            SELECT 
-                id, owner_user_id, filename, original_filename, content_type, 
-                file_size, storage_path, file_hash, encrypted, 
-                encryption_key_version, status,
-                metadata as "metadata: serde_json::Value",
+            SELECT
+                id, owner_user_id, filename, original_filename, content_type,
+                file_size, storage_path, file_hash, encrypted,
+                encryption_key_version, status, metadata,
                 created_at, updated_at
             FROM legacy_content
             WHERE id = $1 AND owner_user_id = $2 AND status = 'active'
             "#,
-            content_id,
-            owner_user_id
         )
+        .bind(content_id)
+        .bind(owner_user_id)
         .fetch_optional(db)
         .await?
         .ok_or_else(|| ApiError::NotFound("Content not found".to_string()))?;
@@ -252,15 +244,15 @@ impl LegacyContentService {
         content_id: Uuid,
         owner_user_id: Uuid,
     ) -> Result<(), ApiError> {
-        let result = sqlx::query!(
+        let result = sqlx::query(
             r#"
             UPDATE legacy_content
             SET status = 'deleted', updated_at = NOW()
             WHERE id = $1 AND owner_user_id = $2 AND status = 'active'
             "#,
-            content_id,
-            owner_user_id
         )
+        .bind(content_id)
+        .bind(owner_user_id)
         .execute(db)
         .await?;
 
@@ -276,21 +268,20 @@ impl LegacyContentService {
         db: &PgPool,
         owner_user_id: Uuid,
     ) -> Result<StorageStats, ApiError> {
-        let stats = sqlx::query_as!(
-            StorageStats,
+        let stats = sqlx::query_as::<_, StorageStats>(
             r#"
-            SELECT 
-                COUNT(*)::bigint as "total_files!",
-                COALESCE(SUM(file_size), 0)::bigint as "total_size!",
-                COUNT(CASE WHEN content_type LIKE 'video/%' THEN 1 END)::bigint as "video_count!",
-                COUNT(CASE WHEN content_type LIKE 'audio/%' THEN 1 END)::bigint as "audio_count!",
-                COUNT(CASE WHEN content_type LIKE 'text/%' THEN 1 END)::bigint as "text_count!",
-                COUNT(CASE WHEN content_type LIKE 'application/%' THEN 1 END)::bigint as "document_count!"
+            SELECT
+                COUNT(*)::bigint AS total_files,
+                COALESCE(SUM(file_size), 0)::bigint AS total_size,
+                COUNT(CASE WHEN content_type LIKE 'video/%' THEN 1 END)::bigint AS video_count,
+                COUNT(CASE WHEN content_type LIKE 'audio/%' THEN 1 END)::bigint AS audio_count,
+                COUNT(CASE WHEN content_type LIKE 'text/%' THEN 1 END)::bigint AS text_count,
+                COUNT(CASE WHEN content_type LIKE 'application/%' THEN 1 END)::bigint AS document_count
             FROM legacy_content
             WHERE owner_user_id = $1 AND status = 'active'
             "#,
-            owner_user_id
         )
+        .bind(owner_user_id)
         .fetch_one(db)
         .await?;
 
@@ -298,7 +289,7 @@ impl LegacyContentService {
     }
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, sqlx::FromRow)]
 pub struct StorageStats {
     pub total_files: i64,
     pub total_size: i64,

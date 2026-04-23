@@ -16,8 +16,8 @@ mod tests {
     // Mock structures for testing
     #[derive(Debug, Clone)]
     struct MockBeneficiary {
-        id: Uuid,
-        plan_id: Uuid,
+        _id: Uuid,
+        _plan_id: Uuid,
         wallet_address: String,
         allocation_percent: rust_decimal::Decimal,
         beneficiary_type: String,
@@ -28,8 +28,8 @@ mod tests {
     impl MockBeneficiary {
         fn new_primary(plan_id: Uuid) -> Self {
             Self {
-                id: Uuid::new_v4(),
-                plan_id,
+                _id: Uuid::new_v4(),
+                _plan_id: plan_id,
                 wallet_address: "0xPRIMARY123".to_string(),
                 allocation_percent: dec!(100.00),
                 beneficiary_type: "primary".to_string(),
@@ -40,8 +40,8 @@ mod tests {
 
         fn new_contingent(plan_id: Uuid, priority: i32) -> Self {
             Self {
-                id: Uuid::new_v4(),
-                plan_id,
+                _id: Uuid::new_v4(),
+                _plan_id: plan_id,
                 wallet_address: format!("0xCONTINGENT{}", priority),
                 allocation_percent: dec!(100.00),
                 beneficiary_type: "contingent".to_string(),
@@ -105,7 +105,7 @@ mod tests {
     #[test]
     fn test_priority_order_sorting() {
         let plan_id = Uuid::new_v4();
-        let mut beneficiaries = vec![
+        let mut beneficiaries = [
             MockBeneficiary::new_contingent(plan_id, 3),
             MockBeneficiary::new_contingent(plan_id, 1),
             MockBeneficiary::new_contingent(plan_id, 2),
@@ -154,7 +154,7 @@ mod tests {
         let contingent2 = MockBeneficiary::new_contingent(plan_id, 2);
         let contingent3 = MockBeneficiary::new_contingent(plan_id, 3);
 
-        let all_beneficiaries = vec![primary, contingent1, contingent2, contingent3];
+        let all_beneficiaries = [primary, contingent1, contingent2, contingent3];
 
         let primary_count = all_beneficiaries
             .iter()
@@ -172,7 +172,7 @@ mod tests {
     #[test]
     fn test_allocation_distribution() {
         let plan_id = Uuid::new_v4();
-        let beneficiaries = vec![
+        let beneficiaries = [
             MockBeneficiary::new_contingent(plan_id, 1).with_allocation(dec!(50.00)),
             MockBeneficiary::new_contingent(plan_id, 2).with_allocation(dec!(30.00)),
             MockBeneficiary::new_contingent(plan_id, 3).with_allocation(dec!(20.00)),
@@ -291,7 +291,7 @@ mod tests {
     #[test]
     fn test_sequential_contingent_activation() {
         let plan_id = Uuid::new_v4();
-        let mut contingents = vec![
+        let mut contingents = [
             MockBeneficiary::new_contingent(plan_id, 1),
             MockBeneficiary::new_contingent(plan_id, 2),
             MockBeneficiary::new_contingent(plan_id, 3),
@@ -325,7 +325,7 @@ mod tests {
 
     #[test]
     fn test_contingent_beneficiary_uniqueness() {
-        let plan_id = Uuid::new_v4();
+        let _plan_id = Uuid::new_v4();
         let wallet1 = "0xABC123";
         let wallet2 = "0xDEF456";
 
