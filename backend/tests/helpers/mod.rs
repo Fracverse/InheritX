@@ -13,6 +13,7 @@ pub struct TestContext {
 }
 
 impl TestContext {
+    #[allow(dead_code)]
     pub async fn from_env() -> Option<Self> {
         // Use a static to ensure tracing is only initialized once
         static INIT: std::sync::Once = std::sync::Once::new();
@@ -76,7 +77,7 @@ impl TestContext {
     }
 }
 
-/// Create a test user and return their ID
+#[allow(dead_code)]
 pub async fn create_test_user(pool: &PgPool, email: &str) -> sqlx::Result<uuid::Uuid> {
     let user_id = uuid::Uuid::new_v4();
     let wallet = format!("G{}", &user_id.to_string().replace("-", "")[..55]);
@@ -93,7 +94,7 @@ pub async fn create_test_user(pool: &PgPool, email: &str) -> sqlx::Result<uuid::
     Ok(user_id)
 }
 
-/// Create a test admin and return their ID
+#[allow(dead_code)]
 pub async fn create_test_admin(pool: &PgPool, email: &str) -> sqlx::Result<uuid::Uuid> {
     let admin_id = uuid::Uuid::new_v4();
     let password_hash = bcrypt::hash("test_password", bcrypt::DEFAULT_COST).unwrap();

@@ -1,11 +1,11 @@
 use inheritx_backend::legacy_content::{LegacyContentService, UploadMetadata};
 use sqlx::PgPool;
-use uuid::Uuid;
+
 
 mod helpers;
 
 #[sqlx::test]
-async fn test_validate_video_types(pool: PgPool) -> sqlx::Result<()> {
+async fn test_validate_video_types(_pool: PgPool) -> Result<(), Box<dyn std::error::Error>> {
     assert!(LegacyContentService::validate_content_type("video/mp4").is_ok());
     assert!(LegacyContentService::validate_content_type("video/webm").is_ok());
     assert!(LegacyContentService::validate_content_type("video/mpeg").is_ok());
@@ -13,7 +13,7 @@ async fn test_validate_video_types(pool: PgPool) -> sqlx::Result<()> {
 }
 
 #[sqlx::test]
-async fn test_validate_audio_types(pool: PgPool) -> sqlx::Result<()> {
+async fn test_validate_audio_types(_pool: PgPool) -> Result<(), Box<dyn std::error::Error>> {
     assert!(LegacyContentService::validate_content_type("audio/mpeg").is_ok());
     assert!(LegacyContentService::validate_content_type("audio/wav").is_ok());
     assert!(LegacyContentService::validate_content_type("audio/ogg").is_ok());
@@ -21,14 +21,14 @@ async fn test_validate_audio_types(pool: PgPool) -> sqlx::Result<()> {
 }
 
 #[sqlx::test]
-async fn test_validate_text_types(pool: PgPool) -> sqlx::Result<()> {
+async fn test_validate_text_types(_pool: PgPool) -> Result<(), Box<dyn std::error::Error>> {
     assert!(LegacyContentService::validate_content_type("text/plain").is_ok());
     assert!(LegacyContentService::validate_content_type("text/markdown").is_ok());
     Ok(())
 }
 
 #[sqlx::test]
-async fn test_validate_document_types(pool: PgPool) -> sqlx::Result<()> {
+async fn test_validate_document_types(_pool: PgPool) -> Result<(), Box<dyn std::error::Error>> {
     assert!(LegacyContentService::validate_content_type("application/pdf").is_ok());
     assert!(LegacyContentService::validate_content_type("application/msword").is_ok());
     assert!(LegacyContentService::validate_content_type(
@@ -39,7 +39,7 @@ async fn test_validate_document_types(pool: PgPool) -> sqlx::Result<()> {
 }
 
 #[sqlx::test]
-async fn test_reject_invalid_types(pool: PgPool) -> sqlx::Result<()> {
+async fn test_reject_invalid_types(_pool: PgPool) -> Result<(), Box<dyn std::error::Error>> {
     assert!(LegacyContentService::validate_content_type("application/exe").is_err());
     assert!(LegacyContentService::validate_content_type("image/png").is_err());
     assert!(LegacyContentService::validate_content_type("video/invalid").is_err());
@@ -47,7 +47,7 @@ async fn test_reject_invalid_types(pool: PgPool) -> sqlx::Result<()> {
 }
 
 #[sqlx::test]
-async fn test_validate_file_size(pool: PgPool) -> sqlx::Result<()> {
+async fn test_validate_file_size(_pool: PgPool) -> Result<(), Box<dyn std::error::Error>> {
     assert!(LegacyContentService::validate_file_size(1024).is_ok());
     assert!(LegacyContentService::validate_file_size(1024 * 1024).is_ok());
     assert!(LegacyContentService::validate_file_size(524_288_000).is_ok()); // 500MB
@@ -55,14 +55,14 @@ async fn test_validate_file_size(pool: PgPool) -> sqlx::Result<()> {
 }
 
 #[sqlx::test]
-async fn test_reject_oversized_files(pool: PgPool) -> sqlx::Result<()> {
+async fn test_reject_oversized_files(_pool: PgPool) -> Result<(), Box<dyn std::error::Error>> {
     assert!(LegacyContentService::validate_file_size(524_288_001).is_err()); // Over 500MB
     assert!(LegacyContentService::validate_file_size(0).is_err()); // Empty file
     Ok(())
 }
 
 #[sqlx::test]
-async fn test_file_hash_calculation(pool: PgPool) -> sqlx::Result<()> {
+async fn test_file_hash_calculation(_pool: PgPool) -> Result<(), Box<dyn std::error::Error>> {
     let content1 = b"test content";
     let content2 = b"test content";
     let content3 = b"different content";
@@ -81,7 +81,7 @@ async fn test_file_hash_calculation(pool: PgPool) -> sqlx::Result<()> {
 }
 
 #[sqlx::test]
-async fn test_create_content_record(pool: PgPool) -> sqlx::Result<()> {
+async fn test_create_content_record(pool: PgPool) -> Result<(), Box<dyn std::error::Error>> {
     let user_id = helpers::create_test_user(&pool, "uploader@test.com").await?;
 
     let metadata = UploadMetadata {
@@ -116,7 +116,7 @@ async fn test_create_content_record(pool: PgPool) -> sqlx::Result<()> {
 }
 
 #[sqlx::test]
-async fn test_list_user_content(pool: PgPool) -> sqlx::Result<()> {
+async fn test_list_user_content(pool: PgPool) -> Result<(), Box<dyn std::error::Error>> {
     let user_id = helpers::create_test_user(&pool, "user1@test.com").await?;
     let other_user_id = helpers::create_test_user(&pool, "user2@test.com").await?;
 
@@ -174,7 +174,7 @@ async fn test_list_user_content(pool: PgPool) -> sqlx::Result<()> {
 }
 
 #[sqlx::test]
-async fn test_filter_by_content_type(pool: PgPool) -> sqlx::Result<()> {
+async fn test_filter_by_content_type(pool: PgPool) -> Result<(), Box<dyn std::error::Error>> {
     let user_id = helpers::create_test_user(&pool, "user3@test.com").await?;
 
     // Create video content
@@ -235,7 +235,7 @@ async fn test_filter_by_content_type(pool: PgPool) -> sqlx::Result<()> {
 }
 
 #[sqlx::test]
-async fn test_get_content_by_id(pool: PgPool) -> sqlx::Result<()> {
+async fn test_get_content_by_id(pool: PgPool) -> Result<(), Box<dyn std::error::Error>> {
     let user_id = helpers::create_test_user(&pool, "user4@test.com").await?;
 
     let metadata = UploadMetadata {
@@ -265,7 +265,7 @@ async fn test_get_content_by_id(pool: PgPool) -> sqlx::Result<()> {
 }
 
 #[sqlx::test]
-async fn test_unauthorized_access_blocked(pool: PgPool) -> sqlx::Result<()> {
+async fn test_unauthorized_access_blocked(pool: PgPool) -> Result<(), Box<dyn std::error::Error>> {
     let owner_id = helpers::create_test_user(&pool, "owner@test.com").await?;
     let other_user_id = helpers::create_test_user(&pool, "other@test.com").await?;
 
@@ -293,7 +293,7 @@ async fn test_unauthorized_access_blocked(pool: PgPool) -> sqlx::Result<()> {
 }
 
 #[sqlx::test]
-async fn test_delete_content(pool: PgPool) -> sqlx::Result<()> {
+async fn test_delete_content(pool: PgPool) -> Result<(), Box<dyn std::error::Error>> {
     let user_id = helpers::create_test_user(&pool, "user5@test.com").await?;
 
     let metadata = UploadMetadata {
@@ -325,7 +325,7 @@ async fn test_delete_content(pool: PgPool) -> sqlx::Result<()> {
 }
 
 #[sqlx::test]
-async fn test_storage_stats(pool: PgPool) -> sqlx::Result<()> {
+async fn test_storage_stats(pool: PgPool) -> Result<(), Box<dyn std::error::Error>> {
     let user_id = helpers::create_test_user(&pool, "user6@test.com").await?;
 
     // Create various content types
