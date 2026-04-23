@@ -43,6 +43,7 @@ fn setup_test(env: &Env) -> (InheritanceContractClient<'_>, Address, Address) {
         distribution_method: DistributionMethod::LumpSum,
         beneficiaries_data,
         is_lendable: true,
+        waterfall_enabled: false,
     };
 
     // We need to mint tokens to owner for plan creation
@@ -113,6 +114,7 @@ fn full_setup(env: &Env) -> (InheritanceContractClient<'_>, Address, u64) {
         distribution_method: DistributionMethod::LumpSum,
         beneficiaries_data,
         is_lendable: true,
+        waterfall_enabled: false,
     });
 
     (client, owner, plan_id)
@@ -275,6 +277,7 @@ fn test_message_accessed_event() {
         distribution_method: DistributionMethod::LumpSum,
         beneficiaries_data,
         is_lendable: true,
+        waterfall_enabled: false,
     });
 
     let message_id = client.create_legacy_message(

@@ -400,6 +400,14 @@
                   "val": {
                     "u64": 50000
                   }
+                },
+                {
+                  "key": {
+                    "symbol": "waterfall_enabled"
+                  },
+                  "val": {
+                    "bool": false
+                  }
                 }
               ]
             }
@@ -573,6 +581,14 @@
                           },
                           "val": {
                             "u64": 50000
+                          }
+                        },
+                        {
+                          "key": {
+                            "symbol": "waterfall_enabled"
+                          },
+                          "val": {
+                            "bool": false
                           }
                         }
                       ]

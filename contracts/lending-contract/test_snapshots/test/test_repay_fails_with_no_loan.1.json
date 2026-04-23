@@ -418,6 +418,22 @@
                             },
                             {
                               "key": {
+                                "symbol": "grace_period_seconds"
+                              },
+                              "val": {
+                                "u64": 259200
+                              }
+                            },
+                            {
+                              "key": {
+                                "symbol": "late_fee_rate_bps"
+                              },
+                              "val": {
+                                "u32": 500
+                              }
+                            },
+                            {
+                              "key": {
                                 "symbol": "multiplier_bps"
                               },
                               "val": {

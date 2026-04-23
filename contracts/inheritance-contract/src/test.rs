@@ -88,6 +88,7 @@ fn plan_params(
         distribution_method,
         beneficiaries_data: beneficiaries_data.clone(),
         is_lendable: true,
+        waterfall_enabled: false,
     }
 }
 
@@ -309,6 +310,7 @@ fn test_create_beneficiary_success() {
         claim_code,
         bank_account,
         allocation,
+        0u32,
     );
 
     assert!(result.is_ok());
@@ -328,6 +330,7 @@ fn test_create_beneficiary_invalid_data() {
         123456u32,
         create_test_bytes(&env, "1234567890123456"),
         5000u32,
+        0u32,
     );
     assert!(result.is_err());
     assert_eq!(
@@ -343,6 +346,7 @@ fn test_create_beneficiary_invalid_data() {
         1000000u32, // > 999999
         create_test_bytes(&env, "1234567890123456"),
         5000u32,
+        0u32,
     );
     assert!(result.is_err());
     assert_eq!(
@@ -358,6 +362,7 @@ fn test_create_beneficiary_invalid_data() {
         123456u32,
         create_test_bytes(&env, "1234567890123456"),
         0u32, // zero allocation
+        0u32,
     );
     assert!(result.is_err());
     assert_eq!(result.err().unwrap(), InheritanceError::InvalidAllocation);
@@ -446,6 +451,7 @@ fn test_add_beneficiary_allocation_exceeds_limit() {
             claim_code: 333333,
             bank_account: create_test_bytes(&env, "3333333333333333"),
             allocation_bp: 2000,
+            priority: 0,
         },
     );
 
@@ -500,6 +506,7 @@ fn test_remove_beneficiary_success() {
             claim_code: 333333,
             bank_account: create_test_bytes(&env, "3333333333333333"),
             allocation_bp: 2000,
+            priority: 0,
         },
     );
     assert!(add_result.is_ok());
@@ -624,6 +631,7 @@ fn test_beneficiary_allocation_tracking() {
             claim_code: 333333,
             bank_account: create_test_bytes(&env, "3333333333333333"),
             allocation_bp: 2000,
+            priority: 0,
         },
     );
     assert!(result.is_ok());
@@ -638,6 +646,7 @@ fn test_beneficiary_allocation_tracking() {
             claim_code: 333333,
             bank_account: create_test_bytes(&env, "3333333333333333"),
             allocation_bp: 2000,
+            priority: 0,
         },
     );
     assert!(result2.is_err());
@@ -4822,4 +4831,323 @@ fn test_delete_legacy_message_unauthorized() {
     let result = client.try_delete_legacy_message(&stranger, &message_id);
     assert_eq!(result, Err(Ok(InheritanceError::Unauthorized)));
     assert!(client.get_legacy_message(&message_id).is_some());
+}
+
+// ===== Waterfall / priority distribution tests =====
+
+/// Three beneficiaries with allocations 50% / 30% / 20% — totals 100%.
+/// Emails use distinct lengths because the contract's hash_string (see lib.rs)
+/// only hashes input length — same-length emails would collide.
+fn three_beneficiaries(env: &Env) -> Vec<(String, String, u32, Bytes, u32)> {
+    vec![
+        env,
+        (
+            String::from_str(env, "Alice"),
+            String::from_str(env, "a@e.io"), // 6 chars
+            111111u32,
+            create_test_bytes(env, "1111"),
+            5000u32,
+        ),
+        (
+            String::from_str(env, "Bob"),
+            String::from_str(env, "bob@e.io"), // 8 chars
+            222222u32,
+            create_test_bytes(env, "2222"),
+            3000u32,
+        ),
+        (
+            String::from_str(env, "Carol"),
+            String::from_str(env, "carol@e.io"), // 10 chars
+            333333u32,
+            create_test_bytes(env, "3333"),
+            2000u32,
+        ),
+    ]
+}
+
+fn make_waterfall_plan(
+    env: &Env,
+    client: &InheritanceContractClient<'_>,
+    token: &Address,
+    owner: &Address,
+    total_amount: u64,
+) -> u64 {
+    let b = three_beneficiaries(env);
+    let plan_id = client.create_inheritance_plan(&plan_params(
+        env,
+        owner,
+        token,
+        "Waterfall",
+        "Priority plan",
+        total_amount,
+        DistributionMethod::LumpSum,
+        &b,
+    ));
+    // Alice=1 (highest), Bob=2, Carol=3
+    client.set_beneficiary_priority(owner, &plan_id, &0u32, &1u32);
+    client.set_beneficiary_priority(owner, &plan_id, &1u32, &2u32);
+    client.set_beneficiary_priority(owner, &plan_id, &2u32, &3u32);
+    client.enable_waterfall_distribution(owner, &plan_id);
+    plan_id
+}
+
+#[test]
+fn test_set_beneficiary_priority_success() {
+    let env = Env::default();
+    let (client, token, _admin, owner) = setup_with_token_and_admin(&env);
+    let b = three_beneficiaries(&env);
+    let plan_id = client.create_inheritance_plan(&plan_params(
+        &env,
+        &owner,
+        &token,
+        "W",
+        "",
+        1000u64,
+        DistributionMethod::LumpSum,
+        &b,
+    ));
+    client.set_beneficiary_priority(&owner, &plan_id, &0u32, &1u32);
+    assert_eq!(client.get_beneficiary_priority(&plan_id, &0u32), 1u32);
+}
+
+#[test]
+fn test_set_priority_zero_rejected() {
+    let env = Env::default();
+    let (client, token, _admin, owner) = setup_with_token_and_admin(&env);
+    let b = three_beneficiaries(&env);
+    let plan_id = client.create_inheritance_plan(&plan_params(
+        &env,
+        &owner,
+        &token,
+        "W",
+        "",
+        1000u64,
+        DistributionMethod::LumpSum,
+        &b,
+    ));
+    let res = client.try_set_beneficiary_priority(&owner, &plan_id, &0u32, &0u32);
+    assert_eq!(res, Err(Ok(InheritanceError::MissingRequiredField)));
+}
+
+#[test]
+fn test_set_priority_duplicate_rejected() {
+    let env = Env::default();
+    let (client, token, _admin, owner) = setup_with_token_and_admin(&env);
+    let b = three_beneficiaries(&env);
+    let plan_id = client.create_inheritance_plan(&plan_params(
+        &env,
+        &owner,
+        &token,
+        "W",
+        "",
+        1000u64,
+        DistributionMethod::LumpSum,
+        &b,
+    ));
+    client.set_beneficiary_priority(&owner, &plan_id, &0u32, &1u32);
+    let res = client.try_set_beneficiary_priority(&owner, &plan_id, &1u32, &1u32);
+    assert_eq!(res, Err(Ok(InheritanceError::AllocationExceedsLimit)));
+}
+
+#[test]
+fn test_set_priority_unauthorized() {
+    let env = Env::default();
+    let (client, token, _admin, owner) = setup_with_token_and_admin(&env);
+    let b = three_beneficiaries(&env);
+    let plan_id = client.create_inheritance_plan(&plan_params(
+        &env,
+        &owner,
+        &token,
+        "W",
+        "",
+        1000u64,
+        DistributionMethod::LumpSum,
+        &b,
+    ));
+    let stranger = Address::generate(&env);
+    let res = client.try_set_beneficiary_priority(&stranger, &plan_id, &0u32, &1u32);
+    assert_eq!(res, Err(Ok(InheritanceError::Unauthorized)));
+}
+
+#[test]
+fn test_enable_waterfall_requires_all_priorities_set() {
+    let env = Env::default();
+    let (client, token, _admin, owner) = setup_with_token_and_admin(&env);
+    let b = three_beneficiaries(&env);
+    let plan_id = client.create_inheritance_plan(&plan_params(
+        &env,
+        &owner,
+        &token,
+        "W",
+        "",
+        1000u64,
+        DistributionMethod::LumpSum,
+        &b,
+    ));
+    // Only one beneficiary has priority set
+    client.set_beneficiary_priority(&owner, &plan_id, &0u32, &1u32);
+    let res = client.try_enable_waterfall_distribution(&owner, &plan_id);
+    assert_eq!(res, Err(Ok(InheritanceError::MissingRequiredField)));
+}
+
+#[test]
+fn test_enable_waterfall_success_snapshots_basis() {
+    let env = Env::default();
+    let (client, token, _admin, owner) = setup_with_token_and_admin(&env);
+    let plan_id = make_waterfall_plan(&env, &client, &token, &owner, 1000u64);
+    // Basis = net_amount = 1000 * (1 - 0.02) = 980.
+    let amounts = client.calculate_waterfall_amounts(&plan_id);
+    assert_eq!(amounts.len(), 3);
+    // Priority 1 first: Alice @ 50% of 980 = 490
+    assert_eq!(amounts.get(0).unwrap(), (0u32, 490u64));
+    // Priority 2: Bob @ 30% of 980 = 294
+    assert_eq!(amounts.get(1).unwrap(), (1u32, 294u64));
+    // Priority 3: Carol @ 20% of 980 = 196
+    assert_eq!(amounts.get(2).unwrap(), (2u32, 196u64));
+}
+
+#[test]
+fn test_enable_waterfall_twice_rejected() {
+    let env = Env::default();
+    let (client, token, _admin, owner) = setup_with_token_and_admin(&env);
+    let plan_id = make_waterfall_plan(&env, &client, &token, &owner, 1000u64);
+    let res = client.try_enable_waterfall_distribution(&owner, &plan_id);
+    assert_eq!(res, Err(Ok(InheritanceError::InheritanceAlreadyTriggered)));
+}
+
+#[test]
+fn test_calculate_waterfall_when_disabled_errors() {
+    let env = Env::default();
+    let (client, token, _admin, owner) = setup_with_token_and_admin(&env);
+    let b = three_beneficiaries(&env);
+    let plan_id = client.create_inheritance_plan(&plan_params(
+        &env,
+        &owner,
+        &token,
+        "W",
+        "",
+        1000u64,
+        DistributionMethod::LumpSum,
+        &b,
+    ));
+    let res = client.try_calculate_waterfall_amounts(&plan_id);
+    assert_eq!(res, Err(Ok(InheritanceError::PlanNotActive)));
+}
+
+#[test]
+fn test_claim_by_priority_in_order() {
+    let env = Env::default();
+    let (client, token, admin, owner) = setup_with_token_and_admin(&env);
+    let plan_id = make_waterfall_plan(&env, &client, &token, &owner, 1000u64);
+
+    // KYC beneficiaries
+    let alice = create_test_address(&env, 901);
+    let bob = create_test_address(&env, 902);
+    let carol = create_test_address(&env, 903);
+    for b in [&alice, &bob, &carol] {
+        client.submit_kyc(b);
+        client.approve_kyc(&admin, b);
+    }
+
+    // Priority 1 claims first, then 2, then 3 — all succeed.
+    client.claim_by_priority(
+        &plan_id,
+        &alice,
+        &String::from_str(&env, "a@e.io"),
+        &111111u32,
+    );
+    client.claim_by_priority(
+        &plan_id,
+        &bob,
+        &String::from_str(&env, "bob@e.io"),
+        &222222u32,
+    );
+    client.claim_by_priority(
+        &plan_id,
+        &carol,
+        &String::from_str(&env, "carol@e.io"),
+        &333333u32,
+    );
+}
+
+#[test]
+fn test_claim_out_of_priority_order_rejected() {
+    let env = Env::default();
+    let (client, token, admin, owner) = setup_with_token_and_admin(&env);
+    let plan_id = make_waterfall_plan(&env, &client, &token, &owner, 1000u64);
+
+    let bob = create_test_address(&env, 902);
+    client.submit_kyc(&bob);
+    client.approve_kyc(&admin, &bob);
+
+    // Bob is priority 2, cannot claim before Alice (priority 1) claims.
+    let res = client.try_claim_by_priority(
+        &plan_id,
+        &bob,
+        &String::from_str(&env, "bob@e.io"),
+        &222222u32,
+    );
+    assert_eq!(res, Err(Ok(InheritanceError::ClaimNotAllowedYet)));
+}
+
+#[test]
+fn test_claim_inheritance_plan_routes_through_waterfall() {
+    let env = Env::default();
+    let (client, token, admin, owner) = setup_with_token_and_admin(&env);
+    let plan_id = make_waterfall_plan(&env, &client, &token, &owner, 1000u64);
+
+    let bob = create_test_address(&env, 902);
+    client.submit_kyc(&bob);
+    client.approve_kyc(&admin, &bob);
+
+    // Bob claims via the generic entrypoint — should still be order-gated.
+    let res = client.try_claim_inheritance_plan(
+        &plan_id,
+        &bob,
+        &String::from_str(&env, "bob@e.io"),
+        &222222u32,
+    );
+    assert_eq!(res, Err(Ok(InheritanceError::ClaimNotAllowedYet)));
+}
+
+#[test]
+fn test_get_claimable_by_priority_ordering() {
+    let env = Env::default();
+    let (client, token, _admin, owner) = setup_with_token_and_admin(&env);
+    let plan_id = make_waterfall_plan(&env, &client, &token, &owner, 1000u64);
+
+    // Before anyone claims: Alice is eligible, Bob and Carol are not.
+    let alice_claimable =
+        client.get_claimable_by_priority(&plan_id, &String::from_str(&env, "a@e.io"));
+    let bob_claimable =
+        client.get_claimable_by_priority(&plan_id, &String::from_str(&env, "bob@e.io"));
+    let carol_claimable =
+        client.get_claimable_by_priority(&plan_id, &String::from_str(&env, "carol@e.io"));
+    assert_eq!(alice_claimable, 490u64); // 50% of 980 basis
+    assert_eq!(bob_claimable, 0u64);
+    assert_eq!(carol_claimable, 0u64);
+}
+
+#[test]
+fn test_waterfall_basis_stable_across_claims() {
+    // After a priority-1 claim, the priority-2 entitlement is still computed
+    // against the original basis (not the reduced total_amount).
+    let env = Env::default();
+    let (client, token, admin, owner) = setup_with_token_and_admin(&env);
+    let plan_id = make_waterfall_plan(&env, &client, &token, &owner, 1000u64);
+
+    let alice = create_test_address(&env, 901);
+    client.submit_kyc(&alice);
+    client.approve_kyc(&admin, &alice);
+    client.claim_by_priority(
+        &plan_id,
+        &alice,
+        &String::from_str(&env, "a@e.io"),
+        &111111u32,
+    );
+
+    // Bob's entitlement should still be 294 (30% of 980), not 30% of (980 - 490).
+    let bob_claimable =
+        client.get_claimable_by_priority(&plan_id, &String::from_str(&env, "bob@e.io"));
+    assert_eq!(bob_claimable, 294u64);
 }
