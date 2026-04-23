@@ -1321,3 +1321,73 @@ fn test_multiple_loans_grace_period() {
     assert!(client.is_in_grace_period(&borrower2));
     assert_eq!(client.calculate_late_fee(&borrower2), 0u64);
 }
+
+// ─────────────────────────────────────────────────
+// Flash Loan Tests
+// ─────────────────────────────────────────────────
+
+#[contract]
+pub struct MockFlashLoanReceiver;
+
+#[contractimpl]
+impl MockFlashLoanReceiver {
+    pub fn execute_operation(env: Env, amount: u64, fee: u64, _initiator: Address) {
+        let lending_contract = env
+            .storage()
+            .instance()
+            .get::<_, Address>(&symbol_short!("LEND"))
+            .unwrap();
+
+        let token_addr = env
+            .storage()
+            .instance()
+            .get::<_, Address>(&symbol_short!("TOKEN"))
+            .unwrap();
+
+        let token_client = token::Client::new(&env, &token_addr);
+        let contract_id = env.current_contract_address();
+
+        let balance = token_client.balance(&contract_id);
+        assert!(balance >= amount as i128);
+
+        let total_repay = amount + fee;
+        token_client.transfer(&contract_id, &lending_contract, &(total_repay as i128));
+    }
+}
+
+#[test]
+fn test_flash_loan_success() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let (client, token_addr, _, _) = setup(&env);
+
+    let depositor = Address::generate(&env);
+    mint_to(&env, &token_addr, &depositor, 1_000_000);
+    client.deposit(&depositor, &100_000u64);
+
+    let receiver_id = env.register_contract(None, MockFlashLoanReceiver);
+
+    env.as_contract(&receiver_id, || {
+        env.storage()
+            .instance()
+            .set(&symbol_short!("LEND"), &client.address);
+        env.storage()
+            .instance()
+            .set(&symbol_short!("TOKEN"), &token_addr);
+    });
+
+    mint_to(&env, &token_addr, &receiver_id, 10_000);
+
+    let flash_loan_amount = 50_000u64;
+    let expected_fee = (50_000u64 * 9) / 10000;
+
+    let pool_before = client.get_pool_state();
+
+    client.flash_loan(&receiver_id, &flash_loan_amount);
+
+    let pool_after = client.get_pool_state();
+    assert_eq!(
+        pool_after.total_deposits,
+        pool_before.total_deposits + expected_fee
+    );
+}
