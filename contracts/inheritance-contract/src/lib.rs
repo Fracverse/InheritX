@@ -59,6 +59,15 @@ pub struct InheritancePlan {
     pub total_loaned: u64,
 }
 
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct BeneficiaryAcknowledgment {
+    pub plan_id: u64,
+    pub beneficiary_index: u32,
+    pub notification_sent_at: u64,
+    pub acknowledged_at: u64,
+}
+
 #[contracterror]
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum InheritanceError {
@@ -149,6 +158,8 @@ pub enum DataKey {
     WillFinalizedAt(u64, u32),        // (plan_id, version) -> u64 timestamp
     WillWitnesses(u64),               // plan_id -> Vec<Address>
     WitnessSignature(u64, Address),   // (plan_id, witness) -> u64 (signed_at)
+    BeneficiaryAcknowledgment(u64, u32), // (plan_id, beneficiary_index) -> BeneficiaryAcknowledgment
+    RequireAcknowledgment(u64),       // plan_id -> bool
 }
 
 #[contracttype]
@@ -204,6 +215,22 @@ pub struct BeneficiaryAddedEvent {
     pub plan_id: u64,
     pub hashed_email: BytesN<32>,
     pub allocation_bp: u32,
+}
+
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct BeneficiaryNotifiedEvent {
+    pub plan_id: u64,
+    pub beneficiary_index: u32,
+    pub timestamp: u64,
+}
+
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct BeneficiaryAcknowledgedEvent {
+    pub plan_id: u64,
+    pub beneficiary_index: u32,
+    pub timestamp: u64,
 }
 
 #[contracttype]
@@ -1444,6 +1471,20 @@ impl InheritanceContract {
         }
 
         let index = beneficiary_index.ok_or(InheritanceError::BeneficiaryNotFound)?;
+
+        // Check if acknowledgment is required
+        let req_ack_key = DataKey::RequireAcknowledgment(plan_id);
+        let require_ack = env.storage().persistent().get(&req_ack_key).unwrap_or(false);
+        if require_ack {
+            let ack_key = DataKey::BeneficiaryAcknowledgment(plan_id, index);
+            if let Some(ack) = env.storage().persistent().get::<_, BeneficiaryAcknowledgment>(&ack_key) {
+                if ack.acknowledged_at == 0 {
+                    return Err(InheritanceError::VerificationFailed);
+                }
+            } else {
+                return Err(InheritanceError::VerificationFailed);
+            }
+        }
 
         // Record the claim
         let claim = ClaimRecord {
@@ -3549,9 +3590,119 @@ impl InheritanceContract {
             .persistent()
             .get(&DataKey::WitnessSignature(vault_id, witness))
     }
+
+    // === Beneficiary Acknowledgment Logic ===
+
+    pub fn set_require_acknowledgment(env: Env, caller: Address, plan_id: u64, require: bool) -> Result<(), InheritanceError> {
+        let plan = Self::get_plan(&env, plan_id).ok_or(InheritanceError::PlanNotFound)?;
+        caller.require_auth();
+        if plan.owner != caller {
+            return Err(InheritanceError::Unauthorized);
+        }
+        
+        env.storage().persistent().set(&DataKey::RequireAcknowledgment(plan_id), &require);
+        Ok(())
+    }
+
+    pub fn notify_beneficiary(env: Env, caller: Address, plan_id: u64, beneficiary_index: u32) -> Result<(), InheritanceError> {
+        let plan = Self::get_plan(&env, plan_id).ok_or(InheritanceError::PlanNotFound)?;
+        caller.require_auth();
+        if plan.owner != caller {
+            return Err(InheritanceError::Unauthorized);
+        }
+        if beneficiary_index >= plan.beneficiaries.len() {
+            return Err(InheritanceError::InvalidBeneficiaryIndex);
+        }
+
+        let ack_key = DataKey::BeneficiaryAcknowledgment(plan_id, beneficiary_index);
+        let mut ack = env.storage().persistent().get(&ack_key).unwrap_or(BeneficiaryAcknowledgment {
+            plan_id,
+            beneficiary_index,
+            notification_sent_at: 0,
+            acknowledged_at: 0,
+        });
+
+        let current_time = env.ledger().timestamp();
+        ack.notification_sent_at = current_time;
+        env.storage().persistent().set(&ack_key, &ack);
+
+        env.events().publish(
+            (symbol_short!("BEN_ACK"), symbol_short!("NOTIFIED")),
+            BeneficiaryNotifiedEvent { plan_id, beneficiary_index, timestamp: current_time },
+        );
+
+        Ok(())
+    }
+
+    pub fn acknowledge_beneficiary_status(
+        env: Env,
+        caller: Address,
+        plan_id: u64,
+        beneficiary_index: u32,
+        email: String,
+        claim_code: u32,
+    ) -> Result<(), InheritanceError> {
+        caller.require_auth();
+
+        let plan = Self::get_plan(&env, plan_id).ok_or(InheritanceError::PlanNotFound)?;
+        if beneficiary_index >= plan.beneficiaries.len() {
+            return Err(InheritanceError::InvalidBeneficiaryIndex);
+        }
+
+        let b = plan.beneficiaries.get(beneficiary_index).unwrap();
+        let hashed_email = Self::hash_string(&env, email);
+        let hashed_claim_code = Self::hash_claim_code(&env, claim_code)?;
+
+        if b.hashed_email != hashed_email || b.hashed_claim_code != hashed_claim_code {
+            return Err(InheritanceError::VerificationFailed);
+        }
+
+        let ack_key = DataKey::BeneficiaryAcknowledgment(plan_id, beneficiary_index);
+        let mut ack = env.storage().persistent().get(&ack_key).unwrap_or(BeneficiaryAcknowledgment {
+            plan_id,
+            beneficiary_index,
+            notification_sent_at: 0,
+            acknowledged_at: 0,
+        });
+
+        let current_time = env.ledger().timestamp();
+        ack.acknowledged_at = current_time;
+        env.storage().persistent().set(&ack_key, &ack);
+
+        env.events().publish(
+            (symbol_short!("BEN_ACK"), symbol_short!("ACKD")),
+            BeneficiaryAcknowledgedEvent { plan_id, beneficiary_index, timestamp: current_time },
+        );
+
+        Ok(())
+    }
+
+    pub fn get_beneficiary_acknowledgment(env: Env, plan_id: u64, beneficiary_index: u32) -> Option<BeneficiaryAcknowledgment> {
+        env.storage().persistent().get(&DataKey::BeneficiaryAcknowledgment(plan_id, beneficiary_index))
+    }
+
+    pub fn get_unacknowledged_beneficiaries(env: Env, plan_id: u64) -> Result<Vec<u32>, InheritanceError> {
+        let plan = Self::get_plan(&env, plan_id).ok_or(InheritanceError::PlanNotFound)?;
+        let mut unacknowledged = Vec::new(&env);
+
+        for i in 0..plan.beneficiaries.len() {
+            let ack_key = DataKey::BeneficiaryAcknowledgment(plan_id, i);
+            if let Some(ack) = env.storage().persistent().get::<_, BeneficiaryAcknowledgment>(&ack_key) {
+                if ack.acknowledged_at == 0 {
+                    unacknowledged.push_back(i);
+                }
+            } else {
+                unacknowledged.push_back(i);
+            }
+        }
+        
+        Ok(unacknowledged)
+    }
 }
 
 #[cfg(test)]
 #[allow(clippy::duplicated_attributes)]
 mod message_test;
+#[cfg(test)]
+mod acknowledgment_test;
 mod test;

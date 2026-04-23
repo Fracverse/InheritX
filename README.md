@@ -68,7 +68,13 @@ Supported triggers in MVP:
 
 Triggers are evaluated on‑chain or via trusted off‑chain attestations.
 
-### 4. Beneficiary Settlement
+### 4. Beneficiary Acknowledgment & Notification
+
+* Plan owners can track notifications sent to beneficiaries
+* Beneficiaries can acknowledge their listing on-chain
+* Optional requirement for acknowledgment prior to inheritance claim execution
+
+### 5. Beneficiary Settlement
 
 * Assets are released automatically when triggers are satisfied
 * Beneficiaries can:
@@ -77,7 +83,7 @@ Triggers are evaluated on‑chain or via trusted off‑chain attestations.
   * Redeem directly to **local fiat** via Stellar anchors
 * Supports bank accounts and mobile money
 
-### 5. Auditability & Transparency
+### 6. Auditability & Transparency
 
 Immutable on‑chain records of:
 
