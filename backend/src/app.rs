@@ -1,6 +1,6 @@
 use axum::{
     extract::{Path, Query, State},
-    routing::{get, post, put},
+    routing::{delete, get, post, put},
     Json, Router,
 };
 use serde_json::{json, Value};
@@ -15,7 +15,15 @@ use crate::analytics::analytics_router;
 use crate::api_error::ApiError;
 use crate::auth::{AuthenticatedAdmin, AuthenticatedUser};
 use crate::beneficiary_sync::{BeneficiarySyncService, DocumentBeneficiary};
+use crate::collateral_management::{
+    AddCollateralRequest, CollateralManagementService, RemoveCollateralRequest,
+    SwapCollateralRequest,
+};
 use crate::config::Config;
+use crate::contingent_beneficiary::{
+    AddContingentBeneficiaryRequest, ContingentBeneficiaryService, PromoteContingentRequest,
+    RemoveContingentBeneficiaryRequest, SetContingencyConditionsRequest,
+};
 use crate::document_storage::DocumentStorageService;
 use crate::governance::{
     CreateProposalRequest, GovernanceService, ParameterUpdateRequest, Proposal, VoteRequest,
@@ -225,6 +233,31 @@ pub async fn create_app(db: PgPool, config: Config) -> Result<Router, ApiError> 
             "/api/admin/loans/lifecycle/mark-overdue",
             post(mark_overdue_loans),
         )
+        // ── Collateral Management ──────────────────────────────────────────────
+        .route(
+            "/api/loans/lifecycle/:id/collateral/add",
+            post(add_collateral),
+        )
+        .route(
+            "/api/loans/lifecycle/:id/collateral/remove",
+            post(remove_collateral),
+        )
+        .route(
+            "/api/loans/lifecycle/:id/collateral/swap",
+            post(swap_collateral),
+        )
+        .route(
+            "/api/loans/lifecycle/:id/collateral/value",
+            get(get_collateral_value),
+        )
+        .route(
+            "/api/loans/lifecycle/:id/collateral/max-withdrawable",
+            get(get_max_withdrawable_collateral),
+        )
+        .route(
+            "/api/loans/lifecycle/:id/collateral/requirements",
+            get(get_collateral_requirements),
+        )
         .route(
             "/api/admin/plans/due-for-claim",
             get(get_all_due_for_claim_plans_admin),
@@ -355,6 +388,27 @@ pub async fn create_app(db: PgPool, config: Config) -> Result<Router, ApiError> 
         .route(
             "/api/plans/:plan_id/beneficiaries/sync",
             post(sync_beneficiaries),
+        )
+        // ── Contingent Beneficiaries ──────────────────────────────────────────
+        .route(
+            "/api/plans/:plan_id/beneficiaries/contingent",
+            post(add_contingent_beneficiary).get(get_contingent_beneficiaries),
+        )
+        .route(
+            "/api/plans/:plan_id/beneficiaries/contingent/:beneficiary_id",
+            delete(remove_contingent_beneficiary),
+        )
+        .route(
+            "/api/plans/:plan_id/beneficiaries/contingent/:beneficiary_id/promote",
+            post(promote_contingent_beneficiary),
+        )
+        .route(
+            "/api/plans/:plan_id/contingency/conditions",
+            post(set_contingency_conditions),
+        )
+        .route(
+            "/api/plans/:plan_id/contingency/config",
+            get(get_contingency_config),
         )
         // ── Digital Signature (Task 4) ────────────────────────────────────────
         .route(
@@ -2365,4 +2419,207 @@ async fn get_admin_logs(
         "status": "success",
         "data": logs
     })))
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Collateral Management Handlers
+// ─────────────────────────────────────────────────────────────────────────────
+
+/// Add collateral to an existing active loan.
+///
+/// `POST /api/loans/lifecycle/:id/collateral/add`
+async fn add_collateral(
+    State(state): State<Arc<AppState>>,
+    Path(id): Path<Uuid>,
+    AuthenticatedUser(user): AuthenticatedUser,
+    Json(mut req): Json<AddCollateralRequest>,
+) -> Result<Json<Value>, ApiError> {
+    req.loan_id = id;
+    req.user_id = user.user_id;
+    let record = CollateralManagementService::add_collateral(&state.db, &req).await?;
+    Ok(Json(json!({ "status": "success", "data": record })))
+}
+
+/// Remove collateral from an existing active loan.
+///
+/// `POST /api/loans/lifecycle/:id/collateral/remove`
+async fn remove_collateral(
+    State(state): State<Arc<AppState>>,
+    Path(id): Path<Uuid>,
+    AuthenticatedUser(user): AuthenticatedUser,
+    Json(mut req): Json<RemoveCollateralRequest>,
+) -> Result<Json<Value>, ApiError> {
+    req.loan_id = id;
+    req.user_id = user.user_id;
+    let price_feed = Arc::new(crate::price_feed::DefaultPriceFeedService::new(
+        state.db.clone(),
+        3600,
+    ));
+    let record =
+        CollateralManagementService::remove_collateral(&state.db, price_feed, &req).await?;
+    Ok(Json(json!({ "status": "success", "data": record })))
+}
+
+/// Swap collateral type for an existing active loan.
+///
+/// `POST /api/loans/lifecycle/:id/collateral/swap`
+async fn swap_collateral(
+    State(state): State<Arc<AppState>>,
+    Path(id): Path<Uuid>,
+    AuthenticatedUser(user): AuthenticatedUser,
+    Json(mut req): Json<SwapCollateralRequest>,
+) -> Result<Json<Value>, ApiError> {
+    req.loan_id = id;
+    req.user_id = user.user_id;
+    let price_feed = Arc::new(crate::price_feed::DefaultPriceFeedService::new(
+        state.db.clone(),
+        3600,
+    ));
+    let record = CollateralManagementService::swap_collateral(&state.db, price_feed, &req).await?;
+    Ok(Json(json!({ "status": "success", "data": record })))
+}
+
+/// Get current collateral value in USD for a loan.
+///
+/// `GET /api/loans/lifecycle/:id/collateral/value`
+async fn get_collateral_value(
+    State(state): State<Arc<AppState>>,
+    Path(id): Path<Uuid>,
+    AuthenticatedUser(_user): AuthenticatedUser,
+) -> Result<Json<Value>, ApiError> {
+    let price_feed = Arc::new(crate::price_feed::DefaultPriceFeedService::new(
+        state.db.clone(),
+        3600,
+    ));
+    let info = CollateralManagementService::get_collateral_value(&state.db, price_feed, id).await?;
+    Ok(Json(json!({ "status": "success", "data": info })))
+}
+
+/// Get maximum withdrawable collateral amount while maintaining health factor >= 150%.
+///
+/// `GET /api/loans/lifecycle/:id/collateral/max-withdrawable`
+async fn get_max_withdrawable_collateral(
+    State(state): State<Arc<AppState>>,
+    Path(id): Path<Uuid>,
+    AuthenticatedUser(_user): AuthenticatedUser,
+) -> Result<Json<Value>, ApiError> {
+    let price_feed = Arc::new(crate::price_feed::DefaultPriceFeedService::new(
+        state.db.clone(),
+        3600,
+    ));
+    let info =
+        CollateralManagementService::get_max_withdrawable_collateral(&state.db, price_feed, id)
+            .await?;
+    Ok(Json(json!({ "status": "success", "data": info })))
+}
+
+/// Get required collateral amount for a given loan.
+///
+/// `GET /api/loans/lifecycle/:id/collateral/requirements`
+async fn get_collateral_requirements(
+    State(state): State<Arc<AppState>>,
+    Path(id): Path<Uuid>,
+    AuthenticatedUser(_user): AuthenticatedUser,
+) -> Result<Json<Value>, ApiError> {
+    let price_feed = Arc::new(crate::price_feed::DefaultPriceFeedService::new(
+        state.db.clone(),
+        3600,
+    ));
+    let reqs =
+        CollateralManagementService::get_required_collateral(&state.db, price_feed, id).await?;
+    Ok(Json(json!({ "status": "success", "data": reqs })))
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Contingent Beneficiary Handlers
+// ─────────────────────────────────────────────────────────────────────────────
+
+/// Add a contingent beneficiary to a plan.
+///
+/// `POST /api/plans/:plan_id/beneficiaries/contingent`
+async fn add_contingent_beneficiary(
+    State(state): State<Arc<AppState>>,
+    Path(plan_id): Path<Uuid>,
+    AuthenticatedUser(user): AuthenticatedUser,
+    Json(mut req): Json<AddContingentBeneficiaryRequest>,
+) -> Result<Json<Value>, ApiError> {
+    req.plan_id = plan_id;
+    let beneficiary =
+        ContingentBeneficiaryService::add_contingent_beneficiary(&state.db, user.user_id, &req)
+            .await?;
+    Ok(Json(json!({ "status": "success", "data": beneficiary })))
+}
+
+/// Remove a contingent beneficiary from a plan.
+///
+/// `DELETE /api/plans/:plan_id/beneficiaries/contingent/:beneficiary_id`
+async fn remove_contingent_beneficiary(
+    State(state): State<Arc<AppState>>,
+    Path((_plan_id, beneficiary_id)): Path<(Uuid, Uuid)>,
+    AuthenticatedUser(user): AuthenticatedUser,
+) -> Result<Json<Value>, ApiError> {
+    let req = RemoveContingentBeneficiaryRequest { beneficiary_id };
+    ContingentBeneficiaryService::remove_contingent_beneficiary(&state.db, user.user_id, &req)
+        .await?;
+    Ok(Json(
+        json!({ "status": "success", "message": "Contingent beneficiary removed" }),
+    ))
+}
+
+/// Get all contingent beneficiaries for a plan.
+///
+/// `GET /api/plans/:plan_id/beneficiaries/contingent`
+async fn get_contingent_beneficiaries(
+    State(state): State<Arc<AppState>>,
+    Path(plan_id): Path<Uuid>,
+    AuthenticatedUser(_user): AuthenticatedUser,
+) -> Result<Json<Value>, ApiError> {
+    let beneficiaries =
+        ContingentBeneficiaryService::get_contingent_beneficiaries(&state.db, plan_id).await?;
+    Ok(Json(json!({ "status": "success", "data": beneficiaries })))
+}
+
+/// Promote a contingent beneficiary to primary.
+///
+/// `POST /api/plans/:plan_id/beneficiaries/contingent/:beneficiary_id/promote`
+async fn promote_contingent_beneficiary(
+    State(state): State<Arc<AppState>>,
+    Path((_plan_id, beneficiary_id)): Path<(Uuid, Uuid)>,
+    AuthenticatedUser(user): AuthenticatedUser,
+    Json(req): Json<PromoteContingentRequest>,
+) -> Result<Json<Value>, ApiError> {
+    let mut promote_req = req;
+    promote_req.beneficiary_id = beneficiary_id;
+    let promoted =
+        ContingentBeneficiaryService::promote_contingent(&state.db, user.user_id, &promote_req)
+            .await?;
+    Ok(Json(json!({ "status": "success", "data": promoted })))
+}
+
+/// Set contingency conditions for a plan.
+///
+/// `POST /api/plans/:plan_id/contingency/conditions`
+async fn set_contingency_conditions(
+    State(state): State<Arc<AppState>>,
+    Path(plan_id): Path<Uuid>,
+    AuthenticatedUser(user): AuthenticatedUser,
+    Json(mut req): Json<SetContingencyConditionsRequest>,
+) -> Result<Json<Value>, ApiError> {
+    req.plan_id = plan_id;
+    ContingentBeneficiaryService::set_contingency_conditions(&state.db, user.user_id, &req).await?;
+    Ok(Json(
+        json!({ "status": "success", "message": "Contingency conditions set" }),
+    ))
+}
+
+/// Get contingency configuration for a plan.
+///
+/// `GET /api/plans/:plan_id/contingency/config`
+async fn get_contingency_config(
+    State(state): State<Arc<AppState>>,
+    Path(plan_id): Path<Uuid>,
+    AuthenticatedUser(_user): AuthenticatedUser,
+) -> Result<Json<Value>, ApiError> {
+    let config = ContingentBeneficiaryService::get_or_create_config(&state.db, plan_id).await?;
+    Ok(Json(json!({ "status": "success", "data": config })))
 }
