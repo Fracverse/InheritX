@@ -2,6 +2,7 @@
 
 import React, { useState } from "react";
 import { X, Calendar, Shield, FileText, UserPlus } from "lucide-react";
+import { LegacyMessage } from "@/app/lib/api/messages";
 
 interface Props {
   onClose: () => void;
@@ -14,7 +15,7 @@ interface Props {
     encrypt: boolean;
     beneficiary_ids: string[];
   }) => void;
-  initialData?: Partial<LegacyMessage>;
+  initialData?: (Partial<LegacyMessage> & { content?: string }) | null;
 }
 
 export default function CreateMessageModal({ onClose, onSave, initialData }: Props) {

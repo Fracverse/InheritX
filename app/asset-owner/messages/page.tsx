@@ -54,11 +54,7 @@ export default function MessagesPage() {
   const [editingMessage, setEditingMessage] = useState<LegacyMessage | null>(null);
   const [activeTab, setActiveTab] = useState<"all" | "drafts" | "finalized" | "unlocked">("all");
   const [showAudit, setShowAudit] = useState(false);
-  const [currentTime, setCurrentTime] = useState(0);
-
-  React.useEffect(() => {
-    setCurrentTime(Date.now());
-  }, []);
+  const [currentTime] = useState(() => Date.now());
 
   const filteredMessages = messages.filter(m => {
     if (activeTab === "all") return true;

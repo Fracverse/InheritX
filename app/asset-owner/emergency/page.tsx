@@ -57,11 +57,7 @@ const MOCK_LOGS: LogType[] = [
 
 export default function EmergencyPage() {
   const [activeTab, setActiveTab] = useState<"overview" | "contacts" | "guardians" | "requests" | "logs">("overview");
-  const [currentTime, setCurrentTime] = useState(0);
-
-  useEffect(() => {
-    setCurrentTime(Date.now());
-  }, []);
+  const [currentTime] = useState(() => Date.now());
   
   // Real state would come from API, using mock for now
   const [contacts, setContacts] = useState<EmergencyContact[]>(MOCK_CONTACTS);
