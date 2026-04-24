@@ -175,3 +175,37 @@ fn test_vault_pause() {
     let new_loan_id = client.create_loan(&borrower, &1000, &5, &1000000, &collateral_addr, &1500);
     assert_eq!(new_loan_id, 1);
 }
+
+#[test]
+fn test_liquidation_auction() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let admin = Address::generate(&env);
+    let collateral_addr = create_token_addr(&env);
+    let contract_id = env.register_contract(None, BorrowingContract);
+    let client = BorrowingContractClient::new(&env, &contract_id);
+    client.initialize(&admin, &12000, &13000, &500);
+    client.whitelist_collateral(&admin, &collateral_addr);
+
+    let borrower = Address::generate(&env);
+    let liquidator = Address::generate(&env);
+    sac_client(&env, &collateral_addr).mint(&borrower, &1200);
+
+    let loan_id = client.create_loan(&borrower, &1000, &5, &1000000, &collateral_addr, &1200);
+
+    let hf = client.get_health_factor(&loan_id);
+    assert_eq!(hf, 12000);
+
+    // Start auction
+    client.start_liquidation_auction(&loan_id, &1000, &100, &2000);
+
+    // Place bid
+    sac_client(&env, &collateral_addr).mint(&liquidator, &1000);
+    client.bid_on_liquidation(&liquidator, &loan_id, &1000);
+
+    // Execute auction
+    client.execute_auction(&loan_id);
+
+    let loan = client.get_loan(&loan_id);
+    assert!(!loan.is_active);
+}

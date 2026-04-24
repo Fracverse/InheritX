@@ -216,6 +216,14 @@ pub struct BeneficiaryRemovedEvent {
 
 #[contracttype]
 #[derive(Clone, Debug, Eq, PartialEq)]
+pub struct BeneficiaryUpdatedEvent {
+    pub plan_id: u64,
+    pub index: u32,
+    pub field: Symbol, // "alloc", "bank", "code", "email", "swap"
+}
+
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
 pub struct PlanDeactivatedEvent {
     pub plan_id: u64,
     pub owner: Address,
@@ -3933,6 +3941,334 @@ impl InheritanceContract {
         Ok((success, fail))
     }
 
+
+    // ---------- Beneficiary Update Functions ----------
+
+    /// Update a beneficiary's allocation percentage.
+    ///
+    /// # Arguments
+    /// * `owner` - The plan owner (must authorize)
+    /// * `plan_id` - The ID of the plan
+    /// * `index` - The 0-based beneficiary index
+    /// * `new_allocation_bp` - New allocation in basis points (1-10000)
+    ///
+    /// # Errors
+    /// - `Unauthorized`: Not the plan owner
+    /// - `PlanNotFound`: Plan does not exist
+    /// - `PlanNotActive`: Plan is inactive or inheritance already triggered
+    /// - `InvalidBeneficiaryIndex`: Index out of range
+    /// - `InvalidAllocation`: New allocation is 0
+    /// - `AllocationExceedsLimit`: New total would exceed 10000 bp
+    pub fn update_beneficiary_allocation(
+        env: Env,
+        owner: Address,
+        plan_id: u64,
+        index: u32,
+        new_allocation_bp: u32,
+    ) -> Result<(), InheritanceError> {
+        owner.require_auth();
+
+        let mut plan = Self::get_plan(&env, plan_id).ok_or(InheritanceError::PlanNotFound)?;
+
+        if plan.owner != owner {
+            return Err(InheritanceError::Unauthorized);
+        }
+        if !plan.is_active || Self::get_trigger_info(&env, plan_id).is_some() {
+            return Err(InheritanceError::PlanNotActive);
+        }
+        if index >= plan.beneficiaries.len() {
+            return Err(InheritanceError::InvalidBeneficiaryIndex);
+        }
+        if new_allocation_bp == 0 {
+            return Err(InheritanceError::InvalidAllocation);
+        }
+
+        let mut beneficiary = plan.beneficiaries.get(index).unwrap();
+        let old_allocation = beneficiary.allocation_bp;
+
+        let new_total = plan
+            .total_allocation_bp
+            .saturating_sub(old_allocation)
+            .saturating_add(new_allocation_bp);
+        if new_total > 10000 {
+            return Err(InheritanceError::AllocationExceedsLimit);
+        }
+
+        beneficiary.allocation_bp = new_allocation_bp;
+        plan.beneficiaries.set(index, beneficiary);
+        plan.total_allocation_bp = new_total;
+
+        Self::store_plan(&env, plan_id, &plan);
+
+        env.events().publish(
+            (symbol_short!("BENEFIC"), symbol_short!("UPDATE")),
+            BeneficiaryUpdatedEvent {
+                plan_id,
+                index,
+                field: Symbol::new(&env, "alloc"),
+            },
+        );
+
+        Ok(())
+    }
+
+    /// Update a beneficiary's bank account details.
+    ///
+    /// # Arguments
+    /// * `owner` - The plan owner (must authorize)
+    /// * `plan_id` - The ID of the plan
+    /// * `index` - The 0-based beneficiary index
+    /// * `new_bank_account` - New bank account bytes (must be non-empty)
+    ///
+    /// # Errors
+    /// - `Unauthorized`: Not the plan owner
+    /// - `PlanNotFound`: Plan does not exist
+    /// - `PlanNotActive`: Plan is inactive or inheritance already triggered
+    /// - `InvalidBeneficiaryIndex`: Index out of range
+    /// - `InvalidBeneficiaryData`: Bank account is empty
+    pub fn update_beneficiary_bank_account(
+        env: Env,
+        owner: Address,
+        plan_id: u64,
+        index: u32,
+        new_bank_account: Bytes,
+    ) -> Result<(), InheritanceError> {
+        owner.require_auth();
+
+        let mut plan = Self::get_plan(&env, plan_id).ok_or(InheritanceError::PlanNotFound)?;
+
+        if plan.owner != owner {
+            return Err(InheritanceError::Unauthorized);
+        }
+        if !plan.is_active || Self::get_trigger_info(&env, plan_id).is_some() {
+            return Err(InheritanceError::PlanNotActive);
+        }
+        if index >= plan.beneficiaries.len() {
+            return Err(InheritanceError::InvalidBeneficiaryIndex);
+        }
+        if new_bank_account.is_empty() {
+            return Err(InheritanceError::InvalidBeneficiaryData);
+        }
+
+        let mut beneficiary = plan.beneficiaries.get(index).unwrap();
+        beneficiary.bank_account = new_bank_account;
+        plan.beneficiaries.set(index, beneficiary);
+
+        Self::store_plan(&env, plan_id, &plan);
+
+        env.events().publish(
+            (symbol_short!("BENEFIC"), symbol_short!("UPDATE")),
+            BeneficiaryUpdatedEvent {
+                plan_id,
+                index,
+                field: Symbol::new(&env, "bank"),
+            },
+        );
+
+        Ok(())
+    }
+
+    /// Update a beneficiary's claim code.
+    ///
+    /// # Arguments
+    /// * `owner` - The plan owner (must authorize)
+    /// * `plan_id` - The ID of the plan
+    /// * `index` - The 0-based beneficiary index
+    /// * `new_claim_code` - New 6-digit claim code (0-999999)
+    ///
+    /// # Errors
+    /// - `Unauthorized`: Not the plan owner
+    /// - `PlanNotFound`: Plan does not exist
+    /// - `PlanNotActive`: Plan is inactive or inheritance already triggered
+    /// - `InvalidBeneficiaryIndex`: Index out of range
+    /// - `InvalidClaimCodeRange`: Claim code > 999999
+    pub fn update_beneficiary_claim_code(
+        env: Env,
+        owner: Address,
+        plan_id: u64,
+        index: u32,
+        new_claim_code: u32,
+    ) -> Result<(), InheritanceError> {
+        owner.require_auth();
+
+        let mut plan = Self::get_plan(&env, plan_id).ok_or(InheritanceError::PlanNotFound)?;
+
+        if plan.owner != owner {
+            return Err(InheritanceError::Unauthorized);
+        }
+        if !plan.is_active || Self::get_trigger_info(&env, plan_id).is_some() {
+            return Err(InheritanceError::PlanNotActive);
+        }
+        if index >= plan.beneficiaries.len() {
+            return Err(InheritanceError::InvalidBeneficiaryIndex);
+        }
+
+        let new_hashed_claim_code = Self::hash_claim_code(&env, new_claim_code)?;
+
+        let mut beneficiary = plan.beneficiaries.get(index).unwrap();
+        beneficiary.hashed_claim_code = new_hashed_claim_code;
+        plan.beneficiaries.set(index, beneficiary);
+
+        Self::store_plan(&env, plan_id, &plan);
+
+        env.events().publish(
+            (symbol_short!("BENEFIC"), symbol_short!("UPDATE")),
+            BeneficiaryUpdatedEvent {
+                plan_id,
+                index,
+                field: Symbol::new(&env, "code"),
+            },
+        );
+
+        Ok(())
+    }
+
+    /// Update a beneficiary's email (stored as a hash).
+    ///
+    /// # Arguments
+    /// * `owner` - The plan owner (must authorize)
+    /// * `plan_id` - The ID of the plan
+    /// * `index` - The 0-based beneficiary index
+    /// * `new_email` - New email string (must be non-empty)
+    ///
+    /// # Errors
+    /// - `Unauthorized`: Not the plan owner
+    /// - `PlanNotFound`: Plan does not exist
+    /// - `PlanNotActive`: Plan is inactive or inheritance already triggered
+    /// - `InvalidBeneficiaryIndex`: Index out of range
+    /// - `InvalidBeneficiaryData`: Email is empty
+    pub fn update_beneficiary_email(
+        env: Env,
+        owner: Address,
+        plan_id: u64,
+        index: u32,
+        new_email: String,
+    ) -> Result<(), InheritanceError> {
+        owner.require_auth();
+
+        let mut plan = Self::get_plan(&env, plan_id).ok_or(InheritanceError::PlanNotFound)?;
+
+        if plan.owner != owner {
+            return Err(InheritanceError::Unauthorized);
+        }
+        if !plan.is_active || Self::get_trigger_info(&env, plan_id).is_some() {
+            return Err(InheritanceError::PlanNotActive);
+        }
+        if index >= plan.beneficiaries.len() {
+            return Err(InheritanceError::InvalidBeneficiaryIndex);
+        }
+        if new_email.is_empty() {
+            return Err(InheritanceError::InvalidBeneficiaryData);
+        }
+
+        let new_hashed_email = Self::hash_string(&env, new_email);
+
+        let mut beneficiary = plan.beneficiaries.get(index).unwrap();
+        beneficiary.hashed_email = new_hashed_email;
+        plan.beneficiaries.set(index, beneficiary);
+
+        Self::store_plan(&env, plan_id, &plan);
+
+        env.events().publish(
+            (symbol_short!("BENEFIC"), symbol_short!("UPDATE")),
+            BeneficiaryUpdatedEvent {
+                plan_id,
+                index,
+                field: Symbol::new(&env, "email"),
+            },
+        );
+
+        Ok(())
+    }
+
+    /// Swap the positions of two beneficiaries.
+    ///
+    /// # Arguments
+    /// * `owner` - The plan owner (must authorize)
+    /// * `plan_id` - The ID of the plan
+    /// * `index_a` - First beneficiary index
+    /// * `index_b` - Second beneficiary index
+    ///
+    /// # Errors
+    /// - `Unauthorized`: Not the plan owner
+    /// - `PlanNotFound`: Plan does not exist
+    /// - `PlanNotActive`: Plan is inactive or inheritance already triggered
+    /// - `InvalidBeneficiaryIndex`: Either index is out of range
+    pub fn swap_beneficiary_order(
+        env: Env,
+        owner: Address,
+        plan_id: u64,
+        index_a: u32,
+        index_b: u32,
+    ) -> Result<(), InheritanceError> {
+        owner.require_auth();
+
+        let mut plan = Self::get_plan(&env, plan_id).ok_or(InheritanceError::PlanNotFound)?;
+
+        if plan.owner != owner {
+            return Err(InheritanceError::Unauthorized);
+        }
+        if !plan.is_active || Self::get_trigger_info(&env, plan_id).is_some() {
+            return Err(InheritanceError::PlanNotActive);
+        }
+
+        let len = plan.beneficiaries.len();
+        if index_a >= len || index_b >= len {
+            return Err(InheritanceError::InvalidBeneficiaryIndex);
+        }
+
+        if index_a == index_b {
+            return Ok(());
+        }
+
+        let beneficiary_a = plan.beneficiaries.get(index_a).unwrap();
+        let beneficiary_b = plan.beneficiaries.get(index_b).unwrap();
+        plan.beneficiaries.set(index_a, beneficiary_b);
+        plan.beneficiaries.set(index_b, beneficiary_a);
+
+        Self::store_plan(&env, plan_id, &plan);
+
+        env.events().publish(
+            (symbol_short!("BENEFIC"), symbol_short!("UPDATE")),
+            BeneficiaryUpdatedEvent {
+                plan_id,
+                index: index_a,
+                field: Symbol::new(&env, "swap"),
+            },
+        );
+
+        Ok(())
+    }
+
+    /// Find a beneficiary by their email hash.
+    ///
+    /// # Arguments
+    /// * `plan_id` - The ID of the plan to search
+    /// * `email` - The plain-text email to look up
+    ///
+    /// # Returns
+    /// `Ok((index, Beneficiary))` on match, or `Err(BeneficiaryNotFound)` if not found.
+    ///
+    /// # Errors
+    /// - `PlanNotFound`: Plan does not exist
+    /// - `BeneficiaryNotFound`: No beneficiary with that email exists in the plan
+    pub fn get_beneficiary_by_email(
+        env: Env,
+        plan_id: u64,
+        email: String,
+    ) -> Result<(u32, Beneficiary), InheritanceError> {
+        let plan = Self::get_plan(&env, plan_id).ok_or(InheritanceError::PlanNotFound)?;
+        let hashed_email = Self::hash_string(&env, email);
+
+        for i in 0..plan.beneficiaries.len() {
+            let b = plan.beneficiaries.get(i).unwrap();
+            if b.hashed_email == hashed_email {
+                return Ok((i, b));
+            }
+        }
+
+        Err(InheritanceError::BeneficiaryNotFound)
+    }
 }
 
 #[cfg(test)]

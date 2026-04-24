@@ -568,10 +568,34 @@
                             },
                             {
                               "key": {
+                                "symbol": "grace_period_seconds"
+                              },
+                              "val": {
+                                "u64": 259200
+                              }
+                            },
+                            {
+                              "key": {
+                                "symbol": "late_fee_rate_bps"
+                              },
+                              "val": {
+                                "u32": 500
+                              }
+                            },
+                            {
+                              "key": {
                                 "symbol": "multiplier_bps"
                               },
                               "val": {
                                 "u32": 2000
+                              }
+                            },
+                            {
+                              "key": {
+                                "symbol": "reserve_factor_bps"
+                              },
+                              "val": {
+                                "u32": 1000
                               }
                             },
                             {
@@ -596,6 +620,14 @@
                               },
                               "val": {
                                 "u64": 2000
+                              }
+                            },
+                            {
+                              "key": {
+                                "symbol": "total_protocol_revenue"
+                              },
+                              "val": {
+                                "u64": 0
                               }
                             },
                             {
@@ -1849,10 +1881,34 @@
                 },
                 {
                   "key": {
+                    "symbol": "grace_period_seconds"
+                  },
+                  "val": {
+                    "u64": 259200
+                  }
+                },
+                {
+                  "key": {
+                    "symbol": "late_fee_rate_bps"
+                  },
+                  "val": {
+                    "u32": 500
+                  }
+                },
+                {
+                  "key": {
                     "symbol": "multiplier_bps"
                   },
                   "val": {
                     "u32": 2000
+                  }
+                },
+                {
+                  "key": {
+                    "symbol": "reserve_factor_bps"
+                  },
+                  "val": {
+                    "u32": 1000
                   }
                 },
                 {
@@ -1877,6 +1933,14 @@
                   },
                   "val": {
                     "u64": 2000
+                  }
+                },
+                {
+                  "key": {
+                    "symbol": "total_protocol_revenue"
+                  },
+                  "val": {
+                    "u64": 0
                   }
                 },
                 {
