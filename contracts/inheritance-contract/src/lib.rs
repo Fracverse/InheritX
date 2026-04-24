@@ -3661,9 +3661,19 @@ impl InheritanceContract {
         Self::store_plan(&env, plan_id, &plan);
         env.events().publish(
             (symbol_short!("BATCH"), symbol_short!("BEN_ADD")),
-            BatchBeneficiariesAddedEvent { plan_id, success_count: success, fail_count: fail },
+            BatchBeneficiariesAddedEvent {
+                plan_id,
+                success_count: success,
+                fail_count: fail,
+            },
         );
-        log!(&env, "batch_add_beneficiaries plan {}: {} ok, {} failed", plan_id, success, fail);
+        log!(
+            &env,
+            "batch_add_beneficiaries plan {}: {} ok, {} failed",
+            plan_id,
+            success,
+            fail
+        );
         Ok((success, fail))
     }
 
@@ -3686,9 +3696,14 @@ impl InheritanceContract {
             if idx < plan.beneficiaries.len() {
                 let mut already = false;
                 for s in sorted.iter() {
-                    if s == idx { already = true; break; }
+                    if s == idx {
+                        already = true;
+                        break;
+                    }
                 }
-                if !already { sorted.push_back(idx); }
+                if !already {
+                    sorted.push_back(idx);
+                }
             }
         }
         // Sort descending so highest index removed first
@@ -3712,9 +3727,13 @@ impl InheritanceContract {
         let fail = (indices.len() as u32).saturating_sub(sorted.len());
         let mut success: u32 = 0;
         for idx in sorted.iter() {
-            if idx >= plan.beneficiaries.len() { continue; }
+            if idx >= plan.beneficiaries.len() {
+                continue;
+            }
             let removed = plan.beneficiaries.get(idx).unwrap();
-            plan.total_allocation_bp = plan.total_allocation_bp.saturating_sub(removed.allocation_bp);
+            plan.total_allocation_bp = plan
+                .total_allocation_bp
+                .saturating_sub(removed.allocation_bp);
             let last = plan.beneficiaries.len() - 1;
             if idx != last {
                 let last_ben = plan.beneficiaries.get(last).unwrap();
@@ -3726,9 +3745,19 @@ impl InheritanceContract {
         Self::store_plan(&env, plan_id, &plan);
         env.events().publish(
             (symbol_short!("BATCH"), symbol_short!("BEN_REM")),
-            BatchBeneficiariesRemovedEvent { plan_id, success_count: success, fail_count: fail },
+            BatchBeneficiariesRemovedEvent {
+                plan_id,
+                success_count: success,
+                fail_count: fail,
+            },
         );
-        log!(&env, "batch_remove_beneficiaries plan {}: {} ok, {} failed", plan_id, success, fail);
+        log!(
+            &env,
+            "batch_remove_beneficiaries plan {}: {} ok, {} failed",
+            plan_id,
+            success,
+            fail
+        );
         Ok((success, fail))
     }
 
@@ -3750,7 +3779,9 @@ impl InheritanceContract {
             return Err(InheritanceError::InvalidBeneficiaryData);
         }
         for bp in new_allocations.iter() {
-            if bp == 0 { return Err(InheritanceError::InvalidAllocation); }
+            if bp == 0 {
+                return Err(InheritanceError::InvalidAllocation);
+            }
         }
         let total: u32 = new_allocations.iter().sum();
         if total != 10000 {
@@ -3765,7 +3796,10 @@ impl InheritanceContract {
         Self::store_plan(&env, plan_id, &plan);
         env.events().publish(
             (symbol_short!("BATCH"), symbol_short!("ALLOC")),
-            BatchAllocationsUpdatedEvent { plan_id, success_count: plan.beneficiaries.len() },
+            BatchAllocationsUpdatedEvent {
+                plan_id,
+                success_count: plan.beneficiaries.len(),
+            },
         );
         log!(&env, "batch_update_allocations plan {}: updated", plan_id);
         Ok(())
@@ -3787,7 +3821,9 @@ impl InheritanceContract {
             let key = DataKey::Kyc(user.clone());
             let maybe_status: Option<KycStatus> = env.storage().persistent().get(&key);
             match maybe_status {
-                None => { fail += 1; }
+                None => {
+                    fail += 1;
+                }
                 Some(mut status) => {
                     if !status.submitted || status.approved {
                         fail += 1;
@@ -3798,7 +3834,10 @@ impl InheritanceContract {
                     env.storage().persistent().set(&key, &status);
                     env.events().publish(
                         (symbol_short!("KYC"), symbol_short!("APPROV")),
-                        KycApprovedEvent { user: user.clone(), approved_at: now },
+                        KycApprovedEvent {
+                            user: user.clone(),
+                            approved_at: now,
+                        },
                     );
                     success += 1;
                 }
@@ -3806,9 +3845,17 @@ impl InheritanceContract {
         }
         env.events().publish(
             (symbol_short!("BATCH"), symbol_short!("KYC_APP")),
-            BatchKycApprovedEvent { success_count: success, fail_count: fail },
+            BatchKycApprovedEvent {
+                success_count: success,
+                fail_count: fail,
+            },
         );
-        log!(&env, "batch_approve_kyc: {} approved, {} failed", success, fail);
+        log!(
+            &env,
+            "batch_approve_kyc: {} approved, {} failed",
+            success,
+            fail
+        );
         Ok((success, fail))
     }
 
@@ -3828,11 +3875,24 @@ impl InheritanceContract {
         for params in params_list.iter() {
             let plan = match Self::get_plan(&env, params.vault_id) {
                 Some(p) => p,
-                None => { fail += 1; continue; }
+                None => {
+                    fail += 1;
+                    continue;
+                }
             };
-            if plan.owner != creator { fail += 1; continue; }
-            if params.unlock_timestamp <= current_ts { fail += 1; continue; }
-            let message_id: u64 = env.storage().persistent().get(&DataKey::NextMessageId).unwrap_or(0u64);
+            if plan.owner != creator {
+                fail += 1;
+                continue;
+            }
+            if params.unlock_timestamp <= current_ts {
+                fail += 1;
+                continue;
+            }
+            let message_id: u64 = env
+                .storage()
+                .persistent()
+                .get(&DataKey::NextMessageId)
+                .unwrap_or(0u64);
             let message = LegacyMessageMetadata {
                 vault_id: params.vault_id,
                 message_id,
@@ -3844,24 +3904,49 @@ impl InheritanceContract {
                 is_finalized: false,
                 created_at: current_ts,
             };
-            env.storage().persistent().set(&DataKey::LegacyMessage(message_id), &message);
-            let mut vault_msgs: Vec<u64> = env.storage().persistent().get(&DataKey::VaultMessages(params.vault_id)).unwrap_or_else(|| vec![&env]);
+            env.storage()
+                .persistent()
+                .set(&DataKey::LegacyMessage(message_id), &message);
+            let mut vault_msgs: Vec<u64> = env
+                .storage()
+                .persistent()
+                .get(&DataKey::VaultMessages(params.vault_id))
+                .unwrap_or_else(|| vec![&env]);
             vault_msgs.push_back(message_id);
-            env.storage().persistent().set(&DataKey::VaultMessages(params.vault_id), &vault_msgs);
-            env.storage().persistent().set(&DataKey::NextMessageId, &(message_id + 1));
+            env.storage()
+                .persistent()
+                .set(&DataKey::VaultMessages(params.vault_id), &vault_msgs);
+            env.storage()
+                .persistent()
+                .set(&DataKey::NextMessageId, &(message_id + 1));
             env.events().publish(
                 (Symbol::new(&env, "message_created"), params.vault_id),
-                MessageCreatedEvent { vault_id: params.vault_id, message_id, timestamp: current_ts },
+                MessageCreatedEvent {
+                    vault_id: params.vault_id,
+                    message_id,
+                    timestamp: current_ts,
+                },
             );
-            if batch_vault_id == 0 { batch_vault_id = params.vault_id; }
+            if batch_vault_id == 0 {
+                batch_vault_id = params.vault_id;
+            }
             created_ids.push_back(message_id);
         }
         let success = created_ids.len();
         env.events().publish(
             (symbol_short!("BATCH"), symbol_short!("MSG_CRE")),
-            BatchMessagesCreatedEvent { vault_id: batch_vault_id, success_count: success, fail_count: fail },
+            BatchMessagesCreatedEvent {
+                vault_id: batch_vault_id,
+                success_count: success,
+                fail_count: fail,
+            },
         );
-        log!(&env, "batch_create_messages: {} created, {} failed", success, fail);
+        log!(
+            &env,
+            "batch_create_messages: {} created, {} failed",
+            success,
+            fail
+        );
         Ok((created_ids, fail))
     }
 
@@ -3875,18 +3960,28 @@ impl InheritanceContract {
         }
         let plan = Self::get_plan(&env, plan_id).ok_or(InheritanceError::PlanNotFound)?;
         let triggered = Self::get_trigger_info(&env, plan_id).is_some();
-        if !plan.is_active { return Err(InheritanceError::PlanNotActive); }
-        if !triggered && !Self::is_claim_time_valid(&env, &plan) { return Err(InheritanceError::ClaimNotAllowedYet); }
+        if !plan.is_active {
+            return Err(InheritanceError::PlanNotActive);
+        }
+        if !triggered && !Self::is_claim_time_valid(&env, &plan) {
+            return Err(InheritanceError::ClaimNotAllowedYet);
+        }
         let mut success: u32 = 0;
         let mut fail: u32 = 0;
         for entry in claimers.iter() {
             let (claimer, email, claim_code) = entry;
             claimer.require_auth();
-            if Self::check_kyc_approved(&env, &claimer).is_err() { fail += 1; continue; }
+            if Self::check_kyc_approved(&env, &claimer).is_err() {
+                fail += 1;
+                continue;
+            }
             let hashed_email = Self::hash_string(&env, email.clone());
             let hashed_claim_code = match Self::hash_claim_code(&env, claim_code) {
                 Ok(h) => h,
-                Err(_) => { fail += 1; continue; }
+                Err(_) => {
+                    fail += 1;
+                    continue;
+                }
             };
             let claim_key = {
                 let mut data = Bytes::new(&env);
@@ -3894,10 +3989,16 @@ impl InheritanceContract {
                 data.extend_from_slice(&hashed_email.to_array());
                 DataKey::Claim(env.crypto().sha256(&data).into())
             };
-            if env.storage().persistent().has(&claim_key) { fail += 1; continue; }
+            if env.storage().persistent().has(&claim_key) {
+                fail += 1;
+                continue;
+            }
             let current_plan = match Self::get_plan(&env, plan_id) {
                 Some(p) => p,
-                None => { fail += 1; continue; }
+                None => {
+                    fail += 1;
+                    continue;
+                }
             };
             let mut beneficiary_index: Option<u32> = None;
             for i in 0..current_plan.beneficiaries.len() {
@@ -3907,7 +4008,13 @@ impl InheritanceContract {
                     break;
                 }
             }
-            let index = match beneficiary_index { Some(i) => i, None => { fail += 1; continue; } };
+            let index = match beneficiary_index {
+                Some(i) => i,
+                None => {
+                    fail += 1;
+                    continue;
+                }
+            };
             let beneficiary = current_plan.beneficiaries.get(index).unwrap();
             let base_payout = (current_plan.total_amount as u128)
                 .checked_mul(beneficiary.allocation_bp as u128)
@@ -3918,10 +4025,19 @@ impl InheritanceContract {
                     .checked_mul(EMERGENCY_TRANSFER_LIMIT_BP as u128)
                     .and_then(|v| v.checked_div(10000))
                     .unwrap_or(0) as u64;
-                if base_payout > limit { fail += 1; continue; }
+                if base_payout > limit {
+                    fail += 1;
+                    continue;
+                }
             }
-            let available = current_plan.total_amount.saturating_sub(current_plan.total_loaned);
-            let claim = ClaimRecord { plan_id, beneficiary_index: index, claimed_at: env.ledger().timestamp() };
+            let available = current_plan
+                .total_amount
+                .saturating_sub(current_plan.total_loaned);
+            let claim = ClaimRecord {
+                plan_id,
+                beneficiary_index: index,
+                claimed_at: env.ledger().timestamp(),
+            };
             env.storage().persistent().set(&claim_key, &claim);
             let mut updated = current_plan.clone();
             updated.total_amount = updated.total_amount.saturating_sub(base_payout);
@@ -3935,12 +4051,21 @@ impl InheritanceContract {
         }
         env.events().publish(
             (symbol_short!("BATCH"), symbol_short!("CLAIM")),
-            BatchClaimEvent { plan_id, success_count: success, fail_count: fail },
+            BatchClaimEvent {
+                plan_id,
+                success_count: success,
+                fail_count: fail,
+            },
         );
-        log!(&env, "batch_claim plan {}: {} claimed, {} failed", plan_id, success, fail);
+        log!(
+            &env,
+            "batch_claim plan {}: {} claimed, {} failed",
+            plan_id,
+            success,
+            fail
+        );
         Ok((success, fail))
     }
-
 
     // ---------- Beneficiary Update Functions ----------
 
