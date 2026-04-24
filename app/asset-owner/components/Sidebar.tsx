@@ -14,6 +14,7 @@ import SecurityIcon from "@/app/svg/SecurityIcon";
 import SwapIcon from "@/app/svg/SwapIcon";
 
 import EmergencyIcon from "@/app/svg/EmergencyIcon";
+import { MessageSquare } from "lucide-react";
 
 const normalizePath = (path: string) => {
   if (path !== "/" && path.endsWith("/")) {
@@ -25,6 +26,7 @@ const normalizePath = (path: string) => {
 const SIDEBAR_ITEMS = [
   { label: "Home", href: "/asset-owner/", icon: HomeIcon, exact: true },
   { label: "Plans", href: "/asset-owner/plans", icon: PlansIcon },
+  { label: "Messages", href: "/asset-owner/messages", icon: MessageSquare },
   { label: "Claim", href: "/asset-owner/claim", icon: ClaimIcon },
   { label: "Swap", href: "/asset-owner/swap", icon: SwapIcon },
   { label: "Portfolio", href: "/asset-owner/portfolio", icon: PortfolioIcon },
