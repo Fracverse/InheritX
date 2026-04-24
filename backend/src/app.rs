@@ -6,7 +6,6 @@ use axum::{
 use serde_json::{json, Value};
 use sqlx::PgPool;
 use std::sync::Arc;
-use tower::ServiceBuilder;
 use tower_governor::{governor::GovernorConfigBuilder, GovernorLayer};
 use tower_http::trace::TraceLayer;
 use uuid::Uuid;
@@ -105,18 +104,21 @@ pub async fn create_app(db: PgPool, config: Config) -> Result<Router, ApiError> 
     // (2 req/s, burst 5) are preserved as defaults when the variables are absent.
     let rl = &config.rate_limit;
 
-    let governor_conf = Arc::new(
-        GovernorConfigBuilder::default()
-            .per_second(rl.default_limit().per_second)
-            .burst_size(rl.default_limit().burst_size)
-            .finish()
-            .unwrap(),
+    let mut governor_builder = GovernorConfigBuilder::default();
+    governor_builder
+        .per_second(rl.default_limit().per_second)
+        .burst_size(rl.default_limit().burst_size);
+    let mut governor_builder = governor_builder.key_extractor(
+        crate::middleware::RateLimitKeyExtractor::new(rl.bypass_tokens.clone()),
     );
+    governor_builder.error_handler(crate::middleware::rate_limit_error_response);
+    let governor_conf = Arc::new(governor_builder.use_headers().finish().unwrap());
 
     let emergency_governor_conf = Arc::new(
         GovernorConfigBuilder::default()
             .per_second(rl.emergency_limit().per_second)
             .burst_size(rl.emergency_limit().burst_size)
+            .use_headers()
             .finish()
             .unwrap(),
     );
@@ -125,6 +127,7 @@ pub async fn create_app(db: PgPool, config: Config) -> Result<Router, ApiError> 
         GovernorConfigBuilder::default()
             .per_second(rl.admin_login_limit().per_second)
             .burst_size(rl.admin_login_limit().burst_size)
+            .use_headers()
             .finish()
             .unwrap(),
     );
@@ -146,13 +149,6 @@ pub async fn create_app(db: PgPool, config: Config) -> Result<Router, ApiError> 
             post(crate::auth::login_admin).layer(GovernorLayer {
                 config: admin_login_governor_conf,
             }),
-        )
-        .layer(
-            ServiceBuilder::new()
-                .layer(TraceLayer::new_for_http())
-                .layer(GovernorLayer {
-                    config: governor_conf,
-                }),
         )
         .route(
             "/api/plans/due-for-claim",
@@ -599,7 +595,18 @@ pub async fn create_app(db: PgPool, config: Config) -> Result<Router, ApiError> 
         )
         .with_state(price_feed_state);
 
-    Ok(app.merge(price_routes))
+    Ok(app
+        .merge(price_routes)
+        .layer(axum::middleware::from_fn(
+            crate::middleware::attach_correlation_id,
+        ))
+        .layer(axum::middleware::from_fn(
+            crate::middleware::log_rate_limit_violations,
+        ))
+        .layer(TraceLayer::new_for_http())
+        .layer(GovernorLayer {
+            config: governor_conf,
+        }))
 }
 
 async fn health_check() -> Json<Value> {
