@@ -470,7 +470,53 @@ pub struct WillVersionActivatedEvent {
     pub version: u32,
 }
 
-/// Proof that a vault owner has cryptographically signed a will.
+// Batch operation events
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct BatchBeneficiariesAddedEvent {
+    pub plan_id: u64,
+    pub success_count: u32,
+    pub fail_count: u32,
+}
+
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct BatchBeneficiariesRemovedEvent {
+    pub plan_id: u64,
+    pub success_count: u32,
+    pub fail_count: u32,
+}
+
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct BatchAllocationsUpdatedEvent {
+    pub plan_id: u64,
+    pub success_count: u32,
+}
+
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct BatchKycApprovedEvent {
+    pub success_count: u32,
+    pub fail_count: u32,
+}
+
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct BatchMessagesCreatedEvent {
+    pub vault_id: u64,
+    pub success_count: u32,
+    pub fail_count: u32,
+}
+
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct BatchClaimEvent {
+    pub plan_id: u64,
+    pub success_count: u32,
+    pub fail_count: u32,
+}
+
 #[contracttype]
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct WillSignatureProof {
@@ -3549,6 +3595,344 @@ impl InheritanceContract {
             .persistent()
             .get(&DataKey::WitnessSignature(vault_id, witness))
     }
+    // ── Batch Operations (Issue #483) ──
+
+    /// Maximum items allowed per batch operation
+    const BATCH_LIMIT: u32 = 20;
+    /// Lower limit for message batches (larger payloads)
+    const BATCH_MESSAGE_LIMIT: u32 = 10;
+
+    pub fn batch_add_beneficiaries(
+        env: Env,
+        owner: Address,
+        plan_id: u64,
+        inputs: Vec<BeneficiaryInput>,
+    ) -> Result<(u32, u32), InheritanceError> {
+        owner.require_auth();
+        if inputs.len() > Self::BATCH_LIMIT {
+            return Err(InheritanceError::TooManyBeneficiaries);
+        }
+        let mut plan = Self::get_plan(&env, plan_id).ok_or(InheritanceError::PlanNotFound)?;
+        if plan.owner != owner {
+            return Err(InheritanceError::Unauthorized);
+        }
+        let mut success: u32 = 0;
+        let mut fail: u32 = 0;
+        for input in inputs.iter() {
+            if plan.beneficiaries.len() >= 10 {
+                fail += 1;
+                continue;
+            }
+            if input.allocation_bp == 0 {
+                fail += 1;
+                continue;
+            }
+            let new_total = plan.total_allocation_bp + input.allocation_bp;
+            if new_total > 10000 {
+                fail += 1;
+                continue;
+            }
+            match Self::create_beneficiary(
+                &env,
+                input.name.clone(),
+                input.email.clone(),
+                input.claim_code,
+                input.bank_account.clone(),
+                input.allocation_bp,
+            ) {
+                Ok(beneficiary) => {
+                    plan.total_allocation_bp = new_total;
+                    plan.beneficiaries.push_back(beneficiary);
+                    success += 1;
+                }
+                Err(_) => {
+                    fail += 1;
+                }
+            }
+        }
+        Self::store_plan(&env, plan_id, &plan);
+        env.events().publish(
+            (symbol_short!("BATCH"), symbol_short!("BEN_ADD")),
+            BatchBeneficiariesAddedEvent { plan_id, success_count: success, fail_count: fail },
+        );
+        log!(&env, "batch_add_beneficiaries plan {}: {} ok, {} failed", plan_id, success, fail);
+        Ok((success, fail))
+    }
+
+    pub fn batch_remove_beneficiaries(
+        env: Env,
+        owner: Address,
+        plan_id: u64,
+        indices: Vec<u32>,
+    ) -> Result<(u32, u32), InheritanceError> {
+        owner.require_auth();
+        if indices.len() > Self::BATCH_LIMIT {
+            return Err(InheritanceError::TooManyBeneficiaries);
+        }
+        let mut plan = Self::get_plan(&env, plan_id).ok_or(InheritanceError::PlanNotFound)?;
+        if plan.owner != owner {
+            return Err(InheritanceError::Unauthorized);
+        }
+        let mut sorted: Vec<u32> = Vec::new(&env);
+        for idx in indices.iter() {
+            if idx < plan.beneficiaries.len() {
+                let mut already = false;
+                for s in sorted.iter() {
+                    if s == idx { already = true; break; }
+                }
+                if !already { sorted.push_back(idx); }
+            }
+        }
+        // Sort descending so highest index removed first
+        let n = sorted.len();
+        if n > 1 {
+            let mut i = 0;
+            while i < n {
+                let mut j = i + 1;
+                while j < n {
+                    if sorted.get(i).unwrap() < sorted.get(j).unwrap() {
+                        let a = sorted.get(i).unwrap();
+                        let b = sorted.get(j).unwrap();
+                        sorted.set(i, b);
+                        sorted.set(j, a);
+                    }
+                    j += 1;
+                }
+                i += 1;
+            }
+        }
+        let fail = (indices.len() as u32).saturating_sub(sorted.len());
+        let mut success: u32 = 0;
+        for idx in sorted.iter() {
+            if idx >= plan.beneficiaries.len() { continue; }
+            let removed = plan.beneficiaries.get(idx).unwrap();
+            plan.total_allocation_bp = plan.total_allocation_bp.saturating_sub(removed.allocation_bp);
+            let last = plan.beneficiaries.len() - 1;
+            if idx != last {
+                let last_ben = plan.beneficiaries.get(last).unwrap();
+                plan.beneficiaries.set(idx, last_ben);
+            }
+            plan.beneficiaries.pop_back();
+            success += 1;
+        }
+        Self::store_plan(&env, plan_id, &plan);
+        env.events().publish(
+            (symbol_short!("BATCH"), symbol_short!("BEN_REM")),
+            BatchBeneficiariesRemovedEvent { plan_id, success_count: success, fail_count: fail },
+        );
+        log!(&env, "batch_remove_beneficiaries plan {}: {} ok, {} failed", plan_id, success, fail);
+        Ok((success, fail))
+    }
+
+    pub fn batch_update_allocations(
+        env: Env,
+        owner: Address,
+        plan_id: u64,
+        new_allocations: Vec<u32>,
+    ) -> Result<(), InheritanceError> {
+        owner.require_auth();
+        if new_allocations.len() > Self::BATCH_LIMIT {
+            return Err(InheritanceError::TooManyBeneficiaries);
+        }
+        let mut plan = Self::get_plan(&env, plan_id).ok_or(InheritanceError::PlanNotFound)?;
+        if plan.owner != owner {
+            return Err(InheritanceError::Unauthorized);
+        }
+        if new_allocations.len() != plan.beneficiaries.len() {
+            return Err(InheritanceError::InvalidBeneficiaryData);
+        }
+        for bp in new_allocations.iter() {
+            if bp == 0 { return Err(InheritanceError::InvalidAllocation); }
+        }
+        let total: u32 = new_allocations.iter().sum();
+        if total != 10000 {
+            return Err(InheritanceError::AllocationPercentageMismatch);
+        }
+        for i in 0..plan.beneficiaries.len() {
+            let mut ben = plan.beneficiaries.get(i).unwrap();
+            ben.allocation_bp = new_allocations.get(i).unwrap();
+            plan.beneficiaries.set(i, ben);
+        }
+        plan.total_allocation_bp = 10000;
+        Self::store_plan(&env, plan_id, &plan);
+        env.events().publish(
+            (symbol_short!("BATCH"), symbol_short!("ALLOC")),
+            BatchAllocationsUpdatedEvent { plan_id, success_count: plan.beneficiaries.len() },
+        );
+        log!(&env, "batch_update_allocations plan {}: updated", plan_id);
+        Ok(())
+    }
+
+    pub fn batch_approve_kyc(
+        env: Env,
+        admin: Address,
+        users: Vec<Address>,
+    ) -> Result<(u32, u32), InheritanceError> {
+        Self::require_admin(&env, &admin)?;
+        if users.len() > Self::BATCH_LIMIT {
+            return Err(InheritanceError::TooManyBeneficiaries);
+        }
+        let mut success: u32 = 0;
+        let mut fail: u32 = 0;
+        let now = env.ledger().timestamp();
+        for user in users.iter() {
+            let key = DataKey::Kyc(user.clone());
+            let maybe_status: Option<KycStatus> = env.storage().persistent().get(&key);
+            match maybe_status {
+                None => { fail += 1; }
+                Some(mut status) => {
+                    if !status.submitted || status.approved {
+                        fail += 1;
+                        continue;
+                    }
+                    status.approved = true;
+                    status.approved_at = now;
+                    env.storage().persistent().set(&key, &status);
+                    env.events().publish(
+                        (symbol_short!("KYC"), symbol_short!("APPROV")),
+                        KycApprovedEvent { user: user.clone(), approved_at: now },
+                    );
+                    success += 1;
+                }
+            }
+        }
+        env.events().publish(
+            (symbol_short!("BATCH"), symbol_short!("KYC_APP")),
+            BatchKycApprovedEvent { success_count: success, fail_count: fail },
+        );
+        log!(&env, "batch_approve_kyc: {} approved, {} failed", success, fail);
+        Ok((success, fail))
+    }
+
+    pub fn batch_create_messages(
+        env: Env,
+        creator: Address,
+        params_list: Vec<CreateLegacyMessageParams>,
+    ) -> Result<(Vec<u64>, u32), InheritanceError> {
+        creator.require_auth();
+        if params_list.len() > Self::BATCH_MESSAGE_LIMIT {
+            return Err(InheritanceError::TooManyBeneficiaries);
+        }
+        let current_ts = env.ledger().timestamp();
+        let mut created_ids: Vec<u64> = Vec::new(&env);
+        let mut fail: u32 = 0;
+        let mut batch_vault_id: u64 = 0;
+        for params in params_list.iter() {
+            let plan = match Self::get_plan(&env, params.vault_id) {
+                Some(p) => p,
+                None => { fail += 1; continue; }
+            };
+            if plan.owner != creator { fail += 1; continue; }
+            if params.unlock_timestamp <= current_ts { fail += 1; continue; }
+            let message_id: u64 = env.storage().persistent().get(&DataKey::NextMessageId).unwrap_or(0u64);
+            let message = LegacyMessageMetadata {
+                vault_id: params.vault_id,
+                message_id,
+                message_hash: params.message_hash.clone(),
+                creator: creator.clone(),
+                key_reference: params.key_reference.clone(),
+                unlock_timestamp: params.unlock_timestamp,
+                is_unlocked: false,
+                is_finalized: false,
+                created_at: current_ts,
+            };
+            env.storage().persistent().set(&DataKey::LegacyMessage(message_id), &message);
+            let mut vault_msgs: Vec<u64> = env.storage().persistent().get(&DataKey::VaultMessages(params.vault_id)).unwrap_or_else(|| vec![&env]);
+            vault_msgs.push_back(message_id);
+            env.storage().persistent().set(&DataKey::VaultMessages(params.vault_id), &vault_msgs);
+            env.storage().persistent().set(&DataKey::NextMessageId, &(message_id + 1));
+            env.events().publish(
+                (Symbol::new(&env, "message_created"), params.vault_id),
+                MessageCreatedEvent { vault_id: params.vault_id, message_id, timestamp: current_ts },
+            );
+            if batch_vault_id == 0 { batch_vault_id = params.vault_id; }
+            created_ids.push_back(message_id);
+        }
+        let success = created_ids.len();
+        env.events().publish(
+            (symbol_short!("BATCH"), symbol_short!("MSG_CRE")),
+            BatchMessagesCreatedEvent { vault_id: batch_vault_id, success_count: success, fail_count: fail },
+        );
+        log!(&env, "batch_create_messages: {} created, {} failed", success, fail);
+        Ok((created_ids, fail))
+    }
+
+    pub fn batch_claim(
+        env: Env,
+        plan_id: u64,
+        claimers: Vec<(Address, String, u32)>,
+    ) -> Result<(u32, u32), InheritanceError> {
+        if claimers.len() > Self::BATCH_LIMIT {
+            return Err(InheritanceError::TooManyBeneficiaries);
+        }
+        let plan = Self::get_plan(&env, plan_id).ok_or(InheritanceError::PlanNotFound)?;
+        let triggered = Self::get_trigger_info(&env, plan_id).is_some();
+        if !plan.is_active { return Err(InheritanceError::PlanNotActive); }
+        if !triggered && !Self::is_claim_time_valid(&env, &plan) { return Err(InheritanceError::ClaimNotAllowedYet); }
+        let mut success: u32 = 0;
+        let mut fail: u32 = 0;
+        for entry in claimers.iter() {
+            let (claimer, email, claim_code) = entry;
+            claimer.require_auth();
+            if Self::check_kyc_approved(&env, &claimer).is_err() { fail += 1; continue; }
+            let hashed_email = Self::hash_string(&env, email.clone());
+            let hashed_claim_code = match Self::hash_claim_code(&env, claim_code) {
+                Ok(h) => h,
+                Err(_) => { fail += 1; continue; }
+            };
+            let claim_key = {
+                let mut data = Bytes::new(&env);
+                data.extend_from_slice(&plan_id.to_be_bytes());
+                data.extend_from_slice(&hashed_email.to_array());
+                DataKey::Claim(env.crypto().sha256(&data).into())
+            };
+            if env.storage().persistent().has(&claim_key) { fail += 1; continue; }
+            let current_plan = match Self::get_plan(&env, plan_id) {
+                Some(p) => p,
+                None => { fail += 1; continue; }
+            };
+            let mut beneficiary_index: Option<u32> = None;
+            for i in 0..current_plan.beneficiaries.len() {
+                let b = current_plan.beneficiaries.get(i).unwrap();
+                if b.hashed_email == hashed_email && b.hashed_claim_code == hashed_claim_code {
+                    beneficiary_index = Some(i);
+                    break;
+                }
+            }
+            let index = match beneficiary_index { Some(i) => i, None => { fail += 1; continue; } };
+            let beneficiary = current_plan.beneficiaries.get(index).unwrap();
+            let base_payout = (current_plan.total_amount as u128)
+                .checked_mul(beneficiary.allocation_bp as u128)
+                .and_then(|v| v.checked_div(10000))
+                .unwrap_or(0) as u64;
+            if Self::is_emergency_active(&env, plan_id) {
+                let limit = (current_plan.total_amount as u128)
+                    .checked_mul(EMERGENCY_TRANSFER_LIMIT_BP as u128)
+                    .and_then(|v| v.checked_div(10000))
+                    .unwrap_or(0) as u64;
+                if base_payout > limit { fail += 1; continue; }
+            }
+            let available = current_plan.total_amount.saturating_sub(current_plan.total_loaned);
+            let claim = ClaimRecord { plan_id, beneficiary_index: index, claimed_at: env.ledger().timestamp() };
+            env.storage().persistent().set(&claim_key, &claim);
+            let mut updated = current_plan.clone();
+            updated.total_amount = updated.total_amount.saturating_sub(base_payout);
+            Self::store_plan(&env, plan_id, &updated);
+            Self::add_plan_to_claimed(&env, current_plan.owner.clone(), plan_id);
+            env.events().publish(
+                (symbol_short!("CLAIM"), symbol_short!("SUCCESS")),
+                (plan_id, hashed_email, base_payout),
+            );
+            success += 1;
+        }
+        env.events().publish(
+            (symbol_short!("BATCH"), symbol_short!("CLAIM")),
+            BatchClaimEvent { plan_id, success_count: success, fail_count: fail },
+        );
+        log!(&env, "batch_claim plan {}: {} claimed, {} failed", plan_id, success, fail);
+        Ok((success, fail))
+    }
+
 }
 
 #[cfg(test)]
