@@ -1,0 +1,12 @@
+On branch feature/multi-asset-lending-491
+Changes not staged for commit:
+  (use "git add <file>..." to update what will be committed)
+  (use "git restore <file>..." to discard changes in working directory)
+	modified:   contracts/lending-contract/src/lib.rs
+
+Untracked files:
+  (use "git add <file>..." to include in what will be committed)
+	git_branch_check.txt
+	git_status_check.txt
+
+no changes added to commit (use "git add" and/or "git commit -a")
