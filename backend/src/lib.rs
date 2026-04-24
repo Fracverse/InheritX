@@ -4,6 +4,8 @@ pub mod api_error;
 pub mod app;
 pub mod auth;
 pub mod beneficiary_sync;
+pub mod circuit_breaker;
+pub mod retry;
 pub mod collateral_management;
 pub mod compliance;
 pub mod config;
@@ -45,6 +47,7 @@ pub mod yield_service;
 
 pub use api_error::ApiError;
 pub use app::create_app;
+pub use circuit_breaker::CircuitBreaker;
 pub use compliance::ComplianceEngine;
 pub use config::Config;
 pub use events::{EventService, EventType, LendingEvent};
