@@ -1,11 +1,103 @@
 use crate::api_error::ApiError;
 use serde::Deserialize;
 
+/// Per-endpoint rate-limit settings (requests per second + burst allowance).
+#[derive(Debug, Deserialize, Clone)]
+pub struct EndpointRateLimit {
+    /// Sustained requests per second.
+    pub per_second: u64,
+    /// Maximum burst above the sustained rate.
+    pub burst_size: u32,
+}
+
+impl EndpointRateLimit {
+    fn new(per_second: u64, burst_size: u32) -> Self {
+        Self {
+            per_second,
+            burst_size,
+        }
+    }
+}
+
+/// Configurable rate-limiting settings loaded from environment variables.
+///
+/// Each limit is independently configurable; sensible defaults are provided so
+/// deployments that do not set a variable still function correctly.
+#[derive(Debug, Deserialize, Clone)]
+pub struct RateLimitConfig {
+    /// Global default applied to all routes not listed below.
+    pub default_per_second: u64,
+    /// Global default burst size.
+    pub default_burst_size: u32,
+    /// Limit for emergency-access endpoints (grant/revoke).
+    pub emergency_per_second: u64,
+    pub emergency_burst_size: u32,
+    /// Limit for the admin login endpoint.
+    pub admin_login_per_second: u64,
+    pub admin_login_burst_size: u32,
+    /// Comma-separated list of API key values that are exempt from rate limiting
+    /// (admin / internal services).  Values are compared against the
+    /// `X-Internal-Token` request header.
+    pub bypass_tokens: Vec<String>,
+}
+
+impl RateLimitConfig {
+    fn load() -> Self {
+        let bypass_raw = std::env::var("RATE_LIMIT_BYPASS_TOKENS").unwrap_or_default();
+        let bypass_tokens = bypass_raw
+            .split(',')
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+            .map(String::from)
+            .collect();
+
+        Self {
+            default_per_second: parse_env("RATE_LIMIT_DEFAULT_PER_SECOND", 2),
+            default_burst_size: parse_env("RATE_LIMIT_DEFAULT_BURST_SIZE", 5),
+            emergency_per_second: parse_env("RATE_LIMIT_EMERGENCY_PER_SECOND", 1),
+            emergency_burst_size: parse_env("RATE_LIMIT_EMERGENCY_BURST_SIZE", 2),
+            admin_login_per_second: parse_env("RATE_LIMIT_ADMIN_LOGIN_PER_SECOND", 1),
+            admin_login_burst_size: parse_env("RATE_LIMIT_ADMIN_LOGIN_BURST_SIZE", 3),
+            bypass_tokens,
+        }
+    }
+
+    /// Returns the default endpoint rate-limit as an [`EndpointRateLimit`].
+    pub fn default_limit(&self) -> EndpointRateLimit {
+        EndpointRateLimit::new(self.default_per_second, self.default_burst_size)
+    }
+
+    /// Returns the emergency-access endpoint rate-limit.
+    pub fn emergency_limit(&self) -> EndpointRateLimit {
+        EndpointRateLimit::new(self.emergency_per_second, self.emergency_burst_size)
+    }
+
+    /// Returns the admin login endpoint rate-limit.
+    pub fn admin_login_limit(&self) -> EndpointRateLimit {
+        EndpointRateLimit::new(self.admin_login_per_second, self.admin_login_burst_size)
+    }
+
+    /// Returns a permissive config suitable for unit/integration tests.
+    /// High limits prevent tests from tripping the rate limiter.
+    pub fn default_for_tests() -> Self {
+        Self {
+            default_per_second: 1000,
+            default_burst_size: 1000,
+            emergency_per_second: 1000,
+            emergency_burst_size: 1000,
+            admin_login_per_second: 1000,
+            admin_login_burst_size: 1000,
+            bypass_tokens: Vec::new(),
+        }
+    }
+}
+
 #[derive(Debug, Deserialize, Clone)]
 pub struct Config {
     pub database_url: String,
     pub port: u16,
     pub jwt_secret: String,
+    pub rate_limit: RateLimitConfig,
 }
 
 impl Config {
@@ -23,10 +115,21 @@ impl Config {
         let jwt_secret = std::env::var("JWT_SECRET")
             .map_err(|_| ApiError::Internal(anyhow::anyhow!("JWT_SECRET must be set")))?;
 
+        let rate_limit = RateLimitConfig::load();
+
         Ok(Config {
             database_url,
             port,
             jwt_secret,
+            rate_limit,
         })
     }
+}
+
+/// Parse an environment variable as `T`, falling back to `default` on any error.
+fn parse_env<T: std::str::FromStr>(key: &str, default: T) -> T {
+    std::env::var(key)
+        .ok()
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(default)
 }
