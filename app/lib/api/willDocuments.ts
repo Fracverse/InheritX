@@ -21,7 +21,7 @@ export interface WillEvent {
   plan_id: string;
   vault_id: string;
   timestamp: string;
-  [key: string]: any;
+  [key: string]: unknown;
 }
 
 export interface EventStats {

@@ -6,13 +6,14 @@ import { EmergencyStatus as StatusType } from "@/app/lib/api/emergency";
 
 interface Props {
   status: StatusType;
+  currentTime: number;
   onActivate: () => void;
   onRevoke: () => void;
 }
 
-export default function EmergencyStatus({ status, onActivate, onRevoke }: Props) {
+export default function EmergencyStatus({ status, currentTime, onActivate, onRevoke }: Props) {
   const isActive = status.is_active;
-  const isCooldown = status.cooldown_until && new Date(status.cooldown_until) > new Date();
+  const isCooldown = status.cooldown_until && new Date(status.cooldown_until).getTime() > currentTime;
 
   return (
     <div className="grid gap-6 md:grid-cols-2">

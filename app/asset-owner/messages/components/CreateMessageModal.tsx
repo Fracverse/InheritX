@@ -1,12 +1,20 @@
 "use client";
 
 import React, { useState } from "react";
-import { X, Calendar, Lock, Shield, FileText, UserPlus } from "lucide-react";
+import { X, Calendar, Shield, FileText, UserPlus } from "lucide-react";
 
 interface Props {
   onClose: () => void;
-  onSave: (data: any) => void;
-  initialData?: any;
+  onSave: (data: {
+    title: string;
+    vault_id: string;
+    content: string;
+    unlock_at: string;
+    beneficiaries: string;
+    encrypt: boolean;
+    beneficiary_ids: string[];
+  }) => void;
+  initialData?: Partial<LegacyMessage>;
 }
 
 export default function CreateMessageModal({ onClose, onSave, initialData }: Props) {
@@ -23,13 +31,13 @@ export default function CreateMessageModal({ onClose, onSave, initialData }: Pro
     e.preventDefault();
     onSave({
       ...formData,
-      beneficiary_ids: formData.beneficiaries.split(",").map(b => b.trim()).filter(b => b)
+      beneficiary_ids: formData.beneficiaries.split(",").map((b: string) => b.trim()).filter((b: string) => b)
     });
   };
 
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/60 backdrop-blur-sm">
-      <div className="bg-[#161E22] w-full max-w-2xl rounded-[32px] border border-[#2A3338] shadow-2xl overflow-hidden animate-in fade-in zoom-in duration-300">
+      <div className="bg-[#161E22] w-full max-w-2xl rounded-[32px] border border-[#2A3338] shadow-2xl overflow-hidden animate-fade-in">
         <div className="p-8 border-b border-[#2A3338] flex justify-between items-center bg-[#182024]">
           <div className="flex items-center gap-3">
             <div className="p-2 bg-[#33C5E0]/10 text-[#33C5E0] rounded-lg">

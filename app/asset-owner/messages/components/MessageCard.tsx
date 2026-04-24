@@ -1,24 +1,25 @@
 "use client";
 
 import React from "react";
-import { Clock, Lock, Unlock, MoreVertical, Edit2, Trash2, ShieldCheck } from "lucide-react";
+import { Clock, Lock, Unlock, Edit2, Trash2, ShieldCheck } from "lucide-react";
 import { LegacyMessage } from "@/app/lib/api/messages";
 
 interface Props {
   message: LegacyMessage;
+  currentTime: number;
   onEdit: (message: LegacyMessage) => void;
   onDelete: (id: string) => void;
   onFinalize: (id: string) => void;
   onView: (message: LegacyMessage) => void;
 }
 
-export default function MessageCard({ message, onEdit, onDelete, onFinalize, onView }: Props) {
+export default function MessageCard({ message, currentTime, onEdit, onDelete, onFinalize, onView }: Props) {
   const isDraft = message.status === 'DRAFT';
   const isFinalized = message.status === 'FINALIZED';
   const isUnlocked = message.status === 'UNLOCKED';
 
   const timeRemaining = () => {
-    const diff = new Date(message.unlock_at).getTime() - Date.now();
+    const diff = new Date(message.unlock_at).getTime() - currentTime;
     if (diff <= 0) return "Ready to unlock";
     const days = Math.floor(diff / (1000 * 60 * 60 * 24));
     const hours = Math.floor((diff % (1000 * 60 * 60 * 24)) / (1000 * 60 * 60));

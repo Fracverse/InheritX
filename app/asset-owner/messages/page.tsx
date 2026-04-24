@@ -54,22 +54,38 @@ export default function MessagesPage() {
   const [editingMessage, setEditingMessage] = useState<LegacyMessage | null>(null);
   const [activeTab, setActiveTab] = useState<"all" | "drafts" | "finalized" | "unlocked">("all");
   const [showAudit, setShowAudit] = useState(false);
+  const [currentTime, setCurrentTime] = useState(0);
+
+  React.useEffect(() => {
+    setCurrentTime(Date.now());
+  }, []);
 
   const filteredMessages = messages.filter(m => {
     if (activeTab === "all") return true;
-    return m.status.toLowerCase() === activeTab.slice(0, -1);
+    const statusLower = m.status.toLowerCase();
+    const tabLower = activeTab.toLowerCase();
+    // Match "drafts" with "draft", "finalized" with "finalized", etc.
+    return statusLower === tabLower || statusLower === tabLower.replace(/s$/, '');
   });
 
-  const handleSave = (data: any) => {
+  const handleSave = (data: {
+    title: string;
+    vault_id: string;
+    content: string;
+    unlock_at: string;
+    beneficiaries: string;
+    encrypt: boolean;
+    beneficiary_ids: string[];
+  }) => {
     if (editingMessage) {
-      setMessages(messages.map(m => m.id === editingMessage.id ? { ...m, ...data, updated_at: new Date().toISOString() } : m));
+      setMessages(messages.map(m => m.id === editingMessage.id ? { ...m, ...data, updated_at: new Date(currentTime).toISOString() } : m));
     } else {
       const newMessage: LegacyMessage = {
-        id: `msg_${Date.now()}`,
+        id: `msg_${currentTime}`,
         ...data,
         status: 'DRAFT',
-        created_at: new Date().toISOString(),
-        updated_at: new Date().toISOString(),
+        created_at: new Date(currentTime).toISOString(),
+        updated_at: new Date(currentTime).toISOString(),
         content_encrypted: "encrypted_" + btoa(data.content)
       };
       setMessages([newMessage, ...messages]);
@@ -79,15 +95,11 @@ export default function MessagesPage() {
   };
 
   const handleFinalize = (id: string) => {
-    if (confirm("Are you sure you want to finalize this message? It will be locked and cannot be edited until the unlock date.")) {
-      setMessages(messages.map(m => m.id === id ? { ...m, status: 'FINALIZED' } : m));
-    }
+    setMessages(messages.map(m => m.id === id ? { ...m, status: 'FINALIZED' } : m));
   };
 
   const handleDelete = (id: string) => {
-    if (confirm("Are you sure you want to delete this message?")) {
-      setMessages(messages.filter(m => m.id !== id));
-    }
+    setMessages(messages.filter(m => m.id !== id));
   };
 
   return (
@@ -116,7 +128,7 @@ export default function MessagesPage() {
           {["all", "drafts", "finalized", "unlocked"].map((tab) => (
             <button
               key={tab}
-              onClick={() => setActiveTab(tab as any)}
+              onClick={() => setActiveTab(tab as "all" | "drafts" | "finalized" | "unlocked")}
               className={`px-6 py-2 rounded-lg text-xs font-bold uppercase transition-all ${
                 activeTab === tab ? 'bg-[#33C5E0] text-[#161E22]' : 'text-[#92A5A8] hover:text-[#FCFFFF]'
               }`}
@@ -149,7 +161,7 @@ export default function MessagesPage() {
 
       {/* Content */}
       {showAudit ? (
-        <div className="bg-[#182024] rounded-2xl border border-[#1C252A] overflow-hidden animate-in fade-in slide-in-from-top-4 duration-300">
+        <div className="bg-[#182024] rounded-2xl border border-[#1C252A] overflow-hidden animate-fade-in">
           <div className="p-6 border-b border-[#1C252A] bg-[#1C252A]/50 flex justify-between items-center">
             <h2 className="text-xl font-bold text-[#FCFFFF] flex items-center gap-2">
               <History size={20} className="text-[#33C5E0]" />
@@ -186,13 +198,14 @@ export default function MessagesPage() {
             <MessageCard 
               key={msg.id} 
               message={msg} 
+              currentTime={currentTime}
               onEdit={(m) => {
                 setEditingMessage(m);
                 setShowCreateModal(true);
               }}
               onDelete={handleDelete}
               onFinalize={handleFinalize}
-              onView={(m) => alert(`Viewing message: ${m.title}\nStatus: ${m.status}`)}
+              onView={() => { /* Logic to open view modal */ }}
             />
           ))}
 

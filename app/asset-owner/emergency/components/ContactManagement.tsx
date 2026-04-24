@@ -48,7 +48,7 @@ export default function ContactManagement({ contacts, onAdd, onRemove }: Props) 
       </div>
 
       {isAdding && (
-        <form onSubmit={handleSubmit} className="bg-[#1C252A] p-6 rounded-2xl border border-[#33C5E0]/30 animate-in fade-in zoom-in duration-200">
+        <form onSubmit={handleSubmit} className="bg-[#1C252A] p-6 rounded-2xl border border-[#33C5E0]/30 animate-fade-in">
           <div className="flex justify-between items-center mb-4">
             <h3 className="font-semibold text-[#FCFFFF]">New Emergency Contact</h3>
             <button type="button" onClick={() => setIsAdding(false)} className="text-[#92A5A8] hover:text-[#FCFFFF]">

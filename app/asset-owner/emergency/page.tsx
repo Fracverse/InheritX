@@ -57,6 +57,11 @@ const MOCK_LOGS: LogType[] = [
 
 export default function EmergencyPage() {
   const [activeTab, setActiveTab] = useState<"overview" | "contacts" | "guardians" | "requests" | "logs">("overview");
+  const [currentTime, setCurrentTime] = useState(0);
+
+  useEffect(() => {
+    setCurrentTime(Date.now());
+  }, []);
   
   // Real state would come from API, using mock for now
   const [contacts, setContacts] = useState<EmergencyContact[]>(MOCK_CONTACTS);
@@ -66,14 +71,12 @@ export default function EmergencyPage() {
   const [logs, setLogs] = useState<LogType[]>(MOCK_LOGS);
 
   const handleActivate = () => {
-    if (confirm("Are you sure you want to MANUALLY activate emergency access? This will trigger the 10% withdrawal limit for 7 days.")) {
-      setStatus({ ...status, is_active: true, activated_at: new Date().toISOString() });
-      addLog("ACTIVATE_EMERGENCY", "Owner (You)", "Manual activation");
-    }
+    setStatus({ ...status, is_active: true, activated_at: new Date(currentTime).toISOString() });
+    addLog("ACTIVATE_EMERGENCY", "Owner (You)", "Manual activation");
   };
 
   const handleRevoke = () => {
-    setStatus({ ...status, is_active: false, cooldown_until: new Date(Date.now() + 86400000).toISOString() });
+    setStatus({ ...status, is_active: false, cooldown_until: new Date(currentTime + 86400000).toISOString() });
     addLog("REVOKE_EMERGENCY", "Owner (You)", "Manual revocation");
   };
 
@@ -107,7 +110,7 @@ export default function EmergencyPage() {
         ].map((tab) => (
           <button
             key={tab.id}
-            onClick={() => setActiveTab(tab.id as any)}
+            onClick={() => setActiveTab(tab.id as "overview" | "contacts" | "guardians" | "requests" | "logs")}
             className={`px-6 py-2.5 rounded-lg text-sm font-semibold transition-all ${
               activeTab === tab.id 
                 ? 'bg-[#33C5E0] text-[#161E22] shadow-lg' 
@@ -120,10 +123,11 @@ export default function EmergencyPage() {
       </div>
 
       {/* Content */}
-      <div className="animate-in fade-in slide-in-from-bottom-4 duration-500">
+      <div className="animate-fade-in">
         {activeTab === "overview" && (
           <EmergencyStatus 
             status={status} 
+            currentTime={currentTime}
             onActivate={handleActivate} 
             onRevoke={handleRevoke} 
           />
@@ -132,12 +136,12 @@ export default function EmergencyPage() {
         {activeTab === "contacts" && (
           <ContactManagement 
             contacts={contacts}
-            onAdd={(c) => {
+            onAdd={(c: Omit<EmergencyContact, 'id' | 'added_at'>) => {
               const newContact = { ...c, id: Date.now().toString(), added_at: new Date().toISOString() };
               setContacts([...contacts, newContact]);
               addLog("ADD_CONTACT", "Owner (You)", `Added ${c.name}`);
             }}
-            onRemove={(id) => {
+            onRemove={(id: string) => {
               const contact = contacts.find(c => c.id === id);
               setContacts(contacts.filter(c => c.id !== id));
               if (contact) addLog("REMOVE_CONTACT", "Owner (You)", `Removed ${contact.name}`);
@@ -151,7 +155,6 @@ export default function EmergencyPage() {
             threshold={2}
             onUpdateGuardians={(addrs, threshold) => {
               // Real implementation would call API
-              console.log("Updating guardians", addrs, threshold);
               addLog("UPDATE_GUARDIANS", "Owner (You)", `Updated threshold to ${threshold}`);
             }}
           />
