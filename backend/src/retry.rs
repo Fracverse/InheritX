@@ -72,7 +72,11 @@ impl RetryConfig {
 ///     db_pool.execute("SELECT 1").await.map_err(ApiError::from)
 /// }, |e| e.is_transient()).await;
 /// ```
-pub async fn retry_async<F, Fut, T, E, P>(config: RetryConfig, mut operation: F, is_transient: P) -> Result<T, E>
+pub async fn retry_async<F, Fut, T, E, P>(
+    config: RetryConfig,
+    mut operation: F,
+    is_transient: P,
+) -> Result<T, E>
 where
     F: FnMut() -> Fut,
     Fut: Future<Output = Result<T, E>>,

@@ -13,7 +13,6 @@ use thiserror::Error;
 #[derive(Debug, Error)]
 pub enum ApiError {
     // ── 5xx ──────────────────────────────────────────────────────────────────
-
     /// Catch-all for unexpected internal failures.
     #[error("An unexpected internal error occurred. Please try again later.")]
     Internal(#[from] anyhow::Error),
@@ -51,7 +50,6 @@ pub enum ApiError {
     ServiceUnavailable(String),
 
     // ── 4xx ──────────────────────────────────────────────────────────────────
-
     /// JWT missing, expired, or signature invalid.
     #[error("Authentication is required to access this resource.")]
     Unauthorized,
@@ -91,7 +89,10 @@ impl ApiError {
     pub fn is_transient(&self) -> bool {
         matches!(
             self,
-            Self::DatabaseConnection(_) | Self::ExternalService(_) | Self::Timeout | Self::ServiceUnavailable(_)
+            Self::DatabaseConnection(_)
+                | Self::ExternalService(_)
+                | Self::Timeout
+                | Self::ServiceUnavailable(_)
         )
     }
 
