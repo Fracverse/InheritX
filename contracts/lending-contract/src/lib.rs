@@ -38,7 +38,7 @@ pub struct PoolState {
     pub late_fee_rate_bps: u32, // Late fee rate in basis points per day (e.g., 500 = 5% per day)
     pub reserve_factor_bps: u32, // Reserve factor in basis points (e.g., 1000 = 10%)
     pub total_protocol_revenue: u64, // Total protocol revenue accumulated
-    pub is_paused: bool, // Per-asset pause functionality
+    pub is_paused: bool,     // Per-asset pause functionality
 }
 
 const SECONDS_IN_YEAR: u64 = 31_536_000;
@@ -361,8 +361,8 @@ pub enum DataKey {
     ReentrancyGuard,
     LateFeesAccrued(u64), // Track late fees for a specific loan_id
     FlashLoanFeeBps,
-    UserLoans(Address), // Track multiple loans per user (Vec<u64>)
-    RewardPool(Address), // Per-asset reward pool
+    UserLoans(Address),          // Track multiple loans per user (Vec<u64>)
+    RewardPool(Address),         // Per-asset reward pool
     UserStake(Address, Address), // (User, Asset) staking position
 }
 
@@ -393,15 +393,17 @@ impl LendingContract {
             return Err(LendingError::AlreadyInitialized);
         }
         env.storage().instance().set(&DataKey::Admin, &admin);
-        
+
         let mut assets = Vec::new(&env);
         assets.push_back(token.clone());
-        env.storage().instance().set(&DataKey::SupportedAssets, &assets);
+        env.storage()
+            .instance()
+            .set(&DataKey::SupportedAssets, &assets);
 
         env.storage()
             .instance()
             .set(&DataKey::CollateralRatio, &collateral_ratio_bps);
-            
+
         env.storage().instance().set(
             &DataKey::PoolState(token.clone()),
             &PoolState {
@@ -462,7 +464,9 @@ impl LendingContract {
         }
 
         assets.push_back(asset.clone());
-        env.storage().instance().set(&DataKey::SupportedAssets, &assets);
+        env.storage()
+            .instance()
+            .set(&DataKey::SupportedAssets, &assets);
 
         env.storage().instance().set(
             &DataKey::PoolState(asset.clone()),
@@ -726,9 +730,10 @@ impl LendingContract {
         user_stake.reward_per_token_paid = reward_pool.reward_per_token_stored;
         user_stake.rewards = Self::calculate_pending_rewards(env, user, asset);
 
-        env.storage()
-            .instance()
-            .set(&DataKey::UserStake(user.clone(), asset.clone()), &user_stake);
+        env.storage().instance().set(
+            &DataKey::UserStake(user.clone(), asset.clone()),
+            &user_stake,
+        );
     }
 
     /// Get user's pending rewards (internal helper)
@@ -878,7 +883,12 @@ impl LendingContract {
 
     /// Deposit `amount` of the specific asset into its pool.
     /// Mints proportional pool shares to the depositor.
-    pub fn deposit(env: Env, depositor: Address, asset: Address, amount: u64) -> Result<u64, LendingError> {
+    pub fn deposit(
+        env: Env,
+        depositor: Address,
+        asset: Address,
+        amount: u64,
+    ) -> Result<u64, LendingError> {
         Self::require_initialized(&env)?;
         Self::enter_reentrancy_guard(&env)?;
         depositor.require_auth();
@@ -938,7 +948,12 @@ impl LendingContract {
 
     /// Burn `shares` and return the proportional underlying tokens to the depositor.
     /// Reverts if insufficient liquidity (i.e., tokens are loaned out).
-    pub fn withdraw(env: Env, depositor: Address, asset: Address, shares: u64) -> Result<u64, LendingError> {
+    pub fn withdraw(
+        env: Env,
+        depositor: Address,
+        asset: Address,
+        shares: u64,
+    ) -> Result<u64, LendingError> {
         Self::require_initialized(&env)?;
         Self::enter_reentrancy_guard(&env)?;
         depositor.require_auth();
@@ -1330,7 +1345,12 @@ impl LendingContract {
 
     /// Withdraw prioritized funds from the retained yield for a specific asset.
     /// Used by authorized contracts (like InheritanceContract) to fulfill priority claims.
-    pub fn withdraw_priority(env: Env, caller: Address, asset: Address, amount: u64) -> Result<u64, LendingError> {
+    pub fn withdraw_priority(
+        env: Env,
+        caller: Address,
+        asset: Address,
+        amount: u64,
+    ) -> Result<u64, LendingError> {
         Self::require_initialized(&env)?;
         Self::enter_reentrancy_guard(&env)?;
         caller.require_auth();
@@ -1359,7 +1379,13 @@ impl LendingContract {
                 amount,
             },
         );
-        log!(&env, "Priority withdrawal {} tokens of asset {} by {}", amount, asset, caller);
+        log!(
+            &env,
+            "Priority withdrawal {} tokens of asset {} by {}",
+            amount,
+            asset,
+            caller
+        );
         Self::exit_reentrancy_guard(&env);
         Ok(amount)
     }
@@ -1602,7 +1628,12 @@ impl LendingContract {
         Ok(())
     }
 
-    pub fn flash_loan(env: Env, receiver_id: Address, asset: Address, amount: u64) -> Result<(), LendingError> {
+    pub fn flash_loan(
+        env: Env,
+        receiver_id: Address,
+        asset: Address,
+        amount: u64,
+    ) -> Result<(), LendingError> {
         Self::require_initialized(&env)?;
         Self::enter_reentrancy_guard(&env)?;
 
@@ -1670,7 +1701,12 @@ impl LendingContract {
     // ─── Yield Farming Functions ───────────────────────
 
     /// Stake LP tokens (shares) for rewards for a specific asset
-    pub fn stake_lp_tokens(env: Env, user: Address, asset: Address, amount: u64) -> Result<(), LendingError> {
+    pub fn stake_lp_tokens(
+        env: Env,
+        user: Address,
+        asset: Address,
+        amount: u64,
+    ) -> Result<(), LendingError> {
         Self::require_initialized(&env)?;
         user.require_auth();
 
@@ -1686,8 +1722,11 @@ impl LendingContract {
 
         // Update reward pool first
         Self::update_reward_pool(&env, &asset);
-        let mut reward_pool: RewardPool =
-            env.storage().instance().get(&DataKey::RewardPool(asset.clone())).unwrap();
+        let mut reward_pool: RewardPool = env
+            .storage()
+            .instance()
+            .get(&DataKey::RewardPool(asset.clone()))
+            .unwrap();
 
         // Update user stake
         let mut user_stake: UserStake = env
@@ -1718,9 +1757,10 @@ impl LendingContract {
         env.storage()
             .instance()
             .set(&DataKey::RewardPool(asset.clone()), &reward_pool);
-        env.storage()
-            .instance()
-            .set(&DataKey::UserStake(user.clone(), asset.clone()), &user_stake);
+        env.storage().instance().set(
+            &DataKey::UserStake(user.clone(), asset.clone()),
+            &user_stake,
+        );
 
         // Emit event
         env.events().publish(
@@ -1732,12 +1772,23 @@ impl LendingContract {
             },
         );
 
-        log!(&env, "Staked {} LP tokens of asset {} for user {:?}", amount, asset, user);
+        log!(
+            &env,
+            "Staked {} LP tokens of asset {} for user {:?}",
+            amount,
+            asset,
+            user
+        );
         Ok(())
     }
 
     /// Unstake LP tokens and claim pending rewards for a specific asset
-    pub fn unstake_lp_tokens(env: Env, user: Address, asset: Address, amount: u64) -> Result<(), LendingError> {
+    pub fn unstake_lp_tokens(
+        env: Env,
+        user: Address,
+        asset: Address,
+        amount: u64,
+    ) -> Result<(), LendingError> {
         Self::require_initialized(&env)?;
         user.require_auth();
 
@@ -1775,17 +1826,21 @@ impl LendingContract {
         }
 
         // Update reward pool
-        let mut reward_pool: RewardPool =
-            env.storage().instance().get(&DataKey::RewardPool(asset.clone())).unwrap();
+        let mut reward_pool: RewardPool = env
+            .storage()
+            .instance()
+            .get(&DataKey::RewardPool(asset.clone()))
+            .unwrap();
         reward_pool.total_staked = reward_pool.total_staked.saturating_sub(amount);
 
         // Save state
         env.storage()
             .instance()
             .set(&DataKey::RewardPool(asset.clone()), &reward_pool);
-        env.storage()
-            .instance()
-            .set(&DataKey::UserStake(user.clone(), asset.clone()), &user_stake);
+        env.storage().instance().set(
+            &DataKey::UserStake(user.clone(), asset.clone()),
+            &user_stake,
+        );
 
         // Emit event
         env.events().publish(
@@ -1830,9 +1885,10 @@ impl LendingContract {
 
         // Reset claimed rewards
         user_stake.rewards = 0;
-        env.storage()
-            .instance()
-            .set(&DataKey::UserStake(user.clone(), asset.clone()), &user_stake);
+        env.storage().instance().set(
+            &DataKey::UserStake(user.clone(), asset.clone()),
+            &user_stake,
+        );
 
         // Emit event
         env.events().publish(
@@ -1906,7 +1962,12 @@ impl LendingContract {
     }
 
     /// Set reward rate for an asset (admin only)
-    pub fn set_reward_rate(env: Env, admin: Address, asset: Address, new_rate: u64) -> Result<(), LendingError> {
+    pub fn set_reward_rate(
+        env: Env,
+        admin: Address,
+        asset: Address,
+        new_rate: u64,
+    ) -> Result<(), LendingError> {
         Self::require_admin(&env, &admin)?;
 
         if new_rate == 0 {
@@ -1916,8 +1977,11 @@ impl LendingContract {
         // Update rewards before changing rate
         Self::update_reward_pool(&env, &asset);
 
-        let mut reward_pool: RewardPool =
-            env.storage().instance().get(&DataKey::RewardPool(asset.clone())).unwrap();
+        let mut reward_pool: RewardPool = env
+            .storage()
+            .instance()
+            .get(&DataKey::RewardPool(asset.clone()))
+            .unwrap();
         let old_rate = reward_pool.reward_rate;
         reward_pool.reward_rate = new_rate;
 
@@ -2120,7 +2184,13 @@ impl LendingContract {
         let contract_id = env.current_contract_address();
 
         // Transfer refinancing fee from borrower to contract
-        Self::transfer(&env, &old_loan.asset, &borrower, &contract_id, terms.refinancing_fee)?;
+        Self::transfer(
+            &env,
+            &old_loan.asset,
+            &borrower,
+            &contract_id,
+            terms.refinancing_fee,
+        )?;
 
         // Close old loan
         env.storage()
@@ -2248,7 +2318,8 @@ impl LendingContract {
             }
 
             // Check if this specific loan is overdue (cannot consolidate overdue loans)
-            let loan_grace_end = loan.due_date + Self::get_pool(&env, &loan.asset)?.grace_period_seconds;
+            let loan_grace_end =
+                loan.due_date + Self::get_pool(&env, &loan.asset)?.grace_period_seconds;
             let current_time = env.ledger().timestamp();
             if current_time > loan_grace_end {
                 return Err(LendingError::CannotRefinance);
@@ -2283,7 +2354,13 @@ impl LendingContract {
 
         // Transfer consolidation fee
         let contract_id = env.current_contract_address();
-        Self::transfer(&env, &consolidation_asset, &borrower, &contract_id, consolidation_fee)?;
+        Self::transfer(
+            &env,
+            &consolidation_asset,
+            &borrower,
+            &contract_id,
+            consolidation_fee,
+        )?;
 
         // Remove old loans
         for loan in old_loans.iter() {
@@ -2590,7 +2667,12 @@ impl LendingContract {
         Ok(pool.total_protocol_revenue)
     }
 
-    pub fn withdraw_reserves(env: Env, admin: Address, asset: Address, amount: u64) -> Result<(), LendingError> {
+    pub fn withdraw_reserves(
+        env: Env,
+        admin: Address,
+        asset: Address,
+        amount: u64,
+    ) -> Result<(), LendingError> {
         admin.require_auth();
 
         // Verify admin

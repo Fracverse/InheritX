@@ -4091,7 +4091,7 @@ impl InheritanceContract {
             }
         }
 
-    Err(InheritanceError::BeneficiaryNotFound)
+        Err(InheritanceError::BeneficiaryNotFound)
     }
 
     /// Transfer ownership of an inheritance plan to another address.
