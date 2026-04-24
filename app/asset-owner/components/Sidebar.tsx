@@ -14,7 +14,7 @@ import SecurityIcon from "@/app/svg/SecurityIcon";
 import SwapIcon from "@/app/svg/SwapIcon";
 
 import EmergencyIcon from "@/app/svg/EmergencyIcon";
-import { MessageSquare } from "lucide-react";
+import { MessageSquare, TrendingUp } from "lucide-react";
 
 const normalizePath = (path: string) => {
   if (path !== "/" && path.endsWith("/")) {
@@ -37,6 +37,7 @@ const SIDEBAR_ITEMS = [
   },
   { label: "Security", href: "/asset-owner/security", icon: SecurityIcon },
   { label: "Emergency", href: "/asset-owner/emergency", icon: EmergencyIcon },
+  { label: "Lending", href: "/asset-owner/lending", icon: TrendingUp },
 ];
 
 export default function Sidebar() {
