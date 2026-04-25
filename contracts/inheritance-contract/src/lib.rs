@@ -63,7 +63,6 @@ pub struct InheritancePlan {
     pub waterfall_enabled: bool,
 }
 
-#[contracterror]
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum InheritanceError {
     InvalidAssetType = 1,
@@ -116,6 +115,13 @@ pub enum InheritanceError {
     WillVersionNotFound = 48,
     WillAlreadyFinalized = 49,
     WillNotVerified = 50,
+    VestingScheduleNotFound = 51,
+    VestingScheduleExists = 52,
+    VestingAlreadyStarted = 53,
+    VestingScheduleActive = 54,
+    InvalidVestingParams = 55,
+    NothingToClaim = 56,
+    VestingExitSettlementPending = 57,
 }
 
 #[contracttype]
@@ -153,6 +159,8 @@ pub enum DataKey {
     WillFinalizedAt(u64, u32),        // (plan_id, version) -> u64 timestamp
     WillWitnesses(u64),               // plan_id -> Vec<Address>
     WitnessSignature(u64, Address),   // (plan_id, witness) -> u64 (signed_at)
+    VestingSchedule(u64, u32),        // (plan_id, beneficiary_index) -> VestingScheduleRecord
+    VestingExitSettlement(u64, u32),  // claimable remainder after owner cancels vesting
 }
 
 #[contracttype]
@@ -549,6 +557,19 @@ pub struct CreateInheritancePlanParams {
     pub distribution_method: DistributionMethod,
     pub beneficiaries_data: Vec<(String, String, u32, Bytes, u32, u32)>,
     pub is_lendable: bool,
+}
+
+/// Linear vesting after an optional cliff (`cliff_seconds` after `start_time`).
+/// Full `total_amount` is vested by `start_time + cliff_seconds + vesting_seconds`.
+/// If `vesting_seconds` is 0, the entire `total_amount` becomes vested at the cliff end.
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct VestingScheduleRecord {
+    pub start_time: u64,
+    pub cliff_seconds: u64,
+    pub vesting_seconds: u64,
+    pub total_amount: u64,
+    pub claimed: u64,
 }
 
 #[contract]
@@ -1623,6 +1644,10 @@ impl InheritanceContract {
 
         let index = beneficiary_index.ok_or(InheritanceError::BeneficiaryNotFound)?;
 
+        if Self::has_active_vesting_schedule(&env, plan_id, index) {
+            return Err(InheritanceError::VestingScheduleActive);
+        }
+
         // Waterfall ordering: if enabled, every strictly higher-priority
         // beneficiary (non-zero priority) must have claimed first.
         if plan.waterfall_enabled {
@@ -1635,17 +1660,13 @@ impl InheritanceContract {
             }
         }
 
-        // Record the claim
-        let claim = ClaimRecord {
-            plan_id,
-            beneficiary_index: index,
-            claimed_at: env.ledger().timestamp(),
-        };
-
-        env.storage().persistent().set(&claim_key, &claim);
-
         // --- Payout Logic ---
-        let payout = Self::calculate_waterfall_payout(&env, &plan, index);
+        let mut payout = Self::calculate_waterfall_payout(&env, &plan, index);
+
+        let exit_settlement = Self::get_vesting_exit_settlement(&env, plan_id, index);
+        if exit_settlement > 0 {
+            payout = payout.min(exit_settlement);
+        }
 
         // Emergency Guard: Limit claim if emergency access was recently activated
         if Self::is_emergency_active(&env, plan_id) {
@@ -1676,24 +1697,49 @@ impl InheritanceContract {
             return Err(InheritanceError::InsufficientLiquidity);
         }
 
+        if payout == 0 {
+            return Err(InheritanceError::NothingToClaim);
+        }
+
         // Transfer funds to beneficiary
         // Note: For fiat (bank_account), this would typically emit an event for off-chain processing.
         // Here, we'll try to transfer USDC if an address can be derived, or just emit an event.
         // As a simplification, we'll emit the event first.
 
-        // Update plan balances and mark beneficiary as claimed
+        // Update plan balances and mark beneficiary as claimed when fully finalized
         let mut updated_plan = plan.clone();
+
+        let exit_remaining_after = exit_settlement.saturating_sub(payout);
+        let exit_finalized = exit_settlement == 0 || exit_remaining_after == 0;
 
         // Update the specific beneficiary in the vector
         let mut b = updated_plan.beneficiaries.get(index).unwrap();
-        b.is_claimed = true;
+        if exit_finalized {
+            b.is_claimed = true;
+        }
         updated_plan.beneficiaries.set(index, b);
 
         updated_plan.total_amount = updated_plan.total_amount.saturating_sub(payout);
         Self::store_plan(&env, plan_id, &updated_plan);
 
-        // Mark plan as claimed
-        Self::add_plan_to_claimed(&env, plan.owner.clone(), plan_id);
+        if exit_settlement > 0 {
+            let settle_key = DataKey::VestingExitSettlement(plan_id, index);
+            if exit_remaining_after == 0 {
+                env.storage().persistent().remove(&settle_key);
+            } else {
+                env.storage().persistent().set(&settle_key, &exit_remaining_after);
+            }
+        }
+
+        if exit_finalized {
+            let claim = ClaimRecord {
+                plan_id,
+                beneficiary_index: index,
+                claimed_at: env.ledger().timestamp(),
+            };
+            env.storage().persistent().set(&claim_key, &claim);
+            Self::add_plan_to_claimed(&env, plan.owner.clone(), plan_id);
+        }
 
         // Emit claim event
         env.events().publish(
@@ -4036,6 +4082,392 @@ impl InheritanceContract {
         );
 
         Ok(())
+    }
+
+    fn vesting_schedule_key(plan_id: u64, beneficiary_index: u32) -> DataKey {
+        DataKey::VestingSchedule(plan_id, beneficiary_index)
+    }
+
+    fn has_active_vesting_schedule(env: &Env, plan_id: u64, beneficiary_index: u32) -> bool {
+        let key = Self::vesting_schedule_key(plan_id, beneficiary_index);
+        if let Some(rec) = env
+            .storage()
+            .persistent()
+            .get::<_, VestingScheduleRecord>(&key)
+        {
+            rec.claimed < rec.total_amount
+        } else {
+            false
+        }
+    }
+
+    fn get_vesting_exit_settlement(env: &Env, plan_id: u64, beneficiary_index: u32) -> u64 {
+        let key = DataKey::VestingExitSettlement(plan_id, beneficiary_index);
+        env.storage().persistent().get(&key).unwrap_or(0)
+    }
+
+    /// Linear vest: 0 until `start_time + cliff`, then linear through `vesting_seconds`
+    /// (or full amount at cliff if `vesting_seconds == 0`).
+    fn compute_vested_total_linear(
+        start_time: u64,
+        cliff_seconds: u64,
+        vesting_seconds: u64,
+        total_amount: u64,
+        now: u64,
+    ) -> u64 {
+        let cliff_end = start_time.saturating_add(cliff_seconds);
+        if now < cliff_end {
+            return 0;
+        }
+        if vesting_seconds == 0 {
+            return total_amount;
+        }
+        let vesting_end = cliff_end.saturating_add(vesting_seconds);
+        if now >= vesting_end {
+            return total_amount;
+        }
+        let elapsed = now.saturating_sub(cliff_end);
+        let vested_u128 = (total_amount as u128)
+            .checked_mul(elapsed as u128)
+            .and_then(|v| v.checked_div(vesting_seconds as u128))
+            .unwrap_or(0);
+        (vested_u128 as u64).min(total_amount)
+    }
+
+    /// Owner defines a linear vesting schedule for one beneficiary (KYC-approved claims still apply).
+    pub fn create_vesting_schedule(
+        env: Env,
+        owner: Address,
+        plan_id: u64,
+        beneficiary_index: u32,
+        start_time: u64,
+        cliff_seconds: u64,
+        vesting_seconds: u64,
+        total_vesting_amount: u64,
+    ) -> Result<(), InheritanceError> {
+        owner.require_auth();
+        let plan = Self::get_plan(&env, plan_id).ok_or(InheritanceError::PlanNotFound)?;
+        if plan.owner != owner {
+            return Err(InheritanceError::Unauthorized);
+        }
+        if !plan.is_active || Self::get_trigger_info(&env, plan_id).is_some() {
+            return Err(InheritanceError::PlanNotActive);
+        }
+        if beneficiary_index >= plan.beneficiaries.len() {
+            return Err(InheritanceError::InvalidBeneficiaryIndex);
+        }
+        let b = plan.beneficiaries.get(beneficiary_index).unwrap();
+        if b.is_claimed {
+            return Err(InheritanceError::AlreadyClaimed);
+        }
+        if Self::get_vesting_exit_settlement(&env, plan_id, beneficiary_index) > 0 {
+            return Err(InheritanceError::VestingExitSettlementPending);
+        }
+        let vkey = Self::vesting_schedule_key(plan_id, beneficiary_index);
+        if env.storage().persistent().has(&vkey) {
+            return Err(InheritanceError::VestingScheduleExists);
+        }
+        if total_vesting_amount == 0 {
+            return Err(InheritanceError::InvalidVestingParams);
+        }
+        let max_now = Self::calculate_waterfall_payout(&env, &plan, beneficiary_index);
+        if total_vesting_amount > max_now {
+            return Err(InheritanceError::InvalidVestingParams);
+        }
+        let record = VestingScheduleRecord {
+            start_time,
+            cliff_seconds,
+            vesting_seconds,
+            total_amount: total_vesting_amount,
+            claimed: 0,
+        };
+        env.storage().persistent().set(&vkey, &record);
+        Ok(())
+    }
+
+    /// Update schedule parameters only before `start_time` is reached.
+    pub fn update_vesting_schedule(
+        env: Env,
+        owner: Address,
+        plan_id: u64,
+        beneficiary_index: u32,
+        start_time: u64,
+        cliff_seconds: u64,
+        vesting_seconds: u64,
+        total_vesting_amount: u64,
+    ) -> Result<(), InheritanceError> {
+        owner.require_auth();
+        let plan = Self::get_plan(&env, plan_id).ok_or(InheritanceError::PlanNotFound)?;
+        if plan.owner != owner {
+            return Err(InheritanceError::Unauthorized);
+        }
+        if !plan.is_active || Self::get_trigger_info(&env, plan_id).is_some() {
+            return Err(InheritanceError::PlanNotActive);
+        }
+        if beneficiary_index >= plan.beneficiaries.len() {
+            return Err(InheritanceError::InvalidBeneficiaryIndex);
+        }
+        let vkey = Self::vesting_schedule_key(plan_id, beneficiary_index);
+        let mut rec: VestingScheduleRecord = env
+            .storage()
+            .persistent()
+            .get(&vkey)
+            .ok_or(InheritanceError::VestingScheduleNotFound)?;
+        let now = env.ledger().timestamp();
+        if now >= rec.start_time {
+            return Err(InheritanceError::VestingAlreadyStarted);
+        }
+        if total_vesting_amount == 0 || total_vesting_amount < rec.claimed {
+            return Err(InheritanceError::InvalidVestingParams);
+        }
+        let max_now = Self::calculate_waterfall_payout(&env, &plan, beneficiary_index);
+        if total_vesting_amount > max_now {
+            return Err(InheritanceError::InvalidVestingParams);
+        }
+        rec.start_time = start_time;
+        rec.cliff_seconds = cliff_seconds;
+        rec.vesting_seconds = vesting_seconds;
+        rec.total_amount = total_vesting_amount;
+        env.storage().persistent().set(&vkey, &rec);
+        Ok(())
+    }
+
+    /// Cancel vesting: unvested amount is transferred to the plan owner; vested-but-unclaimed
+    /// remainder is claimable via `claim_inheritance_plan` (capped by exit settlement).
+    pub fn cancel_vesting(
+        env: Env,
+        owner: Address,
+        token: Address,
+        plan_id: u64,
+        beneficiary_index: u32,
+    ) -> Result<u64, InheritanceError> {
+        owner.require_auth();
+        let mut plan = Self::get_plan(&env, plan_id).ok_or(InheritanceError::PlanNotFound)?;
+        if plan.owner != owner {
+            return Err(InheritanceError::Unauthorized);
+        }
+        if !plan.is_active {
+            return Err(InheritanceError::PlanNotActive);
+        }
+        if beneficiary_index >= plan.beneficiaries.len() {
+            return Err(InheritanceError::InvalidBeneficiaryIndex);
+        }
+        let vkey = Self::vesting_schedule_key(plan_id, beneficiary_index);
+        let rec: VestingScheduleRecord = env
+            .storage()
+            .persistent()
+            .get(&vkey)
+            .ok_or(InheritanceError::VestingScheduleNotFound)?;
+        let now = env.ledger().timestamp();
+        let vested = Self::compute_vested_total_linear(
+            rec.start_time,
+            rec.cliff_seconds,
+            rec.vesting_seconds,
+            rec.total_amount,
+            now,
+        );
+        let unvested = rec.total_amount.saturating_sub(vested);
+        let exit_remainder = vested.saturating_sub(rec.claimed);
+        if unvested > 0 {
+            let contract_id = env.current_contract_address();
+            let unvested_i128 = unvested as i128;
+            let args: Vec<Val> = vec![
+                &env,
+                contract_id.clone().into_val(&env),
+                owner.clone().into_val(&env),
+                unvested_i128.into_val(&env),
+            ];
+            let res = env.try_invoke_contract::<(), InvokeError>(
+                &token,
+                &symbol_short!("transfer"),
+                args,
+            );
+            if res.is_err() {
+                return Err(InheritanceError::FeeTransferFailed);
+            }
+            plan.total_amount = plan.total_amount.saturating_sub(unvested);
+            Self::store_plan(&env, plan_id, &plan);
+        }
+        env.storage().persistent().remove(&vkey);
+        if exit_remainder > 0 {
+            let skey = DataKey::VestingExitSettlement(plan_id, beneficiary_index);
+            env.storage().persistent().set(&skey, &exit_remainder);
+        }
+        Ok(unvested)
+    }
+
+    pub fn get_vesting_schedule(
+        env: Env,
+        plan_id: u64,
+        beneficiary_index: u32,
+    ) -> Result<VestingScheduleRecord, InheritanceError> {
+        let plan = Self::get_plan(&env, plan_id).ok_or(InheritanceError::PlanNotFound)?;
+        if beneficiary_index >= plan.beneficiaries.len() {
+            return Err(InheritanceError::InvalidBeneficiaryIndex);
+        }
+        let vkey = Self::vesting_schedule_key(plan_id, beneficiary_index);
+        env.storage()
+            .persistent()
+            .get(&vkey)
+            .ok_or(InheritanceError::VestingScheduleNotFound)
+    }
+
+    /// Vested amount at the current ledger time (ignores prior `claim_vested` withdrawals).
+    pub fn get_vested_amount(
+        env: Env,
+        plan_id: u64,
+        beneficiary_index: u32,
+    ) -> Result<u64, InheritanceError> {
+        let rec = Self::get_vesting_schedule(env.clone(), plan_id, beneficiary_index)?;
+        let now = env.ledger().timestamp();
+        Ok(Self::compute_vested_total_linear(
+            rec.start_time,
+            rec.cliff_seconds,
+            rec.vesting_seconds,
+            rec.total_amount,
+            now,
+        ))
+    }
+
+    /// Cliff duration in seconds from `start_time` before linear vesting begins.
+    pub fn cliff_period(
+        env: Env,
+        plan_id: u64,
+        beneficiary_index: u32,
+    ) -> Result<u64, InheritanceError> {
+        let rec = Self::get_vesting_schedule(env.clone(), plan_id, beneficiary_index)?;
+        Ok(rec.cliff_seconds)
+    }
+
+    /// Amount the beneficiary can `claim_vested` now (min of vested minus claimed, waterfall cap).
+    pub fn get_claimable_now(
+        env: Env,
+        plan_id: u64,
+        beneficiary_index: u32,
+    ) -> Result<u64, InheritanceError> {
+        let plan = Self::get_plan(&env, plan_id).ok_or(InheritanceError::PlanNotFound)?;
+        if beneficiary_index >= plan.beneficiaries.len() {
+            return Err(InheritanceError::InvalidBeneficiaryIndex);
+        }
+        let vkey = Self::vesting_schedule_key(plan_id, beneficiary_index);
+        let rec: VestingScheduleRecord = env
+            .storage()
+            .persistent()
+            .get(&vkey)
+            .ok_or(InheritanceError::VestingScheduleNotFound)?;
+        let now = env.ledger().timestamp();
+        let vested = Self::compute_vested_total_linear(
+            rec.start_time,
+            rec.cliff_seconds,
+            rec.vesting_seconds,
+            rec.total_amount,
+            now,
+        );
+        let mut claimable = vested.saturating_sub(rec.claimed);
+        let cap = Self::calculate_waterfall_payout(&env, &plan, beneficiary_index);
+        claimable = claimable.min(cap);
+        Ok(claimable)
+    }
+
+    /// Claim up to the currently vested portion for a beneficiary with an active vesting schedule.
+    pub fn claim_vested(
+        env: Env,
+        plan_id: u64,
+        claimer: Address,
+        email: String,
+        claim_code: u32,
+    ) -> Result<u64, InheritanceError> {
+        claimer.require_auth();
+        Self::check_kyc_approved(&env, &claimer)?;
+        let plan = Self::get_plan(&env, plan_id).ok_or(InheritanceError::PlanNotFound)?;
+        if !plan.is_active {
+            return Err(InheritanceError::PlanNotActive);
+        }
+        let triggered = Self::get_trigger_info(&env, plan_id).is_some();
+        if !triggered && !Self::is_claim_time_valid(&env, &plan) {
+            return Err(InheritanceError::ClaimNotAllowedYet);
+        }
+        let hashed_email = Self::hash_string(&env, email.clone());
+        let hashed_claim_code = Self::hash_claim_code(&env, claim_code)?;
+        let mut beneficiary_index: Option<u32> = None;
+        for i in 0..plan.beneficiaries.len() {
+            let b = plan.beneficiaries.get(i).unwrap();
+            if b.hashed_email == hashed_email && b.hashed_claim_code == hashed_claim_code {
+                beneficiary_index = Some(i);
+                break;
+            }
+        }
+        let index = beneficiary_index.ok_or(InheritanceError::BeneficiaryNotFound)?;
+        let vkey = Self::vesting_schedule_key(plan_id, index);
+        let mut vest_rec: VestingScheduleRecord = env
+            .storage()
+            .persistent()
+            .get(&vkey)
+            .ok_or(InheritanceError::VestingScheduleNotFound)?;
+        if vest_rec.claimed >= vest_rec.total_amount {
+            return Err(InheritanceError::NothingToClaim);
+        }
+        if plan.waterfall_enabled {
+            let this = plan.beneficiaries.get(index).unwrap();
+            for i in 0..plan.beneficiaries.len() {
+                let b = plan.beneficiaries.get(i).unwrap();
+                if b.priority != 0 && b.priority < this.priority && !b.is_claimed {
+                    return Err(InheritanceError::ClaimNotAllowedYet);
+                }
+            }
+        }
+        let mut payout = Self::get_claimable_now(env.clone(), plan_id, index)?;
+        if payout == 0 {
+            return Err(InheritanceError::NothingToClaim);
+        }
+        if Self::is_emergency_active(&env, plan_id) {
+            let limit = (plan.total_amount as u128)
+                .checked_mul(EMERGENCY_TRANSFER_LIMIT_BP as u128)
+                .and_then(|v| v.checked_div(10000))
+                .unwrap_or(0) as u64;
+            if payout > limit {
+                return Err(InheritanceError::EmergencyCooldownActive);
+            }
+        }
+        let available_liquidity = plan.total_amount.saturating_sub(plan.total_loaned);
+        if !triggered && payout > available_liquidity {
+            return Err(InheritanceError::InsufficientLiquidity);
+        }
+        let mut updated_plan = plan.clone();
+        vest_rec.claimed = vest_rec.claimed.saturating_add(payout);
+        let mut done = false;
+        let mut b = updated_plan.beneficiaries.get(index).unwrap();
+        if vest_rec.claimed >= vest_rec.total_amount {
+            b.is_claimed = true;
+            done = true;
+        }
+        updated_plan.beneficiaries.set(index, b);
+        updated_plan.total_amount = updated_plan.total_amount.saturating_sub(payout);
+        Self::store_plan(&env, plan_id, &updated_plan);
+        if done {
+            env.storage().persistent().remove(&vkey);
+            let claim_key = {
+                let mut data = Bytes::new(&env);
+                data.extend_from_slice(&plan_id.to_be_bytes());
+                data.extend_from_slice(&hashed_email.to_array());
+                DataKey::Claim(env.crypto().sha256(&data).into())
+            };
+            let claim = ClaimRecord {
+                plan_id,
+                beneficiary_index: index,
+                claimed_at: env.ledger().timestamp(),
+            };
+            env.storage().persistent().set(&claim_key, &claim);
+            Self::add_plan_to_claimed(&env, plan.owner.clone(), plan_id);
+        } else {
+            env.storage().persistent().set(&vkey, &vest_rec);
+        }
+        env.events().publish(
+            (symbol_short!("VEST"), symbol_short!("CLAIM")),
+            (plan_id, hashed_email, payout),
+        );
+        log!(&env, "Vesting claim for plan {} amount {}", plan_id, payout);
+        Ok(payout)
     }
 
     /// Find a beneficiary by their email hash.
