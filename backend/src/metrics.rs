@@ -80,6 +80,17 @@ pub fn install_recorder() -> PrometheusHandle {
         .expect("Failed to install Prometheus metrics recorder")
 }
 
+/// Install the recorder exactly once, returning a clone of the global handle.
+///
+/// Safe to call from multiple tests or from any code path that may run more
+/// than once in the same process.  The first call installs the recorder; all
+/// subsequent calls return the already-installed handle.
+pub fn get_or_install_recorder() -> PrometheusHandle {
+    use std::sync::OnceLock;
+    static HANDLE: OnceLock<PrometheusHandle> = OnceLock::new();
+    HANDLE.get_or_init(install_recorder).clone()
+}
+
 // ── /metrics handler ─────────────────────────────────────────────────────────
 
 /// Axum handler for `GET /metrics`.
@@ -255,23 +266,14 @@ pub fn spawn_pool_metrics_task(pool: sqlx::PgPool, interval_secs: u64) {
 mod tests {
     use super::*;
 
-    /// Install the recorder exactly once across all tests in this module.
-    /// `install_recorder()` panics if called a second time in the same process,
-    /// so we guard it with a `OnceLock`.
-    fn ensure_recorder() {
-        use std::sync::OnceLock;
-        static HANDLE: OnceLock<PrometheusHandle> = OnceLock::new();
-        HANDLE.get_or_init(install_recorder);
-    }
-
     #[test]
     fn recorder_installs_without_panic() {
-        ensure_recorder();
+        get_or_install_recorder();
     }
 
     #[test]
     fn business_metric_helpers_do_not_panic() {
-        ensure_recorder();
+        get_or_install_recorder();
         inc_plans_created();
         inc_plans_claimed();
         inc_plans_paused();
@@ -286,7 +288,7 @@ mod tests {
 
     #[test]
     fn pool_metrics_recording_does_not_panic() {
-        ensure_recorder();
+        get_or_install_recorder();
         let m = crate::db::PoolMetrics {
             size: 3,
             idle: 1,
@@ -299,7 +301,7 @@ mod tests {
 
     #[test]
     fn db_query_recording_does_not_panic() {
-        ensure_recorder();
+        get_or_install_recorder();
         record_db_query("ping", 0.001);
     }
 }

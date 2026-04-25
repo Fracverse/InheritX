@@ -55,6 +55,12 @@ impl Config {
 }
 
 impl DbPoolConfig {
+    /// Load pool settings from environment variables, falling back to safe defaults.
+    /// Public so test helpers and external callers can construct a default config.
+    pub fn from_env_or_defaults() -> Self {
+        Self::from_env()
+    }
+
     fn from_env() -> Self {
         let get_u64 = |key: &str, default: u64| -> u64 {
             std::env::var(key)

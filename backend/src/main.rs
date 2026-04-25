@@ -17,7 +17,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let _sentry_guard = error_tracking::init();
 
     // Install Prometheus metrics recorder (Issue #423).
-    let prometheus_handle = metrics::install_recorder();
+    let prometheus_handle = metrics::get_or_install_recorder();
 
     // Load configuration
     let config = Config::load()?;

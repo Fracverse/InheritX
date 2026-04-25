@@ -57,6 +57,7 @@ pub use governance::GovernanceService;
 pub use interest_reconciliation::InterestReconciliationService;
 pub use lending_notification_service::LendingNotificationService;
 pub use loan_lifecycle::{LoanLifecycleService, LoanStatus};
+pub use metrics::get_or_install_recorder;
 pub use price_feed::{DefaultPriceFeedService, PriceFeedService, PriceFeedSource};
 pub use risk_engine::RiskEngine;
 pub use safe_math::SafeMath;
