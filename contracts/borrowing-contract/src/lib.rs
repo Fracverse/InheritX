@@ -821,7 +821,7 @@ impl BorrowingContract {
         let current_debt = loan.principal - loan.amount_repaid;
         let additional = max_borrow.saturating_sub(current_debt);
 
-        Ok(if additional > 0 { additional } else { 0 })
+        Ok(additional.max(0))
     }
 
     /// Extends the loan due date by `extension_days` seconds. Charges an extension fee.
