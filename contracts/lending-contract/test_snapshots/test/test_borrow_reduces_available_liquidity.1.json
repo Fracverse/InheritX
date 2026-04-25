@@ -1046,6 +1046,14 @@
                             },
                             {
                               "key": {
+                                "symbol": "reserve_factor_bps"
+                              },
+                              "val": {
+                                "u32": 1000
+                              }
+                            },
+                            {
+                              "key": {
                                 "symbol": "retained_yield"
                               },
                               "val": {
@@ -1066,6 +1074,14 @@
                               },
                               "val": {
                                 "u64": 2000
+                              }
+                            },
+                            {
+                              "key": {
+                                "symbol": "total_protocol_revenue"
+                              },
+                              "val": {
+                                "u64": 0
                               }
                             },
                             {
@@ -3230,6 +3246,14 @@
                 },
                 {
                   "key": {
+                    "symbol": "reserve_factor_bps"
+                  },
+                  "val": {
+                    "u32": 1000
+                  }
+                },
+                {
+                  "key": {
                     "symbol": "retained_yield"
                   },
                   "val": {
@@ -3250,6 +3274,14 @@
                   },
                   "val": {
                     "u64": 2000
+                  }
+                },
+                {
+                  "key": {
+                    "symbol": "total_protocol_revenue"
+                  },
+                  "val": {
+                    "u64": 0
                   }
                 },
                 {

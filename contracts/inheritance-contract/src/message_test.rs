@@ -30,6 +30,7 @@ fn setup_test(env: &Env) -> (InheritanceContractClient<'_>, Address, Address) {
             111111u32,
             soroban_sdk::Bytes::from_slice(env, b"1234567890"),
             10000u32,
+            1u32,
         ),
     ];
 
@@ -100,6 +101,7 @@ fn full_setup(env: &Env) -> (InheritanceContractClient<'_>, Address, u64) {
             111111u32,
             soroban_sdk::Bytes::from_slice(env, b"1234567890"),
             10000u32,
+            1u32,
         ),
     ];
 
@@ -262,6 +264,7 @@ fn test_message_accessed_event() {
             111111u32,
             soroban_sdk::Bytes::from_slice(&env, b"1234567890"),
             10000u32,
+            1u32,
         ),
     ];
 
