@@ -1,14 +1,24 @@
 use axum::{
     extract::{Path, Query, State},
+    middleware,
     routing::{delete, get, post, put},
     Json, Router,
 };
 use serde_json::{json, Value};
 use sqlx::PgPool;
 use std::sync::Arc;
+use std::time::Duration;
 use tower::ServiceBuilder;
 use tower_governor::{governor::GovernorConfigBuilder, GovernorLayer};
-use tower_http::trace::TraceLayer;
+use tower_http::{
+    cors::{AllowHeaders, AllowMethods, AllowOrigin, CorsLayer},
+    trace::TraceLayer,
+};
+
+use crate::middleware::{
+    request_id_middleware, request_logging_middleware, request_timeout_middleware,
+    security_headers_middleware,
+};
 use uuid::Uuid;
 
 use crate::analytics::analytics_router;
@@ -115,6 +125,33 @@ pub async fn create_app(db: PgPool, config: Config) -> Result<Router, ApiError> 
             .finish()
             .unwrap(),
     );
+
+    // ── CORS configuration (Issue #408) ──────────────────────────────────────
+    // Allowed origins are read from CORS_ALLOWED_ORIGINS (comma-separated).
+    // Falls back to permissive any-origin in development.
+    let cors_layer = {
+        let allowed_origins_env = std::env::var("CORS_ALLOWED_ORIGINS").unwrap_or_default();
+        if allowed_origins_env.is_empty() {
+            CorsLayer::permissive()
+        } else {
+            let origins: Vec<axum::http::HeaderValue> = allowed_origins_env
+                .split(',')
+                .filter_map(|s| s.trim().parse().ok())
+                .collect();
+            CorsLayer::new()
+                .allow_origin(AllowOrigin::list(origins))
+                .allow_methods(AllowMethods::any())
+                .allow_headers(AllowHeaders::any())
+                .allow_credentials(true)
+        }
+    };
+
+    // Request timeout (configurable via REQUEST_TIMEOUT_SECS, default 30 s).
+    let timeout_secs: u64 = std::env::var("REQUEST_TIMEOUT_SECS")
+        .ok()
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(30);
+    let timeout_duration = Duration::from_secs(timeout_secs);
 
     let app = Router::new()
         .route("/health", get(health_check))
@@ -530,6 +567,14 @@ pub async fn create_app(db: PgPool, config: Config) -> Result<Router, ApiError> 
         .route("/api/content/:content_id/download", get(download_content))
         .route("/api/content/stats", get(get_storage_stats))
         .layer(axum::Extension(config.clone()))
+        // ── Middleware stack (Issues #408, #409) ──────────────────────────────
+        .layer(middleware::from_fn(security_headers_middleware))
+        .layer(middleware::from_fn(request_logging_middleware))
+        .layer(middleware::from_fn(request_id_middleware))
+        .layer(middleware::from_fn(move |req, next| {
+            request_timeout_middleware(req, next, timeout_duration)
+        }))
+        .layer(cors_layer)
         .with_state(state);
 
     // Add price feed routes with separate state
