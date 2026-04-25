@@ -1,6 +1,5 @@
 use base64::Engine;
 use serde::{Deserialize, Serialize};
-use sqlx::PgPool;
 use uuid::Uuid;
 
 /// Standard pagination query parameters for offset-based pagination
