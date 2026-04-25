@@ -153,6 +153,8 @@ pub enum DataKey {
     WillFinalizedAt(u64, u32),        // (plan_id, version) -> u64 timestamp
     WillWitnesses(u64),               // plan_id -> Vec<Address>
     WitnessSignature(u64, Address),   // (plan_id, witness) -> u64 (signed_at)
+    LendingContract,
+    GovernanceContract,
 }
 
 #[contracttype]
@@ -247,6 +249,13 @@ pub struct KycApprovedEvent {
 pub struct KycRejectedEvent {
     pub user: Address,
     pub rejected_at: u64,
+}
+
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct ContractLinkedEvent {
+    pub contract_type: Symbol,
+    pub address: Address,
 }
 
 #[contracttype]
@@ -4067,9 +4076,74 @@ impl InheritanceContract {
 
         Err(InheritanceError::BeneficiaryNotFound)
     }
+
+    // ─── Cross-Contract Integration ──────────────────────────────
+
+    pub fn set_lending_contract(env: Env, admin: Address, contract: Address) -> Result<(), InheritanceError> {
+        Self::require_admin(&env, &admin)?;
+        env.storage().instance().set(&DataKey::LendingContract, &contract);
+        env.events().publish(
+            (symbol_short!("LINK"), symbol_short!("LEND")),
+            ContractLinkedEvent {
+                contract_type: symbol_short!("LEND"),
+                address: contract,
+            },
+        );
+        Ok(())
+    }
+
+    pub fn get_lending_contract(env: Env) -> Option<Address> {
+        env.storage().instance().get(&DataKey::LendingContract)
+    }
+
+    pub fn set_governance_contract(env: Env, admin: Address, contract: Address) -> Result<(), InheritanceError> {
+        Self::require_admin(&env, &admin)?;
+        env.storage().instance().set(&DataKey::GovernanceContract, &contract);
+        env.events().publish(
+            (symbol_short!("LINK"), symbol_short!("GOV")),
+            ContractLinkedEvent {
+                contract_type: symbol_short!("GOV"),
+                address: contract,
+            },
+        );
+        Ok(())
+    }
+
+    pub fn get_governance_contract(env: Env) -> Option<Address> {
+        env.storage().instance().get(&DataKey::GovernanceContract)
+    }
+
+    pub fn verify_plan_ownership(env: Env, plan_id: u64, user: Address) -> bool {
+        if let Some(plan) = Self::get_plan(&env, plan_id) {
+            return plan.owner == user;
+        }
+        false
+    }
+
+    pub fn upgrade_contract(env: Env, admin: Address, new_wasm_hash: BytesN<32>) -> Result<(), InheritanceError> {
+        Self::require_admin(&env, &admin)?;
+        env.deployer().update_current_contract_wasm(new_wasm_hash.clone());
+        
+        let old_version = env.storage().instance().get(&DataKey::Version).unwrap_or(0);
+        let new_version = old_version + 1;
+        env.storage().instance().set(&DataKey::Version, &new_version);
+
+        env.events().publish(
+            (symbol_short!("UPGRADE"), admin.clone()),
+            ContractUpgradedEvent {
+                old_version,
+                new_version,
+                new_wasm_hash,
+                admin,
+                upgraded_at: env.ledger().timestamp(),
+            },
+        );
+        Ok(())
+    }
 }
 
 #[cfg(test)]
 #[allow(clippy::duplicated_attributes)]
 mod message_test;
 mod test;
+mod cross_contract_test;

@@ -1,5 +1,5 @@
 #![no_std]
-use soroban_sdk::{contract, contracterror, contractimpl, contracttype, Address, Env, Vec};
+use soroban_sdk::{contract, contracterror, contractimpl, contracttype, Address, Env, Vec, IntoVal, Symbol};
 
 mod test;
 
@@ -15,6 +15,20 @@ pub enum DataKey {
     TokenBalance(Address),
     Vote(Address, u32),
     ProposalVotes(u32),
+    ControlledContracts,
+}
+
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct ContractLinkedEvent {
+    pub contract: Address,
+}
+
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct ContractExecutedEvent {
+    pub contract: Address,
+    pub func: Symbol,
 }
 
 #[contracttype]
@@ -409,5 +423,88 @@ impl GovernanceContract {
         }
 
         env.storage().instance().set(&key, &new_delegators);
+    }
+
+    // ─── Cross-Contract Integration ──────────────────────────────
+
+    pub fn add_controlled_contract(env: Env, _admin: Address, contract: Address) -> Result<(), GovernanceError> {
+        Self::check_admin(&env)?;
+        
+        let mut contracts: Vec<Address> = env.storage()
+            .instance()
+            .get(&DataKey::ControlledContracts)
+            .unwrap_or_else(|| Vec::new(&env));
+            
+        if !contracts.contains(&contract) {
+            contracts.push_back(contract.clone());
+            env.storage().instance().set(&DataKey::ControlledContracts, &contracts);
+            
+            env.events().publish(
+                (Symbol::new(&env, "LINK"), Symbol::new(&env, "CTRL")),
+                ContractLinkedEvent { contract },
+            );
+        }
+        
+        Ok(())
+    }
+
+    pub fn get_controlled_contracts(env: Env) -> Vec<Address> {
+        env.storage()
+            .instance()
+            .get(&DataKey::ControlledContracts)
+            .unwrap_or_else(|| Vec::new(&env))
+    }
+
+    pub fn execute_on_contract(
+        env: Env, 
+        _admin: Address, 
+        contract: Address, 
+        func: Symbol, 
+        args: Vec<soroban_sdk::Val>
+    ) -> Result<soroban_sdk::Val, GovernanceError> {
+        Self::check_admin(&env)?;
+        
+        // Verify it's a controlled contract
+        let contracts = Self::get_controlled_contracts(env.clone());
+        if !contracts.contains(&contract) {
+            return Err(GovernanceError::Unauthorized);
+        }
+
+        let result = env.invoke_contract(&contract, &func, args);
+        
+        env.events().publish(
+            (Symbol::new(&env, "EXECUTE"), contract.clone()),
+            ContractExecutedEvent { contract, func },
+        );
+        
+        Ok(result)
+    }
+
+    pub fn upgrade_controlled_contract(
+        env: Env, 
+        _admin: Address, 
+        contract: Address, 
+        new_wasm_hash: soroban_sdk::BytesN<32>
+    ) -> Result<(), GovernanceError> {
+        Self::check_admin(&env)?;
+        
+        // Verify it's a controlled contract
+        let contracts = Self::get_controlled_contracts(env.clone());
+        if !contracts.contains(&contract) {
+            return Err(GovernanceError::Unauthorized);
+        }
+
+        let mut args: Vec<soroban_sdk::Val> = Vec::new(&env);
+        // We pass the GovernanceContract's own address as the admin of the child contract
+        args.push_back(env.current_contract_address().into_val(&env)); 
+        args.push_back(new_wasm_hash.into_val(&env));
+        
+        env.invoke_contract::<soroban_sdk::Val>(
+            &contract, 
+            &Symbol::new(&env, "upgrade_contract"), 
+            args
+        );
+        
+        Ok(())
     }
 }
