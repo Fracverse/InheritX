@@ -41,7 +41,6 @@
 //! | `will_documents_generated_total` | Counter | — | Will PDFs generated |
 
 use axum::{
-    body::Body,
     extract::Request,
     http::StatusCode,
     middleware::Next,
