@@ -447,6 +447,14 @@
                     },
                     {
                       "key": {
+                        "symbol": "extension_count"
+                      },
+                      "val": {
+                        "u32": 0
+                      }
+                    },
+                    {
+                      "key": {
                         "symbol": "interest_rate"
                       },
                       "val": {
@@ -1975,6 +1983,14 @@
                   },
                   "val": {
                     "u64": 1000000
+                  }
+                },
+                {
+                  "key": {
+                    "symbol": "extension_count"
+                  },
+                  "val": {
+                    "u32": 0
                   }
                 },
                 {
