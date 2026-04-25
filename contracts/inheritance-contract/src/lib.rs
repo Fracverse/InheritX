@@ -30,6 +30,8 @@ pub struct Beneficiary {
     pub hashed_claim_code: BytesN<32>,
     pub bank_account: Bytes, // Plain text for fiat settlement (MVP trade-off)
     pub allocation_bp: u32,  // Allocation in basis points (0-10000, where 10000 = 100%)
+    pub priority: u32,       // Priority level (1=highest)
+    pub is_claimed: bool,    // Whether the beneficiary has already claimed their portion
 }
 
 #[contracttype]
@@ -40,6 +42,7 @@ pub struct BeneficiaryInput {
     pub claim_code: u32,
     pub bank_account: Bytes,
     pub allocation_bp: u32,
+    pub priority: u32,
 }
 
 #[contracttype]
@@ -57,6 +60,7 @@ pub struct InheritancePlan {
     pub is_active: bool, // Plan activation status
     pub is_lendable: bool,
     pub total_loaned: u64,
+    pub waterfall_enabled: bool,
 }
 
 #[contracterror]
@@ -86,8 +90,8 @@ pub enum InheritanceError {
     NotAdmin = 22,
     KycNotSubmitted = 23,
     KycAlreadyApproved = 24,
-    UpgradeFailed = 25,
-    MigrationNotRequired = 26,
+    DuplicatePriority = 25,
+    PriorityOutOfRange = 26,
     PlanNotClaimed = 27,
     KycAlreadyRejected = 28,
     InsufficientBalance = 29,
@@ -356,6 +360,21 @@ pub struct EmergencyContactAddedEvent {
     pub contact: Address,
 }
 
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct WaterfallEnabledEvent {
+    pub plan_id: u64,
+    pub enabled_at: u64,
+}
+
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct PrioritySetEvent {
+    pub plan_id: u64,
+    pub beneficiary_index: u32,
+    pub priority: u32,
+}
+
 /// Legacy message metadata stored on-chain
 #[contracttype]
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -577,7 +596,7 @@ pub struct CreateInheritancePlanParams {
     pub description: String,
     pub total_amount: u64,
     pub distribution_method: DistributionMethod,
-    pub beneficiaries_data: Vec<(String, String, u32, Bytes, u32)>,
+    pub beneficiaries_data: Vec<(String, String, u32, Bytes, u32, u32)>,
     pub is_lendable: bool,
 }
 
@@ -659,6 +678,7 @@ impl InheritanceContract {
         claim_code: u32,
         bank_account: Bytes,
         allocation_bp: u32,
+        priority: u32,
     ) -> Result<Beneficiary, InheritanceError> {
         // Validate inputs
         if full_name.is_empty() || email.is_empty() || bank_account.is_empty() {
@@ -677,8 +697,10 @@ impl InheritanceContract {
             hashed_full_name: Self::hash_string(env, full_name),
             hashed_email: Self::hash_string(env, email),
             hashed_claim_code,
-            bank_account, // Store plain for fiat settlement
+            bank_account,
             allocation_bp,
+            priority,
+            is_claimed: false,
         })
     }
 
@@ -714,7 +736,8 @@ impl InheritanceContract {
     }
 
     pub fn validate_beneficiaries(
-        beneficiaries_data: Vec<(String, String, u32, Bytes, u32)>,
+        env: &Env,
+        beneficiaries_data: Vec<(String, String, u32, Bytes, u32, u32)>,
     ) -> Result<(), InheritanceError> {
         // Validate beneficiary count (max 10)
         if beneficiaries_data.len() > 10 {
@@ -726,7 +749,22 @@ impl InheritanceContract {
         }
 
         // Validate allocation basis points total to 10000 (100%)
-        let total_allocation: u32 = beneficiaries_data.iter().map(|(_, _, _, _, bp)| bp).sum();
+        let mut total_allocation: u32 = 0;
+        let mut priorities = Vec::new(env);
+
+        for (_, _, _, _, bp, priority) in beneficiaries_data.iter() {
+            total_allocation += bp;
+
+            if priority == 0 {
+                return Err(InheritanceError::PriorityOutOfRange);
+            }
+
+            if priorities.contains(priority) {
+                return Err(InheritanceError::DuplicatePriority);
+            }
+            priorities.push_back(priority);
+        }
+
         if total_allocation != 10000 {
             return Err(InheritanceError::AllocationPercentageMismatch);
         }
@@ -1018,6 +1056,7 @@ impl InheritanceContract {
             beneficiary_input.claim_code,
             beneficiary_input.bank_account,
             beneficiary_input.allocation_bp,
+            beneficiary_input.priority,
         )?;
 
         // Add beneficiary to plan
@@ -1234,7 +1273,7 @@ impl InheritanceContract {
         }
 
         // Validate beneficiaries
-        Self::validate_beneficiaries(beneficiaries_data.clone())?;
+        Self::validate_beneficiaries(&env, beneficiaries_data.clone())?;
 
         // Create beneficiary objects with hashed data
         let mut beneficiaries = Vec::new(&env);
@@ -1248,6 +1287,7 @@ impl InheritanceContract {
                 beneficiary_data.2,
                 beneficiary_data.3.clone(),
                 beneficiary_data.4,
+                beneficiary_data.5,
             )?;
             total_allocation_bp += beneficiary_data.4;
             beneficiaries.push_back(beneficiary);
@@ -1267,6 +1307,7 @@ impl InheritanceContract {
             is_active: true,
             is_lendable,
             total_loaned: 0,
+            waterfall_enabled: false,
         };
 
         // Store the plan and get the plan ID
@@ -1437,6 +1478,135 @@ impl InheritanceContract {
         Ok(())
     }
 
+    pub fn set_beneficiary_priority(
+        env: Env,
+        owner: Address,
+        plan_id: u64,
+        beneficiary_index: u32,
+        priority: u32,
+    ) -> Result<(), InheritanceError> {
+        owner.require_auth();
+        let mut plan = Self::get_plan(&env, plan_id).ok_or(InheritanceError::PlanNotFound)?;
+        if plan.owner != owner {
+            return Err(InheritanceError::Unauthorized);
+        }
+
+        if beneficiary_index >= plan.beneficiaries.len() {
+            return Err(InheritanceError::InvalidBeneficiaryIndex);
+        }
+
+        if priority == 0 {
+            return Err(InheritanceError::PriorityOutOfRange);
+        }
+
+        // Check for duplicate priorities
+        for i in 0..plan.beneficiaries.len() {
+            if i != beneficiary_index {
+                let b = plan.beneficiaries.get(i).unwrap();
+                if b.priority == priority {
+                    return Err(InheritanceError::DuplicatePriority);
+                }
+            }
+        }
+
+        let mut beneficiary = plan.beneficiaries.get(beneficiary_index).unwrap();
+        beneficiary.priority = priority;
+        plan.beneficiaries.set(beneficiary_index, beneficiary);
+        Self::store_plan(&env, plan_id, &plan);
+
+        env.events().publish(
+            (symbol_short!("BENEFIC"), symbol_short!("PRIO")),
+            PrioritySetEvent {
+                plan_id,
+                beneficiary_index,
+                priority,
+            },
+        );
+
+        Ok(())
+    }
+
+    pub fn get_beneficiary_priority(
+        env: Env,
+        plan_id: u64,
+        beneficiary_index: u32,
+    ) -> Result<u32, InheritanceError> {
+        let plan = Self::get_plan(&env, plan_id).ok_or(InheritanceError::PlanNotFound)?;
+        if beneficiary_index >= plan.beneficiaries.len() {
+            return Err(InheritanceError::InvalidBeneficiaryIndex);
+        }
+        Ok(plan.beneficiaries.get(beneficiary_index).unwrap().priority)
+    }
+
+    pub fn enable_waterfall_distribution(
+        env: Env,
+        owner: Address,
+        plan_id: u64,
+    ) -> Result<(), InheritanceError> {
+        owner.require_auth();
+        let mut plan = Self::get_plan(&env, plan_id).ok_or(InheritanceError::PlanNotFound)?;
+        if plan.owner != owner {
+            return Err(InheritanceError::Unauthorized);
+        }
+
+        plan.waterfall_enabled = true;
+        Self::store_plan(&env, plan_id, &plan);
+
+        env.events().publish(
+            (symbol_short!("PLAN"), symbol_short!("WATER")),
+            WaterfallEnabledEvent {
+                plan_id,
+                enabled_at: env.ledger().timestamp(),
+            },
+        );
+
+        Ok(())
+    }
+
+    fn calculate_waterfall_payout(
+        _env: &Env,
+        plan: &InheritancePlan,
+        beneficiary_index: u32,
+    ) -> u64 {
+        let beneficiary = plan.beneficiaries.get(beneficiary_index).unwrap();
+
+        if plan.waterfall_enabled {
+            // Any strictly higher-priority (lower numeric value) beneficiary with a
+            // non-zero priority must claim before this one. Priority 0 is treated
+            // as "unprioritized" and does not gate others.
+            for i in 0..plan.beneficiaries.len() {
+                let b = plan.beneficiaries.get(i).unwrap();
+                if b.priority != 0 && b.priority < beneficiary.priority && !b.is_claimed {
+                    return 0;
+                }
+            }
+        }
+
+        // Entitlement is allocation_bp of the remaining plan balance, capped to it.
+        let entitlement = (plan.total_amount as u128)
+            .checked_mul(beneficiary.allocation_bp as u128)
+            .and_then(|v| v.checked_div(10000))
+            .unwrap_or(0) as u64;
+
+        entitlement.min(plan.total_amount)
+    }
+
+    pub fn get_claimable_by_priority(
+        env: Env,
+        plan_id: u64,
+        beneficiary_index: u32,
+    ) -> Result<u64, InheritanceError> {
+        let plan = Self::get_plan(&env, plan_id).ok_or(InheritanceError::PlanNotFound)?;
+        if beneficiary_index >= plan.beneficiaries.len() {
+            return Err(InheritanceError::InvalidBeneficiaryIndex);
+        }
+        Ok(Self::calculate_waterfall_payout(
+            &env,
+            &plan,
+            beneficiary_index,
+        ))
+    }
+
     fn is_claim_time_valid(env: &Env, plan: &InheritancePlan) -> bool {
         let now = env.ledger().timestamp();
         let elapsed = now - plan.created_at;
@@ -1515,6 +1685,18 @@ impl InheritanceContract {
 
         let index = beneficiary_index.ok_or(InheritanceError::BeneficiaryNotFound)?;
 
+        // Waterfall ordering: if enabled, every strictly higher-priority
+        // beneficiary (non-zero priority) must have claimed first.
+        if plan.waterfall_enabled {
+            let this = plan.beneficiaries.get(index).unwrap();
+            for i in 0..plan.beneficiaries.len() {
+                let b = plan.beneficiaries.get(i).unwrap();
+                if b.priority != 0 && b.priority < this.priority && !b.is_claimed {
+                    return Err(InheritanceError::ClaimNotAllowedYet);
+                }
+            }
+        }
+
         // Record the claim
         let claim = ClaimRecord {
             plan_id,
@@ -1525,13 +1707,7 @@ impl InheritanceContract {
         env.storage().persistent().set(&claim_key, &claim);
 
         // --- Payout Logic ---
-        let beneficiary = plan.beneficiaries.get(index).unwrap();
-
-        // Calculate the base payout
-        let base_payout = (plan.total_amount as u128)
-            .checked_mul(beneficiary.allocation_bp as u128)
-            .and_then(|v| v.checked_div(10000))
-            .unwrap_or(0) as u64;
+        let payout = Self::calculate_waterfall_payout(&env, &plan, index);
 
         // Emergency Guard: Limit claim if emergency access was recently activated
         if Self::is_emergency_active(&env, plan_id) {
@@ -1540,25 +1716,25 @@ impl InheritanceContract {
                 .and_then(|v| v.checked_div(10000))
                 .unwrap_or(0) as u64;
 
-            if base_payout > limit {
+            if payout > limit {
                 return Err(InheritanceError::EmergencyCooldownActive);
             }
         }
 
         // If plan is lendable and funds are loaned, we might have yield or need to recall funds.
-        // For MVP priority logic: if we don't have enough liquid funds (amount - total_loaned < base_payout)
+        // For MVP priority logic: if we don't have enough liquid funds (amount - total_loaned < payout)
         // we'd recall from LendingContract.
         // Since we don't store the LendingContract address in InheritanceContract yet,
         // we assume the funds are sitting in the contract (vault) or we are authorized to pull them.
         let available_liquidity = plan.total_amount.saturating_sub(plan.total_loaned);
 
         // In a full implementation, we would call LendingClient::withdraw_priority
-        // if base_payout > available_liquidity.
+        // if payout > available_liquidity.
         // For now, we simulate the priority payout directly if liquid funds are sufficient,
         // or fail with InsufficientLiquidity if not (which a later migration would fix by linking contracts).
         // When inheritance is triggered, bypass the liquidity check so that
         // beneficiary claims are never blocked by outstanding loans.
-        if !triggered && base_payout > available_liquidity {
+        if !triggered && payout > available_liquidity {
             return Err(InheritanceError::InsufficientLiquidity);
         }
 
@@ -1567,9 +1743,15 @@ impl InheritanceContract {
         // Here, we'll try to transfer USDC if an address can be derived, or just emit an event.
         // As a simplification, we'll emit the event first.
 
-        // Update plan balances
+        // Update plan balances and mark beneficiary as claimed
         let mut updated_plan = plan.clone();
-        updated_plan.total_amount = updated_plan.total_amount.saturating_sub(base_payout);
+
+        // Update the specific beneficiary in the vector
+        let mut b = updated_plan.beneficiaries.get(index).unwrap();
+        b.is_claimed = true;
+        updated_plan.beneficiaries.set(index, b);
+
+        updated_plan.total_amount = updated_plan.total_amount.saturating_sub(payout);
         Self::store_plan(&env, plan_id, &updated_plan);
 
         // Mark plan as claimed
@@ -1578,7 +1760,7 @@ impl InheritanceContract {
         // Emit claim event
         env.events().publish(
             (symbol_short!("CLAIM"), symbol_short!("SUCCESS")),
-            (plan_id, hashed_email, base_payout),
+            (plan_id, hashed_email, payout),
         );
 
         log!(
@@ -2643,7 +2825,7 @@ impl InheritanceContract {
 
         if stored_version >= CONTRACT_VERSION {
             // Already up-to-date — nothing to migrate
-            return Err(InheritanceError::MigrationNotRequired);
+            return Ok(());
         }
 
         // ── Version-specific migrations go here ──

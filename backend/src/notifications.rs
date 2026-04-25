@@ -22,6 +22,10 @@ pub mod notif_type {
     pub const PLAN_UNPAUSED: &str = "plan_unpaused";
     pub const RISK_OVERRIDE_APPLIED: &str = "risk_override_applied";
     pub const RISK_OVERRIDE_REMOVED: &str = "risk_override_removed";
+    // Contingent beneficiaries
+    pub const CONTINGENT_BENEFICIARY_ADDED: &str = "contingent_beneficiary_added";
+    pub const CONTINGENT_BENEFICIARY_REMOVED: &str = "contingent_beneficiary_removed";
+    pub const CONTINGENT_PROMOTED: &str = "contingent_promoted";
     // Emergency access notifications (Issue #293)
     pub const EMERGENCY_ACCESS_GRANTED: &str = "emergency_access_granted";
     pub const EMERGENCY_ACCESS_REVOKED: &str = "emergency_access_revoked";
@@ -245,6 +249,15 @@ pub mod audit_action {
     pub const LOAN_PARTIAL_REPAYMENT: &str = "loan_partial_repayment";
     pub const LOAN_LIQUIDATED: &str = "loan_liquidated";
     pub const LOAN_MARKED_OVERDUE: &str = "loan_marked_overdue";
+    // Collateral management
+    pub const COLLATERAL_ADDED: &str = "collateral_added";
+    pub const COLLATERAL_REMOVED: &str = "collateral_removed";
+    pub const COLLATERAL_SWAPPED: &str = "collateral_swapped";
+    // Contingent beneficiaries
+    pub const CONTINGENT_BENEFICIARY_ADDED: &str = "contingent_beneficiary_added";
+    pub const CONTINGENT_BENEFICIARY_REMOVED: &str = "contingent_beneficiary_removed";
+    pub const CONTINGENCY_CONDITIONS_SET: &str = "contingency_conditions_set";
+    pub const CONTINGENT_PROMOTED: &str = "contingent_promoted";
     // Admin & System
     pub const EMERGENCY_STOP: &str = "emergency_stop";
     pub const PARAMETER_UPDATE: &str = "parameter_update";
