@@ -277,20 +277,36 @@ impl GovernanceContract {
     }
 
     pub fn get_voting_power(env: Env, address: Address) -> i128 {
-        let own_balance = Self::get_token_balance(env.clone(), address.clone());
-
-        let delegate_of_self = Self::get_delegate(env.clone(), address.clone());
-
-        if delegate_of_self.is_some() {
+        // If this address has delegated away, its voting power is 0
+        if env
+            .storage()
+            .instance()
+            .has(&DataKey::Delegation(address.clone()))
+        {
             return 0;
         }
 
-        let delegators = Self::get_delegators(env.clone(), address.clone());
+        let own_balance: i128 = env
+            .storage()
+            .instance()
+            .get(&DataKey::TokenBalance(address.clone()))
+            .unwrap_or(0);
 
+        let delegators: Vec<Address> = env
+            .storage()
+            .instance()
+            .get(&DataKey::Delegators(address.clone()))
+            .unwrap_or_else(|| Vec::new(&env));
+
+        // Accumulate delegated balances in a single loop without cloning env
         let mut total_delegated: i128 = 0;
-        for i in 0..delegators.len() {
-            let delegator_addr = delegators.get(i).unwrap();
-            total_delegated += Self::get_token_balance(env.clone(), delegator_addr);
+        for delegator_addr in delegators.iter() {
+            let bal: i128 = env
+                .storage()
+                .instance()
+                .get(&DataKey::TokenBalance(delegator_addr))
+                .unwrap_or(0);
+            total_delegated += bal;
         }
 
         own_balance + total_delegated
@@ -311,13 +327,35 @@ impl GovernanceContract {
     ) -> Result<(), GovernanceError> {
         voter.require_auth();
 
-        let delegate_of_voter = Self::get_delegate(env.clone(), voter.clone());
-
-        if delegate_of_voter.is_some() {
+        // Check delegation status with a single has() call (cheaper than get())
+        if env
+            .storage()
+            .instance()
+            .has(&DataKey::Delegation(voter.clone()))
+        {
             return Err(GovernanceError::Unauthorized);
         }
 
-        let voting_power = Self::get_voting_power(env.clone(), voter.clone());
+        // Compute voting power inline to avoid redundant storage reads from get_voting_power
+        let own_balance: i128 = env
+            .storage()
+            .instance()
+            .get(&DataKey::TokenBalance(voter.clone()))
+            .unwrap_or(0);
+        let delegators: Vec<Address> = env
+            .storage()
+            .instance()
+            .get(&DataKey::Delegators(voter.clone()))
+            .unwrap_or_else(|| Vec::new(&env));
+        let mut voting_power = own_balance;
+        for delegator_addr in delegators.iter() {
+            let bal: i128 = env
+                .storage()
+                .instance()
+                .get(&DataKey::TokenBalance(delegator_addr))
+                .unwrap_or(0);
+            voting_power += bal;
+        }
 
         if voting_power == 0 {
             return Err(GovernanceError::ZeroAmount);
@@ -416,15 +454,20 @@ impl GovernanceContract {
             .get(&key)
             .unwrap_or_else(|| Vec::new(env));
 
+        // Build filtered list, skipping the removed delegator
         let mut new_delegators: Vec<Address> = Vec::new(env);
-        for i in 0..delegators.len() {
-            let d = delegators.get(i).unwrap();
+        for d in delegators.iter() {
             if d != *delegator {
                 new_delegators.push_back(d);
             }
         }
 
-        env.storage().instance().set(&key, &new_delegators);
+        if new_delegators.is_empty() {
+            // Remove the key entirely when empty – saves storage rent
+            env.storage().instance().remove(&key);
+        } else {
+            env.storage().instance().set(&key, &new_delegators);
+        }
     }
 
     // ─── Cross-Contract Integration ──────────────────────────────
