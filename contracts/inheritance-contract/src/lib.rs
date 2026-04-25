@@ -537,6 +537,15 @@ pub struct WitnessSignedEvent {
     pub witness: Address,
 }
 
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct PlanOwnershipTransferredEvent {
+    pub plan_id: u64,
+    pub old_owner: Address,
+    pub new_owner: Address,
+    pub transferred_at: u64,
+}
+
 /// Parameters for creating an inheritance plan (groups args to satisfy Clippy).
 #[contracttype]
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -782,6 +791,23 @@ impl InheritanceContract {
             .unwrap_or(Vec::new(env));
 
         plans.push_back(plan_id);
+        env.storage().persistent().set(&key, &plans);
+    }
+
+    fn remove_plan_from_user(env: &Env, owner: Address, plan_id: u64) {
+        let key = DataKey::UserPlans(owner);
+        let mut plans: Vec<u64> = env
+            .storage()
+            .persistent()
+            .get(&key)
+            .unwrap_or(Vec::new(env));
+
+        for i in 0..plans.len() {
+            if plans.get(i).unwrap() == plan_id {
+                plans.remove(i);
+                break;
+            }
+        }
         env.storage().persistent().set(&key, &plans);
     }
 
@@ -4066,6 +4092,66 @@ impl InheritanceContract {
         }
 
         Err(InheritanceError::BeneficiaryNotFound)
+    }
+
+    /// Transfer ownership of an inheritance plan to another address.
+    ///
+    /// # Arguments
+    /// * `owner` - The current plan owner (must authorize)
+    /// * `new_owner` - The address of the new owner
+    /// * `plan_id` - The ID of the plan to transfer
+    ///
+    /// # Errors
+    /// - `Unauthorized`: Not the current plan owner
+    /// - `PlanNotFound`: Plan does not exist
+    /// - `PlanNotActive`: Plan is inactive or inheritance already triggered
+    pub fn transfer_plan_ownership(
+        env: Env,
+        owner: Address,
+        new_owner: Address,
+        plan_id: u64,
+    ) -> Result<(), InheritanceError> {
+        owner.require_auth();
+
+        let mut plan = Self::get_plan(&env, plan_id).ok_or(InheritanceError::PlanNotFound)?;
+
+        if plan.owner != owner {
+            return Err(InheritanceError::Unauthorized);
+        }
+
+        // Cannot transfer if inheritance triggered
+        if Self::get_trigger_info(&env, plan_id).is_some() {
+            return Err(InheritanceError::PlanNotActive);
+        }
+
+        // Update user registries
+        Self::remove_plan_from_user(&env, owner.clone(), plan_id);
+        Self::add_plan_to_user(&env, new_owner.clone(), plan_id);
+
+        let old_owner = plan.owner.clone();
+        plan.owner = new_owner.clone();
+        Self::store_plan(&env, plan_id, &plan);
+
+        // Emit event
+        env.events().publish(
+            (symbol_short!("PLAN"), symbol_short!("TRANSFER")),
+            PlanOwnershipTransferredEvent {
+                plan_id,
+                old_owner,
+                new_owner,
+                transferred_at: env.ledger().timestamp(),
+            },
+        );
+
+        log!(
+            &env,
+            "Plan {} ownership transferred from {} to {}",
+            plan_id,
+            owner,
+            new_owner
+        );
+
+        Ok(())
     }
 }
 
