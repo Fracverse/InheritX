@@ -60,6 +60,7 @@ use crate::will_pdf::{WillDocumentInput, WillPdfService, WillTemplate};
 use crate::will_signature::{
     SigningChallengeRequest, SubmitSignatureRequest, WillSignatureService,
 };
+use crate::pagination::{CursorPaginationQuery, PaginationQuery};
 use crate::will_version::{PaginatedVersions, PaginationParams, WillVersionService};
 use crate::witness::{InviteWitnessRequest, WitnessService, WitnessSignRequest};
 use crate::yield_service::{DefaultOnChainYieldService, OnChainYieldService};
@@ -816,37 +817,36 @@ async fn get_my_message_activity(
 async fn get_all_due_for_claim_plans_user(
     State(state): State<Arc<AppState>>,
     AuthenticatedUser(user): AuthenticatedUser,
+    Query(pagination): Query<PaginationQuery>,
 ) -> Result<Json<Value>, ApiError> {
-    let plans = PlanService::get_all_due_for_claim_plans_for_user(&state.db, user.user_id).await?;
+    let (page, limit, offset) = pagination.normalize();
+    let plans = PlanService::get_all_due_for_claim_plans_for_user_paginated(&state.db, user.user_id, limit as i64, offset).await?;
+    let total_count = PlanService::count_due_for_claim_plans_for_user(&state.db, user.user_id).await?;
 
-    Ok(Json(json!({
-        "status": "success",
-        "data": plans,
-        "count": plans.len()
-    })))
+    Ok(Json(json!(pagination.create_response(plans, total_count))))
 }
 
 async fn get_all_due_for_claim_plans_admin(
     State(state): State<Arc<AppState>>,
     AuthenticatedAdmin(_admin): AuthenticatedAdmin,
+    Query(pagination): Query<PaginationQuery>,
 ) -> Result<Json<Value>, ApiError> {
-    let plans = PlanService::get_all_due_for_claim_plans_admin(&state.db).await?;
+    let (page, limit, offset) = pagination.normalize();
+    let plans = PlanService::get_all_due_for_claim_plans_admin_paginated(&state.db, limit as i64, offset).await?;
+    let total_count = PlanService::count_due_for_claim_plans_admin(&state.db).await?;
 
-    Ok(Json(json!({
-        "status": "success",
-        "data": plans,
-        "count": plans.len()
-    })))
+    Ok(Json(json!(pagination.create_response(plans, total_count))))
 }
 
 async fn list_emergency_contacts(
     State(state): State<Arc<AppState>>,
     AuthenticatedUser(user): AuthenticatedUser,
+    Query(pagination): Query<PaginationQuery>,
 ) -> Result<Json<Value>, ApiError> {
-    let contacts = EmergencyContactService::list_for_user(&state.db, user.user_id).await?;
-    Ok(Json(
-        json!({ "status": "success", "data": contacts, "count": contacts.len() }),
-    ))
+    let (page, limit, offset) = pagination.normalize();
+    let contacts = EmergencyContactService::list_for_user_paginated(&state.db, user.user_id, limit as i64, offset).await?;
+    let total_count = EmergencyContactService::count_for_user(&state.db, user.user_id).await?;
+    Ok(Json(json!(pagination.create_response(contacts, total_count))))
 }
 
 async fn create_emergency_contact(
@@ -1099,20 +1099,19 @@ async fn create_lifecycle_loan(
 
 /// List loans, optionally filtered by status.
 ///
-/// `GET /api/loans/lifecycle[?status=active|repaid|overdue|liquidated]`
+/// `GET /api/loans/lifecycle[?status=active|repaid|overdue|liquidated&page=1&limit=20]`
 async fn list_lifecycle_loans(
     State(state): State<Arc<AppState>>,
     AuthenticatedUser(user): AuthenticatedUser,
     Query(mut filters): Query<LoanListFilters>,
+    Query(pagination): Query<PaginationQuery>,
 ) -> Result<Json<Value>, ApiError> {
     // Users may only see their own loans.
     filters.user_id = Some(user.user_id);
-    let loans = LoanLifecycleService::list_loans(&state.db, &filters).await?;
-    Ok(Json(json!({
-        "status": "success",
-        "data": loans,
-        "count": loans.len()
-    })))
+    let (page, limit, offset) = pagination.normalize();
+    let loans = LoanLifecycleService::list_loans_paginated(&state.db, &filters, limit as i64, offset).await?;
+    let total_count = LoanLifecycleService::count_loans(&state.db, &filters).await?;
+    Ok(Json(json!(pagination.create_response(loans, total_count))))
 }
 
 /// Aggregate counts by lifecycle status for the authenticated user.
@@ -2445,25 +2444,27 @@ async fn get_storage_stats(
 async fn get_notifications(
     State(state): State<Arc<AppState>>,
     AuthenticatedUser(user): AuthenticatedUser,
+    Query(pagination): Query<PaginationQuery>,
 ) -> Result<Json<Value>, ApiError> {
+    let (page, limit, _offset) = pagination.normalize();
     let notifications =
-        crate::notifications::NotificationService::list_for_user(&state.db, user.user_id).await?;
-    Ok(Json(json!({
-        "status": "success",
-        "data": notifications
-    })))
+        crate::notifications::NotificationService::list_for_user_paginated(&state.db, user.user_id, page, limit).await?;
+    let total_count = crate::notifications::NotificationService::count_for_user(&state.db, user.user_id).await?;
+    
+    Ok(Json(json!(pagination.create_response(notifications, total_count))))
 }
 
 /// Admin: Get audit logs
 async fn get_admin_logs(
     State(state): State<Arc<AppState>>,
     AuthenticatedAdmin(_admin): AuthenticatedAdmin,
+    Query(pagination): Query<PaginationQuery>,
 ) -> Result<Json<Value>, ApiError> {
-    let logs = crate::notifications::AuditLogService::list_all(&state.db).await?;
-    Ok(Json(json!({
-        "status": "success",
-        "data": logs
-    })))
+    let (page, limit, _offset) = pagination.normalize();
+    let logs = crate::notifications::AuditLogService::list_all_paginated(&state.db, page, limit).await?;
+    let total_count = crate::notifications::AuditLogService::count_all(&state.db).await?;
+    
+    Ok(Json(json!(pagination.create_response(logs, total_count))))
 }
 
 // ─────────────────────────────────────────────────────────────────────────────

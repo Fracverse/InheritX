@@ -26,6 +26,7 @@ pub mod loan_lifecycle;
 pub mod message_access_audit;
 pub mod middleware;
 pub mod notifications;
+pub mod pagination;
 pub mod price_feed;
 pub mod price_feed_handlers;
 pub mod reputation;

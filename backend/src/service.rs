@@ -820,6 +820,31 @@ impl PlanService {
         Ok(due_plans)
     }
 
+    pub async fn get_all_due_for_claim_plans_for_user_paginated(
+        db: &PgPool,
+        user_id: Uuid,
+        limit: i64,
+        offset: i64,
+    ) -> Result<Vec<DueForClaimPlan>, ApiError> {
+        // For simplicity, we'll fetch all and then paginate in memory
+        // In production, you'd want to optimize this with proper SQL pagination
+        let all_plans = Self::get_all_due_for_claim_plans_for_user(db, user_id).await?;
+        let paginated: Vec<DueForClaimPlan> = all_plans
+            .into_iter()
+            .skip(offset as usize)
+            .take(limit as usize)
+            .collect();
+        Ok(paginated)
+    }
+
+    pub async fn count_due_for_claim_plans_for_user(
+        db: &PgPool,
+        user_id: Uuid,
+    ) -> Result<i64, ApiError> {
+        let all_plans = Self::get_all_due_for_claim_plans_for_user(db, user_id).await?;
+        Ok(all_plans.len() as i64)
+    }
+
     pub async fn get_all_due_for_claim_plans_admin(
         db: &PgPool,
     ) -> Result<Vec<DueForClaimPlan>, ApiError> {
@@ -915,6 +940,29 @@ impl PlanService {
         }
 
         Ok(due_plans)
+    }
+
+    pub async fn get_all_due_for_claim_plans_admin_paginated(
+        db: &PgPool,
+        limit: i64,
+        offset: i64,
+    ) -> Result<Vec<DueForClaimPlan>, ApiError> {
+        // For simplicity, we'll fetch all and then paginate in memory
+        // In production, you'd want to optimize this with proper SQL pagination
+        let all_plans = Self::get_all_due_for_claim_plans_admin(db).await?;
+        let paginated: Vec<DueForClaimPlan> = all_plans
+            .into_iter()
+            .skip(offset as usize)
+            .take(limit as usize)
+            .collect();
+        Ok(paginated)
+    }
+
+    pub async fn count_due_for_claim_plans_admin(
+        db: &PgPool,
+    ) -> Result<i64, ApiError> {
+        let all_plans = Self::get_all_due_for_claim_plans_admin(db).await?;
+        Ok(all_plans.len() as i64)
     }
 
     /// Cancel (deactivate) a plan
@@ -2848,6 +2896,49 @@ impl EmergencyContactService {
         .await?;
 
         Ok(contacts)
+    }
+
+    pub async fn list_for_user_paginated(
+        pool: &PgPool,
+        user_id: Uuid,
+        limit: i64,
+        offset: i64,
+    ) -> Result<Vec<EmergencyContact>, ApiError> {
+        let contacts = sqlx::query_as::<_, EmergencyContact>(
+            r#"
+            SELECT id, user_id, name, relationship, email, phone, wallet_address, notes,
+                   created_at, updated_at
+            FROM emergency_contacts
+            WHERE user_id = $1
+            ORDER BY created_at DESC
+            LIMIT $2 OFFSET $3
+            "#,
+        )
+        .bind(user_id)
+        .bind(limit)
+        .bind(offset)
+        .fetch_all(pool)
+        .await?;
+
+        Ok(contacts)
+    }
+
+    pub async fn count_for_user(
+        pool: &PgPool,
+        user_id: Uuid,
+    ) -> Result<i64, ApiError> {
+        let count = sqlx::query_scalar::<_, i64>(
+            r#"
+            SELECT COUNT(*)
+            FROM emergency_contacts
+            WHERE user_id = $1
+            "#,
+        )
+        .bind(user_id)
+        .fetch_one(pool)
+        .await?;
+
+        Ok(count)
     }
 
     pub async fn create_contact(

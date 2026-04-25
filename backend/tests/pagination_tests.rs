@@ -1,4 +1,3 @@
-/*
 mod helpers;
 
 use axum::{
@@ -45,7 +44,7 @@ fn admin_token(admin_id: Uuid) -> String {
 }
 
 async fn create_user(pool: &sqlx::PgPool, user_id: Uuid) {
-    sqlx::query("INSERT INTO users (id, email, password_hash) VALUES ($1, $2, $3)")
+    sqlx::query("INSERT INTO users (id, email, password_hash) VALUES ($1, $2, $3) ON CONFLICT (id) DO NOTHING")
         .bind(user_id)
         .bind(format!("user-{user_id}@example.com"))
         .bind("hash")
@@ -277,4 +276,3 @@ async fn create_plan_accepts_query_pagination_params() {
         "create plan should still succeed when page/limit query params are present"
     );
 }
-*/
