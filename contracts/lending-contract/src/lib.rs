@@ -2549,11 +2549,20 @@ impl LendingContract {
 
     // ─── Cross-Contract Integration ──────────────────────────────
 
-    pub fn set_inheritance_contract(env: Env, admin: Address, contract: Address) -> Result<(), LendingError> {
+    pub fn set_inheritance_contract(
+        env: Env,
+        admin: Address,
+        contract: Address,
+    ) -> Result<(), LendingError> {
         Self::require_admin(&env, &admin)?;
-        env.storage().instance().set(&DataKey::InheritanceContract, &contract);
+        env.storage()
+            .instance()
+            .set(&DataKey::InheritanceContract, &contract);
         env.events().publish(
-            (soroban_sdk::symbol_short!("LINK"), soroban_sdk::symbol_short!("INHERIT")),
+            (
+                soroban_sdk::symbol_short!("LINK"),
+                soroban_sdk::symbol_short!("INHERIT"),
+            ),
             ContractLinkedEvent {
                 contract_type: soroban_sdk::symbol_short!("INHERIT"),
                 address: contract,
@@ -2566,11 +2575,20 @@ impl LendingContract {
         env.storage().instance().get(&DataKey::InheritanceContract)
     }
 
-    pub fn set_governance_contract(env: Env, admin: Address, contract: Address) -> Result<(), LendingError> {
+    pub fn set_governance_contract(
+        env: Env,
+        admin: Address,
+        contract: Address,
+    ) -> Result<(), LendingError> {
         Self::require_admin(&env, &admin)?;
-        env.storage().instance().set(&DataKey::GovernanceContract, &contract);
+        env.storage()
+            .instance()
+            .set(&DataKey::GovernanceContract, &contract);
         env.events().publish(
-            (soroban_sdk::symbol_short!("LINK"), soroban_sdk::symbol_short!("GOV")),
+            (
+                soroban_sdk::symbol_short!("LINK"),
+                soroban_sdk::symbol_short!("GOV"),
+            ),
             ContractLinkedEvent {
                 contract_type: soroban_sdk::symbol_short!("GOV"),
                 address: contract,
@@ -2593,5 +2611,5 @@ impl LendingContract {
     }
 }
 
-mod test;
 mod cross_contract_test;
+mod test;

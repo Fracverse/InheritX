@@ -18,10 +18,16 @@ fn test_set_and_get_contracts() {
     let governance_contract = Address::generate(&env);
 
     client.set_lending_contract(&admin, &lending_contract);
-    assert_eq!(client.get_lending_contract(), Some(lending_contract.clone()));
+    assert_eq!(
+        client.get_lending_contract(),
+        Some(lending_contract.clone())
+    );
 
     client.set_governance_contract(&admin, &governance_contract);
-    assert_eq!(client.get_governance_contract(), Some(governance_contract.clone()));
+    assert_eq!(
+        client.get_governance_contract(),
+        Some(governance_contract.clone())
+    );
 }
 
 #[test]

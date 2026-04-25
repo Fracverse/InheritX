@@ -4079,9 +4079,15 @@ impl InheritanceContract {
 
     // ─── Cross-Contract Integration ──────────────────────────────
 
-    pub fn set_lending_contract(env: Env, admin: Address, contract: Address) -> Result<(), InheritanceError> {
+    pub fn set_lending_contract(
+        env: Env,
+        admin: Address,
+        contract: Address,
+    ) -> Result<(), InheritanceError> {
         Self::require_admin(&env, &admin)?;
-        env.storage().instance().set(&DataKey::LendingContract, &contract);
+        env.storage()
+            .instance()
+            .set(&DataKey::LendingContract, &contract);
         env.events().publish(
             (symbol_short!("LINK"), symbol_short!("LEND")),
             ContractLinkedEvent {
@@ -4096,9 +4102,15 @@ impl InheritanceContract {
         env.storage().instance().get(&DataKey::LendingContract)
     }
 
-    pub fn set_governance_contract(env: Env, admin: Address, contract: Address) -> Result<(), InheritanceError> {
+    pub fn set_governance_contract(
+        env: Env,
+        admin: Address,
+        contract: Address,
+    ) -> Result<(), InheritanceError> {
         Self::require_admin(&env, &admin)?;
-        env.storage().instance().set(&DataKey::GovernanceContract, &contract);
+        env.storage()
+            .instance()
+            .set(&DataKey::GovernanceContract, &contract);
         env.events().publish(
             (symbol_short!("LINK"), symbol_short!("GOV")),
             ContractLinkedEvent {
@@ -4120,13 +4132,20 @@ impl InheritanceContract {
         false
     }
 
-    pub fn upgrade_contract(env: Env, admin: Address, new_wasm_hash: BytesN<32>) -> Result<(), InheritanceError> {
+    pub fn upgrade_contract(
+        env: Env,
+        admin: Address,
+        new_wasm_hash: BytesN<32>,
+    ) -> Result<(), InheritanceError> {
         Self::require_admin(&env, &admin)?;
-        env.deployer().update_current_contract_wasm(new_wasm_hash.clone());
-        
+        env.deployer()
+            .update_current_contract_wasm(new_wasm_hash.clone());
+
         let old_version = env.storage().instance().get(&DataKey::Version).unwrap_or(0);
         let new_version = old_version + 1;
-        env.storage().instance().set(&DataKey::Version, &new_version);
+        env.storage()
+            .instance()
+            .set(&DataKey::Version, &new_version);
 
         env.events().publish(
             (symbol_short!("UPGRADE"), admin.clone()),
@@ -4142,8 +4161,8 @@ impl InheritanceContract {
     }
 }
 
+mod cross_contract_test;
 #[cfg(test)]
 #[allow(clippy::duplicated_attributes)]
 mod message_test;
 mod test;
-mod cross_contract_test;

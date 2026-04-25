@@ -19,8 +19,14 @@ fn test_set_and_get_contracts() {
     let governance_contract = Address::generate(&env);
 
     client.set_inheritance_contract(&admin, &inheritance_contract);
-    assert_eq!(client.get_inheritance_contract(), Some(inheritance_contract.clone()));
+    assert_eq!(
+        client.get_inheritance_contract(),
+        Some(inheritance_contract.clone())
+    );
 
     client.set_governance_contract(&admin, &governance_contract);
-    assert_eq!(client.get_governance_contract(), Some(governance_contract.clone()));
+    assert_eq!(
+        client.get_governance_contract(),
+        Some(governance_contract.clone())
+    );
 }
