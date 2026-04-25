@@ -52,6 +52,31 @@ reqwest = { version = "0.11", default-features = false, features = ["json", "rus
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter", "json"] }
 
+# Metrics — Issue #423
+# `metrics` is the instrumentation facade (counter!/histogram!/gauge! macros).
+# `metrics-exporter-prometheus` renders the registry as a Prometheus text exposition.
+metrics = "0.24"
+metrics-exporter-prometheus = { version = "0.18", default-features = false, features = ["http-listener"] }
+
+# Error tracking — Issue #424
+# `sentry` core SDK with tower middleware, tracing integration, anyhow support,
+# panic capture, and release-health (session tracking).
+sentry = { version = "0.47", default-features = false, features = [
+    "backtrace",
+    "contexts",
+    "panic",
+    "release-health",
+    "rustls",
+    "tracing",
+    "tower",
+    "tower-axum-matched-path",
+    "tower-http",
+    "anyhow",
+    "transport",
+] }
+sentry-tower = "0.47"
+sentry-tracing = "0.47"
+
 # Configuration
 config = "0.14"
 

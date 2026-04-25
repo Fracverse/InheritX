@@ -4,6 +4,7 @@ use axum::{
     routing::{delete, get, post, put},
     Json, Router,
 };
+use metrics_exporter_prometheus::PrometheusHandle;
 use serde_json::{json, Value};
 use sqlx::PgPool;
 use std::sync::Arc;
@@ -73,7 +74,7 @@ pub struct AppState {
     pub insurance_fund_service: Arc<crate::insurance_fund::InsuranceFundService>,
 }
 
-pub async fn create_app(db: PgPool, config: Config) -> Result<Router, ApiError> {
+pub async fn create_app(db: PgPool, config: Config, prometheus_handle: PrometheusHandle) -> Result<Router, ApiError> {
     let price_feed = Arc::new(crate::price_feed::DefaultPriceFeedService::new(
         db.clone(),
         3600,
@@ -156,6 +157,10 @@ pub async fn create_app(db: PgPool, config: Config) -> Result<Router, ApiError> 
     let app = Router::new()
         .route("/health", get(health_check))
         .route("/health/db", get(db_health_check))
+        .route("/health/db/metrics", get(db_metrics))
+        // Prometheus metrics scrape endpoint (Issue #423).
+        // Restrict access at the network/ingress layer in production.
+        .route("/metrics", get(crate::metrics::metrics_handler))
         .route("/admin/login", post(crate::auth::login_admin))
         .layer(
             ServiceBuilder::new()
@@ -567,14 +572,23 @@ pub async fn create_app(db: PgPool, config: Config) -> Result<Router, ApiError> 
         .route("/api/content/:content_id/download", get(download_content))
         .route("/api/content/stats", get(get_storage_stats))
         .layer(axum::Extension(config.clone()))
-        // ── Middleware stack (Issues #408, #409) ──────────────────────────────
+        // ── Middleware stack (Issues #408, #409, #423, #424) ─────────────────
+        // track_metrics must be outermost so it captures the full request
+        // duration including all inner middleware.
+        .layer(middleware::from_fn(crate::metrics::track_metrics))
         .layer(middleware::from_fn(security_headers_middleware))
         .layer(middleware::from_fn(request_logging_middleware))
         .layer(middleware::from_fn(request_id_middleware))
+        // Enrich Sentry scope with request_id and user_id after they are set.
+        .layer(middleware::from_fn(
+            crate::error_tracking::enrich_sentry_context,
+        ))
         .layer(middleware::from_fn(move |req, next| {
             request_timeout_middleware(req, next, timeout_duration)
         }))
         .layer(cors_layer)
+        // Inject the Prometheus handle so the /metrics handler can render output.
+        .layer(axum::Extension(prometheus_handle))
         .with_state(state);
 
     // Add price feed routes with separate state
@@ -624,13 +638,67 @@ async fn health_check() -> Json<Value> {
     Json(json!({ "status": "ok", "message": "App is healthy" }))
 }
 
+/// Liveness + readiness probe for the database (Issue #420).
+///
+/// Executes a lightweight `SELECT 1` and returns:
+/// - `status`: "ok" | "degraded" | "error"
+/// - `latency_ms`: round-trip time for the ping query
+/// - `pool`: current pool metrics (size, idle, active, utilisation)
+///
+/// HTTP 200 → healthy or degraded (caller decides alerting threshold).
+/// HTTP 503 → database unreachable.
 async fn db_health_check(
     axum::extract::State(state): axum::extract::State<Arc<AppState>>,
 ) -> Result<Json<Value>, ApiError> {
-    sqlx::query("SELECT 1").execute(&state.db).await?;
-    Ok(Json(
-        json!({ "status": "ok", "message": "Database is connected" }),
-    ))
+    let metrics = crate::db::pool_metrics(&state.db);
+
+    match crate::db::ping(&state.db).await {
+        Ok(latency_ms) => {
+            // Warn in the response body when utilisation is high so
+            // operators can spot saturation before it becomes an outage.
+            let status = if metrics.utilisation >= 0.9 {
+                "degraded"
+            } else {
+                "ok"
+            };
+
+            Ok(Json(json!({
+                "status": status,
+                "latency_ms": latency_ms,
+                "pool": {
+                    "size": metrics.size,
+                    "idle": metrics.idle,
+                    "active": metrics.active,
+                    "max_connections": metrics.max_connections,
+                    "utilisation": (metrics.utilisation * 100.0).round() / 100.0,
+                }
+            })))
+        }
+        Err(e) => {
+            tracing::error!(error = %e, "Database health check failed");
+            Err(ApiError::Internal(anyhow::anyhow!(
+                "Database health check failed: {}",
+                e
+            )))
+        }
+    }
+}
+
+/// Exposes raw pool metrics for Prometheus / monitoring scraping (Issue #420).
+///
+/// Returns the same pool statistics as `/health/db` but without the ping
+/// latency, so it is safe to call at high frequency from a metrics collector.
+async fn db_metrics(
+    axum::extract::State(state): axum::extract::State<Arc<AppState>>,
+) -> Json<Value> {
+    let m = crate::db::pool_metrics(&state.db);
+    Json(json!({
+        "pool_size": m.size,
+        "pool_idle": m.idle,
+        "pool_active": m.active,
+        "pool_max_connections": m.max_connections,
+        "pool_utilisation": (m.utilisation * 100.0).round() / 100.0,
+    }))
 }
 
 async fn create_plan(
