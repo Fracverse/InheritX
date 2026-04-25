@@ -338,11 +338,7 @@ impl BorrowingContract {
 
     /// Extend a loan's due date by paying a 1% extension fee.
     /// Maximum 2 extensions per loan.
-    pub fn extend_loan(
-        env: Env,
-        loan_id: u64,
-        new_due_date: u64,
-    ) -> Result<(), BorrowingError> {
+    pub fn extend_loan(env: Env, loan_id: u64, new_due_date: u64) -> Result<(), BorrowingError> {
         let mut loan: Loan = env
             .storage()
             .persistent()
@@ -470,7 +466,11 @@ impl BorrowingContract {
         let current_debt = loan.principal - loan.amount_repaid;
         let max_additional = max_debt - current_debt;
 
-        Ok(if max_additional > 0 { max_additional } else { 0 })
+        Ok(if max_additional > 0 {
+            max_additional
+        } else {
+            0
+        })
     }
 
     pub fn get_loan(env: Env, loan_id: u64) -> Loan {
