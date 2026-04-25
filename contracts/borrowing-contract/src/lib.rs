@@ -1,4 +1,5 @@
 #![no_std]
+#![no_std]
 use soroban_sdk::{
     contract, contracterror, contractimpl, contracttype, symbol_short, token, Address, Env,
 };
@@ -16,6 +17,7 @@ pub struct Loan {
     pub collateral_amount: i128,
     pub collateral_token: Address,
     pub is_active: bool,
+    pub extension_count: u32,
 }
 
 // ─────────────────────────────────────────────────
@@ -126,6 +128,27 @@ pub struct AuctionCancelledEvent {
 }
 
 #[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct LoanExtendedEvent {
+    pub loan_id: u64,
+    pub borrower: Address,
+    pub new_due_date: u64,
+    pub extension_fee: i128,
+    pub extension_count: u32,
+    pub timestamp: u64,
+}
+
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct LoanIncreasedEvent {
+    pub loan_id: u64,
+    pub borrower: Address,
+    pub additional_amount: i128,
+    pub new_principal: i128,
+    pub timestamp: u64,
+}
+
+#[contracttype]
 pub enum DataKey {
     Admin,
     CollateralRatio,
@@ -137,6 +160,8 @@ pub enum DataKey {
     LoanCounter,
     Loan(u64),
     Auction(u64),
+    MaxExtensions,
+    ExtensionFeeBps,
 }
 
 #[contracterror]
@@ -155,6 +180,7 @@ pub enum BorrowingError {
     AuctionAlreadyActive = 11,
     AuctionNotActive = 12,
     StillUnhealthy = 13,
+    ExtensionLimitReached = 14,
 }
 
 #[contract]
@@ -239,6 +265,7 @@ impl BorrowingContract {
             collateral_amount,
             collateral_token: collateral_token.clone(),
             is_active: true,
+            extension_count: 0,
         };
 
         env.storage()
@@ -740,6 +767,181 @@ impl BorrowingContract {
         env.events().publish(
             (symbol_short!("AUCTION"), symbol_short!("CANCEL")),
             AuctionCancelledEvent { loan_id },
+        );
+
+        Ok(())
+    }
+
+    /// Returns the extension fee for a loan (1% of remaining principal by default).
+    pub fn get_extension_fee(env: Env, loan_id: u64) -> Result<i128, BorrowingError> {
+        let loan: Loan = env
+            .storage()
+            .persistent()
+            .get(&DataKey::Loan(loan_id))
+            .ok_or(BorrowingError::LoanNotFound)?;
+
+        if !loan.is_active {
+            return Err(BorrowingError::LoanNotActive);
+        }
+
+        let fee_bps: u32 = env
+            .storage()
+            .instance()
+            .get(&DataKey::ExtensionFeeBps)
+            .unwrap_or(100); // 1% default
+
+        let remaining = loan.principal - loan.amount_repaid;
+        let fee = (remaining as u128)
+            .checked_mul(fee_bps as u128)
+            .and_then(|v| v.checked_div(10000))
+            .unwrap_or(0) as i128;
+
+        Ok(fee)
+    }
+
+    /// Returns the maximum additional amount a borrower can take against existing collateral.
+    pub fn get_max_additional_borrow(env: Env, loan_id: u64) -> Result<i128, BorrowingError> {
+        let loan: Loan = env
+            .storage()
+            .persistent()
+            .get(&DataKey::Loan(loan_id))
+            .ok_or(BorrowingError::LoanNotFound)?;
+
+        if !loan.is_active {
+            return Err(BorrowingError::LoanNotActive);
+        }
+
+        let ratio = Self::get_collateral_ratio(env.clone());
+        // max_borrow = collateral * 10000 / ratio
+        let max_borrow = (loan.collateral_amount as u128)
+            .checked_mul(10000)
+            .and_then(|v| v.checked_div(ratio as u128))
+            .unwrap_or(0) as i128;
+
+        let current_debt = loan.principal - loan.amount_repaid;
+        let additional = max_borrow.saturating_sub(current_debt);
+
+        Ok(if additional > 0 { additional } else { 0 })
+    }
+
+    /// Extends the loan due date by `extension_days` seconds. Charges an extension fee.
+    /// Maximum 2 extensions per loan.
+    pub fn extend_loan(
+        env: Env,
+        loan_id: u64,
+        extension_seconds: u64,
+    ) -> Result<(), BorrowingError> {
+        let mut loan: Loan = env
+            .storage()
+            .persistent()
+            .get(&DataKey::Loan(loan_id))
+            .ok_or(BorrowingError::LoanNotFound)?;
+
+        loan.borrower.require_auth();
+
+        if !loan.is_active {
+            return Err(BorrowingError::LoanNotActive);
+        }
+
+        let max_extensions: u32 = env
+            .storage()
+            .instance()
+            .get(&DataKey::MaxExtensions)
+            .unwrap_or(2);
+
+        if loan.extension_count >= max_extensions {
+            return Err(BorrowingError::ExtensionLimitReached);
+        }
+
+        // Calculate and collect extension fee
+        let fee_bps: u32 = env
+            .storage()
+            .instance()
+            .get(&DataKey::ExtensionFeeBps)
+            .unwrap_or(100);
+
+        let remaining = loan.principal - loan.amount_repaid;
+        let fee = (remaining as u128)
+            .checked_mul(fee_bps as u128)
+            .and_then(|v| v.checked_div(10000))
+            .unwrap_or(0) as i128;
+
+        if fee > 0 {
+            let token_client = token::Client::new(&env, &loan.collateral_token);
+            token_client.transfer(&loan.borrower, &env.current_contract_address(), &fee);
+        }
+
+        loan.due_date += extension_seconds;
+        loan.extension_count += 1;
+
+        let new_due_date = loan.due_date;
+        let extension_count = loan.extension_count;
+        let borrower = loan.borrower.clone();
+
+        env.storage()
+            .persistent()
+            .set(&DataKey::Loan(loan_id), &loan);
+
+        env.events().publish(
+            (symbol_short!("LOAN"), symbol_short!("EXTEND")),
+            LoanExtendedEvent {
+                loan_id,
+                borrower,
+                new_due_date,
+                extension_fee: fee,
+                extension_count,
+                timestamp: env.ledger().timestamp(),
+            },
+        );
+
+        Ok(())
+    }
+
+    /// Increases the loan principal if the health factor allows it.
+    pub fn increase_loan_amount(
+        env: Env,
+        loan_id: u64,
+        additional_amount: i128,
+    ) -> Result<(), BorrowingError> {
+        let mut loan: Loan = env
+            .storage()
+            .persistent()
+            .get(&DataKey::Loan(loan_id))
+            .ok_or(BorrowingError::LoanNotFound)?;
+
+        loan.borrower.require_auth();
+
+        if !loan.is_active {
+            return Err(BorrowingError::LoanNotActive);
+        }
+
+        if additional_amount <= 0 {
+            return Err(BorrowingError::InvalidAmount);
+        }
+
+        // Validate health factor allows more borrowing
+        let max_additional = Self::get_max_additional_borrow(env.clone(), loan_id)?;
+        if additional_amount > max_additional {
+            return Err(BorrowingError::InsufficientCollateral);
+        }
+
+        loan.principal += additional_amount;
+        let new_principal = loan.principal;
+        let borrower = loan.borrower.clone();
+
+        env.storage()
+            .persistent()
+            .set(&DataKey::Loan(loan_id), &loan);
+
+        env.events().publish(
+            (symbol_short!("LOAN"), symbol_short!("INCREASE")),
+            LoanIncreasedEvent {
+                loan_id,
+                borrower,
+                additional_amount,
+                new_principal,
+                timestamp: env.ledger().timestamp(),
+            },
         );
 
         Ok(())
