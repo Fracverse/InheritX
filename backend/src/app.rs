@@ -74,7 +74,11 @@ pub struct AppState {
     pub insurance_fund_service: Arc<crate::insurance_fund::InsuranceFundService>,
 }
 
-pub async fn create_app(db: PgPool, config: Config, prometheus_handle: PrometheusHandle) -> Result<Router, ApiError> {
+pub async fn create_app(
+    db: PgPool,
+    config: Config,
+    prometheus_handle: PrometheusHandle,
+) -> Result<Router, ApiError> {
     let price_feed = Arc::new(crate::price_feed::DefaultPriceFeedService::new(
         db.clone(),
         3600,

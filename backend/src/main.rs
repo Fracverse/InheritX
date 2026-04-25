@@ -23,15 +23,18 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let config = Config::load()?;
 
     // Initialize database with pool settings from config (Issue #420).
-    let db_pool = db::create_pool_with_config(&config.database_url, &crate::db::DbPoolConfig {
-        max_connections: config.db_pool.max_connections,
-        min_connections: config.db_pool.min_connections,
-        acquire_timeout_secs: config.db_pool.acquire_timeout_secs,
-        idle_timeout_secs: config.db_pool.idle_timeout_secs,
-        max_lifetime_secs: config.db_pool.max_lifetime_secs,
-        connect_retries: config.db_pool.connect_retries,
-        connect_retry_base_delay_secs: config.db_pool.connect_retry_base_delay_secs,
-    })
+    let db_pool = db::create_pool_with_config(
+        &config.database_url,
+        &crate::db::DbPoolConfig {
+            max_connections: config.db_pool.max_connections,
+            min_connections: config.db_pool.min_connections,
+            acquire_timeout_secs: config.db_pool.acquire_timeout_secs,
+            idle_timeout_secs: config.db_pool.idle_timeout_secs,
+            max_lifetime_secs: config.db_pool.max_lifetime_secs,
+            connect_retries: config.db_pool.connect_retries,
+            connect_retry_base_delay_secs: config.db_pool.connect_retry_base_delay_secs,
+        },
+    )
     .await?;
 
     // Run database migrations

@@ -146,11 +146,7 @@ pub async fn track_metrics(req: Request, next: Next) -> Response {
     let status = response.status().as_u16().to_string();
     let elapsed = start.elapsed().as_secs_f64();
 
-    let labels = [
-        ("method", method),
-        ("path", path),
-        ("status", status),
-    ];
+    let labels = [("method", method), ("path", path), ("status", status)];
 
     metrics::counter!("http_requests_total", &labels).increment(1);
     metrics::histogram!("http_request_duration_seconds", &labels).record(elapsed);
@@ -176,8 +172,7 @@ pub fn record_pool_metrics(m: &crate::db::PoolMetrics) {
 /// `operation` should be a short, low-cardinality label such as
 /// `"select_plan"`, `"insert_loan"`, `"ping"`, etc.
 pub fn record_db_query(operation: &'static str, elapsed_secs: f64) {
-    metrics::histogram!("db_query_duration_seconds", "operation" => operation)
-        .record(elapsed_secs);
+    metrics::histogram!("db_query_duration_seconds", "operation" => operation).record(elapsed_secs);
 }
 
 // ── Business metric helpers ───────────────────────────────────────────────────
