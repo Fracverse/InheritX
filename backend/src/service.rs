@@ -958,9 +958,7 @@ impl PlanService {
         Ok(paginated)
     }
 
-    pub async fn count_due_for_claim_plans_admin(
-        db: &PgPool,
-    ) -> Result<i64, ApiError> {
+    pub async fn count_due_for_claim_plans_admin(db: &PgPool) -> Result<i64, ApiError> {
         let all_plans = Self::get_all_due_for_claim_plans_admin(db).await?;
         Ok(all_plans.len() as i64)
     }
@@ -2923,10 +2921,7 @@ impl EmergencyContactService {
         Ok(contacts)
     }
 
-    pub async fn count_for_user(
-        pool: &PgPool,
-        user_id: Uuid,
-    ) -> Result<i64, ApiError> {
+    pub async fn count_for_user(pool: &PgPool, user_id: Uuid) -> Result<i64, ApiError> {
         let count = sqlx::query_scalar::<_, i64>(
             r#"
             SELECT COUNT(*)

@@ -278,7 +278,10 @@ mod tests {
         let cursor = encode_cursor(id, timestamp);
         let decoded = decode_cursor(&cursor).unwrap();
         assert_eq!(decoded.id, id);
-        assert_eq!(decoded.timestamp.timestamp_millis(), timestamp.timestamp_millis());
+        assert_eq!(
+            decoded.timestamp.timestamp_millis(),
+            timestamp.timestamp_millis()
+        );
     }
 
     #[test]

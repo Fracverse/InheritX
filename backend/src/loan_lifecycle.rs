@@ -178,6 +178,8 @@ pub struct LoanListFilters {
     pub user_id: Option<Uuid>,
     pub plan_id: Option<Uuid>,
     pub status: Option<String>,
+    pub page: Option<u32>,
+    pub limit: Option<u32>,
 }
 
 /// Aggregate counts across all lifecycle states (useful for dashboards).
@@ -338,10 +340,7 @@ impl LoanLifecycleService {
     }
 
     /// Count loans with optional filters.
-    pub async fn count_loans(
-        db: &PgPool,
-        filters: &LoanListFilters,
-    ) -> Result<i64, ApiError> {
+    pub async fn count_loans(db: &PgPool, filters: &LoanListFilters) -> Result<i64, ApiError> {
         let mut conditions: Vec<String> = Vec::new();
         let mut idx: i32 = 1;
 
