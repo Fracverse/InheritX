@@ -1124,14 +1124,14 @@ async fn list_lifecycle_loans(
 ) -> Result<Json<Value>, ApiError> {
     // Users may only see their own loans.
     filters.user_id = Some(user.user_id);
-    
+
     // Extract pagination from filters
     let pagination = PaginationQuery {
         page: filters.page,
         limit: filters.limit,
     };
     let (page, limit, offset) = pagination.normalize();
-    
+
     let loans =
         LoanLifecycleService::list_loans_paginated(&state.db, &filters, limit as i64, offset)
             .await?;
