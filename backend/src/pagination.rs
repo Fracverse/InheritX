@@ -183,27 +183,6 @@ pub fn decode_cursor(cursor: &str) -> Result<DecodedCursor, String> {
     Ok(DecodedCursor { id, timestamp })
 }
 
-/// Helper to count total records for a table with optional filters
-pub async fn count_records(
-    db: &PgPool,
-    table: &str,
-    where_clause: Option<&str>,
-    params: &[&(dyn sqlx::Encode<'_, sqlx::Postgres> + Sync)],
-) -> Result<i64, sqlx::Error> {
-    let query = if let Some(where_clause) = where_clause {
-        format!("SELECT COUNT(*) FROM {} WHERE {}", table, where_clause)
-    } else {
-        format!("SELECT COUNT(*) FROM {}", table)
-    };
-
-    let mut query_builder = sqlx::query_scalar::<_, i64>(&query);
-    for param in params {
-        query_builder = query_builder.bind(*param);
-    }
-
-    query_builder.fetch_one(db).await
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;

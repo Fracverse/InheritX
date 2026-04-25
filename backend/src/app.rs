@@ -42,7 +42,7 @@ use crate::insurance_fund::{CreateInsuranceClaimRequest, ProcessInsuranceClaimRe
 use crate::legacy_content::{ContentListFilters, LegacyContentService};
 use crate::loan_lifecycle::{CreateLoanRequest, LoanLifecycleService, LoanListFilters};
 use crate::message_access_audit::{MessageAccessAuditService, MessageAuditFilters};
-use crate::pagination::{CursorPaginationQuery, PaginationQuery};
+use crate::pagination::PaginationQuery;
 use crate::secure_messages::{
     CreateLegacyMessageRequest, LegacyMessageDeliveryService, MessageEncryptionService,
     MessageKeyService,
@@ -819,7 +819,7 @@ async fn get_all_due_for_claim_plans_user(
     AuthenticatedUser(user): AuthenticatedUser,
     Query(pagination): Query<PaginationQuery>,
 ) -> Result<Json<Value>, ApiError> {
-    let (page, limit, offset) = pagination.normalize();
+    let (_page, limit, offset) = pagination.normalize();
     let plans = PlanService::get_all_due_for_claim_plans_for_user_paginated(
         &state.db,
         user.user_id,
@@ -838,7 +838,7 @@ async fn get_all_due_for_claim_plans_admin(
     AuthenticatedAdmin(_admin): AuthenticatedAdmin,
     Query(pagination): Query<PaginationQuery>,
 ) -> Result<Json<Value>, ApiError> {
-    let (page, limit, offset) = pagination.normalize();
+    let (_page, limit, offset) = pagination.normalize();
     let plans =
         PlanService::get_all_due_for_claim_plans_admin_paginated(&state.db, limit as i64, offset)
             .await?;
@@ -852,7 +852,7 @@ async fn list_emergency_contacts(
     AuthenticatedUser(user): AuthenticatedUser,
     Query(pagination): Query<PaginationQuery>,
 ) -> Result<Json<Value>, ApiError> {
-    let (page, limit, offset) = pagination.normalize();
+    let (_page, limit, offset) = pagination.normalize();
     let contacts = EmergencyContactService::list_for_user_paginated(
         &state.db,
         user.user_id,
@@ -1130,7 +1130,7 @@ async fn list_lifecycle_loans(
         page: filters.page,
         limit: filters.limit,
     };
-    let (page, limit, offset) = pagination.normalize();
+    let (_page, limit, offset) = pagination.normalize();
 
     let loans =
         LoanLifecycleService::list_loans_paginated(&state.db, &filters, limit as i64, offset)
