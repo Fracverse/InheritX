@@ -1,7 +1,7 @@
 #![no_std]
 use soroban_sdk::{
-    contract, contracterror, contractimpl, contracttype, log, symbol_short, token, vec, Address,
-    Bytes, BytesN, Env, FromVal, IntoVal, InvokeError, String, Symbol, Val, Vec,
+    Address, Bytes, BytesN, Env, FromVal, IntoVal, InvokeError, String, Symbol, Val, Vec, contract,
+    contracterror, contractimpl, contracttype, log, symbol_short, token, vec,
 };
 
 /// Current contract version - bump this on each upgrade
@@ -4009,11 +4009,19 @@ impl InheritanceContract {
         env.storage().persistent().has(&DataKey::FreezeInfo(plan_id))
     }
 
-    pub fn add_legal_hold(env: Env, admin: Address, plan_id: u64) -> Result<(), InheritanceError> {
+    pub fn add_legal_hold(
+        env: Env,
+        admin: Address,
+        plan_id: u64,
+    ) -> Result<(), InheritanceError> {
         Self::freeze_plan(env, admin, plan_id, String::from_str(&env, "Legal Hold"))
     }
 
-    pub fn remove_legal_hold(env: Env, admin: Address, plan_id: u64) -> Result<(), InheritanceError> {
+    pub fn remove_legal_hold(
+        env: Env,
+        admin: Address,
+        plan_id: u64,
+    ) -> Result<(), InheritanceError> {
         Self::unfreeze_plan(env, admin, plan_id)
     }
 
@@ -4078,7 +4086,7 @@ impl InheritanceContract {
         }
 
         env.storage().persistent().remove(&key);
- 
+
         env.events().publish(
             (symbol_short!("COMPL"), symbol_short!("B_UNF")),
             BeneficiaryUnfrozenEvent {

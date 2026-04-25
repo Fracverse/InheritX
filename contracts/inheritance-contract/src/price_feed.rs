@@ -1,5 +1,5 @@
 /// Price Feed Module for Collateral Valuation
-/// 
+///
 /// This module provides price feed integration for collateral valuation
 /// on the Soroban smart contract. It validates asset prices and ensures
 /// collateral ratios meet minimum requirements.
@@ -80,7 +80,7 @@ pub fn verify_price_freshness(
     max_age_secs: u64,
 ) -> Result<(), &'static str> {
     let current_time = env.ledger().timestamp();
-    
+
     if current_time < price_timestamp {
         return Err("Price timestamp is in the future");
     }

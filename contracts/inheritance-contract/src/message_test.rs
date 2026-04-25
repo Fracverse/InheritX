@@ -1,8 +1,7 @@
 use super::*;
 use mock_token::MockToken;
 use soroban_sdk::{
-    testutils::{Address as _, Events, Ledger},
-    vec, Address, BytesN, Env, IntoVal, String, Symbol,
+    Address, BytesN, Env, Events, IntoVal, Ledger}, String, Symbol, testutils::{Address as _, vec,
 };
 
 fn create_test_address(env: &Env) -> Address {
