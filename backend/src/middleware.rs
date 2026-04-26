@@ -1,9 +1,7 @@
 use axum::{
     body::Body,
     extract::Request,
-    http::{
-        HeaderMap, HeaderName, HeaderValue, Request as HttpRequest, StatusCode,
-    },
+    http::{HeaderMap, HeaderName, HeaderValue, Request as HttpRequest, StatusCode},
     middleware::Next,
     response::{IntoResponse, Response},
 };
@@ -148,8 +146,10 @@ pub async fn request_id_middleware(mut req: Request, next: Next) -> Response {
         request_id
     };
 
-    req.headers_mut()
-        .insert(X_REQUEST_ID.clone(), HeaderValue::from_str(&request_id).unwrap());
+    req.headers_mut().insert(
+        X_REQUEST_ID.clone(),
+        HeaderValue::from_str(&request_id).unwrap(),
+    );
 
     let mut response = next.run(req).await;
     response.headers_mut().insert(
