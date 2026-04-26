@@ -7,7 +7,7 @@ use soroban_sdk::{Env, String};
 // Helpers
 // ─────────────────────────────────────────────────
 
-fn setup_contract(env: &Env) -> (GovernanceContractClient, Address) {
+fn setup_contract(env: &Env) -> (GovernanceContractClient<'_>, Address) {
     let contract_id = env.register_contract(None, GovernanceContract);
     let client = GovernanceContractClient::new(env, &contract_id);
     let admin = Address::generate(env);
