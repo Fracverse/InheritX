@@ -98,6 +98,9 @@
                               },
                               {
                                 "u32": 5000
+                              },
+                              {
+                                "u32": 1
                               }
                             ]
                           },
@@ -117,6 +120,9 @@
                               },
                               {
                                 "u32": 5000
+                              },
+                              {
+                                "u32": 2
                               }
                             ]
                           }
@@ -437,6 +443,22 @@
                                 "val": {
                                   "bytes": "08bb5e5d6eaac1049ede0893d30ed022b1a4d9b5b48db414871f51c9cb35283d"
                                 }
+                              },
+                              {
+                                "key": {
+                                  "symbol": "is_claimed"
+                                },
+                                "val": {
+                                  "bool": false
+                                }
+                              },
+                              {
+                                "key": {
+                                  "symbol": "priority"
+                                },
+                                "val": {
+                                  "u32": 1
+                                }
                               }
                             ]
                           },
@@ -480,6 +502,22 @@
                                 },
                                 "val": {
                                   "bytes": "ae4b3280e56e2faf83f414a6e3dabe9d5fbe18976544c05fed121accb85b53fc"
+                                }
+                              },
+                              {
+                                "key": {
+                                  "symbol": "is_claimed"
+                                },
+                                "val": {
+                                  "bool": false
+                                }
+                              },
+                              {
+                                "key": {
+                                  "symbol": "priority"
+                                },
+                                "val": {
+                                  "u32": 2
                                 }
                               }
                             ]
@@ -569,6 +607,14 @@
                       },
                       "val": {
                         "u64": 0
+                      }
+                    },
+                    {
+                      "key": {
+                        "symbol": "waterfall_enabled"
+                      },
+                      "val": {
+                        "bool": false
                       }
                     }
                   ]
@@ -1216,6 +1262,9 @@
                           },
                           {
                             "u32": 5000
+                          },
+                          {
+                            "u32": 1
                           }
                         ]
                       },
@@ -1235,6 +1284,9 @@
                           },
                           {
                             "u32": 5000
+                          },
+                          {
+                            "u32": 2
                           }
                         ]
                       }
@@ -1599,6 +1651,14 @@
                           "val": {
                             "string": "X"
                           }
+                        },
+                        {
+                          "key": {
+                            "symbol": "priority"
+                          },
+                          "val": {
+                            "u32": 0
+                          }
                         }
                       ]
                     },
@@ -1642,6 +1702,14 @@
                           },
                           "val": {
                             "string": "X"
+                          }
+                        },
+                        {
+                          "key": {
+                            "symbol": "priority"
+                          },
+                          "val": {
+                            "u32": 1
                           }
                         }
                       ]
@@ -1687,6 +1755,14 @@
                           "val": {
                             "string": "X"
                           }
+                        },
+                        {
+                          "key": {
+                            "symbol": "priority"
+                          },
+                          "val": {
+                            "u32": 2
+                          }
                         }
                       ]
                     },
@@ -1730,6 +1806,14 @@
                           },
                           "val": {
                             "string": "X"
+                          }
+                        },
+                        {
+                          "key": {
+                            "symbol": "priority"
+                          },
+                          "val": {
+                            "u32": 3
                           }
                         }
                       ]
@@ -1775,6 +1859,14 @@
                           "val": {
                             "string": "X"
                           }
+                        },
+                        {
+                          "key": {
+                            "symbol": "priority"
+                          },
+                          "val": {
+                            "u32": 4
+                          }
                         }
                       ]
                     },
@@ -1818,6 +1910,14 @@
                           },
                           "val": {
                             "string": "X"
+                          }
+                        },
+                        {
+                          "key": {
+                            "symbol": "priority"
+                          },
+                          "val": {
+                            "u32": 5
                           }
                         }
                       ]
@@ -1863,6 +1963,14 @@
                           "val": {
                             "string": "X"
                           }
+                        },
+                        {
+                          "key": {
+                            "symbol": "priority"
+                          },
+                          "val": {
+                            "u32": 6
+                          }
                         }
                       ]
                     },
@@ -1906,6 +2014,14 @@
                           },
                           "val": {
                             "string": "X"
+                          }
+                        },
+                        {
+                          "key": {
+                            "symbol": "priority"
+                          },
+                          "val": {
+                            "u32": 7
                           }
                         }
                       ]
@@ -1951,6 +2067,14 @@
                           "val": {
                             "string": "X"
                           }
+                        },
+                        {
+                          "key": {
+                            "symbol": "priority"
+                          },
+                          "val": {
+                            "u32": 8
+                          }
                         }
                       ]
                     },
@@ -1994,6 +2118,14 @@
                           },
                           "val": {
                             "string": "X"
+                          }
+                        },
+                        {
+                          "key": {
+                            "symbol": "priority"
+                          },
+                          "val": {
+                            "u32": 9
                           }
                         }
                       ]
@@ -2039,6 +2171,14 @@
                           "val": {
                             "string": "X"
                           }
+                        },
+                        {
+                          "key": {
+                            "symbol": "priority"
+                          },
+                          "val": {
+                            "u32": 10
+                          }
                         }
                       ]
                     },
@@ -2082,6 +2222,14 @@
                           },
                           "val": {
                             "string": "X"
+                          }
+                        },
+                        {
+                          "key": {
+                            "symbol": "priority"
+                          },
+                          "val": {
+                            "u32": 11
                           }
                         }
                       ]
@@ -2127,6 +2275,14 @@
                           "val": {
                             "string": "X"
                           }
+                        },
+                        {
+                          "key": {
+                            "symbol": "priority"
+                          },
+                          "val": {
+                            "u32": 12
+                          }
                         }
                       ]
                     },
@@ -2170,6 +2326,14 @@
                           },
                           "val": {
                             "string": "X"
+                          }
+                        },
+                        {
+                          "key": {
+                            "symbol": "priority"
+                          },
+                          "val": {
+                            "u32": 13
                           }
                         }
                       ]
@@ -2215,6 +2379,14 @@
                           "val": {
                             "string": "X"
                           }
+                        },
+                        {
+                          "key": {
+                            "symbol": "priority"
+                          },
+                          "val": {
+                            "u32": 14
+                          }
                         }
                       ]
                     },
@@ -2258,6 +2430,14 @@
                           },
                           "val": {
                             "string": "X"
+                          }
+                        },
+                        {
+                          "key": {
+                            "symbol": "priority"
+                          },
+                          "val": {
+                            "u32": 15
                           }
                         }
                       ]
@@ -2303,6 +2483,14 @@
                           "val": {
                             "string": "X"
                           }
+                        },
+                        {
+                          "key": {
+                            "symbol": "priority"
+                          },
+                          "val": {
+                            "u32": 16
+                          }
                         }
                       ]
                     },
@@ -2346,6 +2534,14 @@
                           },
                           "val": {
                             "string": "X"
+                          }
+                        },
+                        {
+                          "key": {
+                            "symbol": "priority"
+                          },
+                          "val": {
+                            "u32": 17
                           }
                         }
                       ]
@@ -2391,6 +2587,14 @@
                           "val": {
                             "string": "X"
                           }
+                        },
+                        {
+                          "key": {
+                            "symbol": "priority"
+                          },
+                          "val": {
+                            "u32": 18
+                          }
                         }
                       ]
                     },
@@ -2435,6 +2639,14 @@
                           "val": {
                             "string": "X"
                           }
+                        },
+                        {
+                          "key": {
+                            "symbol": "priority"
+                          },
+                          "val": {
+                            "u32": 19
+                          }
                         }
                       ]
                     },
@@ -2478,6 +2690,14 @@
                           },
                           "val": {
                             "string": "X"
+                          }
+                        },
+                        {
+                          "key": {
+                            "symbol": "priority"
+                          },
+                          "val": {
+                            "u32": 20
                           }
                         }
                       ]
@@ -2617,6 +2837,14 @@
                               "val": {
                                 "string": "X"
                               }
+                            },
+                            {
+                              "key": {
+                                "symbol": "priority"
+                              },
+                              "val": {
+                                "u32": 0
+                              }
                             }
                           ]
                         },
@@ -2660,6 +2888,14 @@
                               },
                               "val": {
                                 "string": "X"
+                              }
+                            },
+                            {
+                              "key": {
+                                "symbol": "priority"
+                              },
+                              "val": {
+                                "u32": 1
                               }
                             }
                           ]
@@ -2705,6 +2941,14 @@
                               "val": {
                                 "string": "X"
                               }
+                            },
+                            {
+                              "key": {
+                                "symbol": "priority"
+                              },
+                              "val": {
+                                "u32": 2
+                              }
                             }
                           ]
                         },
@@ -2748,6 +2992,14 @@
                               },
                               "val": {
                                 "string": "X"
+                              }
+                            },
+                            {
+                              "key": {
+                                "symbol": "priority"
+                              },
+                              "val": {
+                                "u32": 3
                               }
                             }
                           ]
@@ -2793,6 +3045,14 @@
                               "val": {
                                 "string": "X"
                               }
+                            },
+                            {
+                              "key": {
+                                "symbol": "priority"
+                              },
+                              "val": {
+                                "u32": 4
+                              }
                             }
                           ]
                         },
@@ -2836,6 +3096,14 @@
                               },
                               "val": {
                                 "string": "X"
+                              }
+                            },
+                            {
+                              "key": {
+                                "symbol": "priority"
+                              },
+                              "val": {
+                                "u32": 5
                               }
                             }
                           ]
@@ -2881,6 +3149,14 @@
                               "val": {
                                 "string": "X"
                               }
+                            },
+                            {
+                              "key": {
+                                "symbol": "priority"
+                              },
+                              "val": {
+                                "u32": 6
+                              }
                             }
                           ]
                         },
@@ -2924,6 +3200,14 @@
                               },
                               "val": {
                                 "string": "X"
+                              }
+                            },
+                            {
+                              "key": {
+                                "symbol": "priority"
+                              },
+                              "val": {
+                                "u32": 7
                               }
                             }
                           ]
@@ -2969,6 +3253,14 @@
                               "val": {
                                 "string": "X"
                               }
+                            },
+                            {
+                              "key": {
+                                "symbol": "priority"
+                              },
+                              "val": {
+                                "u32": 8
+                              }
                             }
                           ]
                         },
@@ -3012,6 +3304,14 @@
                               },
                               "val": {
                                 "string": "X"
+                              }
+                            },
+                            {
+                              "key": {
+                                "symbol": "priority"
+                              },
+                              "val": {
+                                "u32": 9
                               }
                             }
                           ]
@@ -3057,6 +3357,14 @@
                               "val": {
                                 "string": "X"
                               }
+                            },
+                            {
+                              "key": {
+                                "symbol": "priority"
+                              },
+                              "val": {
+                                "u32": 10
+                              }
                             }
                           ]
                         },
@@ -3100,6 +3408,14 @@
                               },
                               "val": {
                                 "string": "X"
+                              }
+                            },
+                            {
+                              "key": {
+                                "symbol": "priority"
+                              },
+                              "val": {
+                                "u32": 11
                               }
                             }
                           ]
@@ -3145,6 +3461,14 @@
                               "val": {
                                 "string": "X"
                               }
+                            },
+                            {
+                              "key": {
+                                "symbol": "priority"
+                              },
+                              "val": {
+                                "u32": 12
+                              }
                             }
                           ]
                         },
@@ -3188,6 +3512,14 @@
                               },
                               "val": {
                                 "string": "X"
+                              }
+                            },
+                            {
+                              "key": {
+                                "symbol": "priority"
+                              },
+                              "val": {
+                                "u32": 13
                               }
                             }
                           ]
@@ -3233,6 +3565,14 @@
                               "val": {
                                 "string": "X"
                               }
+                            },
+                            {
+                              "key": {
+                                "symbol": "priority"
+                              },
+                              "val": {
+                                "u32": 14
+                              }
                             }
                           ]
                         },
@@ -3276,6 +3616,14 @@
                               },
                               "val": {
                                 "string": "X"
+                              }
+                            },
+                            {
+                              "key": {
+                                "symbol": "priority"
+                              },
+                              "val": {
+                                "u32": 15
                               }
                             }
                           ]
@@ -3321,6 +3669,14 @@
                               "val": {
                                 "string": "X"
                               }
+                            },
+                            {
+                              "key": {
+                                "symbol": "priority"
+                              },
+                              "val": {
+                                "u32": 16
+                              }
                             }
                           ]
                         },
@@ -3364,6 +3720,14 @@
                               },
                               "val": {
                                 "string": "X"
+                              }
+                            },
+                            {
+                              "key": {
+                                "symbol": "priority"
+                              },
+                              "val": {
+                                "u32": 17
                               }
                             }
                           ]
@@ -3409,6 +3773,14 @@
                               "val": {
                                 "string": "X"
                               }
+                            },
+                            {
+                              "key": {
+                                "symbol": "priority"
+                              },
+                              "val": {
+                                "u32": 18
+                              }
                             }
                           ]
                         },
@@ -3453,6 +3825,14 @@
                               "val": {
                                 "string": "X"
                               }
+                            },
+                            {
+                              "key": {
+                                "symbol": "priority"
+                              },
+                              "val": {
+                                "u32": 19
+                              }
                             }
                           ]
                         },
@@ -3496,6 +3876,14 @@
                               },
                               "val": {
                                 "string": "X"
+                              }
+                            },
+                            {
+                              "key": {
+                                "symbol": "priority"
+                              },
+                              "val": {
+                                "u32": 20
                               }
                             }
                           ]

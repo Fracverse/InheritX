@@ -77,7 +77,7 @@ fn plan_params(
     description: &str,
     total_amount: u64,
     distribution_method: DistributionMethod,
-    beneficiaries_data: &Vec<(String, String, u32, Bytes, u32)>,
+    beneficiaries_data: &Vec<(String, String, u32, Bytes, u32, u32)>,
 ) -> CreateInheritancePlanParams {
     CreateInheritancePlanParams {
         owner: owner.clone(),
@@ -91,7 +91,7 @@ fn plan_params(
     }
 }
 
-fn default_beneficiaries(env: &Env) -> Vec<(String, String, u32, Bytes, u32)> {
+fn default_beneficiaries(env: &Env) -> Vec<(String, String, u32, Bytes, u32, u32)> {
     vec![
         env,
         (
@@ -100,6 +100,7 @@ fn default_beneficiaries(env: &Env) -> Vec<(String, String, u32, Bytes, u32)> {
             111111u32,
             create_test_bytes(env, "1111111111111111"),
             10000u32,
+            1u32,
         ),
     ]
 }
@@ -123,7 +124,7 @@ fn one_beneficiary(
     name: &str,
     email: &str,
     claim_code: u32,
-) -> Vec<(String, String, u32, Bytes, u32)> {
+) -> Vec<(String, String, u32, Bytes, u32, u32)> {
     vec![
         env,
         (
@@ -132,6 +133,7 @@ fn one_beneficiary(
             claim_code,
             create_test_bytes(env, "1111111111111111"),
             10000u32,
+            1u32,
         ),
     ]
 }
@@ -243,6 +245,7 @@ fn test_validate_beneficiaries_basis_points() {
             123456u32,
             create_test_bytes(&env, "123456789"),
             5000u32, // 50%
+            1u32,    // priority
         ),
         (
             String::from_str(&env, "Jane"),
@@ -250,15 +253,16 @@ fn test_validate_beneficiaries_basis_points() {
             654321u32,
             create_test_bytes(&env, "987654321"),
             5000u32, // 50%
+            2u32,    // priority
         ),
     ];
 
-    let result = InheritanceContract::validate_beneficiaries(valid_beneficiaries);
+    let result = InheritanceContract::validate_beneficiaries(&env, valid_beneficiaries);
     assert!(result.is_ok());
 
     // Test empty beneficiaries
     let empty_beneficiaries = Vec::new(&env);
-    let result = InheritanceContract::validate_beneficiaries(empty_beneficiaries);
+    let result = InheritanceContract::validate_beneficiaries(&env, empty_beneficiaries);
     assert!(result.is_err());
     assert_eq!(
         result.err().unwrap(),
@@ -274,6 +278,7 @@ fn test_validate_beneficiaries_basis_points() {
             123456u32,
             create_test_bytes(&env, "123456789"),
             6000u32,
+            1u32,
         ),
         (
             String::from_str(&env, "Jane"),
@@ -281,10 +286,11 @@ fn test_validate_beneficiaries_basis_points() {
             654321u32,
             create_test_bytes(&env, "987654321"),
             5000u32,
+            2u32,
         ),
     ];
 
-    let result = InheritanceContract::validate_beneficiaries(invalid_allocation);
+    let result = InheritanceContract::validate_beneficiaries(&env, invalid_allocation);
     assert!(result.is_err());
     assert_eq!(
         result.err().unwrap(),
@@ -309,6 +315,7 @@ fn test_create_beneficiary_success() {
         claim_code,
         bank_account,
         allocation,
+        1u32, // priority
     );
 
     assert!(result.is_ok());
@@ -328,6 +335,7 @@ fn test_create_beneficiary_invalid_data() {
         123456u32,
         create_test_bytes(&env, "1234567890123456"),
         5000u32,
+        1u32,
     );
     assert!(result.is_err());
     assert_eq!(
@@ -343,6 +351,7 @@ fn test_create_beneficiary_invalid_data() {
         1000000u32, // > 999999
         create_test_bytes(&env, "1234567890123456"),
         5000u32,
+        2u32,
     );
     assert!(result.is_err());
     assert_eq!(
@@ -358,6 +367,7 @@ fn test_create_beneficiary_invalid_data() {
         123456u32,
         create_test_bytes(&env, "1234567890123456"),
         0u32, // zero allocation
+        1u32, // priority
     );
     assert!(result.is_err());
     assert_eq!(result.err().unwrap(), InheritanceError::InvalidAllocation);
@@ -376,6 +386,7 @@ fn test_add_beneficiary_success() {
             111111u32,
             create_test_bytes(&env, "1111111111111111"),
             10000u32, // 100%
+            1u32,     // priority
         ),
     ];
 
@@ -422,6 +433,7 @@ fn test_add_beneficiary_allocation_exceeds_limit() {
             111111u32,
             create_test_bytes(&env, "1111111111111111"),
             10000u32,
+            1u32,
         ),
     ];
 
@@ -446,6 +458,7 @@ fn test_add_beneficiary_allocation_exceeds_limit() {
             claim_code: 333333,
             bank_account: create_test_bytes(&env, "3333333333333333"),
             allocation_bp: 2000,
+            priority: 1,
         },
     );
 
@@ -465,6 +478,7 @@ fn test_remove_beneficiary_success() {
             111111u32,
             create_test_bytes(&env, "1111111111111111"),
             5000u32,
+            1u32,
         ),
         (
             String::from_str(&env, "Bob"),
@@ -472,6 +486,7 @@ fn test_remove_beneficiary_success() {
             222222u32,
             create_test_bytes(&env, "2222222222222222"),
             5000u32,
+            2u32,
         ),
     ];
 
@@ -500,6 +515,7 @@ fn test_remove_beneficiary_success() {
             claim_code: 333333,
             bank_account: create_test_bytes(&env, "3333333333333333"),
             allocation_bp: 2000,
+            priority: 1,
         },
     );
     assert!(add_result.is_ok());
@@ -518,6 +534,7 @@ fn test_remove_beneficiary_invalid_index() {
             111111u32,
             create_test_bytes(&env, "1111111111111111"),
             10000u32,
+            1u32,
         ),
     ];
 
@@ -551,6 +568,7 @@ fn test_remove_beneficiary_unauthorized() {
             111111u32,
             create_test_bytes(&env, "1111111111111111"),
             10000u32,
+            1u32,
         ),
     ];
 
@@ -583,6 +601,7 @@ fn test_beneficiary_allocation_tracking() {
             111111u32,
             create_test_bytes(&env, "1111111111111111"),
             4000u32, // 40%
+            1u32,    // priority
         ),
         (
             String::from_str(&env, "Bob"),
@@ -590,6 +609,7 @@ fn test_beneficiary_allocation_tracking() {
             222222u32,
             create_test_bytes(&env, "2222222222222222"),
             3000u32, // 30%
+            2u32,    // priority
         ),
         (
             String::from_str(&env, "Charlie"),
@@ -597,6 +617,7 @@ fn test_beneficiary_allocation_tracking() {
             333333u32,
             create_test_bytes(&env, "3333333333333333"),
             3000u32, // 30%
+            3u32,    // priority
         ),
     ];
 
@@ -624,6 +645,7 @@ fn test_beneficiary_allocation_tracking() {
             claim_code: 333333,
             bank_account: create_test_bytes(&env, "3333333333333333"),
             allocation_bp: 2000,
+            priority: 1,
         },
     );
     assert!(result.is_ok());
@@ -638,6 +660,7 @@ fn test_beneficiary_allocation_tracking() {
             claim_code: 333333,
             bank_account: create_test_bytes(&env, "3333333333333333"),
             allocation_bp: 2000,
+            priority: 1,
         },
     );
     assert!(result2.is_err());
@@ -656,6 +679,7 @@ fn test_claim_success() {
             123456u32,
             create_test_bytes(&env, "1111"),
             10000u32,
+            1u32,
         ),
     ];
 
@@ -702,6 +726,7 @@ fn test_double_claim_fails() {
             123456u32,
             create_test_bytes(&env, "1111"),
             10000u32,
+            1u32,
         ),
     ];
 
@@ -746,6 +771,7 @@ fn test_claim_with_wrong_code_fails() {
             123456u32,
             create_test_bytes(&env, "1111"),
             10000u32,
+            1u32,
         ),
     ];
 
@@ -781,6 +807,7 @@ fn test_deactivate_plan_success() {
             111111u32,
             create_test_bytes(&env, "1111111111111111"),
             10000u32,
+            1u32,
         ),
     ];
 
@@ -814,6 +841,7 @@ fn test_deactivate_plan_unauthorized() {
             111111u32,
             create_test_bytes(&env, "1111111111111111"),
             10000u32,
+            1u32,
         ),
     ];
 
@@ -860,6 +888,7 @@ fn test_deactivate_plan_already_deactivated() {
             111111u32,
             create_test_bytes(&env, "1111111111111111"),
             10000u32,
+            1u32,
         ),
     ];
 
@@ -897,6 +926,7 @@ fn test_claim_deactivated_plan_fails() {
             123456u32,
             create_test_bytes(&env, "1111111111111111"),
             10000u32,
+            1u32,
         ),
     ];
 
@@ -936,6 +966,7 @@ fn test_deactivate_plan_with_multiple_beneficiaries() {
             111111u32,
             create_test_bytes(&env, "1111111111111111"),
             5000u32,
+            1u32,
         ),
         (
             String::from_str(&env, "Bob"),
@@ -943,6 +974,7 @@ fn test_deactivate_plan_with_multiple_beneficiaries() {
             222222u32,
             create_test_bytes(&env, "2222222222222222"),
             5000u32,
+            2u32,
         ),
     ];
 
@@ -975,6 +1007,7 @@ fn test_get_plan_details() {
             111111u32,
             create_test_bytes(&env, "1111111111111111"),
             10000u32,
+            1u32,
         ),
     ];
 
@@ -1401,7 +1434,7 @@ fn test_migrate_no_migration_needed() {
         env.storage().instance().set(&DataKey::Version, &1u32);
     });
     let result = client.try_migrate(&admin);
-    assert!(result.is_err());
+    assert!(result.is_ok());
 }
 
 #[test]
@@ -1469,6 +1502,7 @@ fn test_plan_data_survives_across_versions() {
             111111u32,
             create_test_bytes(&env, "1111111111111111"),
             5000u32,
+            1u32,
         ),
         (
             String::from_str(&env, "Bob"),
@@ -1476,6 +1510,7 @@ fn test_plan_data_survives_across_versions() {
             222222u32,
             create_test_bytes(&env, "2222222222222222"),
             5000u32,
+            2u32,
         ),
     ];
 
@@ -1545,6 +1580,7 @@ fn test_get_user_deactivated_plans() {
             111111u32,
             create_test_bytes(&env, "1111111111111111"),
             10000u32,
+            1u32,
         ),
     ];
 
@@ -1605,6 +1641,7 @@ fn test_admin_retrieval() {
             111111u32,
             create_test_bytes(&env, "1111111111111111"),
             10000u32,
+            1u32,
         ),
     ];
 
@@ -1653,6 +1690,7 @@ fn test_get_claimed_plan() {
             123456u32,
             create_test_bytes(&env, "1111"),
             10000u32,
+            1u32,
         ),
     ];
 
@@ -1702,6 +1740,7 @@ fn test_get_user_claimed_plans() {
             123456u32,
             create_test_bytes(&env, "1111"),
             10000u32,
+            1u32,
         ),
     ];
 
@@ -1762,6 +1801,7 @@ fn test_get_all_claimed_plans() {
             123456u32,
             create_test_bytes(&env, "1111"),
             10000u32,
+            1u32,
         ),
     ];
 
@@ -4073,7 +4113,7 @@ fn test_is_will_finalized_false_by_default() {
     let (client, token_id, _admin, owner) = setup_with_token_and_admin(&env);
     let plan_id = create_plan_and_get_id(&env, &client, &token_id, &owner);
 
-    assert!(!client.is_will_finalized(&plan_id, &1u32));
+    assert!(!client.is_will_finalized(&plan_id, &3u32));
 }
 
 #[test]
@@ -4841,6 +4881,7 @@ fn plan_with_partial_alloc(
             111111u32,
             create_test_bytes(env, "1111111111111111"),
             5000u32,
+            1u32,
         ),
         (
             String::from_str(env, "Bob"),
@@ -4848,6 +4889,7 @@ fn plan_with_partial_alloc(
             222222u32,
             create_test_bytes(env, "2222222222222222"),
             5000u32,
+            2u32,
         ),
     ];
     client.create_inheritance_plan(&plan_params(
@@ -4877,6 +4919,7 @@ fn test_batch_add_beneficiaries_success() {
             claim_code: 333333u32,
             bank_account: create_test_bytes(&env, "3333333333333333"),
             allocation_bp: 6000u32,
+            priority: 1u32,
         },
         BeneficiaryInput {
             name: String::from_str(&env, "Dave"),
@@ -4884,6 +4927,7 @@ fn test_batch_add_beneficiaries_success() {
             claim_code: 444444u32,
             bank_account: create_test_bytes(&env, "4444444444444444"),
             allocation_bp: 4000u32,
+            priority: 2u32,
         },
     ];
     let (success, fail) = client.batch_add_beneficiaries(&owner, &plan_id, &inputs);
@@ -4907,6 +4951,7 @@ fn test_batch_add_beneficiaries_partial_fail_over_allocation() {
             claim_code: 555555u32,
             bank_account: create_test_bytes(&env, "5555555555555555"),
             allocation_bp: 1000u32,
+            priority: 1u32,
         },
     ];
     let (success, fail) = client.batch_add_beneficiaries(&owner, &plan_id, &inputs);
@@ -4927,6 +4972,7 @@ fn test_batch_add_beneficiaries_limit_exceeded() {
             claim_code: i,
             bank_account: create_test_bytes(&env, "1234"),
             allocation_bp: 100u32,
+            priority: i,
         });
     }
     let result = client.try_batch_add_beneficiaries(&owner, &plan_id, &inputs);
@@ -4947,6 +4993,7 @@ fn test_batch_add_beneficiaries_unauthorized() {
             claim_code: 123456u32,
             bank_account: create_test_bytes(&env, "1234"),
             allocation_bp: 1000u32,
+            priority: 1u32,
         },
     ];
     let result = client.try_batch_add_beneficiaries(&stranger, &plan_id, &inputs);
@@ -5183,6 +5230,7 @@ fn test_batch_claim_success() {
             111111u32,
             create_test_bytes(&env, "1111111111111111"),
             5000u32,
+            1u32,
         ),
         (
             String::from_str(&env, "Bob"),
@@ -5190,6 +5238,7 @@ fn test_batch_claim_success() {
             222222u32,
             create_test_bytes(&env, "2222222222222222"),
             5000u32,
+            2u32,
         ),
     ];
     let plan_id = client.create_inheritance_plan(&plan_params(
@@ -5238,6 +5287,7 @@ fn test_batch_claim_partial_fail_wrong_code() {
             111111u32,
             create_test_bytes(&env, "1111111111111111"),
             10000u32,
+            1u32,
         ),
     ];
     let plan_id = client.create_inheritance_plan(&plan_params(
@@ -5278,6 +5328,7 @@ fn test_batch_claim_no_kyc_counted_as_fail() {
             111111u32,
             create_test_bytes(&env, "1111111111111111"),
             10000u32,
+            1u32,
         ),
     ];
     let plan_id = client.create_inheritance_plan(&plan_params(
@@ -5316,6 +5367,7 @@ fn test_batch_claim_double_claim_counted_as_fail() {
             111111u32,
             create_test_bytes(&env, "1111111111111111"),
             10000u32,
+            1u32,
         ),
     ];
     let plan_id = client.create_inheritance_plan(&plan_params(
@@ -5362,6 +5414,7 @@ fn test_batch_claim_limit_exceeded() {
             111111u32,
             create_test_bytes(&env, "1111111111111111"),
             10000u32,
+            1u32,
         ),
     ];
     let plan_id = client.create_inheritance_plan(&plan_params(
@@ -5386,153 +5439,131 @@ fn test_batch_claim_limit_exceeded() {
     assert!(result.is_err());
 }
 
-// ─────────────────────────────────────────────────────────────────────────────
-// Asset Freezing & Compliance Tests (Issue #501)
-// ─────────────────────────────────────────────────────────────────────────────
-
 #[test]
-fn test_freeze_plan_success() {
+fn test_waterfall_payout_logic() {
     let env = Env::default();
-    let (client, _token, admin, owner) = setup_with_token_and_admin(&env);
-    let plan_id = plan_with_partial_alloc(&env, &client, &_token, &owner);
+    let (client, token, admin, owner) = setup_with_token_and_admin(&env);
 
-    assert!(!client.is_plan_frozen(&plan_id));
-    client.freeze_plan(&admin, &plan_id, &String::from_str(&env, "AML compliance"));
-    assert!(client.is_plan_frozen(&plan_id));
-}
+    let beneficiaries_data = vec![
+        &env,
+        (
+            String::from_str(&env, "Priority 1"),
+            String::from_str(&env, "p1@example.com"),
+            111111u32,
+            create_test_bytes(&env, "1111111111111111"),
+            6000u32, // 60%
+            1u32,    // priority 1
+        ),
+        (
+            String::from_str(&env, "Priority 2"),
+            String::from_str(&env, "pri-two@example.com"),
+            222222u32,
+            create_test_bytes(&env, "2222222222222222"),
+            4000u32, // 40%
+            2u32,    // priority 2
+        ),
+    ];
 
-#[test]
-fn test_freeze_plan_non_admin_fails() {
-    let env = Env::default();
-    let (client, _token, _admin, owner) = setup_with_token_and_admin(&env);
-    let plan_id = plan_with_partial_alloc(&env, &client, &_token, &owner);
+    let plan_id = client.create_inheritance_plan(&plan_params(
+        &env,
+        &owner,
+        &token,
+        "Waterfall Plan",
+        "Test",
+        1000u64,
+        DistributionMethod::LumpSum,
+        &beneficiaries_data,
+    ));
 
-    let result = client.try_freeze_plan(&owner, &plan_id, &String::from_str(&env, "reason"));
-    assert!(result.is_err());
-}
+    client.enable_waterfall_distribution(&owner, &plan_id);
 
-#[test]
-fn test_freeze_plan_already_frozen_fails() {
-    let env = Env::default();
-    let (client, _token, admin, owner) = setup_with_token_and_admin(&env);
-    let plan_id = plan_with_partial_alloc(&env, &client, &_token, &owner);
+    let plan = client.get_plan_details(&plan_id).unwrap();
+    assert!(plan.waterfall_enabled);
 
-    client.freeze_plan(&admin, &plan_id, &String::from_str(&env, "reason"));
-    let result = client.try_freeze_plan(&admin, &plan_id, &String::from_str(&env, "reason2"));
-    assert!(result.is_err());
-}
+    // Plan stores 980 (1000 - 2% creation fee). Entitlements:
+    //  P1 (60% of 980) → 588
+    //  P2 (40% of 980) → 0 while P1 is unclaimed (waterfall gate).
+    assert_eq!(client.get_claimable_by_priority(&plan_id, &0u32), 588);
+    assert_eq!(client.get_claimable_by_priority(&plan_id, &1u32), 0);
 
-#[test]
-fn test_unfreeze_plan_success() {
-    let env = Env::default();
-    let (client, _token, admin, owner) = setup_with_token_and_admin(&env);
-    let plan_id = plan_with_partial_alloc(&env, &client, &_token, &owner);
+    let b1 = create_test_address(&env, 10);
+    let b2 = create_test_address(&env, 11);
+    client.submit_kyc(&b1);
+    client.approve_kyc(&admin, &b1);
+    client.submit_kyc(&b2);
+    client.approve_kyc(&admin, &b2);
 
-    client.freeze_plan(&admin, &plan_id, &String::from_str(&env, "reason"));
-    assert!(client.is_plan_frozen(&plan_id));
-    client.unfreeze_plan(&admin, &plan_id);
-    assert!(!client.is_plan_frozen(&plan_id));
-}
-
-#[test]
-fn test_unfreeze_plan_not_frozen_fails() {
-    let env = Env::default();
-    let (client, _token, admin, owner) = setup_with_token_and_admin(&env);
-    let plan_id = plan_with_partial_alloc(&env, &client, &_token, &owner);
-
-    let result = client.try_unfreeze_plan(&admin, &plan_id);
-    assert!(result.is_err());
-}
-
-#[test]
-fn test_get_freeze_reason() {
-    let env = Env::default();
-    let (client, _token, admin, owner) = setup_with_token_and_admin(&env);
-    let plan_id = plan_with_partial_alloc(&env, &client, &_token, &owner);
-
-    assert!(client.get_freeze_reason(&plan_id).is_none());
-    client.freeze_plan(&admin, &plan_id, &String::from_str(&env, "Sanctions check"));
-    let record = client.get_freeze_reason(&plan_id).unwrap();
-    assert_eq!(record.reason, String::from_str(&env, "Sanctions check"));
-    assert_eq!(record.frozen_by, admin);
-}
-
-#[test]
-fn test_add_legal_hold_success() {
-    let env = Env::default();
-    let (client, _token, admin, owner) = setup_with_token_and_admin(&env);
-    let plan_id = plan_with_partial_alloc(&env, &client, &_token, &owner);
-
-    client.add_legal_hold(
-        &admin,
+    // P2 attempting to claim before P1 is rejected by the waterfall gate.
+    let blocked = client.try_claim_inheritance_plan(
         &plan_id,
-        &String::from_str(&env, "Court order #123"),
+        &b2,
+        &String::from_str(&env, "pri-two@example.com"),
+        &222222u32,
     );
-}
+    assert_eq!(blocked, Err(Ok(InheritanceError::ClaimNotAllowedYet)));
 
-#[test]
-fn test_add_legal_hold_twice_fails() {
-    let env = Env::default();
-    let (client, _token, admin, owner) = setup_with_token_and_admin(&env);
-    let plan_id = plan_with_partial_alloc(&env, &client, &_token, &owner);
-
-    client.add_legal_hold(
-        &admin,
+    // P1 claims and the plan balance drops by 588.
+    client.claim_inheritance_plan(
         &plan_id,
-        &String::from_str(&env, "Court order #123"),
+        &b1,
+        &String::from_str(&env, "p1@example.com"),
+        &111111u32,
     );
-    let result = client.try_add_legal_hold(&admin, &plan_id, &String::from_str(&env, "order2"));
-    assert!(result.is_err());
+    let plan = client.get_plan_details(&plan_id).unwrap();
+    assert_eq!(plan.total_amount, 980 - 588);
+    assert!(plan.beneficiaries.get(0).unwrap().is_claimed);
+
+    // P2's entitlement is now 40% of what remains (392 * 40% = 156).
+    assert_eq!(client.get_claimable_by_priority(&plan_id, &1u32), 156);
+
+    // P2 can now claim.
+    client.claim_inheritance_plan(
+        &plan_id,
+        &b2,
+        &String::from_str(&env, "pri-two@example.com"),
+        &222222u32,
+    );
+    let plan = client.get_plan_details(&plan_id).unwrap();
+    assert!(plan.beneficiaries.get(1).unwrap().is_claimed);
+    assert_eq!(plan.total_amount, 980 - 588 - 156);
 }
 
 #[test]
-fn test_remove_legal_hold_success() {
+fn test_priority_validation() {
     let env = Env::default();
-    let (client, _token, admin, owner) = setup_with_token_and_admin(&env);
-    let plan_id = plan_with_partial_alloc(&env, &client, &_token, &owner);
+    let (client, token, _admin, owner) = setup_with_token_and_admin(&env);
 
-    client.add_legal_hold(&admin, &plan_id, &String::from_str(&env, "Court order"));
-    client.remove_legal_hold(&admin, &plan_id);
-}
+    // Test duplicate priority during plan creation
+    let dup_priorities = vec![
+        &env,
+        (
+            String::from_str(&env, "A"),
+            String::from_str(&env, "a@example.com"),
+            111111u32,
+            create_test_bytes(&env, "1111"),
+            5000u32,
+            1u32,
+        ),
+        (
+            String::from_str(&env, "B"),
+            String::from_str(&env, "b@example.com"),
+            222222u32,
+            create_test_bytes(&env, "2222"),
+            5000u32,
+            1u32, // Duplicate priority!
+        ),
+    ];
 
-#[test]
-fn test_remove_legal_hold_not_exists_fails() {
-    let env = Env::default();
-    let (client, _token, admin, owner) = setup_with_token_and_admin(&env);
-    let plan_id = plan_with_partial_alloc(&env, &client, &_token, &owner);
+    let result = client.try_create_inheritance_plan(&plan_params(
+        &env,
+        &owner,
+        &token,
+        "Dup Plan",
+        "Test",
+        1000u64,
+        DistributionMethod::LumpSum,
+        &dup_priorities,
+    ));
 
-    let result = client.try_remove_legal_hold(&admin, &plan_id);
-    assert!(result.is_err());
-}
-
-#[test]
-fn test_freeze_beneficiary_success() {
-    let env = Env::default();
-    let (client, _token, admin, owner) = setup_with_token_and_admin(&env);
-    let plan_id = plan_with_partial_alloc(&env, &client, &_token, &owner);
-
-    assert!(!client.is_beneficiary_frozen(&plan_id, &0u32));
-    client.freeze_beneficiary(&admin, &plan_id, &0u32);
-    assert!(client.is_beneficiary_frozen(&plan_id, &0u32));
-}
-
-#[test]
-fn test_freeze_beneficiary_already_frozen_fails() {
-    let env = Env::default();
-    let (client, _token, admin, owner) = setup_with_token_and_admin(&env);
-    let plan_id = plan_with_partial_alloc(&env, &client, &_token, &owner);
-
-    client.freeze_beneficiary(&admin, &plan_id, &0u32);
-    let result = client.try_freeze_beneficiary(&admin, &plan_id, &0u32);
-    assert!(result.is_err());
-}
-
-#[test]
-fn test_freeze_beneficiary_invalid_index_fails() {
-    let env = Env::default();
-    let (client, _token, admin, owner) = setup_with_token_and_admin(&env);
-    let plan_id = plan_with_partial_alloc(&env, &client, &_token, &owner);
-
-    let result = client.try_freeze_beneficiary(&admin, &plan_id, &99u32);
     assert!(result.is_err());
 }

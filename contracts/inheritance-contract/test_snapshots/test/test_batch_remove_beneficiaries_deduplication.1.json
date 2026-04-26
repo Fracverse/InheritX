@@ -98,6 +98,9 @@
                               },
                               {
                                 "u32": 5000
+                              },
+                              {
+                                "u32": 1
                               }
                             ]
                           },
@@ -117,6 +120,9 @@
                               },
                               {
                                 "u32": 5000
+                              },
+                              {
+                                "u32": 2
                               }
                             ]
                           }
@@ -469,6 +475,22 @@
                                 "val": {
                                   "bytes": "ae4b3280e56e2faf83f414a6e3dabe9d5fbe18976544c05fed121accb85b53fc"
                                 }
+                              },
+                              {
+                                "key": {
+                                  "symbol": "is_claimed"
+                                },
+                                "val": {
+                                  "bool": false
+                                }
+                              },
+                              {
+                                "key": {
+                                  "symbol": "priority"
+                                },
+                                "val": {
+                                  "u32": 2
+                                }
                               }
                             ]
                           }
@@ -557,6 +579,14 @@
                       },
                       "val": {
                         "u64": 0
+                      }
+                    },
+                    {
+                      "key": {
+                        "symbol": "waterfall_enabled"
+                      },
+                      "val": {
+                        "bool": false
                       }
                     }
                   ]
@@ -1237,6 +1267,9 @@
                           },
                           {
                             "u32": 5000
+                          },
+                          {
+                            "u32": 1
                           }
                         ]
                       },
@@ -1256,6 +1289,9 @@
                           },
                           {
                             "u32": 5000
+                          },
+                          {
+                            "u32": 2
                           }
                         ]
                       }
@@ -1803,6 +1839,22 @@
                             "val": {
                               "bytes": "ae4b3280e56e2faf83f414a6e3dabe9d5fbe18976544c05fed121accb85b53fc"
                             }
+                          },
+                          {
+                            "key": {
+                              "symbol": "is_claimed"
+                            },
+                            "val": {
+                              "bool": false
+                            }
+                          },
+                          {
+                            "key": {
+                              "symbol": "priority"
+                            },
+                            "val": {
+                              "u32": 2
+                            }
                           }
                         ]
                       }
@@ -1891,6 +1943,14 @@
                   },
                   "val": {
                     "u64": 0
+                  }
+                },
+                {
+                  "key": {
+                    "symbol": "waterfall_enabled"
+                  },
+                  "val": {
+                    "bool": false
                   }
                 }
               ]

@@ -98,6 +98,9 @@
                               },
                               {
                                 "u32": 5000
+                              },
+                              {
+                                "u32": 1
                               }
                             ]
                           },
@@ -117,6 +120,9 @@
                               },
                               {
                                 "u32": 5000
+                              },
+                              {
+                                "u32": 2
                               }
                             ]
                           }
@@ -347,6 +353,14 @@
                           "val": {
                             "string": "Carol"
                           }
+                        },
+                        {
+                          "key": {
+                            "symbol": "priority"
+                          },
+                          "val": {
+                            "u32": 1
+                          }
                         }
                       ]
                     },
@@ -390,6 +404,14 @@
                           },
                           "val": {
                             "string": "Dave"
+                          }
+                        },
+                        {
+                          "key": {
+                            "symbol": "priority"
+                          },
+                          "val": {
+                            "u32": 2
                           }
                         }
                       ]
@@ -601,6 +623,22 @@
                                 "val": {
                                   "bytes": "08bb5e5d6eaac1049ede0893d30ed022b1a4d9b5b48db414871f51c9cb35283d"
                                 }
+                              },
+                              {
+                                "key": {
+                                  "symbol": "is_claimed"
+                                },
+                                "val": {
+                                  "bool": false
+                                }
+                              },
+                              {
+                                "key": {
+                                  "symbol": "priority"
+                                },
+                                "val": {
+                                  "u32": 1
+                                }
                               }
                             ]
                           },
@@ -644,6 +682,22 @@
                                 },
                                 "val": {
                                   "bytes": "054edec1d0211f624fed0cbca9d4f9400b0e491c43742af2c5b0abebf0c990d8"
+                                }
+                              },
+                              {
+                                "key": {
+                                  "symbol": "is_claimed"
+                                },
+                                "val": {
+                                  "bool": false
+                                }
+                              },
+                              {
+                                "key": {
+                                  "symbol": "priority"
+                                },
+                                "val": {
+                                  "u32": 2
                                 }
                               }
                             ]
@@ -733,6 +787,14 @@
                       },
                       "val": {
                         "u64": 0
+                      }
+                    },
+                    {
+                      "key": {
+                        "symbol": "waterfall_enabled"
+                      },
+                      "val": {
+                        "bool": false
                       }
                     }
                   ]
@@ -1479,6 +1541,9 @@
                           },
                           {
                             "u32": 5000
+                          },
+                          {
+                            "u32": 1
                           }
                         ]
                       },
@@ -1498,6 +1563,9 @@
                           },
                           {
                             "u32": 5000
+                          },
+                          {
+                            "u32": 2
                           }
                         ]
                       }
@@ -2126,6 +2194,14 @@
                           "val": {
                             "string": "Carol"
                           }
+                        },
+                        {
+                          "key": {
+                            "symbol": "priority"
+                          },
+                          "val": {
+                            "u32": 1
+                          }
                         }
                       ]
                     },
@@ -2169,6 +2245,14 @@
                           },
                           "val": {
                             "string": "Dave"
+                          }
+                        },
+                        {
+                          "key": {
+                            "symbol": "priority"
+                          },
+                          "val": {
+                            "u32": 2
                           }
                         }
                       ]
@@ -2391,6 +2475,22 @@
                             "val": {
                               "bytes": "08bb5e5d6eaac1049ede0893d30ed022b1a4d9b5b48db414871f51c9cb35283d"
                             }
+                          },
+                          {
+                            "key": {
+                              "symbol": "is_claimed"
+                            },
+                            "val": {
+                              "bool": false
+                            }
+                          },
+                          {
+                            "key": {
+                              "symbol": "priority"
+                            },
+                            "val": {
+                              "u32": 1
+                            }
                           }
                         ]
                       },
@@ -2434,6 +2534,22 @@
                             },
                             "val": {
                               "bytes": "054edec1d0211f624fed0cbca9d4f9400b0e491c43742af2c5b0abebf0c990d8"
+                            }
+                          },
+                          {
+                            "key": {
+                              "symbol": "is_claimed"
+                            },
+                            "val": {
+                              "bool": false
+                            }
+                          },
+                          {
+                            "key": {
+                              "symbol": "priority"
+                            },
+                            "val": {
+                              "u32": 2
                             }
                           }
                         ]
@@ -2523,6 +2639,14 @@
                   },
                   "val": {
                     "u64": 0
+                  }
+                },
+                {
+                  "key": {
+                    "symbol": "waterfall_enabled"
+                  },
+                  "val": {
+                    "bool": false
                   }
                 }
               ]

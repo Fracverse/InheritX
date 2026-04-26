@@ -1,5 +1,0 @@
-commit 1f7a2e373f6f897a4f6c2985f38c6b9c2e2748eb
-Author: EDOHWARES <edohemmanuel4real@gmail.com>
-Date:   Wed Mar 25 09:58:56 2026 +0100
-
-    feat: [Backend] Accounting & Reconciliation Engine #253

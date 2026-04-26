@@ -1,1 +1,0 @@
-    Checking stellar-xdr v21.2.0
