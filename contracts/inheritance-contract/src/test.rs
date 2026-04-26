@@ -4823,7 +4823,6 @@ fn test_delete_legacy_message_unauthorized() {
     assert_eq!(result, Err(Ok(InheritanceError::Unauthorized)));
     assert!(client.get_legacy_message(&message_id).is_some());
 }
-
 // ─────────────────────────────────────────────────────────────────────────────
 // Batch Operations Tests (Issue #483)
 // ─────────────────────────────────────────────────────────────────────────────
