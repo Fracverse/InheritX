@@ -2682,7 +2682,11 @@ impl LendingContract {
     /// Get the base interest rate from the rate model, falling back to pool state.
     pub fn get_base_rate(env: Env) -> Result<u32, LendingError> {
         Self::require_initialized(&env)?;
-        if let Some(model) = env.storage().instance().get::<DataKey, RateModel>(&DataKey::RateModel) {
+        if let Some(model) = env
+            .storage()
+            .instance()
+            .get::<DataKey, RateModel>(&DataKey::RateModel)
+        {
             return Ok(model.base_rate_bps);
         }
         Ok(Self::get_pool(&env).base_rate_bps)
@@ -2691,7 +2695,11 @@ impl LendingContract {
     /// Get the optimal (target) utilization rate from the rate model.
     pub fn get_optimal_utilization(env: Env) -> Result<u32, LendingError> {
         Self::require_initialized(&env)?;
-        if let Some(model) = env.storage().instance().get::<DataKey, RateModel>(&DataKey::RateModel) {
+        if let Some(model) = env
+            .storage()
+            .instance()
+            .get::<DataKey, RateModel>(&DataKey::RateModel)
+        {
             return Ok(model.optimal_utilization_bps);
         }
         // Default: use utilization cap as the optimal target
@@ -2701,7 +2709,11 @@ impl LendingContract {
     /// Get slope1 — the rate increase per unit utilization before optimal utilization.
     pub fn get_slope1(env: Env) -> Result<u32, LendingError> {
         Self::require_initialized(&env)?;
-        if let Some(model) = env.storage().instance().get::<DataKey, RateModel>(&DataKey::RateModel) {
+        if let Some(model) = env
+            .storage()
+            .instance()
+            .get::<DataKey, RateModel>(&DataKey::RateModel)
+        {
             return Ok(model.slope1_bps);
         }
         // Fallback: use pool multiplier as slope1
@@ -2711,7 +2723,11 @@ impl LendingContract {
     /// Get slope2 — the steep rate increase per unit utilization above optimal utilization.
     pub fn get_slope2(env: Env) -> Result<u32, LendingError> {
         Self::require_initialized(&env)?;
-        if let Some(model) = env.storage().instance().get::<DataKey, RateModel>(&DataKey::RateModel) {
+        if let Some(model) = env
+            .storage()
+            .instance()
+            .get::<DataKey, RateModel>(&DataKey::RateModel)
+        {
             return Ok(model.slope2_bps);
         }
         // Fallback: slope2 is 10× slope1 when not configured
@@ -2725,7 +2741,11 @@ impl LendingContract {
         let pool = Self::get_pool(&env);
         let utilization_bps = Self::get_utilization_bps(pool.total_borrowed, pool.total_deposits);
 
-        if let Some(model) = env.storage().instance().get::<DataKey, RateModel>(&DataKey::RateModel) {
+        if let Some(model) = env
+            .storage()
+            .instance()
+            .get::<DataKey, RateModel>(&DataKey::RateModel)
+        {
             return Ok(Self::two_slope_rate(&model, utilization_bps));
         }
 
@@ -2744,8 +2764,10 @@ impl LendingContract {
         let utilization_bps = Self::get_utilization_bps(pool.total_borrowed, pool.total_deposits);
         let borrow_rate = Self::get_borrow_rate(env.clone())?;
 
-        let reserve_factor = if let Some(model) =
-            env.storage().instance().get::<DataKey, RateModel>(&DataKey::RateModel)
+        let reserve_factor = if let Some(model) = env
+            .storage()
+            .instance()
+            .get::<DataKey, RateModel>(&DataKey::RateModel)
         {
             model.reserve_factor_bps
         } else {
@@ -2767,7 +2789,11 @@ impl LendingContract {
     /// Useful for modelling rate impact before taking on or repaying debt.
     pub fn simulate_rate(env: Env, utilization_bps: u32) -> Result<u32, LendingError> {
         Self::require_initialized(&env)?;
-        if let Some(model) = env.storage().instance().get::<DataKey, RateModel>(&DataKey::RateModel) {
+        if let Some(model) = env
+            .storage()
+            .instance()
+            .get::<DataKey, RateModel>(&DataKey::RateModel)
+        {
             return Ok(Self::two_slope_rate(&model, utilization_bps));
         }
         let pool = Self::get_pool(&env);

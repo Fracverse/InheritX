@@ -15,11 +15,7 @@ fn setup_contract(env: &Env) -> (GovernanceContractClient, Address) {
     (client, admin)
 }
 
-fn make_proposal(
-    env: &Env,
-    client: &GovernanceContractClient,
-    proposer: &Address,
-) -> u32 {
+fn make_proposal(env: &Env, client: &GovernanceContractClient, proposer: &Address) -> u32 {
     client.create_proposal(
         proposer,
         &String::from_str(env, "Test Proposal"),
@@ -477,7 +473,9 @@ fn test_create_proposal() {
 
     assert_eq!(proposal_id, 1u32);
 
-    let proposal = client.get_proposal(&proposal_id).expect("Proposal must exist");
+    let proposal = client
+        .get_proposal(&proposal_id)
+        .expect("Proposal must exist");
     assert_eq!(proposal.id, 1u32);
     assert_eq!(proposal.proposer, admin);
     assert_eq!(proposal.yes_votes, 0);
@@ -543,7 +541,10 @@ fn test_get_user_vote() {
 
     client.vote(&voter, &proposal_id, &VoteChoice::No);
 
-    assert_eq!(client.get_user_vote(&voter, &proposal_id), Some(VoteChoice::No));
+    assert_eq!(
+        client.get_user_vote(&voter, &proposal_id),
+        Some(VoteChoice::No)
+    );
 }
 
 #[test]

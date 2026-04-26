@@ -2095,7 +2095,13 @@ fn test_get_borrow_rate_at_optimal() {
     // Borrow 1600 → 80% utilization (1600/2000 = 80%)
     let borrower = Address::generate(&env);
     mint_to(&env, &collateral_addr, &borrower, 3000);
-    client.borrow(&borrower, &1600u64, &collateral_addr, &3000u64, &31536000u64);
+    client.borrow(
+        &borrower,
+        &1600u64,
+        &collateral_addr,
+        &3000u64,
+        &31536000u64,
+    );
 
     // Configure model: base=200, optimal=80%, slope1=800, slope2=10000
     client.set_rate_model(&admin, &200u32, &8000u32, &800u32, &10000u32, &1000u32);
@@ -2161,7 +2167,13 @@ fn test_get_supply_rate() {
     // Borrow 1000 → 50% utilization (1000/2000 = 50%)
     let borrower = Address::generate(&env);
     mint_to(&env, &collateral_addr, &borrower, 2000);
-    client.borrow(&borrower, &1000u64, &collateral_addr, &2000u64, &31536000u64);
+    client.borrow(
+        &borrower,
+        &1000u64,
+        &collateral_addr,
+        &2000u64,
+        &31536000u64,
+    );
 
     // Configure model: base=200, optimal=8000, slope1=800, slope2=10000, reserve=1000
     client.set_rate_model(&admin, &200u32, &8000u32, &800u32, &10000u32, &1000u32);

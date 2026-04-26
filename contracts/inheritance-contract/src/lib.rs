@@ -156,12 +156,12 @@ pub enum DataKey {
     LendingContract,
     GovernanceContract,
     // Beneficiary notification & acknowledgment
-    BeneficiaryNotifiedAt(u64, u32),        // (plan_id, beneficiary_index) -> u64 (notified_at)
-    BeneficiaryAcknowledgedAt(u64, u32),    // (plan_id, beneficiary_index) -> u64 (acknowledged_at)
-    RequiresAcknowledgment(u64),            // plan_id -> bool
-    FreezePlan(u64),             // plan_id -> FreezeRecord
-    LegalHold(u64),              // plan_id -> LegalHold
-    FrozenBeneficiary(u64, u32), // (plan_id, index) -> bool
+    BeneficiaryNotifiedAt(u64, u32), // (plan_id, beneficiary_index) -> u64 (notified_at)
+    BeneficiaryAcknowledgedAt(u64, u32), // (plan_id, beneficiary_index) -> u64 (acknowledged_at)
+    RequiresAcknowledgment(u64),     // plan_id -> bool
+    FreezePlan(u64),                 // plan_id -> FreezeRecord
+    LegalHold(u64),                  // plan_id -> LegalHold
+    FrozenBeneficiary(u64, u32),     // (plan_id, index) -> bool
 }
 
 #[contracttype]
@@ -4517,11 +4517,7 @@ impl InheritanceContract {
         let notification_sent_at: u64 = env.storage().instance().get(&notif_key)?;
 
         let ack_key = DataKey::BeneficiaryAcknowledgedAt(plan_id, beneficiary_index);
-        let acknowledged_at: u64 = env
-            .storage()
-            .instance()
-            .get(&ack_key)
-            .unwrap_or(0);
+        let acknowledged_at: u64 = env.storage().instance().get(&ack_key).unwrap_or(0);
 
         Some(BeneficiaryAcknowledgment {
             plan_id,
