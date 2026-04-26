@@ -1,4 +1,3 @@
-/*
 mod helpers;
 
 use axum::{
@@ -7,6 +6,7 @@ use axum::{
 };
 use inheritx_backend::auth::{AdminClaims, UserClaims};
 use jsonwebtoken::{encode, EncodingKey, Header};
+use rust_decimal::prelude::FromPrimitive;
 use serde_json::json;
 use tower::ServiceExt;
 use uuid::Uuid;
@@ -45,7 +45,7 @@ fn admin_token(admin_id: Uuid) -> String {
 }
 
 async fn create_user(pool: &sqlx::PgPool, user_id: Uuid) {
-    sqlx::query("INSERT INTO users (id, email, password_hash) VALUES ($1, $2, $3)")
+    sqlx::query("INSERT INTO users (id, email, password_hash) VALUES ($1, $2, $3) ON CONFLICT (id) DO NOTHING")
         .bind(user_id)
         .bind(format!("user-{user_id}@example.com"))
         .bind("hash")
@@ -65,10 +65,11 @@ async fn notifications_endpoint_supports_page_and_limit() {
 
     for i in 0..15 {
         sqlx::query(
-            "INSERT INTO notifications (id, user_id, type, message, is_read) VALUES ($1, $2, $3, $4, false)",
+            "INSERT INTO notifications (id, user_id, title, type, message, is_read) VALUES ($1, $2, $3, $4, $5, false)",
         )
         .bind(Uuid::new_v4())
         .bind(user_id)
+        .bind(format!("Notification {}", i))
         .bind("plan_created")
         .bind(format!("notification-{i}"))
         .execute(&ctx.pool)
@@ -113,10 +114,14 @@ async fn admin_logs_endpoint_supports_page_and_limit() {
     };
 
     for _ in 0..14 {
+        let user_id = Uuid::new_v4();
+        // Create user first to satisfy foreign key constraint
+        create_user(&ctx.pool, user_id).await;
+
         sqlx::query(
             "INSERT INTO action_logs (user_id, action, entity_id, entity_type) VALUES ($1, $2, $3, $4)",
         )
-        .bind(Some(Uuid::new_v4()))
+        .bind(user_id)
         .bind("plan_created")
         .bind(Some(Uuid::new_v4()))
         .bind(Some("plan"))
@@ -164,29 +169,19 @@ async fn due_plans_endpoint_supports_page_and_limit() {
     let user_id = Uuid::new_v4();
     create_user(&ctx.pool, user_id).await;
 
-    let now = chrono::Utc::now().timestamp();
     for i in 0..13 {
         sqlx::query(
             r#"
-            INSERT INTO plans (
-                id, user_id, title, description, fee, net_amount, status,
-                distribution_method, contract_created_at, is_active,
-                beneficiary_name, bank_account_number, bank_name, currency_preference
-            )
-            VALUES ($1, $2, $3, $4, $5, $6, 'pending', 'LumpSum', $7, true, $8, $9, $10, $11)
+            INSERT INTO plans (id, user_id, title, description, fee, net_amount, status)
+            VALUES ($1, $2, $3, $4, $5, $6, 'pending')
             "#,
         )
         .bind(Uuid::new_v4())
         .bind(user_id)
         .bind(format!("plan-{i}"))
         .bind(Some("desc".to_string()))
-        .bind("10.00")
-        .bind("490.00")
-        .bind(now)
-        .bind("Jane Doe")
-        .bind("123456789")
-        .bind("Bank")
-        .bind("USDC")
+        .bind(rust_decimal::Decimal::from_f64(10.00).unwrap())
+        .bind(rust_decimal::Decimal::from_f64(490.00).unwrap())
         .execute(&ctx.pool)
         .await
         .expect("failed to insert plan");
@@ -248,8 +243,8 @@ async fn create_plan_accepts_query_pagination_params() {
     let body = json!({
         "title": "Paginated create plan",
         "description": "plan",
-        "fee": "10.00",
-        "net_amount": "490.00",
+        "fee": 10.00,
+        "net_amount": 490.00,
         "beneficiary_name": "Jane Doe",
         "bank_name": "",
         "bank_account_number": "",
@@ -277,4 +272,3 @@ async fn create_plan_accepts_query_pagination_params() {
         "create plan should still succeed when page/limit query params are present"
     );
 }
-*/

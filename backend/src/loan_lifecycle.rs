@@ -178,6 +178,8 @@ pub struct LoanListFilters {
     pub user_id: Option<Uuid>,
     pub plan_id: Option<Uuid>,
     pub status: Option<String>,
+    pub page: Option<u32>,
+    pub limit: Option<u32>,
 }
 
 /// Aggregate counts across all lifecycle states (useful for dashboards).
@@ -274,6 +276,114 @@ impl LoanLifecycleService {
 
         let rows = query.fetch_all(db).await?;
         Ok(rows.into_iter().map(Into::into).collect())
+    }
+
+    /// List loans with pagination and optional filters.
+    pub async fn list_loans_paginated(
+        db: &PgPool,
+        filters: &LoanListFilters,
+        limit: i64,
+        offset: i64,
+    ) -> Result<Vec<LoanLifecycleRecord>, ApiError> {
+        let mut conditions: Vec<String> = Vec::new();
+        let mut idx: i32 = 1;
+
+        if filters.user_id.is_some() {
+            conditions.push(format!("user_id = ${idx}"));
+            idx += 1;
+        }
+        if filters.plan_id.is_some() {
+            conditions.push(format!("plan_id = ${idx}"));
+            idx += 1;
+        }
+        if filters.status.is_some() {
+            conditions.push(format!("status = ${idx}::loan_lifecycle_status"));
+            idx += 1;
+        }
+
+        let where_clause = if conditions.is_empty() {
+            String::new()
+        } else {
+            format!("WHERE {}", conditions.join(" AND "))
+        };
+
+        let sql = format!(
+            r#"
+            SELECT id, user_id, plan_id, borrow_asset, collateral_asset,
+                   principal, interest_rate_bps, collateral_amount, amount_repaid,
+                   status, due_date, transaction_hash,
+                   created_at, updated_at, repaid_at, liquidated_at
+            FROM loan_lifecycle
+            {where_clause}
+            ORDER BY created_at DESC
+            LIMIT ${idx} OFFSET ${idx_plus_1}
+            "#,
+            idx = idx,
+            idx_plus_1 = idx + 1
+        );
+
+        let mut query = sqlx::query_as::<_, LoanLifecycleRow>(&sql);
+
+        if let Some(user_id) = filters.user_id {
+            query = query.bind(user_id);
+        }
+        if let Some(plan_id) = filters.plan_id {
+            query = query.bind(plan_id);
+        }
+        if let Some(ref status) = filters.status {
+            query = query.bind(status.clone());
+        }
+        query = query.bind(limit).bind(offset);
+
+        let rows = query.fetch_all(db).await?;
+        Ok(rows.into_iter().map(Into::into).collect())
+    }
+
+    /// Count loans with optional filters.
+    pub async fn count_loans(db: &PgPool, filters: &LoanListFilters) -> Result<i64, ApiError> {
+        let mut conditions: Vec<String> = Vec::new();
+        let mut idx: i32 = 1;
+
+        if filters.user_id.is_some() {
+            conditions.push(format!("user_id = ${idx}"));
+            idx += 1;
+        }
+        if filters.plan_id.is_some() {
+            conditions.push(format!("plan_id = ${idx}"));
+            idx += 1;
+        }
+        if filters.status.is_some() {
+            conditions.push(format!("status = ${idx}::loan_lifecycle_status"));
+        }
+
+        let where_clause = if conditions.is_empty() {
+            String::new()
+        } else {
+            format!("WHERE {}", conditions.join(" AND "))
+        };
+
+        let sql = format!(
+            r#"
+            SELECT COUNT(*)
+            FROM loan_lifecycle
+            {where_clause}
+            "#
+        );
+
+        let mut query = sqlx::query_scalar::<_, i64>(&sql);
+
+        if let Some(user_id) = filters.user_id {
+            query = query.bind(user_id);
+        }
+        if let Some(plan_id) = filters.plan_id {
+            query = query.bind(plan_id);
+        }
+        if let Some(ref status) = filters.status {
+            query = query.bind(status.clone());
+        }
+
+        let count = query.fetch_one(db).await?;
+        Ok(count)
     }
 
     /// Returns aggregate counts of loans grouped by status.
