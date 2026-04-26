@@ -149,6 +149,9 @@ pub enum DataKey {
     WillFinalizedAt(u64, u32),        // (plan_id, version) -> u64 timestamp
     WillWitnesses(u64),               // plan_id -> Vec<Address>
     WitnessSignature(u64, Address),   // (plan_id, witness) -> u64 (signed_at)
+    FreezePlan(u64),                  // plan_id -> FreezeRecord
+    LegalHold(u64),                   // plan_id -> LegalHold
+    FrozenBeneficiary(u64, u32),      // (plan_id, index) -> bool
 }
 
 #[contracttype]
@@ -568,6 +571,66 @@ pub struct CreateInheritancePlanParams {
     pub distribution_method: DistributionMethod,
     pub beneficiaries_data: Vec<(String, String, u32, Bytes, u32)>,
     pub is_lendable: bool,
+}
+
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct FreezeRecord {
+    pub plan_id: u64,
+    pub frozen_at: u64,
+    pub reason: String,
+    pub frozen_by: Address,
+}
+
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct LegalHold {
+    pub plan_id: u64,
+    pub added_at: u64,
+    pub reason: String,
+    pub added_by: Address,
+}
+
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct PlanFrozenEvent {
+    pub plan_id: u64,
+    pub frozen_by: Address,
+    pub frozen_at: u64,
+    pub reason: String,
+}
+
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct PlanUnfrozenEvent {
+    pub plan_id: u64,
+    pub unfrozen_by: Address,
+    pub unfrozen_at: u64,
+}
+
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct LegalHoldAddedEvent {
+    pub plan_id: u64,
+    pub added_by: Address,
+    pub added_at: u64,
+}
+
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct LegalHoldRemovedEvent {
+    pub plan_id: u64,
+    pub removed_by: Address,
+    pub removed_at: u64,
+}
+
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct BeneficiaryFrozenEvent {
+    pub plan_id: u64,
+    pub index: u32,
+    pub frozen_by: Address,
+    pub frozen_at: u64,
 }
 
 #[contract]
@@ -1368,6 +1431,18 @@ impl InheritanceContract {
             return Err(InheritanceError::Unauthorized);
         }
 
+        // Freeze/legal hold check
+        if env
+            .storage()
+            .persistent()
+            .has(&DataKey::FreezePlan(plan_id))
+        {
+            return Err(InheritanceError::PlanNotActive);
+        }
+        if env.storage().persistent().has(&DataKey::LegalHold(plan_id)) {
+            return Err(InheritanceError::PlanNotActive);
+        }
+
         // Emergency Guard: Limit withdrawal if emergency access was recently activated
         if Self::is_emergency_active(&env, plan_id) {
             let limit = (plan.total_amount as u128)
@@ -1452,6 +1527,18 @@ impl InheritanceContract {
 
         // Check if plan is active
         if !plan.is_active {
+            return Err(InheritanceError::PlanNotActive);
+        }
+
+        // Freeze/legal hold check
+        if env
+            .storage()
+            .persistent()
+            .has(&DataKey::FreezePlan(plan_id))
+        {
+            return Err(InheritanceError::PlanNotActive);
+        }
+        if env.storage().persistent().has(&DataKey::LegalHold(plan_id)) {
             return Err(InheritanceError::PlanNotActive);
         }
 
@@ -4058,7 +4145,167 @@ impl InheritanceContract {
         );
         Ok((success, fail))
     }
+
+    // ── Asset Freezing & Compliance (Issue #501) ──
+
+    pub fn freeze_plan(
+        env: Env,
+        admin: Address,
+        plan_id: u64,
+        reason: String,
+    ) -> Result<(), InheritanceError> {
+        Self::require_admin(&env, &admin)?;
+        Self::get_plan(&env, plan_id).ok_or(InheritanceError::PlanNotFound)?;
+        let key = DataKey::FreezePlan(plan_id);
+        if env.storage().persistent().has(&key) {
+            return Err(InheritanceError::PlanNotActive);
+        }
+        let now = env.ledger().timestamp();
+        let record = FreezeRecord {
+            plan_id,
+            frozen_at: now,
+            reason: reason.clone(),
+            frozen_by: admin.clone(),
+        };
+        env.storage().persistent().set(&key, &record);
+        env.events().publish(
+            (symbol_short!("FREEZE"), symbol_short!("PLAN")),
+            PlanFrozenEvent {
+                plan_id,
+                frozen_by: admin,
+                frozen_at: now,
+                reason,
+            },
+        );
+        Ok(())
+    }
+
+    pub fn unfreeze_plan(env: Env, admin: Address, plan_id: u64) -> Result<(), InheritanceError> {
+        Self::require_admin(&env, &admin)?;
+        Self::get_plan(&env, plan_id).ok_or(InheritanceError::PlanNotFound)?;
+        let key = DataKey::FreezePlan(plan_id);
+        if !env.storage().persistent().has(&key) {
+            return Err(InheritanceError::PlanAlreadyDeactivated);
+        }
+        env.storage().persistent().remove(&key);
+        env.events().publish(
+            (symbol_short!("FREEZE"), symbol_short!("UNPLAN")),
+            PlanUnfrozenEvent {
+                plan_id,
+                unfrozen_by: admin,
+                unfrozen_at: env.ledger().timestamp(),
+            },
+        );
+        Ok(())
+    }
+
+    pub fn is_plan_frozen(env: Env, plan_id: u64) -> bool {
+        env.storage()
+            .persistent()
+            .has(&DataKey::FreezePlan(plan_id))
+    }
+
+    pub fn get_freeze_reason(env: Env, plan_id: u64) -> Option<FreezeRecord> {
+        env.storage()
+            .persistent()
+            .get(&DataKey::FreezePlan(plan_id))
+    }
+
+    pub fn add_legal_hold(
+        env: Env,
+        admin: Address,
+        plan_id: u64,
+        reason: String,
+    ) -> Result<(), InheritanceError> {
+        Self::require_admin(&env, &admin)?;
+        Self::get_plan(&env, plan_id).ok_or(InheritanceError::PlanNotFound)?;
+        let key = DataKey::LegalHold(plan_id);
+        if env.storage().persistent().has(&key) {
+            return Err(InheritanceError::PlanNotActive);
+        }
+        let now = env.ledger().timestamp();
+        let hold = LegalHold {
+            plan_id,
+            added_at: now,
+            reason,
+            added_by: admin.clone(),
+        };
+        env.storage().persistent().set(&key, &hold);
+        env.events().publish(
+            (symbol_short!("LEGAL"), symbol_short!("HOLD")),
+            LegalHoldAddedEvent {
+                plan_id,
+                added_by: admin,
+                added_at: now,
+            },
+        );
+        Ok(())
+    }
+
+    pub fn remove_legal_hold(
+        env: Env,
+        admin: Address,
+        plan_id: u64,
+    ) -> Result<(), InheritanceError> {
+        Self::require_admin(&env, &admin)?;
+        Self::get_plan(&env, plan_id).ok_or(InheritanceError::PlanNotFound)?;
+        let key = DataKey::LegalHold(plan_id);
+        if !env.storage().persistent().has(&key) {
+            return Err(InheritanceError::PlanNotFound);
+        }
+        env.storage().persistent().remove(&key);
+        env.events().publish(
+            (symbol_short!("LEGAL"), symbol_short!("REMOVE")),
+            LegalHoldRemovedEvent {
+                plan_id,
+                removed_by: admin,
+                removed_at: env.ledger().timestamp(),
+            },
+        );
+        Ok(())
+    }
+
+    pub fn freeze_beneficiary(
+        env: Env,
+        admin: Address,
+        plan_id: u64,
+        index: u32,
+    ) -> Result<(), InheritanceError> {
+        Self::require_admin(&env, &admin)?;
+        let plan = Self::get_plan(&env, plan_id).ok_or(InheritanceError::PlanNotFound)?;
+        if index >= plan.beneficiaries.len() {
+            return Err(InheritanceError::InvalidBeneficiaryIndex);
+        }
+        let key = DataKey::FrozenBeneficiary(plan_id, index);
+        if env
+            .storage()
+            .persistent()
+            .get::<_, bool>(&key)
+            .unwrap_or(false)
+        {
+            return Err(InheritanceError::AlreadyClaimed);
+        }
+        env.storage().persistent().set(&key, &true);
+        env.events().publish(
+            (symbol_short!("FREEZE"), symbol_short!("BENEF")),
+            BeneficiaryFrozenEvent {
+                plan_id,
+                index,
+                frozen_by: admin,
+                frozen_at: env.ledger().timestamp(),
+            },
+        );
+        Ok(())
+    }
+
+    pub fn is_beneficiary_frozen(env: Env, plan_id: u64, index: u32) -> bool {
+        env.storage()
+            .persistent()
+            .get::<_, bool>(&DataKey::FrozenBeneficiary(plan_id, index))
+            .unwrap_or(false)
+    }
 }
+
 #[cfg(test)]
 #[allow(clippy::duplicated_attributes)]
 mod message_test;

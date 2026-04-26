@@ -5385,3 +5385,146 @@ fn test_batch_claim_limit_exceeded() {
     let result = client.try_batch_claim(&plan_id, &claimers);
     assert!(result.is_err());
 }
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Asset Freezing & Compliance Tests (Issue #501)
+// ─────────────────────────────────────────────────────────────────────────────
+
+#[test]
+fn test_freeze_plan_success() {
+    let env = Env::default();
+    let (client, _token, admin, owner) = setup_with_token_and_admin(&env);
+    let plan_id = plan_with_partial_alloc(&env, &client, &_token, &owner);
+
+    assert!(!client.is_plan_frozen(&plan_id));
+    client.freeze_plan(&admin, &plan_id, &String::from_str(&env, "AML compliance"));
+    assert!(client.is_plan_frozen(&plan_id));
+}
+
+#[test]
+fn test_freeze_plan_non_admin_fails() {
+    let env = Env::default();
+    let (client, _token, _admin, owner) = setup_with_token_and_admin(&env);
+    let plan_id = plan_with_partial_alloc(&env, &client, &_token, &owner);
+
+    let result = client.try_freeze_plan(&owner, &plan_id, &String::from_str(&env, "reason"));
+    assert!(result.is_err());
+}
+
+#[test]
+fn test_freeze_plan_already_frozen_fails() {
+    let env = Env::default();
+    let (client, _token, admin, owner) = setup_with_token_and_admin(&env);
+    let plan_id = plan_with_partial_alloc(&env, &client, &_token, &owner);
+
+    client.freeze_plan(&admin, &plan_id, &String::from_str(&env, "reason"));
+    let result = client.try_freeze_plan(&admin, &plan_id, &String::from_str(&env, "reason2"));
+    assert!(result.is_err());
+}
+
+#[test]
+fn test_unfreeze_plan_success() {
+    let env = Env::default();
+    let (client, _token, admin, owner) = setup_with_token_and_admin(&env);
+    let plan_id = plan_with_partial_alloc(&env, &client, &_token, &owner);
+
+    client.freeze_plan(&admin, &plan_id, &String::from_str(&env, "reason"));
+    assert!(client.is_plan_frozen(&plan_id));
+    client.unfreeze_plan(&admin, &plan_id);
+    assert!(!client.is_plan_frozen(&plan_id));
+}
+
+#[test]
+fn test_unfreeze_plan_not_frozen_fails() {
+    let env = Env::default();
+    let (client, _token, admin, owner) = setup_with_token_and_admin(&env);
+    let plan_id = plan_with_partial_alloc(&env, &client, &_token, &owner);
+
+    let result = client.try_unfreeze_plan(&admin, &plan_id);
+    assert!(result.is_err());
+}
+
+#[test]
+fn test_get_freeze_reason() {
+    let env = Env::default();
+    let (client, _token, admin, owner) = setup_with_token_and_admin(&env);
+    let plan_id = plan_with_partial_alloc(&env, &client, &_token, &owner);
+
+    assert!(client.get_freeze_reason(&plan_id).is_none());
+    client.freeze_plan(&admin, &plan_id, &String::from_str(&env, "Sanctions check"));
+    let record = client.get_freeze_reason(&plan_id).unwrap();
+    assert_eq!(record.reason, String::from_str(&env, "Sanctions check"));
+    assert_eq!(record.frozen_by, admin);
+}
+
+#[test]
+fn test_add_legal_hold_success() {
+    let env = Env::default();
+    let (client, _token, admin, owner) = setup_with_token_and_admin(&env);
+    let plan_id = plan_with_partial_alloc(&env, &client, &_token, &owner);
+
+    client.add_legal_hold(&admin, &plan_id, &String::from_str(&env, "Court order #123"));
+}
+
+#[test]
+fn test_add_legal_hold_twice_fails() {
+    let env = Env::default();
+    let (client, _token, admin, owner) = setup_with_token_and_admin(&env);
+    let plan_id = plan_with_partial_alloc(&env, &client, &_token, &owner);
+
+    client.add_legal_hold(&admin, &plan_id, &String::from_str(&env, "Court order #123"));
+    let result = client.try_add_legal_hold(&admin, &plan_id, &String::from_str(&env, "order2"));
+    assert!(result.is_err());
+}
+
+#[test]
+fn test_remove_legal_hold_success() {
+    let env = Env::default();
+    let (client, _token, admin, owner) = setup_with_token_and_admin(&env);
+    let plan_id = plan_with_partial_alloc(&env, &client, &_token, &owner);
+
+    client.add_legal_hold(&admin, &plan_id, &String::from_str(&env, "Court order"));
+    client.remove_legal_hold(&admin, &plan_id);
+}
+
+#[test]
+fn test_remove_legal_hold_not_exists_fails() {
+    let env = Env::default();
+    let (client, _token, admin, owner) = setup_with_token_and_admin(&env);
+    let plan_id = plan_with_partial_alloc(&env, &client, &_token, &owner);
+
+    let result = client.try_remove_legal_hold(&admin, &plan_id);
+    assert!(result.is_err());
+}
+
+#[test]
+fn test_freeze_beneficiary_success() {
+    let env = Env::default();
+    let (client, _token, admin, owner) = setup_with_token_and_admin(&env);
+    let plan_id = plan_with_partial_alloc(&env, &client, &_token, &owner);
+
+    assert!(!client.is_beneficiary_frozen(&plan_id, &0u32));
+    client.freeze_beneficiary(&admin, &plan_id, &0u32);
+    assert!(client.is_beneficiary_frozen(&plan_id, &0u32));
+}
+
+#[test]
+fn test_freeze_beneficiary_already_frozen_fails() {
+    let env = Env::default();
+    let (client, _token, admin, owner) = setup_with_token_and_admin(&env);
+    let plan_id = plan_with_partial_alloc(&env, &client, &_token, &owner);
+
+    client.freeze_beneficiary(&admin, &plan_id, &0u32);
+    let result = client.try_freeze_beneficiary(&admin, &plan_id, &0u32);
+    assert!(result.is_err());
+}
+
+#[test]
+fn test_freeze_beneficiary_invalid_index_fails() {
+    let env = Env::default();
+    let (client, _token, admin, owner) = setup_with_token_and_admin(&env);
+    let plan_id = plan_with_partial_alloc(&env, &client, &_token, &owner);
+
+    let result = client.try_freeze_beneficiary(&admin, &plan_id, &99u32);
+    assert!(result.is_err());
+}
