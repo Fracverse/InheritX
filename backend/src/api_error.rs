@@ -51,7 +51,7 @@ pub enum ApiError {
 
     // ── 4xx ──────────────────────────────────────────────────────────────────
     /// JWT missing, expired, or signature invalid.
-    #[error("Authentication is required to access this resource.")]
+    #[error("Unauthorized")]
     Unauthorized,
 
     /// Authenticated but lacking the required permission.
