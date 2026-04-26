@@ -45,6 +45,7 @@ impl TestContext {
             database_url,
             port: 0,
             jwt_secret: env::var("JWT_SECRET").unwrap_or_else(|_| "test-jwt-secret".to_string()),
+            rate_limit: inheritx_backend::config::RateLimitConfig::default_for_tests(),
             db_pool: inheritx_backend::config::DbPoolConfig::from_env_or_defaults(),
         };
 

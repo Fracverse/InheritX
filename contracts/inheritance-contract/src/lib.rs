@@ -159,6 +159,9 @@ pub enum DataKey {
     BeneficiaryNotifiedAt(u64, u32),        // (plan_id, beneficiary_index) -> u64 (notified_at)
     BeneficiaryAcknowledgedAt(u64, u32),    // (plan_id, beneficiary_index) -> u64 (acknowledged_at)
     RequiresAcknowledgment(u64),            // plan_id -> bool
+    FreezePlan(u64),             // plan_id -> FreezeRecord
+    LegalHold(u64),              // plan_id -> LegalHold
+    FrozenBeneficiary(u64, u32), // (plan_id, index) -> bool
 }
 
 #[contracttype]
@@ -602,34 +605,64 @@ pub struct CreateInheritancePlanParams {
     pub is_lendable: bool,
 }
 
-// ─────────────────────────────────────────────────
-// Beneficiary Notification & Acknowledgment Types
-// ─────────────────────────────────────────────────
-
-/// Tracks on-chain notification and acknowledgment timestamps for a beneficiary.
 #[contracttype]
 #[derive(Clone, Debug, Eq, PartialEq)]
-pub struct BeneficiaryAcknowledgment {
+pub struct FreezeRecord {
     pub plan_id: u64,
-    pub beneficiary_index: u32,
-    pub acknowledged_at: u64,
-    pub notification_sent_at: u64,
+    pub frozen_at: u64,
+    pub reason: String,
+    pub frozen_by: Address,
 }
 
 #[contracttype]
 #[derive(Clone, Debug, Eq, PartialEq)]
-pub struct BeneficiaryNotifiedEvent {
+pub struct LegalHold {
     pub plan_id: u64,
-    pub beneficiary_index: u32,
-    pub notified_at: u64,
+    pub added_at: u64,
+    pub reason: String,
+    pub added_by: Address,
 }
 
 #[contracttype]
 #[derive(Clone, Debug, Eq, PartialEq)]
-pub struct BeneficiaryAcknowledgedEvent {
+pub struct PlanFrozenEvent {
     pub plan_id: u64,
-    pub beneficiary_index: u32,
-    pub acknowledged_at: u64,
+    pub frozen_by: Address,
+    pub frozen_at: u64,
+    pub reason: String,
+}
+
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct PlanUnfrozenEvent {
+    pub plan_id: u64,
+    pub unfrozen_by: Address,
+    pub unfrozen_at: u64,
+}
+
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct LegalHoldAddedEvent {
+    pub plan_id: u64,
+    pub added_by: Address,
+    pub added_at: u64,
+}
+
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct LegalHoldRemovedEvent {
+    pub plan_id: u64,
+    pub removed_by: Address,
+    pub removed_at: u64,
+}
+
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct BeneficiaryFrozenEvent {
+    pub plan_id: u64,
+    pub index: u32,
+    pub frozen_by: Address,
+    pub frozen_at: u64,
 }
 
 #[contract]
@@ -1452,6 +1485,18 @@ impl InheritanceContract {
             return Err(InheritanceError::Unauthorized);
         }
 
+        // Freeze/legal hold check
+        if env
+            .storage()
+            .persistent()
+            .has(&DataKey::FreezePlan(plan_id))
+        {
+            return Err(InheritanceError::PlanNotActive);
+        }
+        if env.storage().persistent().has(&DataKey::LegalHold(plan_id)) {
+            return Err(InheritanceError::PlanNotActive);
+        }
+
         // Emergency Guard: Limit withdrawal if emergency access was recently activated
         if Self::is_emergency_active(&env, plan_id) {
             let limit = (plan.total_amount as u128)
@@ -1665,6 +1710,18 @@ impl InheritanceContract {
 
         // Check if plan is active
         if !plan.is_active {
+            return Err(InheritanceError::PlanNotActive);
+        }
+
+        // Freeze/legal hold check
+        if env
+            .storage()
+            .persistent()
+            .has(&DataKey::FreezePlan(plan_id))
+        {
+            return Err(InheritanceError::PlanNotActive);
+        }
+        if env.storage().persistent().has(&DataKey::LegalHold(plan_id)) {
             return Err(InheritanceError::PlanNotActive);
         }
 

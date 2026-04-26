@@ -9,7 +9,6 @@ use serde_json::{json, Value};
 use sqlx::PgPool;
 use std::sync::Arc;
 use std::time::Duration;
-use tower::ServiceBuilder;
 use tower_governor::{governor::GovernorConfigBuilder, GovernorLayer};
 use tower_http::{
     cors::{AllowHeaders, AllowMethods, AllowOrigin, CorsLayer},
@@ -114,21 +113,46 @@ pub async fn create_app(
         insurance_fund_service,
     });
 
-    // Rate limiting configuration
-    let governor_conf = Arc::new(
+    // ── Rate limiting (config-driven) ────────────────────────────────────────
+    // Limits are read from environment variables via Config::load() so every
+    // deployment can tune them without a code change.  Hardcoded fallbacks
+    // (2 req/s, burst 5) are preserved as defaults when the variables are absent.
+    let rl = &config.rate_limit;
+
+    let mut governor_builder = GovernorConfigBuilder::default();
+    governor_builder
+        .per_second(rl.default_limit().per_second)
+        .burst_size(rl.default_limit().burst_size);
+    let mut governor_builder = governor_builder.key_extractor(
+        crate::middleware::RateLimitKeyExtractor::new(rl.bypass_tokens.clone()),
+    );
+    governor_builder.error_handler(crate::middleware::rate_limit_error_response);
+    let governor_conf = Arc::new(governor_builder.use_headers().finish().unwrap());
+
+    let emergency_governor_conf = Arc::new(
         GovernorConfigBuilder::default()
-            .per_second(2)
-            .burst_size(5)
+            .per_second(rl.emergency_limit().per_second)
+            .burst_size(rl.emergency_limit().burst_size)
+            .use_headers()
             .finish()
             .unwrap(),
     );
 
-    let emergency_governor_conf = Arc::new(
+    let admin_login_governor_conf = Arc::new(
         GovernorConfigBuilder::default()
-            .per_second(1)
-            .burst_size(2)
+            .per_second(rl.admin_login_limit().per_second)
+            .burst_size(rl.admin_login_limit().burst_size)
+            .use_headers()
             .finish()
             .unwrap(),
+    );
+
+    tracing::info!(
+        default_rps = rl.default_per_second,
+        default_burst = rl.default_burst_size,
+        emergency_rps = rl.emergency_per_second,
+        admin_login_rps = rl.admin_login_per_second,
+        "Rate limiting configuration loaded"
     );
 
     // ── CORS configuration (Issue #408) ──────────────────────────────────────
@@ -161,17 +185,16 @@ pub async fn create_app(
     let app = Router::new()
         .route("/health", get(health_check))
         .route("/health/db", get(db_health_check))
+        // Admin login gets its own, tighter rate limit (brute-force protection).
         .route("/health/db/metrics", get(db_metrics))
         // Prometheus metrics scrape endpoint (Issue #423).
         // Restrict access at the network/ingress layer in production.
         .route("/metrics", get(crate::metrics::metrics_handler))
-        .route("/admin/login", post(crate::auth::login_admin))
-        .layer(
-            ServiceBuilder::new()
-                .layer(TraceLayer::new_for_http())
-                .layer(GovernorLayer {
-                    config: governor_conf,
-                }),
+        .route(
+            "/admin/login",
+            post(crate::auth::login_admin).layer(GovernorLayer {
+                config: admin_login_governor_conf,
+            }),
         )
         .route(
             "/api/plans/due-for-claim",
@@ -635,7 +658,18 @@ pub async fn create_app(
         )
         .with_state(price_feed_state);
 
-    Ok(app.merge(price_routes))
+    Ok(app
+        .merge(price_routes)
+        .layer(axum::middleware::from_fn(
+            crate::middleware::attach_correlation_id,
+        ))
+        .layer(axum::middleware::from_fn(
+            crate::middleware::log_rate_limit_violations,
+        ))
+        .layer(TraceLayer::new_for_http())
+        .layer(GovernorLayer {
+            config: governor_conf,
+        }))
 }
 
 async fn health_check() -> Json<Value> {
