@@ -5575,7 +5575,7 @@ fn test_priority_validation() {
 #[test]
 fn test_notify_beneficiary() {
     let env = Env::default();
-    let (client, token, admin, owner) = setup_with_token_and_admin(&env);
+    let (client, token, _admin, owner) = setup_with_token_and_admin(&env);
 
     let plan_id = client.create_inheritance_plan(&plan_params(
         &env,
@@ -5597,14 +5597,13 @@ fn test_notify_beneficiary() {
 
     assert_eq!(ack.plan_id, plan_id);
     assert_eq!(ack.beneficiary_index, 0u32);
-    assert!(ack.notification_sent_at > 0 || ack.notification_sent_at == 0); // timestamp may be 0 in test env
     assert_eq!(ack.acknowledged_at, 0u64); // not yet acknowledged
 }
 
 #[test]
 fn test_notify_beneficiary_twice_fails() {
     let env = Env::default();
-    let (client, token, admin, owner) = setup_with_token_and_admin(&env);
+    let (client, token, _admin, owner) = setup_with_token_and_admin(&env);
 
     let plan_id = client.create_inheritance_plan(&plan_params(
         &env,
@@ -5627,7 +5626,7 @@ fn test_notify_beneficiary_twice_fails() {
 #[test]
 fn test_acknowledge_beneficiary_status() {
     let env = Env::default();
-    let (client, token, admin, owner) = setup_with_token_and_admin(&env);
+    let (client, token, _admin, owner) = setup_with_token_and_admin(&env);
 
     let plan_id = client.create_inheritance_plan(&plan_params(
         &env,
@@ -5658,7 +5657,7 @@ fn test_acknowledge_beneficiary_status() {
 #[test]
 fn test_acknowledge_without_notification_fails() {
     let env = Env::default();
-    let (client, token, admin, owner) = setup_with_token_and_admin(&env);
+    let (client, token, _admin, owner) = setup_with_token_and_admin(&env);
 
     let plan_id = client.create_inheritance_plan(&plan_params(
         &env,
@@ -5680,7 +5679,7 @@ fn test_acknowledge_without_notification_fails() {
 #[test]
 fn test_acknowledge_twice_fails() {
     let env = Env::default();
-    let (client, token, admin, owner) = setup_with_token_and_admin(&env);
+    let (client, token, _admin, owner) = setup_with_token_and_admin(&env);
 
     let plan_id = client.create_inheritance_plan(&plan_params(
         &env,
@@ -5706,7 +5705,7 @@ fn test_acknowledge_twice_fails() {
 #[test]
 fn test_get_unacknowledged_beneficiaries() {
     let env = Env::default();
-    let (client, token, admin, owner) = setup_with_token_and_admin(&env);
+    let (client, token, _admin, owner) = setup_with_token_and_admin(&env);
 
     let two_beneficiaries = vec![
         &env,
@@ -5755,7 +5754,7 @@ fn test_get_unacknowledged_beneficiaries() {
 #[test]
 fn test_require_acknowledgment_setting() {
     let env = Env::default();
-    let (client, token, admin, owner) = setup_with_token_and_admin(&env);
+    let (client, token, _admin, owner) = setup_with_token_and_admin(&env);
 
     let plan_id = client.create_inheritance_plan(&plan_params(
         &env,
@@ -5778,7 +5777,7 @@ fn test_require_acknowledgment_setting() {
 #[test]
 fn test_notify_invalid_beneficiary_index_fails() {
     let env = Env::default();
-    let (client, token, admin, owner) = setup_with_token_and_admin(&env);
+    let (client, token, _admin, owner) = setup_with_token_and_admin(&env);
 
     let plan_id = client.create_inheritance_plan(&plan_params(
         &env,
@@ -5799,7 +5798,7 @@ fn test_notify_invalid_beneficiary_index_fails() {
 #[test]
 fn test_get_beneficiary_acknowledgment_none_before_notify() {
     let env = Env::default();
-    let (client, token, admin, owner) = setup_with_token_and_admin(&env);
+    let (client, token, _admin, owner) = setup_with_token_and_admin(&env);
 
     let plan_id = client.create_inheritance_plan(&plan_params(
         &env,
