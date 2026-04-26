@@ -1,15 +1,22 @@
 use axum::{
     body::Body,
     extract::Request,
-    http::{HeaderMap, HeaderValue, Request as HttpRequest, Response, StatusCode},
+    http::{
+        HeaderMap, HeaderName, HeaderValue, Request as HttpRequest, StatusCode,
+    },
     middleware::Next,
-    response::IntoResponse,
+    response::{IntoResponse, Response},
 };
 use serde_json::json;
 use std::collections::HashSet;
 use std::sync::Arc;
+use std::time::Duration;
+use tokio::time::timeout;
 use tower_governor::{errors::GovernorError, key_extractor::KeyExtractor};
 use uuid::Uuid;
+
+/// Request ID header name.
+pub static X_REQUEST_ID: HeaderName = HeaderName::from_static("x-request-id");
 
 #[derive(Clone)]
 pub struct RateLimitKeyExtractor {
@@ -38,13 +45,11 @@ impl KeyExtractor for RateLimitKeyExtractor {
             .headers()
             .get("x-internal-token")
             .and_then(|h| h.to_str().ok())
-            .map(|s| s.trim())
+            .map(str::trim)
             .filter(|s| !s.is_empty());
 
         if let Some(token) = maybe_internal_token {
             if self.bypass_tokens.contains(token) {
-                // Bypass by assigning a unique key so quota is effectively never shared.
-                // This is intended for low-traffic trusted internal/admin automation.
                 return Ok(format!("bypass:{}:{}", token, Uuid::new_v4()));
             }
         }
@@ -54,16 +59,16 @@ impl KeyExtractor for RateLimitKeyExtractor {
             .get("x-forwarded-for")
             .and_then(|h| h.to_str().ok())
             .and_then(|s| s.split(',').next())
-            .map(|s| s.trim())
+            .map(str::trim)
             .filter(|s| !s.is_empty())
             .or_else(|| {
                 req.headers()
                     .get("x-real-ip")
                     .and_then(|h| h.to_str().ok())
-                    .map(|s| s.trim())
+                    .map(str::trim)
                     .filter(|s| !s.is_empty())
             })
-            .map(|s| s.to_string())
+            .map(str::to_string)
             .or_else(|| {
                 req.extensions()
                     .get::<std::net::SocketAddr>()
@@ -127,31 +132,73 @@ pub fn rate_limit_error_response(error: GovernorError) -> Response<Body> {
     }
 }
 
-pub async fn attach_correlation_id(mut request: Request<Body>, next: Next) -> impl IntoResponse {
-    let correlation_id = request
+/// Injects a unique `x-request-id` into each request and propagates it to the response.
+pub async fn request_id_middleware(mut req: Request, next: Next) -> Response {
+    let request_id = req
         .headers()
-        .get("x-correlation-id")
-        .and_then(|h| h.to_str().ok())
-        .map(str::trim)
-        .filter(|s| !s.is_empty())
-        .map(str::to_string)
-        .unwrap_or_else(|| Uuid::new_v4().to_string());
+        .get(&X_REQUEST_ID)
+        .and_then(|v| v.to_str().ok())
+        .unwrap_or("")
+        .trim()
+        .to_string();
 
-    request.extensions_mut().insert(correlation_id.clone());
+    let request_id = if request_id.is_empty() {
+        Uuid::new_v4().to_string()
+    } else {
+        request_id
+    };
 
-    let mut response = next.run(request).await;
-    if let Ok(value) = HeaderValue::from_str(&correlation_id) {
-        response.headers_mut().insert("x-correlation-id", value);
-    }
+    req.headers_mut()
+        .insert(X_REQUEST_ID.clone(), HeaderValue::from_str(&request_id).unwrap());
+
+    let mut response = next.run(req).await;
+    response.headers_mut().insert(
+        X_REQUEST_ID.clone(),
+        HeaderValue::from_str(&request_id).unwrap(),
+    );
     response
 }
 
-pub async fn log_rate_limit_violations(request: Request<Body>, next: Next) -> impl IntoResponse {
-    let path = request.uri().path().to_string();
-    let method = request.method().clone();
-    let correlation_id = request.extensions().get::<String>().cloned();
+/// Legacy alias retained for compatibility with existing call sites.
+pub async fn attach_correlation_id(req: Request<Body>, next: Next) -> impl IntoResponse {
+    request_id_middleware(req, next).await
+}
 
-    let response = next.run(request).await;
+/// Logs each incoming request with its method, URI, and assigned request ID.
+pub async fn request_logging_middleware(req: Request, next: Next) -> Response {
+    let method = req.method().clone();
+    let uri = req.uri().clone();
+    let request_id = req
+        .headers()
+        .get(&X_REQUEST_ID)
+        .and_then(|v| v.to_str().ok())
+        .unwrap_or("unknown")
+        .to_owned();
+
+    tracing::info!(request_id = %request_id, method = %method, uri = %uri, "incoming request");
+
+    let response = next.run(req).await;
+
+    tracing::info!(
+        request_id = %request_id,
+        status = %response.status(),
+        "request completed"
+    );
+
+    response
+}
+
+pub async fn log_rate_limit_violations(req: Request<Body>, next: Next) -> impl IntoResponse {
+    let path = req.uri().path().to_string();
+    let method = req.method().clone();
+    let request_id = req
+        .headers()
+        .get(&X_REQUEST_ID)
+        .and_then(|v| v.to_str().ok())
+        .unwrap_or("n/a")
+        .to_string();
+
+    let response = next.run(req).await;
 
     if response.status() == StatusCode::TOO_MANY_REQUESTS {
         let mut metadata = HeaderMap::new();
@@ -162,11 +209,56 @@ pub async fn log_rate_limit_violations(request: Request<Body>, next: Next) -> im
             error_code = "RATE_LIMITED",
             http.method = %method,
             http.path = %path,
-            correlation_id = %correlation_id.unwrap_or_else(|| "n/a".to_string()),
+            request_id = %request_id,
             ratelimit_after = ?metadata.get("x-ratelimit-after"),
             "Request rejected due to rate limit"
         );
     }
 
     response
+}
+
+/// Adds security headers to every response.
+pub async fn security_headers_middleware(req: Request, next: Next) -> Response {
+    let mut response = next.run(req).await;
+    let headers = response.headers_mut();
+
+    headers.insert(
+        HeaderName::from_static("strict-transport-security"),
+        HeaderValue::from_static("max-age=63072000; includeSubDomains; preload"),
+    );
+    headers.insert(
+        HeaderName::from_static("content-security-policy"),
+        HeaderValue::from_static("default-src 'self'"),
+    );
+    headers.insert(
+        HeaderName::from_static("x-frame-options"),
+        HeaderValue::from_static("DENY"),
+    );
+    headers.insert(
+        HeaderName::from_static("x-content-type-options"),
+        HeaderValue::from_static("nosniff"),
+    );
+    headers.insert(
+        HeaderName::from_static("referrer-policy"),
+        HeaderValue::from_static("strict-origin-when-cross-origin"),
+    );
+
+    response
+}
+
+/// Enforces a per-request timeout. Returns 408 if the handler exceeds the limit.
+pub async fn request_timeout_middleware(
+    req: Request<Body>,
+    next: Next,
+    duration: Duration,
+) -> Response {
+    match timeout(duration, next.run(req)).await {
+        Ok(response) => response,
+        Err(_) => (
+            StatusCode::REQUEST_TIMEOUT,
+            axum::Json(serde_json::json!({ "error": "Request timed out" })),
+        )
+            .into_response(),
+    }
 }

@@ -46,6 +46,7 @@ impl TestContext {
             port: 0,
             jwt_secret: env::var("JWT_SECRET").unwrap_or_else(|_| "test-jwt-secret".to_string()),
             rate_limit: inheritx_backend::config::RateLimitConfig::default_for_tests(),
+            db_pool: inheritx_backend::config::DbPoolConfig::from_env_or_defaults(),
         };
 
         // Run migrations
@@ -53,7 +54,8 @@ impl TestContext {
             .await
             .expect("failed to run migrations");
 
-        let app = create_app(pool.clone(), config)
+        let prometheus_handle = inheritx_backend::get_or_install_recorder();
+        let app = create_app(pool.clone(), config, prometheus_handle)
             .await
             .expect("failed to create app");
         Some(Self { app, pool })

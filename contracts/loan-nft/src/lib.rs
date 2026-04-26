@@ -50,6 +50,7 @@ impl LoanNFT {
             panic!("NFT already exists for this loan");
         }
 
+        // Batch all persistent writes together
         env.storage()
             .persistent()
             .set(&DataKey::Metadata(loan_id), &metadata);
@@ -60,31 +61,27 @@ impl LoanNFT {
             .persistent()
             .set(&DataKey::Transferable(loan_id), &true);
 
-        // Update total supply
-        let mut total_supply: u64 = env
+        // Update total supply (instance storage – single read+write)
+        let total_supply: u64 = env
             .storage()
             .instance()
             .get(&DataKey::TotalSupply)
             .unwrap_or(0);
-        total_supply += 1;
         env.storage()
             .instance()
-            .set(&DataKey::TotalSupply, &total_supply);
+            .set(&DataKey::TotalSupply, &(total_supply + 1));
 
-        // Update balance
-        let mut balance: u64 = env
+        // Update balance (persistent – single read+write, no extra clone)
+        let balance: u64 = env
             .storage()
             .persistent()
             .get(&DataKey::Balance(to.clone()))
             .unwrap_or(0);
-        balance += 1;
         env.storage()
             .persistent()
-            .set(&DataKey::Balance(to.clone()), &balance);
+            .set(&DataKey::Balance(to.clone()), &(balance + 1));
 
-        // Emit Mint as Transfer from zero
-        Self::emit_mint_event(&env, to.clone(), loan_id);
-
+        Self::emit_mint_event(&env, to, loan_id);
         Self::exit_reentrancy_guard(&env);
     }
 
@@ -95,6 +92,7 @@ impl LoanNFT {
         let owner =
             Self::owner_of(env.clone(), loan_id).unwrap_or_else(|| panic!("NFT does not exist"));
 
+        // Batch all persistent removes together
         env.storage()
             .persistent()
             .remove(&DataKey::Metadata(loan_id));
@@ -109,33 +107,29 @@ impl LoanNFT {
             .persistent()
             .remove(&DataKey::Transferable(loan_id));
 
-        // Update total supply
-        let mut total_supply: u64 = env
+        // Update total supply (single read+write)
+        let total_supply: u64 = env
             .storage()
             .instance()
             .get(&DataKey::TotalSupply)
             .unwrap_or(0);
         if total_supply > 0 {
-            total_supply -= 1;
             env.storage()
                 .instance()
-                .set(&DataKey::TotalSupply, &total_supply);
+                .set(&DataKey::TotalSupply, &(total_supply - 1));
         }
 
-        // Update balance
-        let mut balance: u64 = env
+        // Update balance (single read+write)
+        let balance: u64 = env
             .storage()
             .persistent()
             .get(&DataKey::Balance(owner.clone()))
             .unwrap_or(0);
-        balance = balance.saturating_sub(1);
         env.storage()
             .persistent()
-            .set(&DataKey::Balance(owner.clone()), &balance);
+            .set(&DataKey::Balance(owner.clone()), &balance.saturating_sub(1));
 
-        // Emit Burn as Transfer to zero
         Self::emit_burn_event(&env, owner, loan_id);
-
         Self::exit_reentrancy_guard(&env);
     }
 

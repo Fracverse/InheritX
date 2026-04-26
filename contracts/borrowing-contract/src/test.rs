@@ -177,6 +177,149 @@ fn test_vault_pause() {
 }
 
 #[test]
+fn test_extend_loan() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let (client, collateral_addr, _) = setup(&env);
+    let borrower = Address::generate(&env);
+    // Mint enough for collateral + extension fee (1% of 1000 = 10)
+    sac_client(&env, &collateral_addr).mint(&borrower, &1510);
+    let loan_id = client.create_loan(&borrower, &1000, &5, &1000000, &collateral_addr, &1500);
+
+    let original_due = client.get_loan(&loan_id).due_date;
+    client.extend_loan(&loan_id, &86400); // extend by 1 day in seconds
+
+    let loan = client.get_loan(&loan_id);
+    assert_eq!(loan.due_date, original_due + 86400);
+    assert_eq!(loan.extension_count, 1);
+}
+
+#[test]
+fn test_extend_loan_fee_calculation() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let (client, collateral_addr, _) = setup(&env);
+    let borrower = Address::generate(&env);
+    sac_client(&env, &collateral_addr).mint(&borrower, &1510);
+    let loan_id = client.create_loan(&borrower, &1000, &5, &1000000, &collateral_addr, &1500);
+
+    // Fee = 1% of remaining principal (1000) = 10
+    let fee = client.get_extension_fee(&loan_id);
+    assert_eq!(fee, 10);
+}
+
+#[test]
+fn test_extend_loan_limit_reached() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let (client, collateral_addr, _) = setup(&env);
+    let borrower = Address::generate(&env);
+    // Mint enough for collateral + 3 extension fees (10 each)
+    sac_client(&env, &collateral_addr).mint(&borrower, &1530);
+    let loan_id = client.create_loan(&borrower, &1000, &5, &1000000, &collateral_addr, &1500);
+
+    // First extension
+    client.extend_loan(&loan_id, &86400);
+    assert_eq!(client.get_loan(&loan_id).extension_count, 1);
+
+    // Second extension
+    client.extend_loan(&loan_id, &86400);
+    assert_eq!(client.get_loan(&loan_id).extension_count, 2);
+
+    // Third extension should fail (max 2)
+    let result = client.try_extend_loan(&loan_id, &86400);
+    assert_eq!(result, Err(Ok(BorrowingError::ExtensionLimitReached)));
+}
+
+#[test]
+fn test_extend_inactive_loan_fails() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let (client, collateral_addr, _) = setup(&env);
+    let borrower = Address::generate(&env);
+    sac_client(&env, &collateral_addr).mint(&borrower, &1500);
+    let loan_id = client.create_loan(&borrower, &1000, &5, &1000000, &collateral_addr, &1500);
+    client.repay_loan(&loan_id, &1000);
+
+    let result = client.try_extend_loan(&loan_id, &86400);
+    assert_eq!(result, Err(Ok(BorrowingError::LoanNotActive)));
+}
+
+#[test]
+fn test_increase_loan_amount() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let (client, collateral_addr, _) = setup(&env);
+    let borrower = Address::generate(&env);
+    // collateral_ratio = 15000 (150%), so 1500 collateral supports up to 1000 principal
+    // max_borrow = 1500 * 10000 / 15000 = 1000; current debt = 500; max_additional = 500
+    sac_client(&env, &collateral_addr).mint(&borrower, &1500);
+    let loan_id = client.create_loan(&borrower, &500, &5, &1000000, &collateral_addr, &1500);
+
+    let max_add = client.get_max_additional_borrow(&loan_id);
+    assert_eq!(max_add, 500);
+
+    client.increase_loan_amount(&loan_id, &300);
+    let loan = client.get_loan(&loan_id);
+    assert_eq!(loan.principal, 800);
+}
+
+#[test]
+fn test_increase_loan_exceeds_collateral_fails() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let (client, collateral_addr, _) = setup(&env);
+    let borrower = Address::generate(&env);
+    sac_client(&env, &collateral_addr).mint(&borrower, &1500);
+    let loan_id = client.create_loan(&borrower, &1000, &5, &1000000, &collateral_addr, &1500);
+
+    // max_additional = 0 since collateral exactly covers current principal
+    let result = client.try_increase_loan_amount(&loan_id, &1);
+    assert_eq!(result, Err(Ok(BorrowingError::InsufficientCollateral)));
+}
+
+#[test]
+fn test_increase_inactive_loan_fails() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let (client, collateral_addr, _) = setup(&env);
+    let borrower = Address::generate(&env);
+    sac_client(&env, &collateral_addr).mint(&borrower, &1500);
+    let loan_id = client.create_loan(&borrower, &1000, &5, &1000000, &collateral_addr, &1500);
+    client.repay_loan(&loan_id, &1000);
+
+    let result = client.try_increase_loan_amount(&loan_id, &100);
+    assert_eq!(result, Err(Ok(BorrowingError::LoanNotActive)));
+}
+
+#[test]
+fn test_increase_loan_invalid_amount_fails() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let (client, collateral_addr, _) = setup(&env);
+    let borrower = Address::generate(&env);
+    sac_client(&env, &collateral_addr).mint(&borrower, &1500);
+    let loan_id = client.create_loan(&borrower, &500, &5, &1000000, &collateral_addr, &1500);
+
+    let result = client.try_increase_loan_amount(&loan_id, &0);
+    assert_eq!(result, Err(Ok(BorrowingError::InvalidAmount)));
+}
+
+#[test]
+fn test_get_max_additional_borrow_inactive_fails() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let (client, collateral_addr, _) = setup(&env);
+    let borrower = Address::generate(&env);
+    sac_client(&env, &collateral_addr).mint(&borrower, &1500);
+    let loan_id = client.create_loan(&borrower, &1000, &5, &1000000, &collateral_addr, &1500);
+    client.repay_loan(&loan_id, &1000);
+
+    let result = client.try_get_max_additional_borrow(&loan_id);
+    assert_eq!(result, Err(Ok(BorrowingError::LoanNotActive)));
+}
+
+#[test]
 fn test_liquidation_auction() {
     let env = Env::default();
     env.mock_all_auths();
