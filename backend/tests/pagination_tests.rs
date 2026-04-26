@@ -64,10 +64,11 @@ async fn notifications_endpoint_supports_page_and_limit() {
 
     for i in 0..15 {
         sqlx::query(
-            "INSERT INTO notifications (id, user_id, type, message, is_read) VALUES ($1, $2, $3, $4, false)",
+            "INSERT INTO notifications (id, user_id, title, type, message, is_read) VALUES ($1, $2, $3, $4, $5, false)",
         )
         .bind(Uuid::new_v4())
         .bind(user_id)
+        .bind(format!("Notification {}", i))
         .bind("plan_created")
         .bind(format!("notification-{i}"))
         .execute(&ctx.pool)
@@ -112,10 +113,14 @@ async fn admin_logs_endpoint_supports_page_and_limit() {
     };
 
     for _ in 0..14 {
+        let user_id = Uuid::new_v4();
+        // Create user first to satisfy foreign key constraint
+        create_user(&ctx.pool, user_id).await;
+        
         sqlx::query(
             "INSERT INTO action_logs (user_id, action, entity_id, entity_type) VALUES ($1, $2, $3, $4)",
         )
-        .bind(Some(Uuid::new_v4()))
+        .bind(Some(user_id))
         .bind("plan_created")
         .bind(Some(Uuid::new_v4()))
         .bind(Some("plan"))
@@ -172,15 +177,15 @@ async fn due_plans_endpoint_supports_page_and_limit() {
                 distribution_method, contract_created_at, is_active,
                 beneficiary_name, bank_account_number, bank_name, currency_preference
             )
-            VALUES ($1, $2, $3, $4, $5, $6, 'pending', 'LumpSum', $7, true, $8, $9, $10, $11)
+            VALUES ($1, $2, $3, $4, $5::numeric, $6::numeric, 'pending', 'LumpSum', $7, true, $8, $9, $10, $11)
             "#,
         )
         .bind(Uuid::new_v4())
         .bind(user_id)
         .bind(format!("plan-{i}"))
         .bind(Some("desc".to_string()))
-        .bind("10.00")
-        .bind("490.00")
+        .bind(10.00_f64)
+        .bind(490.00_f64)
         .bind(now)
         .bind("Jane Doe")
         .bind("123456789")
@@ -247,8 +252,8 @@ async fn create_plan_accepts_query_pagination_params() {
     let body = json!({
         "title": "Paginated create plan",
         "description": "plan",
-        "fee": "10.00",
-        "net_amount": "490.00",
+        "fee": 10.00,
+        "net_amount": 490.00,
         "beneficiary_name": "Jane Doe",
         "bank_name": "",
         "bank_account_number": "",
