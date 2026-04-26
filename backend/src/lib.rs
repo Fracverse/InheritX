@@ -1,8 +1,11 @@
 pub mod alert_provider;
 pub mod analytics;
 pub mod api_error;
+pub mod api_versioning;
 pub mod app;
 pub mod auth;
+pub mod csrf;
+pub mod session;
 pub mod beneficiary_sync;
 pub mod circuit_breaker;
 pub mod collateral_management;
