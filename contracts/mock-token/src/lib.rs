@@ -1,8 +1,6 @@
 #![no_std]
 
-use soroban_sdk::{
-    contract, contracterror, contractimpl, contracttype, Address, Env,
-};
+use soroban_sdk::{contract, contracterror, contractimpl, contracttype, Address, Env};
 
 const MAX_SUPPLY: i128 = 1_000_000_000_000_000_000;
 
@@ -56,10 +54,8 @@ impl MockToken {
         let key_from = MockTokenDataKey::Balance(from.clone());
         let key_to = MockTokenDataKey::Balance(to.clone());
 
-        let balance_from: i128 =
-            env.storage().instance().get(&key_from).unwrap_or(0);
-        let balance_to: i128 =
-            env.storage().instance().get(&key_to).unwrap_or(0);
+        let balance_from: i128 = env.storage().instance().get(&key_from).unwrap_or(0);
+        let balance_to: i128 = env.storage().instance().get(&key_to).unwrap_or(0);
 
         if balance_from < amount {
             return Err(ContractError::InsufficientBalance);
@@ -79,11 +75,7 @@ impl MockToken {
         Ok(())
     }
 
-    pub fn mint(
-        env: Env,
-        to: Address,
-        amount: i128,
-    ) -> Result<(), ContractError> {
+    pub fn mint(env: Env, to: Address, amount: i128) -> Result<(), ContractError> {
         if amount < 0 {
             return Err(ContractError::NegativeAmount);
         }
@@ -91,10 +83,8 @@ impl MockToken {
         let key = MockTokenDataKey::Balance(to.clone());
         let supply_key = MockTokenDataKey::TotalSupply;
 
-        let balance: i128 =
-            env.storage().instance().get(&key).unwrap_or(0);
-        let total_supply: i128 =
-            env.storage().instance().get(&supply_key).unwrap_or(0);
+        let balance: i128 = env.storage().instance().get(&key).unwrap_or(0);
+        let total_supply: i128 = env.storage().instance().get(&supply_key).unwrap_or(0);
 
         if total_supply.checked_add(amount).is_none() {
             return Err(ContractError::Overflow);
@@ -116,11 +106,7 @@ impl MockToken {
         Ok(())
     }
 
-    pub fn burn(
-        env: Env,
-        from: Address,
-        amount: i128,
-    ) -> Result<(), ContractError> {
+    pub fn burn(env: Env, from: Address, amount: i128) -> Result<(), ContractError> {
         from.require_auth();
 
         if amount < 0 {
@@ -130,10 +116,8 @@ impl MockToken {
         let key = MockTokenDataKey::Balance(from.clone());
         let supply_key = MockTokenDataKey::TotalSupply;
 
-        let balance: i128 =
-            env.storage().instance().get(&key).unwrap_or(0);
-        let total_supply: i128 =
-            env.storage().instance().get(&supply_key).unwrap_or(0);
+        let balance: i128 = env.storage().instance().get(&key).unwrap_or(0);
+        let total_supply: i128 = env.storage().instance().get(&supply_key).unwrap_or(0);
 
         if balance < amount {
             return Err(ContractError::InsufficientBalance);
@@ -143,9 +127,7 @@ impl MockToken {
             return Err(ContractError::InsufficientBalance);
         }
 
-        env.storage()
-            .instance()
-            .set(&key, &(balance - amount));
+        env.storage().instance().set(&key, &(balance - amount));
         env.storage()
             .instance()
             .set(&supply_key, &(total_supply - amount));
@@ -169,15 +151,17 @@ mod property_tests {
     }
 
     fn addr_a(env: &Env) -> Address {
-        Address::from_string(
-            &String::from_str(env, "GAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAWHF")
-        )
+        Address::from_string(&String::from_str(
+            env,
+            "GAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAWHF",
+        ))
     }
 
     fn addr_b(env: &Env) -> Address {
-        Address::from_string(
-            &String::from_str(env, "GBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBWHF")
-        )
+        Address::from_string(&String::from_str(
+            env,
+            "GBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBWHF",
+        ))
     }
 
     proptest! {
@@ -246,42 +230,42 @@ mod property_tests {
     }
 
     proptest! {
-    #[test]
-    fn prop_mint_increases_supply(
-        amount in 0i128..(MAX_SUPPLY / 10)
-    ) {
-        let env = setup_env();
-        let addr = addr_a(&env);
+        #[test]
+        fn prop_mint_increases_supply(
+            amount in 0i128..(MAX_SUPPLY / 10)
+        ) {
+            let env = setup_env();
+            let addr = addr_a(&env);
 
-        let before = MockToken::total_supply(env.clone());
+            let before = MockToken::total_supply(env.clone());
 
-        if MockToken::mint(env.clone(), addr.clone(), amount).is_ok() {
-            let after = MockToken::total_supply(env.clone());
+            if MockToken::mint(env.clone(), addr.clone(), amount).is_ok() {
+                let after = MockToken::total_supply(env.clone());
 
-            // INVARIANT
-            prop_assert_eq!(after, before + amount);
+                // INVARIANT
+                prop_assert_eq!(after, before + amount);
+            }
         }
     }
-} 
 
     proptest! {
-    #[test]
-    fn prop_balance_never_negative(
-        mint_amount in 0i128..(MAX_SUPPLY / 10),
-        burn_amount in 0i128..(MAX_SUPPLY / 10)
-    ) {
-        let env = setup_env();
-        let addr = addr_a(&env);
+        #[test]
+        fn prop_balance_never_negative(
+            mint_amount in 0i128..(MAX_SUPPLY / 10),
+            burn_amount in 0i128..(MAX_SUPPLY / 10)
+        ) {
+            let env = setup_env();
+            let addr = addr_a(&env);
 
-        let _ = MockToken::mint(env.clone(), addr.clone(), mint_amount);
+            let _ = MockToken::mint(env.clone(), addr.clone(), mint_amount);
 
-        env.mock_all_auths();
-        let _ = MockToken::burn(env.clone(), addr.clone(), burn_amount);
+            env.mock_all_auths();
+            let _ = MockToken::burn(env.clone(), addr.clone(), burn_amount);
 
-        let balance = MockToken::balance(env.clone(), addr);
+            let balance = MockToken::balance(env.clone(), addr);
 
-        // INVARIANT
-        prop_assert!(balance >= 0);
+            // INVARIANT
+            prop_assert!(balance >= 0);
+        }
     }
-}
 }
