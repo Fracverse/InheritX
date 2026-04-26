@@ -155,6 +155,10 @@ pub enum DataKey {
     WitnessSignature(u64, Address),   // (plan_id, witness) -> u64 (signed_at)
     LendingContract,
     GovernanceContract,
+    // Beneficiary notification & acknowledgment
+    BeneficiaryNotifiedAt(u64, u32),        // (plan_id, beneficiary_index) -> u64 (notified_at)
+    BeneficiaryAcknowledgedAt(u64, u32),    // (plan_id, beneficiary_index) -> u64 (acknowledged_at)
+    RequiresAcknowledgment(u64),            // plan_id -> bool
 }
 
 #[contracttype]
@@ -596,6 +600,36 @@ pub struct CreateInheritancePlanParams {
     pub distribution_method: DistributionMethod,
     pub beneficiaries_data: Vec<(String, String, u32, Bytes, u32, u32)>,
     pub is_lendable: bool,
+}
+
+// ─────────────────────────────────────────────────
+// Beneficiary Notification & Acknowledgment Types
+// ─────────────────────────────────────────────────
+
+/// Tracks on-chain notification and acknowledgment timestamps for a beneficiary.
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct BeneficiaryAcknowledgment {
+    pub plan_id: u64,
+    pub beneficiary_index: u32,
+    pub acknowledged_at: u64,
+    pub notification_sent_at: u64,
+}
+
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct BeneficiaryNotifiedEvent {
+    pub plan_id: u64,
+    pub beneficiary_index: u32,
+    pub notified_at: u64,
+}
+
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct BeneficiaryAcknowledgedEvent {
+    pub plan_id: u64,
+    pub beneficiary_index: u32,
+    pub acknowledged_at: u64,
 }
 
 #[contract]
@@ -4304,6 +4338,160 @@ impl InheritanceContract {
             return plan.owner == user;
         }
         false
+    }
+
+    // ─── Beneficiary Notification & Acknowledgment ────
+
+    /// Mark a beneficiary as notified on-chain. Only the plan owner or admin can call this.
+    /// Errors: PlanNotFound, InvalidBeneficiaryIndex, Unauthorized, AlreadyApproved (already notified).
+    pub fn notify_beneficiary(
+        env: Env,
+        caller: Address,
+        plan_id: u64,
+        beneficiary_index: u32,
+    ) -> Result<(), InheritanceError> {
+        caller.require_auth();
+
+        let plan = Self::get_plan(&env, plan_id).ok_or(InheritanceError::PlanNotFound)?;
+
+        if caller != plan.owner {
+            Self::require_admin(&env, &caller)?;
+        }
+
+        if beneficiary_index >= plan.beneficiaries.len() {
+            return Err(InheritanceError::InvalidBeneficiaryIndex);
+        }
+
+        let notif_key = DataKey::BeneficiaryNotifiedAt(plan_id, beneficiary_index);
+        if env.storage().instance().has(&notif_key) {
+            return Err(InheritanceError::AlreadyApproved);
+        }
+
+        let now = env.ledger().timestamp();
+        env.storage().instance().set(&notif_key, &now);
+
+        env.events().publish(
+            (symbol_short!("BENEFIC"), symbol_short!("NOTIFY")),
+            BeneficiaryNotifiedEvent {
+                plan_id,
+                beneficiary_index,
+                notified_at: now,
+            },
+        );
+
+        Ok(())
+    }
+
+    /// Called by the beneficiary (via their address) to acknowledge their listing in a plan.
+    /// Requires the beneficiary to have been notified first.
+    /// Errors: PlanNotFound, InvalidBeneficiaryIndex, Unauthorized (not notified yet → ClaimNotAllowedYet), AlreadyApproved (already acknowledged).
+    pub fn acknowledge_beneficiary_status(
+        env: Env,
+        beneficiary_caller: Address,
+        plan_id: u64,
+        beneficiary_index: u32,
+    ) -> Result<(), InheritanceError> {
+        beneficiary_caller.require_auth();
+
+        let plan = Self::get_plan(&env, plan_id).ok_or(InheritanceError::PlanNotFound)?;
+
+        if beneficiary_index >= plan.beneficiaries.len() {
+            return Err(InheritanceError::InvalidBeneficiaryIndex);
+        }
+
+        // Notification must have been sent before acknowledgment is possible
+        let notif_key = DataKey::BeneficiaryNotifiedAt(plan_id, beneficiary_index);
+        if !env.storage().instance().has(&notif_key) {
+            return Err(InheritanceError::ClaimNotAllowedYet);
+        }
+
+        let ack_key = DataKey::BeneficiaryAcknowledgedAt(plan_id, beneficiary_index);
+        if env.storage().instance().has(&ack_key) {
+            return Err(InheritanceError::AlreadyApproved);
+        }
+
+        let now = env.ledger().timestamp();
+        env.storage().instance().set(&ack_key, &now);
+
+        env.events().publish(
+            (symbol_short!("BENEFIC"), symbol_short!("ACK")),
+            BeneficiaryAcknowledgedEvent {
+                plan_id,
+                beneficiary_index,
+                acknowledged_at: now,
+            },
+        );
+
+        Ok(())
+    }
+
+    /// Returns notification and acknowledgment timestamps for a beneficiary, or None if not notified.
+    pub fn get_beneficiary_acknowledgment(
+        env: Env,
+        plan_id: u64,
+        beneficiary_index: u32,
+    ) -> Option<BeneficiaryAcknowledgment> {
+        let notif_key = DataKey::BeneficiaryNotifiedAt(plan_id, beneficiary_index);
+        let notification_sent_at: u64 = env.storage().instance().get(&notif_key)?;
+
+        let ack_key = DataKey::BeneficiaryAcknowledgedAt(plan_id, beneficiary_index);
+        let acknowledged_at: u64 = env
+            .storage()
+            .instance()
+            .get(&ack_key)
+            .unwrap_or(0);
+
+        Some(BeneficiaryAcknowledgment {
+            plan_id,
+            beneficiary_index,
+            acknowledged_at,
+            notification_sent_at,
+        })
+    }
+
+    /// Enable or disable the acknowledgment requirement for a plan.
+    /// When enabled, beneficiaries must acknowledge before they can claim.
+    /// Only the plan owner or admin may call this.
+    pub fn require_acknowledgment(
+        env: Env,
+        caller: Address,
+        plan_id: u64,
+        required: bool,
+    ) -> Result<(), InheritanceError> {
+        caller.require_auth();
+
+        let plan = Self::get_plan(&env, plan_id).ok_or(InheritanceError::PlanNotFound)?;
+
+        if caller != plan.owner {
+            Self::require_admin(&env, &caller)?;
+        }
+
+        env.storage()
+            .instance()
+            .set(&DataKey::RequiresAcknowledgment(plan_id), &required);
+
+        Ok(())
+    }
+
+    /// Returns the indices of beneficiaries who have been notified but have not yet acknowledged.
+    pub fn get_unacknowledged_beneficiaries(
+        env: Env,
+        plan_id: u64,
+    ) -> Result<Vec<u32>, InheritanceError> {
+        let plan = Self::get_plan(&env, plan_id).ok_or(InheritanceError::PlanNotFound)?;
+        let mut unacknowledged: Vec<u32> = Vec::new(&env);
+
+        for idx in 0..plan.beneficiaries.len() {
+            let notif_key = DataKey::BeneficiaryNotifiedAt(plan_id, idx);
+            if env.storage().instance().has(&notif_key) {
+                let ack_key = DataKey::BeneficiaryAcknowledgedAt(plan_id, idx);
+                if !env.storage().instance().has(&ack_key) {
+                    unacknowledged.push_back(idx);
+                }
+            }
+        }
+
+        Ok(unacknowledged)
     }
 
     pub fn upgrade_contract(

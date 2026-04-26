@@ -1,9 +1,21 @@
 #![no_std]
 use soroban_sdk::{
-    contract, contracterror, contractimpl, contracttype, Address, Env, IntoVal, Symbol, Vec,
+    contract, contracterror, contractimpl, contracttype, Address, Env, IntoVal, String, Symbol,
+    Vec,
 };
 
 mod test;
+
+// ─────────────────────────────────────────────────
+// Constants
+// ─────────────────────────────────────────────────
+
+const PROPOSAL_DURATION: u64 = 604_800; // 7 days in seconds
+const QUORUM_THRESHOLD: i128 = 1; // Minimum total votes required to consider a proposal valid
+
+// ─────────────────────────────────────────────────
+// Storage Keys
+// ─────────────────────────────────────────────────
 
 #[contracttype]
 pub enum DataKey {
@@ -15,10 +27,64 @@ pub enum DataKey {
     Delegators(Address),
     DelegationHistory,
     TokenBalance(Address),
+    // Legacy vote storage (kept for enum stability)
     Vote(Address, u32),
     ProposalVotes(u32),
     ControlledContracts,
+    // Proposal governance
+    Proposal(u32),
+    NextProposalId,
+    UserVoteChoice(Address, u32),
 }
+
+// ─────────────────────────────────────────────────
+// Proposal Types
+// ─────────────────────────────────────────────────
+
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum ProposalStatus {
+    Active,
+    Passed,
+    Rejected,
+    Executed,
+    Cancelled,
+}
+
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum VoteChoice {
+    Yes,
+    No,
+    Abstain,
+}
+
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct Proposal {
+    pub id: u32,
+    pub title: String,
+    pub description: String,
+    pub proposer: Address,
+    pub yes_votes: i128,
+    pub no_votes: i128,
+    pub abstain_votes: i128,
+    pub status: ProposalStatus,
+    pub created_at: u64,
+    pub expires_at: u64,
+}
+
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct VoteCount {
+    pub yes_votes: i128,
+    pub no_votes: i128,
+    pub abstain_votes: i128,
+}
+
+// ─────────────────────────────────────────────────
+// Delegation Types
+// ─────────────────────────────────────────────────
 
 #[contracttype]
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -50,6 +116,45 @@ pub enum DelegationAction {
     Redelegated,
 }
 
+// ─────────────────────────────────────────────────
+// Events
+// ─────────────────────────────────────────────────
+
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct ProposalCreatedEvent {
+    pub id: u32,
+    pub proposer: Address,
+    pub expires_at: u64,
+}
+
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct VoteCastEvent {
+    pub proposal_id: u32,
+    pub voter: Address,
+    pub choice: VoteChoice,
+    pub voting_power: i128,
+}
+
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct ProposalExecutedEvent {
+    pub proposal_id: u32,
+    pub executor: Address,
+}
+
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct ProposalCancelledEvent {
+    pub proposal_id: u32,
+    pub proposer: Address,
+}
+
+// ─────────────────────────────────────────────────
+// Errors
+// ─────────────────────────────────────────────────
+
 #[contracterror]
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum GovernanceError {
@@ -62,13 +167,27 @@ pub enum GovernanceError {
     AlreadyDelegated = 7,
     ZeroAmount = 8,
     AlreadyVoted = 9,
+    ProposalNotFound = 10,
+    ProposalExpired = 11,
+    ProposalNotActive = 12,
+    QuorumNotMet = 13,
+    ProposalNotPassed = 14,
+    ProposalAlreadyExecuted = 15,
+    ProposalAlreadyCancelled = 16,
+    NotProposer = 17,
 }
+
+// ─────────────────────────────────────────────────
+// Contract
+// ─────────────────────────────────────────────────
 
 #[contract]
 pub struct GovernanceContract;
 
 #[contractimpl]
 impl GovernanceContract {
+    // ─── Admin / Init ───────────────────────────────
+
     pub fn initialize(
         env: Env,
         admin: Address,
@@ -154,6 +273,8 @@ impl GovernanceContract {
         Ok(())
     }
 
+    // ─── Token Balance ───────────────────────────────
+
     pub fn set_token_balance(env: Env, address: Address, balance: i128) {
         env.storage()
             .instance()
@@ -166,6 +287,8 @@ impl GovernanceContract {
             .get(&DataKey::TokenBalance(address))
             .unwrap_or(0)
     }
+
+    // ─── Delegation ──────────────────────────────────
 
     pub fn delegate_votes(
         env: Env,
@@ -277,7 +400,7 @@ impl GovernanceContract {
     }
 
     pub fn get_voting_power(env: Env, address: Address) -> i128 {
-        // If this address has delegated away, its voting power is 0
+        // Delegated accounts have zero direct voting power
         if env
             .storage()
             .instance()
@@ -298,7 +421,6 @@ impl GovernanceContract {
             .get(&DataKey::Delegators(address.clone()))
             .unwrap_or_else(|| Vec::new(&env));
 
-        // Accumulate delegated balances in a single loop without cloning env
         let mut total_delegated: i128 = 0;
         for delegator_addr in delegators.iter() {
             let bal: i128 = env
@@ -319,15 +441,69 @@ impl GovernanceContract {
             .unwrap_or_else(|| Vec::new(&env))
     }
 
+    // ─── Proposal Governance ─────────────────────────
+
+    /// Create a new governance proposal. Returns the new proposal ID.
+    pub fn create_proposal(
+        env: Env,
+        proposer: Address,
+        title: String,
+        description: String,
+    ) -> Result<u32, GovernanceError> {
+        proposer.require_auth();
+
+        let proposal_id: u32 = env
+            .storage()
+            .instance()
+            .get(&DataKey::NextProposalId)
+            .unwrap_or(1u32);
+
+        let now = env.ledger().timestamp();
+        let expires_at = now + PROPOSAL_DURATION;
+
+        let proposal = Proposal {
+            id: proposal_id,
+            title,
+            description,
+            proposer: proposer.clone(),
+            yes_votes: 0,
+            no_votes: 0,
+            abstain_votes: 0,
+            status: ProposalStatus::Active,
+            created_at: now,
+            expires_at,
+        };
+
+        env.storage()
+            .instance()
+            .set(&DataKey::Proposal(proposal_id), &proposal);
+        env.storage()
+            .instance()
+            .set(&DataKey::NextProposalId, &(proposal_id + 1));
+
+        env.events().publish(
+            (Symbol::new(&env, "PropCreate"), proposer.clone()),
+            ProposalCreatedEvent {
+                id: proposal_id,
+                proposer,
+                expires_at,
+            },
+        );
+
+        Ok(proposal_id)
+    }
+
+    /// Vote on a proposal with yes, no, or abstain.
+    /// Voting power is automatically derived from the voter's token balance plus any delegated balances.
     pub fn vote(
         env: Env,
         voter: Address,
         proposal_id: u32,
-        vote_weight: i128,
+        choice: VoteChoice,
     ) -> Result<(), GovernanceError> {
         voter.require_auth();
 
-        // Check delegation status with a single has() call (cheaper than get())
+        // Delegated voters cannot vote directly
         if env
             .storage()
             .instance()
@@ -336,7 +512,7 @@ impl GovernanceContract {
             return Err(GovernanceError::Unauthorized);
         }
 
-        // Compute voting power inline to avoid redundant storage reads from get_voting_power
+        // Compute voting power inline
         let own_balance: i128 = env
             .storage()
             .instance()
@@ -361,43 +537,209 @@ impl GovernanceContract {
             return Err(GovernanceError::ZeroAmount);
         }
 
-        if vote_weight > voting_power {
-            return Err(GovernanceError::ZeroAmount);
+        // Validate proposal state
+        let mut proposal: Proposal = env
+            .storage()
+            .instance()
+            .get(&DataKey::Proposal(proposal_id))
+            .ok_or(GovernanceError::ProposalNotFound)?;
+
+        let current_time = env.ledger().timestamp();
+        if current_time > proposal.expires_at {
+            return Err(GovernanceError::ProposalExpired);
         }
 
-        let vote_key = DataKey::Vote(voter.clone(), proposal_id);
-        if env.storage().instance().has(&vote_key) {
+        if proposal.status != ProposalStatus::Active {
+            return Err(GovernanceError::ProposalNotActive);
+        }
+
+        // Prevent double voting
+        let vote_choice_key = DataKey::UserVoteChoice(voter.clone(), proposal_id);
+        if env.storage().instance().has(&vote_choice_key) {
             return Err(GovernanceError::AlreadyVoted);
         }
 
-        env.storage().instance().set(&vote_key, &vote_weight);
+        // Record vote and tally
+        env.storage().instance().set(&vote_choice_key, &choice);
 
-        let mut proposal_votes: i128 = env
-            .storage()
-            .instance()
-            .get(&DataKey::ProposalVotes(proposal_id))
-            .unwrap_or(0);
-
-        proposal_votes += vote_weight;
+        if choice == VoteChoice::Yes {
+            proposal.yes_votes += voting_power;
+        } else if choice == VoteChoice::No {
+            proposal.no_votes += voting_power;
+        } else {
+            proposal.abstain_votes += voting_power;
+        }
 
         env.storage()
             .instance()
-            .set(&DataKey::ProposalVotes(proposal_id), &proposal_votes);
+            .set(&DataKey::Proposal(proposal_id), &proposal);
+
+        env.events().publish(
+            (Symbol::new(&env, "VoteCast"), voter.clone()),
+            VoteCastEvent {
+                proposal_id,
+                voter,
+                choice,
+                voting_power,
+            },
+        );
 
         Ok(())
     }
 
+    /// Execute a passed proposal. Anyone can call this after the voting period ends.
+    pub fn execute_proposal(
+        env: Env,
+        executor: Address,
+        proposal_id: u32,
+    ) -> Result<(), GovernanceError> {
+        executor.require_auth();
+
+        let status = Self::evaluate_proposal_status(&env, proposal_id)?;
+        if status != ProposalStatus::Passed {
+            return Err(GovernanceError::ProposalNotPassed);
+        }
+
+        let mut proposal: Proposal = env
+            .storage()
+            .instance()
+            .get(&DataKey::Proposal(proposal_id))
+            .ok_or(GovernanceError::ProposalNotFound)?;
+
+        proposal.status = ProposalStatus::Executed;
+        env.storage()
+            .instance()
+            .set(&DataKey::Proposal(proposal_id), &proposal);
+
+        env.events().publish(
+            (Symbol::new(&env, "PropExec"), executor.clone()),
+            ProposalExecutedEvent {
+                proposal_id,
+                executor,
+            },
+        );
+
+        Ok(())
+    }
+
+    /// Get full proposal details.
+    pub fn get_proposal(env: Env, proposal_id: u32) -> Option<Proposal> {
+        env.storage()
+            .instance()
+            .get(&DataKey::Proposal(proposal_id))
+    }
+
+    /// Get the effective status of a proposal, accounting for voting period expiry.
+    pub fn get_proposal_status(
+        env: Env,
+        proposal_id: u32,
+    ) -> Result<ProposalStatus, GovernanceError> {
+        Self::evaluate_proposal_status(&env, proposal_id)
+    }
+
+    /// Get the vote counts (yes, no, abstain) for a proposal.
+    pub fn get_vote_count(env: Env, proposal_id: u32) -> Result<VoteCount, GovernanceError> {
+        let proposal: Proposal = env
+            .storage()
+            .instance()
+            .get(&DataKey::Proposal(proposal_id))
+            .ok_or(GovernanceError::ProposalNotFound)?;
+        Ok(VoteCount {
+            yes_votes: proposal.yes_votes,
+            no_votes: proposal.no_votes,
+            abstain_votes: proposal.abstain_votes,
+        })
+    }
+
+    /// Get the vote choice of a specific voter on a proposal.
+    pub fn get_user_vote(env: Env, voter: Address, proposal_id: u32) -> Option<VoteChoice> {
+        env.storage()
+            .instance()
+            .get(&DataKey::UserVoteChoice(voter, proposal_id))
+    }
+
+    /// Cancel an active proposal. Only the original proposer can cancel.
+    pub fn cancel_proposal(
+        env: Env,
+        caller: Address,
+        proposal_id: u32,
+    ) -> Result<(), GovernanceError> {
+        caller.require_auth();
+
+        let mut proposal: Proposal = env
+            .storage()
+            .instance()
+            .get(&DataKey::Proposal(proposal_id))
+            .ok_or(GovernanceError::ProposalNotFound)?;
+
+        if proposal.proposer != caller {
+            return Err(GovernanceError::NotProposer);
+        }
+
+        if proposal.status != ProposalStatus::Active {
+            return Err(GovernanceError::ProposalNotActive);
+        }
+
+        proposal.status = ProposalStatus::Cancelled;
+        env.storage()
+            .instance()
+            .set(&DataKey::Proposal(proposal_id), &proposal);
+
+        env.events().publish(
+            (Symbol::new(&env, "PropCancel"), caller.clone()),
+            ProposalCancelledEvent {
+                proposal_id,
+                proposer: caller,
+            },
+        );
+
+        Ok(())
+    }
+
+    /// Returns yes_votes for a proposal (backward-compatible helper).
     pub fn get_proposal_votes(env: Env, proposal_id: u32) -> i128 {
         env.storage()
             .instance()
-            .get(&DataKey::ProposalVotes(proposal_id))
+            .get::<DataKey, Proposal>(&DataKey::Proposal(proposal_id))
+            .map(|p| p.yes_votes)
             .unwrap_or(0)
     }
 
+    /// Returns true if the voter has already cast a vote on this proposal.
     pub fn has_voted(env: Env, voter: Address, proposal_id: u32) -> bool {
         env.storage()
             .instance()
-            .has(&DataKey::Vote(voter, proposal_id))
+            .has(&DataKey::UserVoteChoice(voter, proposal_id))
+    }
+
+    // ─── Internal Helpers ────────────────────────────
+
+    fn evaluate_proposal_status(
+        env: &Env,
+        proposal_id: u32,
+    ) -> Result<ProposalStatus, GovernanceError> {
+        let proposal: Proposal = env
+            .storage()
+            .instance()
+            .get(&DataKey::Proposal(proposal_id))
+            .ok_or(GovernanceError::ProposalNotFound)?;
+
+        if proposal.status != ProposalStatus::Active {
+            return Ok(proposal.status);
+        }
+
+        let now = env.ledger().timestamp();
+        if now <= proposal.expires_at {
+            return Ok(ProposalStatus::Active);
+        }
+
+        // Voting period ended — evaluate result against quorum and majority
+        let total_votes = proposal.yes_votes + proposal.no_votes + proposal.abstain_votes;
+        if total_votes >= QUORUM_THRESHOLD && proposal.yes_votes > proposal.no_votes {
+            Ok(ProposalStatus::Passed)
+        } else {
+            Ok(ProposalStatus::Rejected)
+        }
     }
 
     fn check_circular_delegation(
@@ -454,7 +796,6 @@ impl GovernanceContract {
             .get(&key)
             .unwrap_or_else(|| Vec::new(env));
 
-        // Build filtered list, skipping the removed delegator
         let mut new_delegators: Vec<Address> = Vec::new(env);
         for d in delegators.iter() {
             if d != *delegator {
@@ -463,14 +804,13 @@ impl GovernanceContract {
         }
 
         if new_delegators.is_empty() {
-            // Remove the key entirely when empty – saves storage rent
             env.storage().instance().remove(&key);
         } else {
             env.storage().instance().set(&key, &new_delegators);
         }
     }
 
-    // ─── Cross-Contract Integration ──────────────────────────────
+    // ─── Cross-Contract Integration ──────────────────
 
     pub fn add_controlled_contract(
         env: Env,
@@ -516,7 +856,6 @@ impl GovernanceContract {
     ) -> Result<soroban_sdk::Val, GovernanceError> {
         Self::check_admin(&env)?;
 
-        // Verify it's a controlled contract
         let contracts = Self::get_controlled_contracts(env.clone());
         if !contracts.contains(&contract) {
             return Err(GovernanceError::Unauthorized);
@@ -540,14 +879,12 @@ impl GovernanceContract {
     ) -> Result<(), GovernanceError> {
         Self::check_admin(&env)?;
 
-        // Verify it's a controlled contract
         let contracts = Self::get_controlled_contracts(env.clone());
         if !contracts.contains(&contract) {
             return Err(GovernanceError::Unauthorized);
         }
 
         let mut args: Vec<soroban_sdk::Val> = Vec::new(&env);
-        // We pass the GovernanceContract's own address as the admin of the child contract
         args.push_back(env.current_contract_address().into_val(&env));
         args.push_back(new_wasm_hash.into_val(&env));
 

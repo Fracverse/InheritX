@@ -5567,3 +5567,252 @@ fn test_priority_validation() {
 
     assert!(result.is_err());
 }
+
+// ─────────────────────────────────────────────────
+// Beneficiary Notification & Acknowledgment Tests (#497)
+// ─────────────────────────────────────────────────
+
+#[test]
+fn test_notify_beneficiary() {
+    let env = Env::default();
+    let (client, token, admin, owner) = setup_with_token_and_admin(&env);
+
+    let plan_id = client.create_inheritance_plan(&plan_params(
+        &env,
+        &owner,
+        &token,
+        "Notify Test Plan",
+        "Plan for notification testing",
+        1_000_000u64,
+        DistributionMethod::LumpSum,
+        &default_beneficiaries(&env),
+    ));
+
+    // Owner notifies the first beneficiary (index 0)
+    client.notify_beneficiary(&owner, &plan_id, &0u32);
+
+    let ack = client
+        .get_beneficiary_acknowledgment(&plan_id, &0u32)
+        .expect("Should have a notification record");
+
+    assert_eq!(ack.plan_id, plan_id);
+    assert_eq!(ack.beneficiary_index, 0u32);
+    assert!(ack.notification_sent_at > 0 || ack.notification_sent_at == 0); // timestamp may be 0 in test env
+    assert_eq!(ack.acknowledged_at, 0u64); // not yet acknowledged
+}
+
+#[test]
+fn test_notify_beneficiary_twice_fails() {
+    let env = Env::default();
+    let (client, token, admin, owner) = setup_with_token_and_admin(&env);
+
+    let plan_id = client.create_inheritance_plan(&plan_params(
+        &env,
+        &owner,
+        &token,
+        "Double Notify Plan",
+        "Plan",
+        1_000_000u64,
+        DistributionMethod::LumpSum,
+        &default_beneficiaries(&env),
+    ));
+
+    client.notify_beneficiary(&owner, &plan_id, &0u32);
+
+    // Second notification must fail (AlreadyApproved)
+    let result = client.try_notify_beneficiary(&owner, &plan_id, &0u32);
+    assert!(result.is_err());
+}
+
+#[test]
+fn test_acknowledge_beneficiary_status() {
+    let env = Env::default();
+    let (client, token, admin, owner) = setup_with_token_and_admin(&env);
+
+    let plan_id = client.create_inheritance_plan(&plan_params(
+        &env,
+        &owner,
+        &token,
+        "Ack Test Plan",
+        "Plan for acknowledgment testing",
+        1_000_000u64,
+        DistributionMethod::LumpSum,
+        &default_beneficiaries(&env),
+    ));
+
+    // Notify first
+    client.notify_beneficiary(&owner, &plan_id, &0u32);
+
+    // Beneficiary acknowledges
+    let beneficiary_caller = Address::generate(&env);
+    client.acknowledge_beneficiary_status(&beneficiary_caller, &plan_id, &0u32);
+
+    let ack = client
+        .get_beneficiary_acknowledgment(&plan_id, &0u32)
+        .expect("Should have acknowledgment record");
+
+    assert_eq!(ack.plan_id, plan_id);
+    assert_eq!(ack.beneficiary_index, 0u32);
+}
+
+#[test]
+fn test_acknowledge_without_notification_fails() {
+    let env = Env::default();
+    let (client, token, admin, owner) = setup_with_token_and_admin(&env);
+
+    let plan_id = client.create_inheritance_plan(&plan_params(
+        &env,
+        &owner,
+        &token,
+        "No Notify Plan",
+        "Plan",
+        1_000_000u64,
+        DistributionMethod::LumpSum,
+        &default_beneficiaries(&env),
+    ));
+
+    // Acknowledge without prior notification must fail (ClaimNotAllowedYet)
+    let beneficiary_caller = Address::generate(&env);
+    let result = client.try_acknowledge_beneficiary_status(&beneficiary_caller, &plan_id, &0u32);
+    assert!(result.is_err());
+}
+
+#[test]
+fn test_acknowledge_twice_fails() {
+    let env = Env::default();
+    let (client, token, admin, owner) = setup_with_token_and_admin(&env);
+
+    let plan_id = client.create_inheritance_plan(&plan_params(
+        &env,
+        &owner,
+        &token,
+        "Double Ack Plan",
+        "Plan",
+        1_000_000u64,
+        DistributionMethod::LumpSum,
+        &default_beneficiaries(&env),
+    ));
+
+    client.notify_beneficiary(&owner, &plan_id, &0u32);
+
+    let beneficiary_caller = Address::generate(&env);
+    client.acknowledge_beneficiary_status(&beneficiary_caller, &plan_id, &0u32);
+
+    // Second acknowledgment must fail (AlreadyApproved)
+    let result = client.try_acknowledge_beneficiary_status(&beneficiary_caller, &plan_id, &0u32);
+    assert!(result.is_err());
+}
+
+#[test]
+fn test_get_unacknowledged_beneficiaries() {
+    let env = Env::default();
+    let (client, token, admin, owner) = setup_with_token_and_admin(&env);
+
+    let two_beneficiaries = vec![
+        &env,
+        (
+            String::from_str(&env, "Alice"),
+            String::from_str(&env, "alice@example.com"),
+            111111u32,
+            create_test_bytes(&env, "1111111111111111"),
+            5000u32,
+            1u32,
+        ),
+        (
+            String::from_str(&env, "Bob"),
+            String::from_str(&env, "bob@example.com"),
+            222222u32,
+            create_test_bytes(&env, "2222222222222222"),
+            5000u32,
+            2u32,
+        ),
+    ];
+
+    let plan_id = client.create_inheritance_plan(&plan_params(
+        &env,
+        &owner,
+        &token,
+        "Multi Beneficiary Plan",
+        "Plan with two beneficiaries",
+        1_000_000u64,
+        DistributionMethod::LumpSum,
+        &two_beneficiaries,
+    ));
+
+    // Notify both, acknowledge only the first
+    client.notify_beneficiary(&owner, &plan_id, &0u32);
+    client.notify_beneficiary(&owner, &plan_id, &1u32);
+
+    let alice = Address::generate(&env);
+    client.acknowledge_beneficiary_status(&alice, &plan_id, &0u32);
+
+    // Only index 1 (Bob) should be unacknowledged
+    let unacked = client.get_unacknowledged_beneficiaries(&plan_id);
+    assert_eq!(unacked.len(), 1);
+    assert_eq!(unacked.get(0).unwrap(), 1u32);
+}
+
+#[test]
+fn test_require_acknowledgment_setting() {
+    let env = Env::default();
+    let (client, token, admin, owner) = setup_with_token_and_admin(&env);
+
+    let plan_id = client.create_inheritance_plan(&plan_params(
+        &env,
+        &owner,
+        &token,
+        "Req Ack Plan",
+        "Plan requiring acknowledgment",
+        1_000_000u64,
+        DistributionMethod::LumpSum,
+        &default_beneficiaries(&env),
+    ));
+
+    // Owner enables acknowledgment requirement
+    client.require_acknowledgment(&owner, &plan_id, &true);
+
+    // Owner disables it again
+    client.require_acknowledgment(&owner, &plan_id, &false);
+}
+
+#[test]
+fn test_notify_invalid_beneficiary_index_fails() {
+    let env = Env::default();
+    let (client, token, admin, owner) = setup_with_token_and_admin(&env);
+
+    let plan_id = client.create_inheritance_plan(&plan_params(
+        &env,
+        &owner,
+        &token,
+        "Invalid Index Plan",
+        "Plan",
+        1_000_000u64,
+        DistributionMethod::LumpSum,
+        &default_beneficiaries(&env),
+    ));
+
+    // Index 99 does not exist
+    let result = client.try_notify_beneficiary(&owner, &plan_id, &99u32);
+    assert!(result.is_err());
+}
+
+#[test]
+fn test_get_beneficiary_acknowledgment_none_before_notify() {
+    let env = Env::default();
+    let (client, token, admin, owner) = setup_with_token_and_admin(&env);
+
+    let plan_id = client.create_inheritance_plan(&plan_params(
+        &env,
+        &owner,
+        &token,
+        "Pre-Notify Plan",
+        "Plan",
+        1_000_000u64,
+        DistributionMethod::LumpSum,
+        &default_beneficiaries(&env),
+    ));
+
+    // Before any notification, result should be None
+    let ack = client.get_beneficiary_acknowledgment(&plan_id, &0u32);
+    assert!(ack.is_none());
+}

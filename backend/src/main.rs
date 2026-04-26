@@ -1,6 +1,6 @@
 use inheritx_backend::{
     create_app, db, error_tracking, metrics, telemetry, Config, LegacyMessageDeliveryService,
-    MessageKeyService,
+    LendingDataWarehouseService, MessageKeyService,
 };
 use std::net::SocketAddr;
 use std::sync::Arc;
@@ -75,6 +75,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         inheritx_backend::LendingNotificationService::new(db_pool.clone()),
     );
     lending_notification_service.start();
+
+    // Start lending data warehouse snapshot job (Issue #256).
+    let lending_data_warehouse = Arc::new(LendingDataWarehouseService::new(db_pool.clone()));
+    lending_data_warehouse.start();
 
     // Start legacy message delivery worker.
     let legacy_message_delivery_service =
