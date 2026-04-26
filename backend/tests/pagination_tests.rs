@@ -169,7 +169,6 @@ async fn due_plans_endpoint_supports_page_and_limit() {
     let user_id = Uuid::new_v4();
     create_user(&ctx.pool, user_id).await;
 
-    let now = chrono::Utc::now();
     for i in 0..13 {
         sqlx::query(
             r#"
