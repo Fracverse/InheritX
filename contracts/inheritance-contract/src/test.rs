@@ -5463,7 +5463,11 @@ fn test_add_legal_hold_success() {
     let (client, _token, admin, owner) = setup_with_token_and_admin(&env);
     let plan_id = plan_with_partial_alloc(&env, &client, &_token, &owner);
 
-    client.add_legal_hold(&admin, &plan_id, &String::from_str(&env, "Court order #123"));
+    client.add_legal_hold(
+        &admin,
+        &plan_id,
+        &String::from_str(&env, "Court order #123"),
+    );
 }
 
 #[test]
@@ -5472,7 +5476,11 @@ fn test_add_legal_hold_twice_fails() {
     let (client, _token, admin, owner) = setup_with_token_and_admin(&env);
     let plan_id = plan_with_partial_alloc(&env, &client, &_token, &owner);
 
-    client.add_legal_hold(&admin, &plan_id, &String::from_str(&env, "Court order #123"));
+    client.add_legal_hold(
+        &admin,
+        &plan_id,
+        &String::from_str(&env, "Court order #123"),
+    );
     let result = client.try_add_legal_hold(&admin, &plan_id, &String::from_str(&env, "order2"));
     assert!(result.is_err());
 }
