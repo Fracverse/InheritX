@@ -6,6 +6,7 @@ use axum::{
 };
 use inheritx_backend::auth::{AdminClaims, UserClaims};
 use jsonwebtoken::{encode, EncodingKey, Header};
+use rust_decimal::prelude::FromPrimitive;
 use serde_json::json;
 use tower::ServiceExt;
 use uuid::Uuid;
