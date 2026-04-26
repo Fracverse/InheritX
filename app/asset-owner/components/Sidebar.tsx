@@ -14,7 +14,7 @@ import SecurityIcon from "@/app/svg/SecurityIcon";
 import SwapIcon from "@/app/svg/SwapIcon";
 
 import EmergencyIcon from "@/app/svg/EmergencyIcon";
-import { MessageSquare } from "lucide-react";
+import { MessageSquare, TrendingUp } from "lucide-react";
 
 const normalizePath = (path: string) => {
   if (path !== "/" && path.endsWith("/")) {
