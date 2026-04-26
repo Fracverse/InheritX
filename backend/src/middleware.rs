@@ -73,7 +73,9 @@ impl KeyExtractor for RateLimitKeyExtractor {
                     .map(|addr| addr.ip().to_string())
             });
 
-        ip_key.ok_or(GovernorError::UnableToExtractKey)
+        // Some tests and internal service calls do not populate socket/connect
+        // metadata. Falling back avoids converting auth failures into 400s.
+        Ok(ip_key.unwrap_or_else(|| "unknown-client".to_string()))
     }
 }
 
