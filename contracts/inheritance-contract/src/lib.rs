@@ -665,6 +665,31 @@ pub struct BeneficiaryFrozenEvent {
     pub frozen_at: u64,
 }
 
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct BeneficiaryNotifiedEvent {
+    pub plan_id: u64,
+    pub beneficiary_index: u32,
+    pub notified_at: u64,
+}
+
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct BeneficiaryAcknowledgedEvent {
+    pub plan_id: u64,
+    pub beneficiary_index: u32,
+    pub acknowledged_at: u64,
+}
+
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct BeneficiaryAcknowledgment {
+    pub plan_id: u64,
+    pub beneficiary_index: u32,
+    pub notification_sent_at: u64,
+    pub acknowledged_at: u64,
+}
+
 #[contract]
 pub struct InheritanceContract;
 
