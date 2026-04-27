@@ -244,6 +244,7 @@ impl ComplianceEngine {
 mod tests {
     use super::*;
     use rust_decimal_macros::dec;
+    use sqlx::PgPool;
 
     #[tokio::test]
     async fn test_compliance_engine_new() {
@@ -253,4 +254,11 @@ mod tests {
         assert_eq!(engine.velocity_window_mins, 15);
         assert_eq!(engine.volume_threshold, dec!(50000));
     }
+
+    // Additional integration tests would go here
+    // Test velocity detection logic
+    // Test volume threshold detection
+    // Test sanctions screening integration
+    // Test risk scoring algorithms
+    // Add compliance violation scenarios
 }
