@@ -1,0 +1,116 @@
+{
+  "common": {
+    "loading": "Chargement...",
+    "error": "Une erreur s'est produite",
+    "retry": "Réessayer",
+    "cancel": "Annuler",
+    "confirm": "Confirmer",
+    "save": "Enregistrer",
+    "delete": "Supprimer",
+    "edit": "Modifier",
+    "close": "Fermer",
+    "back": "Retour",
+    "next": "Suivant",
+    "submit": "Soumettre",
+    "connect": "Connecter",
+    "disconnect": "Déconnecter",
+    "search": "Rechercher",
+    "filter": "Filtrer",
+    "noData": "Aucune donnée disponible"
+  },
+  "nav": {
+    "home": "Accueil",
+    "plans": "Plans",
+    "portfolio": "Portefeuille",
+    "lending": "Prêt",
+    "claim": "Réclamation",
+    "emergency": "Urgence",
+    "security": "Sécurité",
+    "swap": "Échange",
+    "messages": "Messages",
+    "inactivity": "Inactivité"
+  },
+  "wallet": {
+    "connect": "Connecter le portefeuille",
+    "connecting": "Connexion...",
+    "connected": "Connecté",
+    "disconnect": "Déconnecter",
+    "selectWallet": "Sélectionnez un portefeuille",
+    "description": "Connectez votre portefeuille pour commencer avec InheritX"
+  },
+  "kyc": {
+    "title": "Vérification KYC",
+    "pending": "En attente",
+    "submitted": "Soumis",
+    "approved": "Approuvé",
+    "rejected": "Rejeté",
+    "submit": "Soumettre KYC",
+    "submitting": "Soumission...",
+    "fullName": "Nom complet",
+    "email": "E-mail",
+    "dateOfBirth": "Date de naissance",
+    "nationality": "Nationalité",
+    "idType": "Type de pièce d'identité",
+    "idNumber": "Numéro d'identité",
+    "expiryDate": "Date d'expiration",
+    "streetAddress": "Adresse",
+    "city": "Ville",
+    "country": "Pays",
+    "postalCode": "Code postal"
+  },
+  "plans": {
+    "title": "Mes Plans",
+    "createPlan": "Créer un plan",
+    "noPlan": "Aucun plan pour l'instant",
+    "active": "Actif",
+    "completed": "Terminé",
+    "pending": "En attente",
+    "expired": "Expiré",
+    "assets": "Actifs",
+    "beneficiaries": "Bénéficiaires",
+    "trigger": "Déclencheur",
+    "status": "Statut"
+  },
+  "lending": {
+    "title": "Pool de prêt",
+    "deposit": "Déposer",
+    "withdraw": "Retirer",
+    "totalDeposits": "Total des dépôts",
+    "totalBorrowed": "Total emprunté",
+    "utilizationRate": "Taux d'utilisation",
+    "currentApy": "APY actuel",
+    "yourBalance": "Votre solde",
+    "totalEarnings": "Gains totaux",
+    "depositHistory": "Historique des dépôts"
+  },
+  "claim": {
+    "title": "Réclamations",
+    "submitClaim": "Soumettre une réclamation",
+    "claimCode": "Code de réclamation",
+    "activities": "Activités",
+    "noClaims": "Aucune réclamation trouvée"
+  },
+  "emergency": {
+    "title": "Accès d'urgence",
+    "activate": "Activer l'urgence",
+    "revoke": "Révoquer l'accès",
+    "contacts": "Contacts d'urgence",
+    "guardians": "Gardiens",
+    "auditLog": "Journal d'audit",
+    "status": "Statut"
+  },
+  "dashboard": {
+    "goodMorning": "Bonjour",
+    "activePlans": "Plans actifs",
+    "guardians": "Gardiens",
+    "createdPlans": "Plans créés",
+    "recentActivity": "Activité récente"
+  },
+  "errors": {
+    "networkError": "Erreur réseau. Vérifiez votre connexion.",
+    "authRequired": "Authentification requise.",
+    "notFound": "Ressource introuvable.",
+    "serverError": "Erreur serveur. Veuillez réessayer.",
+    "unauthorized": "Vous n'êtes pas autorisé à effectuer cette action."
+  }
+}

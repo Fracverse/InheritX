@@ -1,0 +1,122 @@
+   Compiling inheritance-contract v0.0.0 (/home/jahrulez/Desktop/oss/testers-web/InheritX/contracts/inheritance-contract)
+error[E0277]: the trait bound `u8: TryFromVal<Env, soroban_sdk::Val>` is not satisfied
+   --> inheritance-contract/src/message_test.rs:34:13
+    |
+ 34 |             vec![env, 1u8].into_val(env), // dummy bytes
+    |             ^^^^^^^^^^^^^^
+    |             |
+    |             the trait `TryFromVal<Env, soroban_sdk::Val>` is not implemented for `u8`
+    |             required by a bound introduced by this call
+    |
+    = help: the following other types implement trait `TryFromVal<E, V>`:
+              `i128` implements `TryFromVal<E, soroban_sdk::Val>`
+              `i128` implements `TryFromVal<Env, i128>`
+              `i32` implements `TryFromVal<E, soroban_sdk::Val>`
+              `i32` implements `TryFromVal<Env, i32>`
+              `i64` implements `TryFromVal<E, soroban_sdk::Val>`
+              `i64` implements `TryFromVal<Env, i64>`
+              `u128` implements `TryFromVal<E, soroban_sdk::Val>`
+              `u128` implements `TryFromVal<Env, u128>`
+            and 7 others
+note: required by a bound in `soroban_sdk::Vec::<T>::from_array`
+   --> /home/jahrulez/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/soroban-sdk-21.7.7/src/vec.rs:349:28
+    |
+349 |     T: IntoVal<Env, Val> + TryFromVal<Env, Val>,
+    |                            ^^^^^^^^^^^^^^^^^^^^ required by this bound in `Vec::<T>::from_array`
+...
+359 |     pub fn from_array<const N: usize>(env: &Env, items: [T; N]) -> Ve...
+    |            ---------- required by a bound in this associated function
+    = note: this error originates in the macro `vec` (in Nightly builds, run with -Z macro-backtrace for more info)
+
+error[E0277]: the trait bound `soroban_sdk::Val: TryFromVal<Env, u8>` is not satisfied
+   --> inheritance-contract/src/message_test.rs:34:13
+    |
+ 34 |             vec![env, 1u8].into_val(env), // dummy bytes
+    |             ^^^^^^^^^^^^^^
+    |             |
+    |             the trait `TryFromVal<Env, u8>` is not implemented for `soroban_sdk::Val`
+    |             required by a bound introduced by this call
+    |
+    = help: the following other types implement trait `TryFromVal<E, V>`:
+              `soroban_sdk::Val` implements `TryFromVal<E, &[u8]>`
+              `soroban_sdk::Val` implements `TryFromVal<E, &str>`
+              `soroban_sdk::Val` implements `TryFromVal<E, ()>`
+              `soroban_sdk::Val` implements `TryFromVal<E, (T0, T1)>`
+              `soroban_sdk::Val` implements `TryFromVal<E, (T0, T1, T2)>`
+              `soroban_sdk::Val` implements `TryFromVal<E, (T0, T1, T2, T3)>`
+              `soroban_sdk::Val` implements `TryFromVal<E, (T0, T1, T2, T3, T4)>`
+              `soroban_sdk::Val` implements `TryFromVal<E, (T0, T1, T2, T3, T4, T5)>`
+            and 160 others
+    = note: required for `soroban_sdk::Val` to implement `soroban_sdk::FromVal<Env, u8>`
+    = note: required for `u8` to implement `soroban_sdk::IntoVal<Env, soroban_sdk::Val>`
+note: required by a bound in `soroban_sdk::Vec::<T>::from_array`
+   --> /home/jahrulez/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/soroban-sdk-21.7.7/src/vec.rs:349:8
+    |
+349 |     T: IntoVal<Env, Val> + TryFromVal<Env, Val>,
+    |        ^^^^^^^^^^^^^^^^^ required by this bound in `Vec::<T>::from_array`
+...
+359 |     pub fn from_array<const N: usize>(env: &Env, items: [T; N]) -> Ve...
+    |            ---------- required by a bound in this associated function
+    = note: the full name for the type has been written to '/home/jahrulez/Desktop/oss/testers-web/InheritX/contracts/target/debug/deps/inheritance_contract-6356ab242d7e5e95.long-type-477773247176039955.txt'
+    = note: consider using `--verbose` to print the full type name to the console
+    = note: this error originates in the macro `vec` (in Nightly builds, run with -Z macro-backtrace for more info)
+
+error[E0277]: the trait bound `Bytes: TryFromVal<Env, Vec<u8>>` is not satisfied
+  --> inheritance-contract/src/message_test.rs:34:37
+   |
+34 |             vec![env, 1u8].into_val(env), // dummy bytes
+   |                            -------- ^^^ unsatisfied trait bound
+   |                            |
+   |                            required by a bound introduced by this call
+   |
+   = help: the trait `TryFromVal<Env, soroban_sdk::Vec<u8>>` is not implemented for `soroban_sdk::Bytes`
+   = help: the following other types implement trait `TryFromVal<E, V>`:
+             `soroban_sdk::Bytes` implements `TryFromVal<Env, &[u8]>`
+             `soroban_sdk::Bytes` implements `TryFromVal<Env, &str>`
+             `soroban_sdk::Bytes` implements `TryFromVal<Env, [u8; N]>`
+             `soroban_sdk::Bytes` implements `TryFromVal<Env, BytesObject>`
+             `soroban_sdk::Bytes` implements `TryFromVal<Env, soroban_sdk::Bytes>`
+             `soroban_sdk::Bytes` implements `TryFromVal<Env, soroban_sdk::BytesN<N>>`
+             `soroban_sdk::Bytes` implements `TryFromVal<Env, soroban_sdk::Val>`
+             `soroban_sdk::Bytes` implements `TryFromVal<Env, ArbitraryBytes>`
+             `soroban_sdk::Bytes` implements `TryFromVal<Env, soroban_sdk::xdr::ScVal>`
+   = note: required for `soroban_sdk::Bytes` to implement `soroban_sdk::FromVal<Env, soroban_sdk::Vec<u8>>`
+   = note: required for `soroban_sdk::Vec<u8>` to implement `soroban_sdk::IntoVal<Env, soroban_sdk::Bytes>`
+   = note: the full name for the type has been written to '/home/jahrulez/Desktop/oss/testers-web/InheritX/contracts/target/debug/deps/inheritance_contract-6356ab242d7e5e95.long-type-708601758637369663.txt'
+   = note: consider using `--verbose` to print the full type name to the console
+
+warning: unused variable: `client`
+  --> inheritance-contract/src/message_test.rs:61:10
+   |
+61 |     let (client, owner, contract_id) = setup_test(&env);
+   |          ^^^^^^ help: if this is intentional, prefix it with an underscore: `_client`
+   |
+   = note: `#[warn(unused_variables)]` (part of `#[warn(unused)]`) on by default
+
+warning: unused variable: `owner`
+  --> inheritance-contract/src/message_test.rs:61:18
+   |
+61 |     let (client, owner, contract_id) = setup_test(&env);
+   |                  ^^^^^ help: if this is intentional, prefix it with an underscore: `_owner`
+
+warning: unused variable: `contract_id`
+  --> inheritance-contract/src/message_test.rs:61:25
+   |
+61 |     let (client, owner, contract_id) = setup_test(&env);
+   |                         ^^^^^^^^^^^ help: if this is intentional, prefix it with an underscore: `_contract_id`
+
+warning: unused variable: `alice_hash`
+   --> inheritance-contract/src/message_test.rs:246:9
+    |
+246 |     let alice_hash: BytesN<32> = env.crypto().sha256(&alice_bytes).in...
+    |         ^^^^^^^^^^ help: if this is intentional, prefix it with an underscore: `_alice_hash`
+
+warning: unused variable: `env`
+   --> inheritance-contract/src/message_test.rs:294:16
+    |
+294 | fn contract_id(env: &Env, client: &InheritanceContractClient<'_>) -> ...
+    |                ^^^ help: if this is intentional, prefix it with an underscore: `_env`
+
+For more information about this error, try `rustc --explain E0277`.
+warning: `inheritance-contract` (lib test) generated 5 warnings
+error: could not compile `inheritance-contract` (lib test) due to 3 previous errors; 5 warnings emitted

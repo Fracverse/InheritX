@@ -1,12 +1,18 @@
 [workspace]
 resolver = "2"
 members = [
+  "access-control",
   "example-contract",
-  "inheritance-contract",
+  "inheritance-contract", "lending-contract",
+  "borrowing-contract",
+  "mock-token",
+  "governance-contract",
+  "loan-nft",
 ]
 
 [workspace.dependencies]
 soroban-sdk = "21.0.0"
+access-control = { path = "access-control" }
 
 [profile.release]
 opt-level = "z"

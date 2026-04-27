@@ -6,6 +6,7 @@ import {
   WalletNetwork,
   allowAllModules,
 } from "@creit.tech/stellar-wallets-kit";
+import { useRouter } from "next/navigation";
 
 interface WalletContextType {
   connect: (moduleId: string) => Promise<void>;
@@ -25,6 +26,7 @@ const WalletContext = createContext<WalletContextType | undefined>(undefined);
 
 export const useWallet = () => {
   const context = useContext(WalletContext);
+
   if (!context) {
     throw new Error("useWallet must be used within a WalletProvider");
   }
@@ -37,6 +39,7 @@ export const WalletProvider = ({ children }: { children: React.ReactNode }) => {
   const [selectedWalletId, setSelectedWalletId] = useState<string | null>(null);
   const [kit, setKit] = useState<StellarWalletsKit | null>(null);
   const [isModalOpen, setIsModalOpen] = useState(false);
+  const router = useRouter();
 
   // Initialize kit on mount
   useEffect(() => {
@@ -90,6 +93,7 @@ export const WalletProvider = ({ children }: { children: React.ReactNode }) => {
       localStorage.setItem("inheritx_wallet_address", address);
       localStorage.setItem("inheritx_wallet_id", moduleId);
       setIsModalOpen(false);
+      router.push("/asset-owner");
     } catch (error) {
       console.error("Connection failed:", error);
       // Handle specific errors (user rejected, extension not found)

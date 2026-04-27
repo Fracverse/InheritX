@@ -1,0 +1,15 @@
+error: this file contains an unclosed delimiter
+   --> /home/edohwares/Desktop/Room/drips/InheritX/backend/src/interest_reconciliation.rs:192:3
+    |
+ 16 | impl InterestReconciliationService {
+    |                                    - unclosed delimiter
+...
+ 44 |     pub async fn reconcile_yields(&self) -> Result<(), ApiError> {
+    |                                                                  - this delimiter might not be properly closed...
+...
+192 | }
+    | -^
+    | |
+    | ...as it matches this but it has different indentation
+
+Error writing files: failed to resolve mod `interest_reconciliation`: cannot parse /home/edohwares/Desktop/Room/drips/InheritX/backend/src/interest_reconciliation.rs

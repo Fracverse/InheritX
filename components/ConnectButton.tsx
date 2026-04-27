@@ -4,6 +4,8 @@ import { useWallet } from "../context/WalletContext";
 import { motion, AnimatePresence } from "framer-motion";
 import { useState, useRef, useEffect } from "react";
 import { LogOut } from "lucide-react";
+import { useRouter } from "next/navigation";
+import { formatAddress } from "@/util/address";
 
 const ArrowDownIcon = () => (
   <svg
@@ -21,18 +23,15 @@ const ArrowDownIcon = () => (
   </svg>
 );
 
-export function ConnectButton() {
+export function ConnectButton({ targetUI }: { targetUI?: string }) {
   const { isConnected, address, openModal, disconnect } = useWallet();
   const [dropdownOpen, setDropdownOpen] = useState(false);
   const dropdownRef = useRef<HTMLDivElement>(null);
-
-  const formatAddress = (addr: string) => {
-    if (!addr) return "";
-    return `${addr.slice(0, 4)}...${addr.slice(-4)}`;
-  };
+  const router = useRouter();
 
   const handleDisconnect = async () => {
     await disconnect();
+    router.push("/");
     setDropdownOpen(false);
   };
 
@@ -53,20 +52,35 @@ export function ConnectButton() {
   if (isConnected && address) {
     return (
       <div className="relative" ref={dropdownRef}>
-        <button
-          onClick={() => setDropdownOpen(!dropdownOpen)}
-          className="flex items-center gap-3 px-6 py-3 rounded-s-2xl bg-[#0F1621] border border-[#1e293b] hover:border-[#33C5E0]/50 transition-all group pointer-events-auto"
-        >
-          <div className="w-2 h-2 rounded-full bg-[#33C5E0] shadow-[0_0_8px_#33C5E0]" />
-          <span className="text-[#33C5E0] font-medium tracking-wide">
-            {formatAddress(address)}
-          </span>
-          <div
-            className={`transition-transform duration-200 ${dropdownOpen ? "rotate-180" : ""}`}
+        {targetUI === "dashboard" ? (
+          <button
+            className="p-4 rounded-l-full flex items-center gap-x-[6px] bg-[#1C252A] hidden md:flex"
+            onClick={() => setDropdownOpen(!dropdownOpen)}
           >
-            <ArrowDownIcon />
-          </div>
-        </button>
+            <img src="/user-avatar.svg" alt="" />
+
+            <span className="leading-6 text-[#92A5A8]">
+              {formatAddress(address || "")}
+            </span>
+          </button>
+        ) : (
+          <button
+            onClick={() => setDropdownOpen(!dropdownOpen)}
+            className="flex items-center gap-3 px-6 py-3 rounded-s-2xl bg-[#0F1621] border border-[#1e293b] hover:border-[#33C5E0]/50 transition-all group pointer-events-auto"
+          >
+            <div className="w-2 h-2 rounded-full bg-[#33C5E0] shadow-[0_0_8px_#33C5E0]" />
+
+            <span className="text-[#33C5E0] font-medium tracking-wide">
+              {formatAddress(address)}
+            </span>
+
+            <div
+              className={`transition-transform duration-200 ${dropdownOpen ? "rotate-180" : ""}`}
+            >
+              <ArrowDownIcon />
+            </div>
+          </button>
+        )}
 
         <AnimatePresence>
           {dropdownOpen && (

@@ -3,9 +3,9 @@ import { Plus } from "lucide-react";
 import React from "react";
 
 function ActivityBox() {
-  let activities = [];
+  const activities = [];
   return (
-    <div className="bg-[#182024] rounded-3xl min-h-94">
+    <div className="rounded-[24px] bg-[#182024] min-h-[376px]">
       {activities.length === 0 && (
         <div className="w-full h-full flex flex-col justify-center py-27.5 text-center">
           <h2 className="text-lg/[34px] text-[#FCFFFF]">No activity yet.</h2>

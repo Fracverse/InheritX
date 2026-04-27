@@ -242,4 +242,13 @@ export default function AllPlansPage() {
             </div>
         </div>
     );
+import { AdminAuthProvider } from "@/context/AdminAuthContext";
+import AllPlansPageContent from "./AllPlansPageContent";
+
+export default function AllPlansPage() {
+  return (
+    <AdminAuthProvider>
+      <AllPlansPageContent />
+    </AdminAuthProvider>
+  );
 }

@@ -89,22 +89,18 @@ export default function SecurityPage() {
     setEmailAlertsEnabled(enabled);
   };
 
-  const handleLogoutDevice = (deviceIndex: number) => {
+  const handleLogoutDevice = (_deviceIndex: number) => {
     // Handle device logout logic here
-    console.log("Logging out device:", devices[deviceIndex]);
     // In a real app, you would make an API call here
   };
 
   const handleSaveSettings = () => {
     // Handle save settings logic here
-    console.log("Saving settings...", {
-      twoFactorEnabled,
-      fingerprintEnabled,
-      faceIdEnabled,
-      emailAlertsEnabled,
-    });
     // In a real app, you would make an API call here
   };
+
+    // Handle save settings logic here
+    // In a real app, you would make an API call here
 
   // Determine account status
   const isAccountSecured = twoFactorEnabled;

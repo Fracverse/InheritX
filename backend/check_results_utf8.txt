@@ -1,0 +1,46 @@
+﻿cargo :     Checking 
+inheritx-backend 
+v0.1.0 (C:\Users\HomeP
+C\Desktop\DRIPS 
+W3\InheritX\backend)
+At line:1 char:1
++ cargo check > 
+check_results.txt 2>&1
++ ~~~~~~~~~~~~~~~~~~~~
+~~~~~~~~~~~~~~~~
+    + CategoryInfo    
+          : NotSpeci  
+  fied: (    Checki   
+ ng in...heritX\ba    
+ckend):String) []    
+, RemoteException
+    + FullyQualifiedE 
+   rrorId : NativeCo  
+  mmandError
+ 
+error: this file 
+contains an unclosed 
+delimiter
+    --> 
+src\service.rs:3812:3
+     |
+3578 | impl EmergencyS
+essionService {
+     |                
+              - 
+unclosed delimiter
+...
+3708 |     ) -> 
+Result<(), ApiError> {
+     |                
+               - 
+unclosed delimiter
+...
+3812 | }
+     |  ^
+
+error: could not 
+compile 
+`inheritx-backend` 
+(lib) due to 1 
+previous error

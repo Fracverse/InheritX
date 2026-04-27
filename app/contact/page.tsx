@@ -18,7 +18,6 @@ export default function ContactPage() {
   const handleSubmit = (e: React.FormEvent) => {
     e.preventDefault();
     // Handle form submission
-    console.log({ fullName, subject, message });
   };
 
   return (
@@ -42,7 +41,7 @@ export default function ContactPage() {
           Contact Support
         </h1>
         <p className="text-white/50 text-sm font-light">
-          We're here if you need help or clarity on things
+          We&apos;re here if you need help or clarity on things
           concerning InheritX
         </p>
       </div>

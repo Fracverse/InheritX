@@ -1,0 +1,116 @@
+{
+  "common": {
+    "loading": "Loading...",
+    "error": "Something went wrong",
+    "retry": "Retry",
+    "cancel": "Cancel",
+    "confirm": "Confirm",
+    "save": "Save",
+    "delete": "Delete",
+    "edit": "Edit",
+    "close": "Close",
+    "back": "Back",
+    "next": "Next",
+    "submit": "Submit",
+    "connect": "Connect",
+    "disconnect": "Disconnect",
+    "search": "Search",
+    "filter": "Filter",
+    "noData": "No data available"
+  },
+  "nav": {
+    "home": "Home",
+    "plans": "Plans",
+    "portfolio": "Portfolio",
+    "lending": "Lending",
+    "claim": "Claim",
+    "emergency": "Emergency",
+    "security": "Security",
+    "swap": "Swap",
+    "messages": "Messages",
+    "inactivity": "Inactivity"
+  },
+  "wallet": {
+    "connect": "Connect Wallet",
+    "connecting": "Connecting...",
+    "connected": "Connected",
+    "disconnect": "Disconnect",
+    "selectWallet": "Select a wallet to connect",
+    "description": "Connect your wallet to get started with InheritX"
+  },
+  "kyc": {
+    "title": "KYC Verification",
+    "pending": "Pending",
+    "submitted": "Submitted",
+    "approved": "Approved",
+    "rejected": "Rejected",
+    "submit": "Submit KYC",
+    "submitting": "Submitting...",
+    "fullName": "Full Name",
+    "email": "Email",
+    "dateOfBirth": "Date of Birth",
+    "nationality": "Nationality",
+    "idType": "ID Type",
+    "idNumber": "ID Number",
+    "expiryDate": "Expiry Date",
+    "streetAddress": "Street Address",
+    "city": "City",
+    "country": "Country",
+    "postalCode": "Postal Code"
+  },
+  "plans": {
+    "title": "My Plans",
+    "createPlan": "Create Plan",
+    "noPlan": "No plans yet",
+    "active": "Active",
+    "completed": "Completed",
+    "pending": "Pending",
+    "expired": "Expired",
+    "assets": "Assets",
+    "beneficiaries": "Beneficiaries",
+    "trigger": "Trigger",
+    "status": "Status"
+  },
+  "lending": {
+    "title": "Lending Pool",
+    "deposit": "Deposit",
+    "withdraw": "Withdraw",
+    "totalDeposits": "Total Deposits",
+    "totalBorrowed": "Total Borrowed",
+    "utilizationRate": "Utilization Rate",
+    "currentApy": "Current APY",
+    "yourBalance": "Your Balance",
+    "totalEarnings": "Total Earnings",
+    "depositHistory": "Deposit History"
+  },
+  "claim": {
+    "title": "Claims",
+    "submitClaim": "Submit Claim",
+    "claimCode": "Claim Code",
+    "activities": "Activities",
+    "noClaims": "No claims found"
+  },
+  "emergency": {
+    "title": "Emergency Access",
+    "activate": "Activate Emergency",
+    "revoke": "Revoke Access",
+    "contacts": "Emergency Contacts",
+    "guardians": "Guardians",
+    "auditLog": "Audit Log",
+    "status": "Status"
+  },
+  "dashboard": {
+    "goodMorning": "Good morning",
+    "activePlans": "Active Plans",
+    "guardians": "Guardians",
+    "createdPlans": "Created Plans",
+    "recentActivity": "Recent Activity"
+  },
+  "errors": {
+    "networkError": "Network error. Please check your connection.",
+    "authRequired": "Authentication required.",
+    "notFound": "Resource not found.",
+    "serverError": "Server error. Please try again later.",
+    "unauthorized": "You are not authorized to perform this action."
+  }
+}

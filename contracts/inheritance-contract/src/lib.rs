@@ -1,8 +1,18 @@
 #![no_std]
+use access_control::{self, Role};
 use soroban_sdk::{
-    contract, contracterror, contractimpl, contracttype, log, symbol_short, vec, Address, Bytes,
-    BytesN, Env, String, Symbol, Vec,
+    contract, contracterror, contractimpl, contracttype, log, symbol_short, token, vec, Address,
+    Bytes, BytesN, Env, FromVal, IntoVal, InvokeError, String, Symbol, Val, Vec,
 };
+
+/// Current contract version - bump this on each upgrade
+const CONTRACT_VERSION: u32 = 1;
+
+/// Emergency transfer limit in basis points (10% = 1000 bp)
+const EMERGENCY_TRANSFER_LIMIT_BP: u32 = 1000;
+
+/// Emergency cooldown period in seconds (24 hours)
+const EMERGENCY_COOLDOWN_PERIOD: u64 = 86400;
 
 #[contracttype]
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -20,7 +30,20 @@ pub struct Beneficiary {
     pub hashed_email: BytesN<32>,
     pub hashed_claim_code: BytesN<32>,
     pub bank_account: Bytes, // Plain text for fiat settlement (MVP trade-off)
-    pub allocation_bp: u32,   // Allocation in basis points (0-10000, where 10000 = 100%)
+    pub allocation_bp: u32,  // Allocation in basis points (0-10000, where 10000 = 100%)
+    pub priority: u32,       // Priority level (1=highest)
+    pub is_claimed: bool,    // Whether the beneficiary has already claimed their portion
+}
+
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct BeneficiaryInput {
+    pub name: String,
+    pub email: String,
+    pub claim_code: u32,
+    pub bank_account: Bytes,
+    pub allocation_bp: u32,
+    pub priority: u32,
 }
 
 #[contracttype]
@@ -33,8 +56,12 @@ pub struct InheritancePlan {
     pub distribution_method: DistributionMethod,
     pub beneficiaries: Vec<Beneficiary>,
     pub total_allocation_bp: u32, // Total allocation in basis points
-    pub owner: Address,            // Plan owner
+    pub owner: Address,           // Plan owner
     pub created_at: u64,
+    pub is_active: bool, // Plan activation status
+    pub is_lendable: bool,
+    pub total_loaned: u64,
+    pub waterfall_enabled: bool,
 }
 
 #[contracterror]
@@ -54,6 +81,42 @@ pub enum InheritanceError {
     AllocationExceedsLimit = 12,
     InvalidAllocation = 13,
     InvalidClaimCodeRange = 14,
+    ClaimNotAllowedYet = 15,
+    AlreadyClaimed = 16,
+    BeneficiaryNotFound = 17,
+    PlanAlreadyDeactivated = 18,
+    PlanNotActive = 19,
+    AdminNotSet = 20,
+    AdminAlreadyInitialized = 21,
+    NotAdmin = 22,
+    KycNotSubmitted = 23,
+    KycAlreadyApproved = 24,
+    DuplicatePriority = 25,
+    PriorityOutOfRange = 26,
+    PlanNotClaimed = 27,
+    KycAlreadyRejected = 28,
+    InsufficientBalance = 29,
+    FeeTransferFailed = 30,
+    InsufficientLiquidity = 31,
+    InheritanceAlreadyTriggered = 32,
+    InheritanceNotTriggered = 33,
+    LoanRecallFailed = 34,
+    NoOutstandingLoans = 35,
+    EmergencyAccessAlreadyActive = 36,
+    EmergencyCooldownActive = 37,
+    InvalidGuardianThreshold = 38,
+    GuardianNotFound = 39,
+    AlreadyApproved = 40,
+    EmergencyContactNotFound = 41,
+    EmergencyContactAlreadyExists = 42,
+    TooManyEmergencyContacts = 43,
+    WillHashAlreadyStored = 44,
+    WillAlreadyLinked = 45,
+    VaultNotFound = 46,
+    VerificationFailed = 47,
+    WillVersionNotFound = 48,
+    WillAlreadyFinalized = 49,
+    WillNotVerified = 50,
 }
 
 #[contracttype]
@@ -61,6 +124,92 @@ pub enum InheritanceError {
 pub enum DataKey {
     NextPlanId,
     Plan(u64),
+    Claim(BytesN<32>),         // keyed by hashed_email
+    UserPlans(Address),        // keyed by owner Address, value is Vec<u64>
+    UserClaimedPlans(Address), // keyed by owner Address, value is Vec<u64>
+    DeactivatedPlans,          // value is Vec<u64> of all deactivated plan IDs
+    AllClaimedPlans,           // value is Vec<u64> of all claimed plan IDs
+    Admin,
+    Kyc(Address),
+    Version,
+    InheritanceTrigger(u64),          // per-plan inheritance trigger info
+    EmergencyActive(Address),         // bool, keyed by Address
+    EmergencyLastActivated(Address),  // u64, keyed by Address
+    EmergencyAccess(u64),             // per-plan emergency access record
+    Guardians(u64),                   // per-plan guardian configuration
+    EmergencyApprovals(u64, Address), // (plan_id, trusted_contact) -> Vec<Address>
+    EmergencyContacts(u64),           // per-plan emergency contacts list
+    WillHash(u64),                    // plan_id -> BytesN<32> (will document hash)
+    VaultWill(u64),                   // plan_id -> BytesN<32> (linked will hash)
+    BeneficiaryVerification(u64),     // plan_id -> bool (last verification result)
+    WillVersionCount(u64),            // plan_id -> u32 (number of will versions)
+    WillVersion(u64, u32),            // (plan_id, version) -> WillVersion struct
+    ActiveWillVersion(u64),           // plan_id -> u32 (active version number)
+    WillSignature(u64),               // plan_id -> WillSignatureProof
+    SignatureUsed(BytesN<32>),        // sig_hash -> bool (replay protection)
+    NextMessageId,                    // Global next message ID counter
+    LegacyMessage(u64),               // message_id -> LegacyMessageMetadata
+    VaultMessages(u64),               // vault_id -> Vec<u64> (message IDs)
+    WillFinalized(u64, u32),          // (plan_id, version) -> bool
+    WillFinalizedAt(u64, u32),        // (plan_id, version) -> u64 timestamp
+    WillWitnesses(u64),               // plan_id -> Vec<Address>
+    WitnessSignature(u64, Address),   // (plan_id, witness) -> u64 (signed_at)
+    LendingContract,
+    GovernanceContract,
+    // Beneficiary notification & acknowledgment
+    BeneficiaryNotifiedAt(u64, u32), // (plan_id, beneficiary_index) -> u64 (notified_at)
+    BeneficiaryAcknowledgedAt(u64, u32), // (plan_id, beneficiary_index) -> u64 (acknowledged_at)
+    RequiresAcknowledgment(u64),     // plan_id -> bool
+    FreezePlan(u64),                 // plan_id -> FreezeRecord
+    LegalHold(u64),                  // plan_id -> LegalHold
+    FrozenBeneficiary(u64, u32),     // (plan_id, index) -> bool
+    TriggerConditions(u64),          // plan_id -> TriggerConfig
+}
+
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct GuardianConfig {
+    pub guardians: Vec<Address>,
+    pub threshold: u32,
+}
+
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct ClaimRecord {
+    pub plan_id: u64,
+    pub beneficiary_index: u32,
+    pub claimed_at: u64,
+}
+
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct KycStatus {
+    pub submitted: bool,
+    pub approved: bool,
+    pub rejected: bool,
+    pub submitted_at: u64,
+    pub approved_at: u64,
+    pub rejected_at: u64,
+}
+
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct InheritanceTriggerInfo {
+    pub triggered_at: u64,
+    pub loan_freeze_active: bool,
+    pub recall_attempted: bool,
+    pub liquidation_triggered: bool,
+    pub original_loaned: u64,
+    pub recalled_amount: u64,
+    pub settled_amount: u64,
+}
+
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct EmergencyAccessRecord {
+    pub plan_id: u64,
+    pub trusted_contact: Address,
+    pub activated_at: u64,
 }
 
 // Events for beneficiary operations
@@ -80,11 +229,512 @@ pub struct BeneficiaryRemovedEvent {
     pub allocation_bp: u32,
 }
 
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct PlanDeactivatedEvent {
+    pub plan_id: u64,
+    pub owner: Address,
+    pub total_amount: u64,
+    pub deactivated_at: u64,
+}
+
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct KycApprovedEvent {
+    pub user: Address,
+    pub approved_at: u64,
+}
+
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct KycRejectedEvent {
+    pub user: Address,
+    pub rejected_at: u64,
+}
+
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct ContractLinkedEvent {
+    pub contract_type: Symbol,
+    pub address: Address,
+}
+
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct ContractUpgradedEvent {
+    pub old_version: u32,
+    pub new_version: u32,
+    pub new_wasm_hash: BytesN<32>,
+    pub admin: Address,
+    pub upgraded_at: u64,
+}
+
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct VaultDepositEvent {
+    pub plan_id: u64,
+    pub amount: u64,
+}
+
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct VaultWithdrawEvent {
+    pub plan_id: u64,
+    pub amount: u64,
+}
+
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct VaultLendableChangedEvent {
+    pub plan_id: u64,
+    pub is_lendable: bool,
+}
+
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct InheritanceTriggeredEvent {
+    pub plan_id: u64,
+    pub triggered_at: u64,
+    pub outstanding_loans: u64,
+}
+
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct LoanFreezeEvent {
+    pub plan_id: u64,
+    pub frozen_at: u64,
+}
+
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct LoanRecallEvent {
+    pub plan_id: u64,
+    pub recalled_amount: u64,
+    pub remaining_loaned: u64,
+}
+
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct LiquidationFallbackEvent {
+    pub plan_id: u64,
+    pub settled_amount: u64,
+    pub claimable_amount: u64,
+}
+
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct EmergencyAccessActivationEvent {
+    pub user: Address,
+    pub activated_at: u64,
+}
+
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct EmergencyAccessRevocationEvent {
+    pub plan_id: u64,
+    pub revoked_at: u64,
+}
+
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct EmergencyAccessApprovedEvent {
+    pub plan_id: u64,
+    pub trusted_contact: Address,
+    pub guardian: Address,
+    pub approvals_count: u32,
+}
+
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct EmergencyAccessExpirationEvent {
+    pub plan_id: u64,
+    pub expired_at: u64,
+}
+
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct EmergencyAccessActivatedEvent {
+    pub plan_id: u64,
+    pub trusted_contact: Address,
+    pub activated_at: u64,
+}
+
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct EmergencyContactAddedEvent {
+    pub plan_id: u64,
+    pub contact: Address,
+}
+
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct WaterfallEnabledEvent {
+    pub plan_id: u64,
+    pub enabled_at: u64,
+}
+
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct PrioritySetEvent {
+    pub plan_id: u64,
+    pub beneficiary_index: u32,
+    pub priority: u32,
+}
+
+/// Legacy message metadata stored on-chain
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct LegacyMessageMetadata {
+    pub vault_id: u64,            // Associated vault/plan ID
+    pub message_id: u64,          // Unique message identifier
+    pub message_hash: BytesN<32>, // Cryptographic hash of message content (off-chain)
+    pub creator: Address,         // Message creator (vault owner)
+    pub key_reference: String,    // Reference for decryption key (#364)
+    pub unlock_timestamp: u64,    // Timestamp when message becomes accessible
+    pub is_unlocked: bool,        // Whether message has been unlocked
+    pub is_finalized: bool,       // Whether message has been finalized (#363)
+    pub created_at: u64,          // Message creation timestamp
+}
+
+/// Parameters for creating a legacy message
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct CreateLegacyMessageParams {
+    pub vault_id: u64,
+    pub message_hash: BytesN<32>,
+    pub unlock_timestamp: u64,
+    pub key_reference: String, // Addition for #364
+}
+
+/// Event emitted when a legacy message is created
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct MessageCreatedEvent {
+    pub vault_id: u64,
+    pub message_id: u64,
+    pub timestamp: u64,
+}
+
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct MessageUpdatedEvent {
+    pub vault_id: u64,
+    pub message_id: u64,
+    pub timestamp: u64,
+}
+
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct MessageFinalizedEvent {
+    pub vault_id: u64,
+    pub message_id: u64,
+    pub timestamp: u64,
+}
+
+/// Event emitted when a legacy message is deleted
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct MessageDeletedEvent {
+    pub vault_id: u64,
+    pub message_id: u64,
+    pub timestamp: u64,
+}
+
+/// Event emitted when a message is unlocked
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct MessageUnlockedEvent {
+    pub vault_id: u64,
+    pub message_id: u64,
+    pub timestamp: u64,
+}
+
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct MessageAccessedEvent {
+    pub vault_id: u64,
+    pub message_id: u64,
+    pub timestamp: u64,
+}
+
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct EmergencyContactRemovedEvent {
+    pub plan_id: u64,
+    pub contact: Address,
+}
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct WillVersionInfo {
+    pub version: u32,
+    pub will_hash: BytesN<32>,
+    pub created_at: u64,
+    pub is_active: bool,
+}
+
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct WillHashStoredEvent {
+    pub plan_id: u64,
+    pub will_hash: BytesN<32>,
+}
+
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct WillLinkedToVaultEvent {
+    pub plan_id: u64,
+    pub will_hash: BytesN<32>,
+}
+
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct BeneficiariesVerifiedEvent {
+    pub plan_id: u64,
+    pub status: bool,
+}
+
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct WillVersionCreatedEvent {
+    pub plan_id: u64,
+    pub version: u32,
+}
+
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct WillVersionActivatedEvent {
+    pub plan_id: u64,
+    pub version: u32,
+}
+
+// Batch operation events
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct BatchBeneficiariesAddedEvent {
+    pub plan_id: u64,
+    pub success_count: u32,
+    pub fail_count: u32,
+}
+
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct BatchBeneficiariesRemovedEvent {
+    pub plan_id: u64,
+    pub success_count: u32,
+    pub fail_count: u32,
+}
+
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct BatchAllocationsUpdatedEvent {
+    pub plan_id: u64,
+    pub success_count: u32,
+}
+
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct BatchKycApprovedEvent {
+    pub success_count: u32,
+    pub fail_count: u32,
+}
+
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct BatchMessagesCreatedEvent {
+    pub vault_id: u64,
+    pub success_count: u32,
+    pub fail_count: u32,
+}
+
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct BatchClaimEvent {
+    pub plan_id: u64,
+    pub success_count: u32,
+    pub fail_count: u32,
+}
+
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct WillSignatureProof {
+    pub vault_id: u64,
+    pub will_hash: BytesN<32>,
+    pub signer: Address,
+    pub sig_hash: BytesN<32>,
+    pub signed_at: u64,
+}
+
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct WillSignedEvent {
+    pub vault_id: u64,
+    pub signer: Address,
+}
+
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct WillFinalizedEvent {
+    pub vault_id: u64,
+    pub version: u32,
+    pub finalized_at: u64,
+}
+
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct WitnessAddedEvent {
+    pub vault_id: u64,
+    pub witness: Address,
+}
+
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct WitnessSignedEvent {
+    pub vault_id: u64,
+    pub witness: Address,
+}
+
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum TriggerConditionType {
+    Manual,
+    Time,
+    Inactivity,
+    Oracle,
+    Health,
+}
+
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct TriggerConfig {
+    pub conditions: Vec<TriggerConditionType>,
+    pub trigger_date: u64,
+    pub inactivity_period: u64,
+    pub last_activity: u64,
+    pub oracle_address: Option<Address>,
+    pub oracle_triggered: bool,
+    pub health_triggered: bool,
+}
+
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct TriggerConditionSetEvent {
+    pub plan_id: u64,
+    pub conditions_count: u32,
+}
+
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct TriggerConditionMetEvent {
+    pub plan_id: u64,
+    pub triggered_at: u64,
+}
+
+/// Parameters for creating an inheritance plan (groups args to satisfy Clippy).
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct CreateInheritancePlanParams {
+    pub owner: Address,
+    pub token: Address,
+    pub plan_name: String,
+    pub description: String,
+    pub total_amount: u64,
+    pub distribution_method: DistributionMethod,
+    pub beneficiaries_data: Vec<(String, String, u32, Bytes, u32, u32)>,
+    pub is_lendable: bool,
+}
+
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct FreezeRecord {
+    pub plan_id: u64,
+    pub frozen_at: u64,
+    pub reason: String,
+    pub frozen_by: Address,
+}
+
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct LegalHold {
+    pub plan_id: u64,
+    pub added_at: u64,
+    pub reason: String,
+    pub added_by: Address,
+}
+
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct PlanFrozenEvent {
+    pub plan_id: u64,
+    pub frozen_by: Address,
+    pub frozen_at: u64,
+    pub reason: String,
+}
+
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct PlanUnfrozenEvent {
+    pub plan_id: u64,
+    pub unfrozen_by: Address,
+    pub unfrozen_at: u64,
+}
+
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct LegalHoldAddedEvent {
+    pub plan_id: u64,
+    pub added_by: Address,
+    pub added_at: u64,
+}
+
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct LegalHoldRemovedEvent {
+    pub plan_id: u64,
+    pub removed_by: Address,
+    pub removed_at: u64,
+}
+
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct BeneficiaryFrozenEvent {
+    pub plan_id: u64,
+    pub index: u32,
+    pub frozen_by: Address,
+    pub frozen_at: u64,
+}
+
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct BeneficiaryNotifiedEvent {
+    pub plan_id: u64,
+    pub beneficiary_index: u32,
+    pub notified_at: u64,
+}
+
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct BeneficiaryAcknowledgedEvent {
+    pub plan_id: u64,
+    pub beneficiary_index: u32,
+    pub acknowledged_at: u64,
+}
+
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct BeneficiaryAcknowledgment {
+    pub plan_id: u64,
+    pub beneficiary_index: u32,
+    pub notification_sent_at: u64,
+    pub acknowledged_at: u64,
+}
+
 #[contract]
 pub struct InheritanceContract;
 
 #[contractimpl]
 impl InheritanceContract {
+    const EMERGENCY_EXPIRATION_PERIOD: u64 = 604800; // 7 days in seconds
+
     pub fn hello(env: Env, to: Symbol) -> Vec<Symbol> {
         vec![&env, symbol_short!("Hello"), to]
     }
@@ -92,13 +742,13 @@ impl InheritanceContract {
     // Hash utility functions
     pub fn hash_string(env: &Env, input: String) -> BytesN<32> {
         // Convert string to bytes for hashing
-        let mut data = Bytes::new(&env);
-        
+        let mut data = Bytes::new(env);
+
         // Simple conversion - in production, use proper string-to-bytes conversion
         for i in 0..input.len() {
             data.push_back((i % 256) as u8);
         }
-        
+
         env.crypto().sha256(&data).into()
     }
 
@@ -113,8 +763,8 @@ impl InheritanceContract {
         }
 
         // Convert claim code to bytes for hashing (6 digits, padded with zeros)
-        let mut data = Bytes::new(&env);
-        
+        let mut data = Bytes::new(env);
+
         // Extract each digit and convert to ASCII byte
         for i in 0..6 {
             let digit = ((claim_code / 10u32.pow(5 - i)) % 10) as u8;
@@ -124,6 +774,102 @@ impl InheritanceContract {
         Ok(env.crypto().sha256(&data).into())
     }
 
+    fn get_admin(env: &Env) -> Option<Address> {
+        let key = DataKey::Admin;
+        env.storage().instance().get(&key)
+    }
+
+    fn require_admin(env: &Env, admin: &Address) -> Result<(), InheritanceError> {
+        admin.require_auth();
+        access_control::require_role(env, admin, Role::Admin, InheritanceError::NotAdmin)
+    }
+
+    fn enter_guard(env: &Env) {
+        access_control::reentrancy_enter_or_panic(env);
+    }
+
+    fn exit_guard(env: &Env) {
+        access_control::reentrancy_exit(env);
+    }
+
+    fn check_not_paused(env: &Env) {
+        access_control::require_not_paused_or_panic(env);
+    }
+
+    pub fn pause(env: Env, admin: Address) -> Result<(), InheritanceError> {
+        Self::require_admin(&env, &admin)?;
+        access_control::pause_contract(&env);
+        env.events().publish(
+            (symbol_short!("ADMIN"), symbol_short!("PAUSE")),
+            env.ledger().timestamp(),
+        );
+        Ok(())
+    }
+
+    pub fn unpause(env: Env, admin: Address) -> Result<(), InheritanceError> {
+        Self::require_admin(&env, &admin)?;
+        access_control::unpause_contract(&env);
+        env.events().publish(
+            (symbol_short!("ADMIN"), symbol_short!("UNPAUSE")),
+            env.ledger().timestamp(),
+        );
+        Ok(())
+    }
+
+    pub fn is_paused(env: Env) -> bool {
+        access_control::is_contract_paused(&env)
+    }
+
+    pub fn initialize_admin(env: Env, admin: Address) -> Result<(), InheritanceError> {
+        admin.require_auth();
+        if Self::get_admin(&env).is_some() {
+            return Err(InheritanceError::AdminAlreadyInitialized);
+        }
+
+        let key = DataKey::Admin;
+        env.storage().instance().set(&key, &admin);
+        access_control::assign_role(&env, &admin, Role::Admin);
+        Ok(())
+    }
+
+    /// Assign a role to an address. Admin-only.
+    pub fn assign_role(
+        env: Env,
+        admin: Address,
+        address: Address,
+        role: Role,
+    ) -> Result<(), InheritanceError> {
+        Self::require_admin(&env, &admin)?;
+        access_control::assign_role(&env, &address, role);
+        Ok(())
+    }
+
+    /// Revoke a role from an address. Admin-only.
+    pub fn revoke_role(
+        env: Env,
+        admin: Address,
+        address: Address,
+        role: Role,
+    ) -> Result<(), InheritanceError> {
+        Self::require_admin(&env, &admin)?;
+        access_control::revoke_role(&env, &address, role);
+        Ok(())
+    }
+
+    /// Check whether an address holds a given role.
+    pub fn has_role(env: Env, address: Address, role: Role) -> bool {
+        access_control::has_role(&env, &address, role)
+    }
+
+    /// Return all roles held by an address.
+    pub fn get_roles(env: Env, address: Address) -> Vec<Role> {
+        use access_control::AccessControlKey;
+        env.storage()
+            .persistent()
+            .get(&AccessControlKey::Roles(address))
+            .unwrap_or(Vec::new(&env))
+    }
+
     fn create_beneficiary(
         env: &Env,
         full_name: String,
@@ -131,6 +877,7 @@ impl InheritanceContract {
         claim_code: u32,
         bank_account: Bytes,
         allocation_bp: u32,
+        priority: u32,
     ) -> Result<Beneficiary, InheritanceError> {
         // Validate inputs
         if full_name.is_empty() || email.is_empty() || bank_account.is_empty() {
@@ -149,13 +896,16 @@ impl InheritanceContract {
             hashed_full_name: Self::hash_string(env, full_name),
             hashed_email: Self::hash_string(env, email),
             hashed_claim_code,
-            bank_account, // Store plain for fiat settlement
+            bank_account,
             allocation_bp,
+            priority,
+            is_claimed: false,
         })
     }
 
     // Validation functions
     pub fn validate_plan_inputs(
+        env: &Env,
         plan_name: String,
         description: String,
         asset_type: Symbol,
@@ -172,7 +922,7 @@ impl InheritanceContract {
         }
 
         // Validate asset type (only USDC allowed)
-        if asset_type != Symbol::new(&Env::default(), "USDC") {
+        if asset_type != Symbol::new(env, "USDC") {
             return Err(InheritanceError::InvalidAssetType);
         }
 
@@ -185,7 +935,8 @@ impl InheritanceContract {
     }
 
     pub fn validate_beneficiaries(
-        beneficiaries_data: Vec<(String, String, u32, Bytes, u32)>,
+        env: &Env,
+        beneficiaries_data: Vec<(String, String, u32, Bytes, u32, u32)>,
     ) -> Result<(), InheritanceError> {
         // Validate beneficiary count (max 10)
         if beneficiaries_data.len() > 10 {
@@ -197,9 +948,50 @@ impl InheritanceContract {
         }
 
         // Validate allocation basis points total to 10000 (100%)
-        let total_allocation: u32 = beneficiaries_data.iter().map(|(_, _, _, _, bp)| bp).sum();
+        let mut total_allocation: u32 = 0;
+        let mut priorities = Vec::new(env);
+
+        for (_, _, _, _, bp, priority) in beneficiaries_data.iter() {
+            total_allocation += bp;
+
+            if priority == 0 {
+                return Err(InheritanceError::PriorityOutOfRange);
+            }
+
+            if priorities.contains(priority) {
+                return Err(InheritanceError::DuplicatePriority);
+            }
+            priorities.push_back(priority);
+        }
+
         if total_allocation != 10000 {
             return Err(InheritanceError::AllocationPercentageMismatch);
+        }
+
+        Ok(())
+    }
+
+    /// Check if a user has approved KYC status
+    ///
+    /// # Arguments
+    /// * `env` - The environment
+    /// * `user` - The user address to check
+    ///
+    /// # Returns
+    /// Ok(()) if user has approved KYC, Err(InheritanceError) otherwise
+    ///
+    /// # Errors
+    /// - KycNotSubmitted: If user has not submitted KYC
+    fn check_kyc_approved(env: &Env, user: &Address) -> Result<(), InheritanceError> {
+        let key = DataKey::Kyc(user.clone());
+        let status: KycStatus = env
+            .storage()
+            .persistent()
+            .get(&key)
+            .ok_or(InheritanceError::KycNotSubmitted)?;
+
+        if !status.approved {
+            return Err(InheritanceError::KycNotSubmitted);
         }
 
         Ok(())
@@ -229,17 +1021,187 @@ impl InheritanceContract {
         env.storage().persistent().get(&key)
     }
 
+    fn add_plan_to_user(env: &Env, owner: Address, plan_id: u64) {
+        let key = DataKey::UserPlans(owner.clone());
+        let mut plans: Vec<u64> = env
+            .storage()
+            .persistent()
+            .get(&key)
+            .unwrap_or(Vec::new(env));
+
+        plans.push_back(plan_id);
+        env.storage().persistent().set(&key, &plans);
+    }
+
+    fn add_plan_to_deactivated(env: &Env, plan_id: u64) {
+        let key = DataKey::DeactivatedPlans;
+        let mut plans: Vec<u64> = env
+            .storage()
+            .persistent()
+            .get(&key)
+            .unwrap_or(Vec::new(env));
+
+        // Avoid duplicates if called multiple times (though logic should prevent this)
+        if !plans.contains(plan_id) {
+            plans.push_back(plan_id);
+            env.storage().persistent().set(&key, &plans);
+        }
+    }
+
+    fn add_plan_to_claimed(env: &Env, owner: Address, plan_id: u64) {
+        let key_user = DataKey::UserClaimedPlans(owner);
+        let mut user_plans: Vec<u64> = env
+            .storage()
+            .persistent()
+            .get(&key_user)
+            .unwrap_or(Vec::new(env));
+
+        if !user_plans.contains(plan_id) {
+            user_plans.push_back(plan_id);
+            env.storage().persistent().set(&key_user, &user_plans);
+        }
+
+        let key_all = DataKey::AllClaimedPlans;
+        let mut all_plans: Vec<u64> = env
+            .storage()
+            .persistent()
+            .get(&key_all)
+            .unwrap_or(Vec::new(env));
+
+        if !all_plans.contains(plan_id) {
+            all_plans.push_back(plan_id);
+            env.storage().persistent().set(&key_all, &all_plans);
+        }
+    }
+
+    /// Get plan details
+    ///
+    /// # Arguments
+    /// * `env` - The environment
+    /// * `plan_id` - The ID of the plan to retrieve
+    ///
+    /// # Returns
+    /// The InheritancePlan if found, None otherwise
+    pub fn get_plan_details(env: Env, plan_id: u64) -> Option<InheritancePlan> {
+        Self::get_plan(&env, plan_id)
+    }
+
+    pub fn get_user_plan(
+        env: Env,
+        caller: Address,
+        plan_id: u64,
+    ) -> Result<InheritancePlan, InheritanceError> {
+        caller.require_auth();
+        let plan = Self::get_plan(&env, plan_id).ok_or(InheritanceError::PlanNotFound)?;
+
+        // Authorization check: owner or active emergency contact
+        let mut is_authorized = plan.owner == caller;
+        if !is_authorized {
+            if let Some(record) = Self::get_emergency_access(env.clone(), plan_id) {
+                if record.trusted_contact == caller {
+                    is_authorized = true;
+                }
+            }
+        }
+
+        if !is_authorized {
+            return Err(InheritanceError::Unauthorized);
+        }
+        Ok(plan)
+    }
+
+    /// Internal helper to check and potentially expire emergency access based on the 7-day period.
+    fn check_and_expire_emergency_access(env: &Env, plan_id: u64) -> bool {
+        let key = DataKey::EmergencyAccess(plan_id);
+        if let Some(record) = env
+            .storage()
+            .persistent()
+            .get::<_, EmergencyAccessRecord>(&key)
+        {
+            if env.ledger().timestamp() > record.activated_at + Self::EMERGENCY_EXPIRATION_PERIOD {
+                // Expired
+                env.storage().persistent().remove(&key);
+
+                env.events().publish(
+                    (symbol_short!("EMERG"), symbol_short!("EXPIR")),
+                    EmergencyAccessExpirationEvent {
+                        plan_id,
+                        expired_at: env.ledger().timestamp(),
+                    },
+                );
+                return false;
+            }
+            return true;
+        }
+        false
+    }
+
+    pub fn get_user_plans(env: Env, user: Address) -> Vec<InheritancePlan> {
+        user.require_auth();
+        let key = DataKey::UserPlans(user);
+        let plan_ids: Vec<u64> = env
+            .storage()
+            .persistent()
+            .get(&key)
+            .unwrap_or(Vec::new(&env));
+
+        let mut plans = Vec::new(&env);
+        for plan_id in plan_ids.iter() {
+            if let Some(plan) = Self::get_plan(&env, plan_id) {
+                plans.push_back(plan);
+            }
+        }
+        plans
+    }
+
+    pub fn get_all_plans(
+        env: Env,
+        admin: Address,
+    ) -> Result<Vec<InheritancePlan>, InheritanceError> {
+        Self::require_admin(&env, &admin)?;
+
+        let mut plans = Vec::new(&env);
+        let next_plan_id = Self::get_next_plan_id(&env);
+        for plan_id in 1..next_plan_id {
+            if let Some(plan) = Self::get_plan(&env, plan_id) {
+                plans.push_back(plan);
+            }
+        }
+        Ok(plans)
+    }
+
+    pub fn get_user_pending_plans(env: Env, user: Address) -> Vec<InheritancePlan> {
+        let all_user_plans = Self::get_user_plans(env.clone(), user);
+        let mut pending = Vec::new(&env);
+        for plan in all_user_plans.iter() {
+            if plan.is_active {
+                pending.push_back(plan);
+            }
+        }
+        pending
+    }
+
+    pub fn get_all_pending_plans(
+        env: Env,
+        admin: Address,
+    ) -> Result<Vec<InheritancePlan>, InheritanceError> {
+        let all_plans = Self::get_all_plans(env.clone(), admin)?;
+        let mut pending = Vec::new(&env);
+        for plan in all_plans.iter() {
+            if plan.is_active {
+                pending.push_back(plan);
+            }
+        }
+        Ok(pending)
+    }
+
     /// Add a beneficiary to an existing inheritance plan
     ///
     /// # Arguments
     /// * `env` - The environment
     /// * `owner` - The plan owner (must authorize this call)
     /// * `plan_id` - The ID of the plan to add beneficiary to
-    /// * `name` - Full name of the beneficiary
-    /// * `email` - Email address of the beneficiary (will be hashed)
-    /// * `claim_code` - 6-digit numeric claim code (0-999999, will be hashed)
-    /// * `allocation_bp` - Allocation in basis points (must be > 0)
-    /// * `bank_account` - USD bank account number (stored plain for fiat settlement)
+    /// * `beneficiary_input` - Beneficiary data (name, email, claim_code, bank_account, allocation_bp)
     ///
     /// # Returns
     /// Ok(()) on success
@@ -256,14 +1218,12 @@ impl InheritanceContract {
         env: Env,
         owner: Address,
         plan_id: u64,
-        name: String,
-        email: String,
-        claim_code: u32,
-        allocation_bp: u32,
-        bank_account: Bytes,
+        beneficiary_input: BeneficiaryInput,
     ) -> Result<(), InheritanceError> {
         // Require owner authorization
         owner.require_auth();
+        Self::check_not_paused(&env);
+        Self::enter_guard(&env);
 
         // Get the plan
         let mut plan = Self::get_plan(&env, plan_id).ok_or(InheritanceError::PlanNotFound)?;
@@ -279,19 +1239,26 @@ impl InheritanceContract {
         }
 
         // Validate allocation is greater than 0
-        if allocation_bp == 0 {
+        if beneficiary_input.allocation_bp == 0 {
             return Err(InheritanceError::InvalidAllocation);
         }
 
         // Check that total allocation won't exceed 10000 basis points (100%)
-        let new_total = plan.total_allocation_bp + allocation_bp;
+        let new_total = plan.total_allocation_bp + beneficiary_input.allocation_bp;
         if new_total > 10000 {
             return Err(InheritanceError::AllocationExceedsLimit);
         }
 
         // Create the beneficiary (validates inputs and hashes sensitive data)
-        let beneficiary =
-            Self::create_beneficiary(&env, name, email.clone(), claim_code, bank_account, allocation_bp)?;
+        let beneficiary = Self::create_beneficiary(
+            &env,
+            beneficiary_input.name,
+            beneficiary_input.email.clone(),
+            beneficiary_input.claim_code,
+            beneficiary_input.bank_account,
+            beneficiary_input.allocation_bp,
+            beneficiary_input.priority,
+        )?;
 
         // Add beneficiary to plan
         plan.beneficiaries.push_back(beneficiary.clone());
@@ -306,12 +1273,13 @@ impl InheritanceContract {
             BeneficiaryAddedEvent {
                 plan_id,
                 hashed_email: beneficiary.hashed_email,
-                allocation_bp,
+                allocation_bp: beneficiary_input.allocation_bp,
             },
         );
 
         log!(&env, "Beneficiary added to plan {}", plan_id);
 
+        Self::exit_guard(&env);
         Ok(())
     }
 
@@ -338,6 +1306,8 @@ impl InheritanceContract {
     ) -> Result<(), InheritanceError> {
         // Require owner authorization
         owner.require_auth();
+        Self::check_not_paused(&env);
+        Self::enter_guard(&env);
 
         // Get the plan
         let mut plan = Self::get_plan(&env, plan_id).ok_or(InheritanceError::PlanNotFound)?;
@@ -383,17 +1353,24 @@ impl InheritanceContract {
 
         log!(&env, "Beneficiary removed from plan {}", plan_id);
 
+        Self::exit_guard(&env);
         Ok(())
     }
 
-    /// Create a new inheritance plan
+    /// Creation fee in basis points (2% = 200 bp).
+    const CREATION_FEE_BP: u64 = 200;
+
+    /// Create a new inheritance plan.
+    /// Applies a 2% creation fee: fee is deducted from the user's input amount,
+    /// transferred to the admin wallet, and the net amount is saved in the plan.
     ///
     /// # Arguments
     /// * `env` - The environment
-    /// * `owner` - The plan owner
+    /// * `owner` - The plan owner (must authorize and have sufficient token balance)
+    /// * `token` - The token contract address (e.g. USDC)
     /// * `plan_name` - Name of the inheritance plan (required)
     /// * `description` - Description of the plan (max 500 characters)
-    /// * `total_amount` - Total amount in the plan (must be > 0)
+    /// * `total_amount` - User-input amount (must be > 0); fee is 2% of this, plan stores net
     /// * `distribution_method` - How to distribute the inheritance
     /// * `beneficiaries_data` - Vector of beneficiary data tuples: (full_name, email, claim_code, bank_account, allocation_bp)
     ///
@@ -401,35 +1378,114 @@ impl InheritanceContract {
     /// The plan ID of the created inheritance plan
     ///
     /// # Errors
-    /// Returns InheritanceError for various validation failures
+    /// - AdminNotSet: Admin wallet not initialized
+    /// - InsufficientBalance: Owner balance less than total_amount
+    /// - FeeTransferFailed: Fee transfer to admin failed
+    /// - InvalidTotalAmount: Net amount would be zero after fee
+    /// - Other validation errors from validate_plan_inputs / validate_beneficiaries
     pub fn create_inheritance_plan(
         env: Env,
-        owner: Address,
-        plan_name: String,
-        description: String,
-        total_amount: u64,
-        distribution_method: DistributionMethod,
-        beneficiaries_data: Vec<(String, String, u32, Bytes, u32)>,
+        params: CreateInheritancePlanParams,
     ) -> Result<u64, InheritanceError> {
+        let CreateInheritancePlanParams {
+            owner,
+            token,
+            plan_name,
+            description,
+            total_amount,
+            distribution_method,
+            beneficiaries_data,
+            is_lendable,
+        } = params;
+
         // Require owner authorization
         owner.require_auth();
+        Self::check_not_paused(&env);
+        Self::enter_guard(&env);
 
-        // Validate plan inputs (asset type is hardcoded to USDC)
+        // Check KYC approval - only approved users can create plans
+        Self::check_kyc_approved(&env, &owner)?;
+
+        // Admin must be set to receive the fee
+        let admin = Self::get_admin(&env).ok_or(InheritanceError::AdminNotSet)?;
+
+        // Fee: 2% of user input; net amount stored in plan
+        let fee = total_amount
+            .checked_mul(Self::CREATION_FEE_BP)
+            .and_then(|v| v.checked_div(10000))
+            .unwrap_or(0);
+        let net_amount = total_amount
+            .checked_sub(fee)
+            .ok_or(InheritanceError::InvalidTotalAmount)?;
+
+        if net_amount == 0 {
+            return Err(InheritanceError::InvalidTotalAmount);
+        }
+
+        // Validate plan inputs using user input for "full amount" validation
         let usdc_symbol = Symbol::new(&env, "USDC");
         Self::validate_plan_inputs(
+            &env,
             plan_name.clone(),
             description.clone(),
             usdc_symbol.clone(),
             total_amount,
         )?;
 
+        // Wallet balance validation: must cover full amount (what user is debited)
+        let token_client = token::Client::new(&env, &token);
+        let balance = token_client.balance(&owner);
+        let required = total_amount as i128;
+        if balance < required {
+            return Err(InheritanceError::InsufficientBalance);
+        }
+
+        // Transfer fee to admin (owner must have authorized this via auth).
+        // Use try_invoke_contract so we can return FeeTransferFailed instead of trapping.
+        let fee_i128 = fee as i128;
+        if fee_i128 > 0 {
+            let args: Vec<Val> = vec![
+                &env,
+                owner.clone().into_val(&env),
+                admin.clone().into_val(&env),
+                fee_i128.into_val(&env),
+            ];
+            let res = env.try_invoke_contract::<(), InvokeError>(
+                &token,
+                &symbol_short!("transfer"),
+                args,
+            );
+            if res.is_err() {
+                return Err(InheritanceError::FeeTransferFailed);
+            }
+        }
+
+        // Transfer net amount to this contract (escrow for the plan).
+        // Same: catch failure and return FeeTransferFailed.
+        let contract_id = env.current_contract_address();
+        let net_i128 = net_amount as i128;
+        let net_args: Vec<Val> = vec![
+            &env,
+            owner.clone().into_val(&env),
+            contract_id.clone().into_val(&env),
+            net_i128.into_val(&env),
+        ];
+        let net_res = env.try_invoke_contract::<(), InvokeError>(
+            &token,
+            &symbol_short!("transfer"),
+            net_args,
+        );
+        if net_res.is_err() {
+            return Err(InheritanceError::FeeTransferFailed);
+        }
+
         // Validate beneficiaries
-        Self::validate_beneficiaries(beneficiaries_data.clone())?;
+        Self::validate_beneficiaries(&env, beneficiaries_data.clone())?;
 
         // Create beneficiary objects with hashed data
         let mut beneficiaries = Vec::new(&env);
         let mut total_allocation_bp = 0u32;
-        
+
         for beneficiary_data in beneficiaries_data.iter() {
             let beneficiary = Self::create_beneficiary(
                 &env,
@@ -438,32 +1494,3597 @@ impl InheritanceContract {
                 beneficiary_data.2,
                 beneficiary_data.3.clone(),
                 beneficiary_data.4,
+                beneficiary_data.5,
             )?;
             total_allocation_bp += beneficiary_data.4;
             beneficiaries.push_back(beneficiary);
         }
 
-        // Create the inheritance plan
+        // Create the inheritance plan with net amount (user input minus 2% fee)
         let plan = InheritancePlan {
             plan_name,
             description,
             asset_type: Symbol::new(&env, "USDC"),
-            total_amount,
+            total_amount: net_amount,
             distribution_method,
             beneficiaries,
             total_allocation_bp,
             owner: owner.clone(),
             created_at: env.ledger().timestamp(),
+            is_active: true,
+            is_lendable,
+            total_loaned: 0,
+            waterfall_enabled: false,
         };
 
         // Store the plan and get the plan ID
         let plan_id = Self::increment_plan_id(&env);
         Self::store_plan(&env, plan_id, &plan);
 
+        // Add to user's plan list
+        Self::add_plan_to_user(&env, owner.clone(), plan_id);
+
+        // Grant Owner role so RBAC checks recognise this address as a plan owner
+        access_control::assign_role(&env, &owner, Role::Owner);
+
         log!(&env, "Inheritance plan created with ID: {}", plan_id);
 
+        Self::exit_guard(&env);
         Ok(plan_id)
+    }
+
+    pub fn set_lendable(
+        env: Env,
+        owner: Address,
+        plan_id: u64,
+        is_lendable: bool,
+    ) -> Result<(), InheritanceError> {
+        owner.require_auth();
+        let mut plan = Self::get_plan(&env, plan_id).ok_or(InheritanceError::PlanNotFound)?;
+        if plan.owner != owner {
+            return Err(InheritanceError::Unauthorized);
+        }
+
+        plan.is_lendable = is_lendable;
+        Self::store_plan(&env, plan_id, &plan);
+
+        env.events().publish(
+            (symbol_short!("VAULT"), symbol_short!("LENDABLE")),
+            VaultLendableChangedEvent {
+                plan_id,
+                is_lendable,
+            },
+        );
+        log!(&env, "Vault {} lendable set to {}", plan_id, is_lendable);
+        Ok(())
+    }
+
+    pub fn deposit(
+        env: Env,
+        caller: Address,
+        token: Address,
+        plan_id: u64,
+        amount: u64,
+    ) -> Result<(), InheritanceError> {
+        caller.require_auth();
+        Self::check_not_paused(&env);
+        Self::enter_guard(&env);
+        if amount == 0 {
+            return Err(InheritanceError::InvalidTotalAmount);
+        }
+
+        let mut plan = Self::get_plan(&env, plan_id).ok_or(InheritanceError::PlanNotFound)?;
+
+        // Authorization check: owner only
+        if plan.owner != caller {
+            return Err(InheritanceError::Unauthorized);
+        }
+
+        if !plan.is_active {
+            return Err(InheritanceError::PlanNotActive);
+        }
+
+        let token_client = token::Client::new(&env, &token);
+        let balance = token_client.balance(&caller);
+        let required = amount as i128;
+        if balance < required {
+            return Err(InheritanceError::InsufficientBalance);
+        }
+
+        let contract_id = env.current_contract_address();
+        let args: Vec<Val> = vec![
+            &env,
+            caller.clone().into_val(&env),
+            contract_id.clone().into_val(&env),
+            required.into_val(&env),
+        ];
+        let res =
+            env.try_invoke_contract::<(), InvokeError>(&token, &symbol_short!("transfer"), args);
+        if res.is_err() {
+            return Err(InheritanceError::FeeTransferFailed);
+        }
+
+        plan.total_amount += amount;
+        Self::store_plan(&env, plan_id, &plan);
+
+        env.events().publish(
+            (symbol_short!("VAULT"), symbol_short!("DEPOSIT")),
+            VaultDepositEvent { plan_id, amount },
+        );
+        log!(&env, "Deposited {} into plan {}", amount, plan_id);
+        Self::exit_guard(&env);
+        Ok(())
+    }
+
+    pub fn withdraw(
+        env: Env,
+        caller: Address,
+        token: Address,
+        plan_id: u64,
+        amount: u64,
+    ) -> Result<(), InheritanceError> {
+        caller.require_auth();
+        Self::check_not_paused(&env);
+        Self::enter_guard(&env);
+        if amount == 0 {
+            return Err(InheritanceError::InvalidTotalAmount);
+        }
+        let mut plan = Self::get_plan(&env, plan_id).ok_or(InheritanceError::PlanNotFound)?;
+
+        // Authorization check: owner only
+        if plan.owner != caller {
+            return Err(InheritanceError::Unauthorized);
+        }
+
+        // Freeze/legal hold check
+        if env
+            .storage()
+            .persistent()
+            .has(&DataKey::FreezePlan(plan_id))
+        {
+            return Err(InheritanceError::PlanNotActive);
+        }
+        if env.storage().persistent().has(&DataKey::LegalHold(plan_id)) {
+            return Err(InheritanceError::PlanNotActive);
+        }
+
+        // Emergency Guard: Limit withdrawal if emergency access was recently activated
+        if Self::is_emergency_active(&env, plan_id) {
+            let limit = (plan.total_amount as u128)
+                .checked_mul(EMERGENCY_TRANSFER_LIMIT_BP as u128)
+                .and_then(|v| v.checked_div(10000))
+                .unwrap_or(0) as u64;
+
+            if amount > limit {
+                return Err(InheritanceError::EmergencyCooldownActive);
+            }
+        }
+
+        // Emergency Guard: Limit withdrawal if emergency access was recently activated
+        if Self::is_emergency_active(&env, plan_id) {
+            let limit = (plan.total_amount as u128)
+                .checked_mul(EMERGENCY_TRANSFER_LIMIT_BP as u128)
+                .and_then(|v| v.checked_div(10000))
+                .unwrap_or(0) as u64;
+
+            if amount > limit {
+                return Err(InheritanceError::EmergencyCooldownActive);
+            }
+        }
+
+        let available = plan.total_amount.saturating_sub(plan.total_loaned);
+        if amount > available {
+            return Err(InheritanceError::InsufficientLiquidity);
+        }
+
+        let contract_id = env.current_contract_address();
+        let required = amount as i128;
+        let args: Vec<Val> = vec![
+            &env,
+            contract_id.clone().into_val(&env),
+            caller.clone().into_val(&env),
+            required.into_val(&env),
+        ];
+        let res =
+            env.try_invoke_contract::<(), InvokeError>(&token, &symbol_short!("transfer"), args);
+        if res.is_err() {
+            return Err(InheritanceError::FeeTransferFailed);
+        }
+
+        plan.total_amount -= amount;
+        Self::store_plan(&env, plan_id, &plan);
+
+        env.events().publish(
+            (symbol_short!("VAULT"), symbol_short!("WITHDRAW")),
+            VaultWithdrawEvent { plan_id, amount },
+        );
+        log!(&env, "Withdrew {} from plan {}", amount, plan_id);
+        Self::exit_guard(&env);
+        Ok(())
+    }
+
+    pub fn set_beneficiary_priority(
+        env: Env,
+        owner: Address,
+        plan_id: u64,
+        beneficiary_index: u32,
+        priority: u32,
+    ) -> Result<(), InheritanceError> {
+        owner.require_auth();
+        let mut plan = Self::get_plan(&env, plan_id).ok_or(InheritanceError::PlanNotFound)?;
+        if plan.owner != owner {
+            return Err(InheritanceError::Unauthorized);
+        }
+
+        if beneficiary_index >= plan.beneficiaries.len() {
+            return Err(InheritanceError::InvalidBeneficiaryIndex);
+        }
+
+        if priority == 0 {
+            return Err(InheritanceError::PriorityOutOfRange);
+        }
+
+        // Check for duplicate priorities
+        for i in 0..plan.beneficiaries.len() {
+            if i != beneficiary_index {
+                let b = plan.beneficiaries.get(i).unwrap();
+                if b.priority == priority {
+                    return Err(InheritanceError::DuplicatePriority);
+                }
+            }
+        }
+
+        let mut beneficiary = plan.beneficiaries.get(beneficiary_index).unwrap();
+        beneficiary.priority = priority;
+        plan.beneficiaries.set(beneficiary_index, beneficiary);
+        Self::store_plan(&env, plan_id, &plan);
+
+        env.events().publish(
+            (symbol_short!("BENEFIC"), symbol_short!("PRIO")),
+            PrioritySetEvent {
+                plan_id,
+                beneficiary_index,
+                priority,
+            },
+        );
+
+        Ok(())
+    }
+
+    pub fn get_beneficiary_priority(
+        env: Env,
+        plan_id: u64,
+        beneficiary_index: u32,
+    ) -> Result<u32, InheritanceError> {
+        let plan = Self::get_plan(&env, plan_id).ok_or(InheritanceError::PlanNotFound)?;
+        if beneficiary_index >= plan.beneficiaries.len() {
+            return Err(InheritanceError::InvalidBeneficiaryIndex);
+        }
+        Ok(plan.beneficiaries.get(beneficiary_index).unwrap().priority)
+    }
+
+    pub fn enable_waterfall_distribution(
+        env: Env,
+        owner: Address,
+        plan_id: u64,
+    ) -> Result<(), InheritanceError> {
+        owner.require_auth();
+        let mut plan = Self::get_plan(&env, plan_id).ok_or(InheritanceError::PlanNotFound)?;
+        if plan.owner != owner {
+            return Err(InheritanceError::Unauthorized);
+        }
+
+        plan.waterfall_enabled = true;
+        Self::store_plan(&env, plan_id, &plan);
+
+        env.events().publish(
+            (symbol_short!("PLAN"), symbol_short!("WATER")),
+            WaterfallEnabledEvent {
+                plan_id,
+                enabled_at: env.ledger().timestamp(),
+            },
+        );
+
+        Ok(())
+    }
+
+    fn calculate_waterfall_payout(
+        _env: &Env,
+        plan: &InheritancePlan,
+        beneficiary_index: u32,
+    ) -> u64 {
+        let beneficiary = plan.beneficiaries.get(beneficiary_index).unwrap();
+
+        if plan.waterfall_enabled {
+            // Any strictly higher-priority (lower numeric value) beneficiary with a
+            // non-zero priority must claim before this one. Priority 0 is treated
+            // as "unprioritized" and does not gate others.
+            for i in 0..plan.beneficiaries.len() {
+                let b = plan.beneficiaries.get(i).unwrap();
+                if b.priority != 0 && b.priority < beneficiary.priority && !b.is_claimed {
+                    return 0;
+                }
+            }
+        }
+
+        // Entitlement is allocation_bp of the remaining plan balance, capped to it.
+        let entitlement = (plan.total_amount as u128)
+            .checked_mul(beneficiary.allocation_bp as u128)
+            .and_then(|v| v.checked_div(10000))
+            .unwrap_or(0) as u64;
+
+        entitlement.min(plan.total_amount)
+    }
+
+    pub fn get_claimable_by_priority(
+        env: Env,
+        plan_id: u64,
+        beneficiary_index: u32,
+    ) -> Result<u64, InheritanceError> {
+        let plan = Self::get_plan(&env, plan_id).ok_or(InheritanceError::PlanNotFound)?;
+        if beneficiary_index >= plan.beneficiaries.len() {
+            return Err(InheritanceError::InvalidBeneficiaryIndex);
+        }
+        Ok(Self::calculate_waterfall_payout(
+            &env,
+            &plan,
+            beneficiary_index,
+        ))
+    }
+
+    fn is_claim_time_valid(env: &Env, plan: &InheritancePlan) -> bool {
+        let now = env.ledger().timestamp();
+        let elapsed = now - plan.created_at;
+
+        match plan.distribution_method {
+            DistributionMethod::LumpSum => true, // always claimable
+            DistributionMethod::Monthly => elapsed >= 30 * 24 * 60 * 60,
+            DistributionMethod::Quarterly => elapsed >= 90 * 24 * 60 * 60,
+            DistributionMethod::Yearly => elapsed >= 365 * 24 * 60 * 60,
+        }
+    }
+
+    pub fn claim_inheritance_plan(
+        env: Env,
+        plan_id: u64,
+        claimer: Address,
+        email: String,
+        claim_code: u32,
+    ) -> Result<(), InheritanceError> {
+        // Require claimer authorization
+        claimer.require_auth();
+        Self::check_not_paused(&env);
+        Self::enter_guard(&env);
+
+        // Check KYC approval - only approved users can claim plans
+        Self::check_kyc_approved(&env, &claimer)?;
+
+        // Fetch the plan
+        let plan = Self::get_plan(&env, plan_id).ok_or(InheritanceError::PlanNotFound)?;
+
+        // Check if plan is active
+        if !plan.is_active {
+            return Err(InheritanceError::PlanNotActive);
+        }
+
+        // Freeze/legal hold check
+        if env
+            .storage()
+            .persistent()
+            .has(&DataKey::FreezePlan(plan_id))
+        {
+            return Err(InheritanceError::PlanNotActive);
+        }
+        if env.storage().persistent().has(&DataKey::LegalHold(plan_id)) {
+            return Err(InheritanceError::PlanNotActive);
+        }
+
+        // When inheritance is triggered, bypass the time-based check so
+        // that inheritance execution cannot be blocked.
+        let triggered = Self::get_trigger_info(&env, plan_id).is_some();
+        if !triggered && !Self::is_claim_time_valid(&env, &plan) {
+            return Err(InheritanceError::ClaimNotAllowedYet);
+        }
+
+        // Hash email and claim code
+        let hashed_email = Self::hash_string(&env, email.clone());
+        let hashed_claim_code = Self::hash_claim_code(&env, claim_code)?;
+
+        // Build claim key including plan ID
+        let claim_key = {
+            let mut data = Bytes::new(&env);
+            data.extend_from_slice(&plan_id.to_be_bytes()); // plan ID as bytes
+            data.extend_from_slice(&hashed_email.to_array()); // convert BytesN<32> to [u8;32]
+            DataKey::Claim(env.crypto().sha256(&data).into())
+        };
+
+        // Check if already claimed for this plan
+        if env.storage().persistent().has(&claim_key) {
+            return Err(InheritanceError::AlreadyClaimed);
+        }
+
+        // Find beneficiary
+        let mut beneficiary_index: Option<u32> = None;
+        for i in 0..plan.beneficiaries.len() {
+            let b = plan.beneficiaries.get(i).unwrap();
+            if b.hashed_email == hashed_email && b.hashed_claim_code == hashed_claim_code {
+                beneficiary_index = Some(i);
+                break;
+            }
+        }
+
+        let index = beneficiary_index.ok_or(InheritanceError::BeneficiaryNotFound)?;
+
+        // Waterfall ordering: if enabled, every strictly higher-priority
+        // beneficiary (non-zero priority) must have claimed first.
+        if plan.waterfall_enabled {
+            let this = plan.beneficiaries.get(index).unwrap();
+            for i in 0..plan.beneficiaries.len() {
+                let b = plan.beneficiaries.get(i).unwrap();
+                if b.priority != 0 && b.priority < this.priority && !b.is_claimed {
+                    return Err(InheritanceError::ClaimNotAllowedYet);
+                }
+            }
+        }
+
+        // Record the claim
+        let claim = ClaimRecord {
+            plan_id,
+            beneficiary_index: index,
+            claimed_at: env.ledger().timestamp(),
+        };
+
+        env.storage().persistent().set(&claim_key, &claim);
+
+        // --- Payout Logic ---
+        let payout = Self::calculate_waterfall_payout(&env, &plan, index);
+
+        // Emergency Guard: Limit claim if emergency access was recently activated
+        if Self::is_emergency_active(&env, plan_id) {
+            let limit = (plan.total_amount as u128)
+                .checked_mul(EMERGENCY_TRANSFER_LIMIT_BP as u128)
+                .and_then(|v| v.checked_div(10000))
+                .unwrap_or(0) as u64;
+
+            if payout > limit {
+                return Err(InheritanceError::EmergencyCooldownActive);
+            }
+        }
+
+        // If plan is lendable and funds are loaned, we might have yield or need to recall funds.
+        // For MVP priority logic: if we don't have enough liquid funds (amount - total_loaned < payout)
+        // we'd recall from LendingContract.
+        // Since we don't store the LendingContract address in InheritanceContract yet,
+        // we assume the funds are sitting in the contract (vault) or we are authorized to pull them.
+        let available_liquidity = plan.total_amount.saturating_sub(plan.total_loaned);
+
+        // In a full implementation, we would call LendingClient::withdraw_priority
+        // if payout > available_liquidity.
+        // For now, we simulate the priority payout directly if liquid funds are sufficient,
+        // or fail with InsufficientLiquidity if not (which a later migration would fix by linking contracts).
+        // When inheritance is triggered, bypass the liquidity check so that
+        // beneficiary claims are never blocked by outstanding loans.
+        if !triggered && payout > available_liquidity {
+            return Err(InheritanceError::InsufficientLiquidity);
+        }
+
+        // Transfer funds to beneficiary
+        // Note: For fiat (bank_account), this would typically emit an event for off-chain processing.
+        // Here, we'll try to transfer USDC if an address can be derived, or just emit an event.
+        // As a simplification, we'll emit the event first.
+
+        // Update plan balances and mark beneficiary as claimed
+        let mut updated_plan = plan.clone();
+
+        // Update the specific beneficiary in the vector
+        let mut b = updated_plan.beneficiaries.get(index).unwrap();
+        b.is_claimed = true;
+        updated_plan.beneficiaries.set(index, b);
+
+        updated_plan.total_amount = updated_plan.total_amount.saturating_sub(payout);
+        Self::store_plan(&env, plan_id, &updated_plan);
+
+        // Mark plan as claimed
+        Self::add_plan_to_claimed(&env, plan.owner.clone(), plan_id);
+
+        // Grant Beneficiary role to the claimer as an on-chain record of a successful claim
+        access_control::assign_role(&env, &claimer, Role::Beneficiary);
+
+        // Emit claim event
+        env.events().publish(
+            (symbol_short!("CLAIM"), symbol_short!("SUCCESS")),
+            (plan_id, hashed_email, payout),
+        );
+
+        log!(
+            &env,
+            "Inheritance claimed for plan {} by {}",
+            plan_id,
+            email
+        );
+
+        Self::exit_guard(&env);
+        Ok(())
+    }
+
+    /// Record KYC submission on-chain (called after off-chain submission).
+    pub fn submit_kyc(env: Env, user: Address) -> Result<(), InheritanceError> {
+        user.require_auth();
+
+        let key = DataKey::Kyc(user.clone());
+        let mut status = env.storage().persistent().get(&key).unwrap_or(KycStatus {
+            submitted: false,
+            approved: false,
+            rejected: false,
+            submitted_at: 0,
+            approved_at: 0,
+            rejected_at: 0,
+        });
+
+        if status.approved {
+            return Err(InheritanceError::KycAlreadyApproved);
+        }
+
+        status.submitted = true;
+        status.submitted_at = env.ledger().timestamp();
+        env.storage().persistent().set(&key, &status);
+
+        Ok(())
+    }
+
+    /// Approve a user's KYC after off-chain verification (admin-only).
+    pub fn approve_kyc(env: Env, admin: Address, user: Address) -> Result<(), InheritanceError> {
+        Self::require_admin(&env, &admin)?;
+
+        let key = DataKey::Kyc(user.clone());
+        let mut status: KycStatus = env
+            .storage()
+            .persistent()
+            .get(&key)
+            .ok_or(InheritanceError::KycNotSubmitted)?;
+
+        if !status.submitted {
+            return Err(InheritanceError::KycNotSubmitted);
+        }
+
+        if status.approved {
+            return Err(InheritanceError::KycAlreadyApproved);
+        }
+
+        status.approved = true;
+        status.approved_at = env.ledger().timestamp();
+        env.storage().persistent().set(&key, &status);
+
+        env.events().publish(
+            (symbol_short!("KYC"), symbol_short!("APPROV")),
+            KycApprovedEvent {
+                user,
+                approved_at: status.approved_at,
+            },
+        );
+
+        Ok(())
+    }
+
+    /// Reject a user's KYC after off-chain review (admin-only).
+    ///
+    /// # Arguments
+    /// * `env` - The environment
+    /// * `admin` - The admin address (must be the initialized admin)
+    /// * `user` - The user address whose KYC is being rejected
+    ///
+    /// # Errors
+    /// - `AdminNotSet` / `NotAdmin` if caller is not the admin
+    /// - `KycNotSubmitted` if user has no submitted KYC data
+    /// - `KycAlreadyRejected` if the KYC was already rejected
+    pub fn reject_kyc(env: Env, admin: Address, user: Address) -> Result<(), InheritanceError> {
+        Self::require_admin(&env, &admin)?;
+
+        let key = DataKey::Kyc(user.clone());
+        let mut status: KycStatus = env
+            .storage()
+            .persistent()
+            .get(&key)
+            .ok_or(InheritanceError::KycNotSubmitted)?;
+
+        if !status.submitted {
+            return Err(InheritanceError::KycNotSubmitted);
+        }
+
+        if status.rejected {
+            return Err(InheritanceError::KycAlreadyRejected);
+        }
+
+        status.rejected = true;
+        status.rejected_at = env.ledger().timestamp();
+        env.storage().persistent().set(&key, &status);
+
+        env.events().publish(
+            (symbol_short!("KYC"), symbol_short!("REJECT")),
+            KycRejectedEvent {
+                user,
+                rejected_at: status.rejected_at,
+            },
+        );
+
+        Ok(())
+    }
+
+    /// Deactivate an existing inheritance plan
+    ///
+    /// # Arguments
+    /// * `env` - The environment
+    /// * `owner` - The plan owner (must authorize this call)
+    /// * `plan_id` - The ID of the plan to deactivate
+    ///
+    /// # Returns
+    /// Ok(()) on success
+    ///
+    /// # Errors
+    /// - Unauthorized: If caller is not the plan owner
+    /// - PlanNotFound: If plan_id doesn't exist
+    /// - PlanAlreadyDeactivated: If plan is already deactivated
+    ///
+    /// # Notes
+    /// Upon successful deactivation, the USDC associated with the plan should be
+    /// transferred back to the owner's wallet address. This function marks the plan
+    /// as inactive and emits a deactivation event.
+    pub fn deactivate_inheritance_plan(
+        env: Env,
+        owner: Address,
+        plan_id: u64,
+    ) -> Result<(), InheritanceError> {
+        // Require owner authorization
+        owner.require_auth();
+
+        // Get the plan
+        let mut plan = Self::get_plan(&env, plan_id).ok_or(InheritanceError::PlanNotFound)?;
+
+        // Verify caller is the plan owner
+        if plan.owner != owner {
+            return Err(InheritanceError::Unauthorized);
+        }
+
+        // Check if plan is already deactivated
+        if !plan.is_active {
+            return Err(InheritanceError::PlanAlreadyDeactivated);
+        }
+
+        // Mark plan as inactive
+        plan.is_active = false;
+
+        // Store updated plan
+        Self::store_plan(&env, plan_id, &plan);
+        Self::add_plan_to_deactivated(&env, plan_id);
+
+        // Emit deactivation event
+        env.events().publish(
+            (symbol_short!("PLAN"), symbol_short!("DEACT")),
+            PlanDeactivatedEvent {
+                plan_id,
+                owner: owner.clone(),
+                total_amount: plan.total_amount,
+                deactivated_at: env.ledger().timestamp(),
+            },
+        );
+
+        log!(&env, "Inheritance plan {} deactivated by owner", plan_id);
+
+        Ok(())
+    }
+
+    /// Activate emergency access for a trusted contact on a vault/plan.
+    /// Only the plan owner can activate emergency access.
+    pub fn activate_emergency_access(
+        env: Env,
+        owner: Address,
+        plan_id: u64,
+        trusted_contact: Address,
+    ) -> Result<(), InheritanceError> {
+        // Require owner authorization
+        owner.require_auth();
+
+        // Get the plan
+        let plan = Self::get_plan(&env, plan_id).ok_or(InheritanceError::PlanNotFound)?;
+
+        // Verify caller is the plan owner
+        if plan.owner != owner {
+            return Err(InheritanceError::Unauthorized);
+        }
+
+        // Check if emergency access is already activated
+        let key = DataKey::EmergencyAccess(plan_id);
+        if env.storage().persistent().has(&key) {
+            return Err(InheritanceError::EmergencyAccessAlreadyActive);
+        }
+
+        // Record the activation timestamp
+        let now = env.ledger().timestamp();
+
+        // Create emergency access record
+        let emergency_access = EmergencyAccessRecord {
+            plan_id,
+            trusted_contact: trusted_contact.clone(),
+            activated_at: now,
+        };
+
+        // Store the emergency access record
+        env.storage().persistent().set(&key, &emergency_access);
+
+        // Emit event
+        env.events().publish(
+            (symbol_short!("EMERG"), symbol_short!("ACTIV")),
+            EmergencyAccessActivatedEvent {
+                plan_id,
+                trusted_contact,
+                activated_at: now,
+            },
+        );
+
+        log!(
+            &env,
+            "Emergency access activated for plan {} at timestamp {}",
+            plan_id,
+            now
+        );
+
+        Ok(())
+    }
+
+    pub fn set_guardians(
+        env: Env,
+        owner: Address,
+        plan_id: u64,
+        guardians: Vec<Address>,
+        threshold: u32,
+    ) -> Result<(), InheritanceError> {
+        owner.require_auth();
+        let plan = Self::get_plan(&env, plan_id).ok_or(InheritanceError::PlanNotFound)?;
+        if plan.owner != owner {
+            return Err(InheritanceError::Unauthorized);
+        }
+        if threshold == 0 || guardians.len() < threshold {
+            return Err(InheritanceError::InvalidGuardianThreshold);
+        }
+        let config = GuardianConfig {
+            guardians: guardians.clone(),
+            threshold,
+        };
+        env.storage()
+            .persistent()
+            .set(&DataKey::Guardians(plan_id), &config);
+        // Grant Guardian role to each guardian address for RBAC checks
+        for g in guardians.iter() {
+            access_control::assign_role(&env, &g, Role::Guardian);
+        }
+        Ok(())
+    }
+
+    /// Add an emergency contact to a vault/plan.
+    /// Emergency contacts can later request emergency access with guardian approval.
+    pub fn add_emergency_contact(
+        env: Env,
+        owner: Address,
+        plan_id: u64,
+        contact: Address,
+    ) -> Result<(), InheritanceError> {
+        owner.require_auth();
+
+        let plan = Self::get_plan(&env, plan_id).ok_or(InheritanceError::PlanNotFound)?;
+        if plan.owner != owner {
+            return Err(InheritanceError::Unauthorized);
+        }
+
+        let key = DataKey::EmergencyContacts(plan_id);
+        let mut contacts: Vec<Address> = env
+            .storage()
+            .persistent()
+            .get(&key)
+            .unwrap_or(Vec::new(&env));
+
+        // Check for duplicates
+        for c in contacts.iter() {
+            if c == contact {
+                return Err(InheritanceError::EmergencyContactAlreadyExists);
+            }
+        }
+
+        // Limit to 10 emergency contacts per plan
+        if contacts.len() >= 10 {
+            return Err(InheritanceError::TooManyEmergencyContacts);
+        }
+
+        contacts.push_back(contact.clone());
+        env.storage().persistent().set(&key, &contacts);
+
+        env.events().publish(
+            (symbol_short!("EMERG"), symbol_short!("CON_ADD")),
+            EmergencyContactAddedEvent {
+                plan_id,
+                contact: contact.clone(),
+            },
+        );
+
+        log!(&env, "Emergency contact added to plan {}", plan_id);
+
+        Ok(())
+    }
+
+    /// Remove an emergency contact from a vault/plan.
+    pub fn remove_emergency_contact(
+        env: Env,
+        owner: Address,
+        plan_id: u64,
+        contact: Address,
+    ) -> Result<(), InheritanceError> {
+        owner.require_auth();
+
+        let plan = Self::get_plan(&env, plan_id).ok_or(InheritanceError::PlanNotFound)?;
+        if plan.owner != owner {
+            return Err(InheritanceError::Unauthorized);
+        }
+
+        let key = DataKey::EmergencyContacts(plan_id);
+        let mut contacts: Vec<Address> = env
+            .storage()
+            .persistent()
+            .get(&key)
+            .unwrap_or(Vec::new(&env));
+
+        // Find and remove the contact
+        let mut found_index: Option<u32> = None;
+        for i in 0..contacts.len() {
+            if contacts.get(i).unwrap() == contact {
+                found_index = Some(i);
+                break;
+            }
+        }
+
+        let index = found_index.ok_or(InheritanceError::EmergencyContactNotFound)?;
+
+        // Swap-remove for efficiency
+        let last_index = contacts.len() - 1;
+        if index != last_index {
+            let last = contacts.get(last_index).unwrap();
+            contacts.set(index, last);
+        }
+        contacts.pop_back();
+
+        env.storage().persistent().set(&key, &contacts);
+
+        env.events().publish(
+            (symbol_short!("EMERG"), symbol_short!("CON_REM")),
+            EmergencyContactRemovedEvent {
+                plan_id,
+                contact: contact.clone(),
+            },
+        );
+
+        log!(&env, "Emergency contact removed from plan {}", plan_id);
+
+        Ok(())
+    }
+
+    /// Get all emergency contacts for a vault/plan.
+    pub fn get_emergency_contacts(env: Env, plan_id: u64) -> Vec<Address> {
+        let key = DataKey::EmergencyContacts(plan_id);
+        env.storage()
+            .persistent()
+            .get(&key)
+            .unwrap_or(Vec::new(&env))
+    }
+
+    pub fn approve_emergency_access(
+        env: Env,
+        guardian: Address,
+        plan_id: u64,
+        trusted_contact: Address,
+    ) -> Result<(), InheritanceError> {
+        guardian.require_auth();
+        access_control::require_role(
+            &env,
+            &guardian,
+            Role::Guardian,
+            InheritanceError::Unauthorized,
+        )?;
+        let _plan = Self::get_plan(&env, plan_id).ok_or(InheritanceError::PlanNotFound)?;
+
+        let key_access = DataKey::EmergencyAccess(plan_id);
+        if env.storage().persistent().has(&key_access) {
+            return Err(InheritanceError::EmergencyAccessAlreadyActive);
+        }
+
+        let config: GuardianConfig = env
+            .storage()
+            .persistent()
+            .get(&DataKey::Guardians(plan_id))
+            .ok_or(InheritanceError::GuardianNotFound)?;
+
+        // Check if guardian is in the list
+        let mut is_guardian = false;
+        for g in config.guardians.iter() {
+            if g == guardian {
+                is_guardian = true;
+                break;
+            }
+        }
+        if !is_guardian {
+            return Err(InheritanceError::Unauthorized);
+        }
+
+        let key_approvals = DataKey::EmergencyApprovals(plan_id, trusted_contact.clone());
+        let mut approvals: Vec<Address> = env
+            .storage()
+            .persistent()
+            .get(&key_approvals)
+            .unwrap_or(Vec::new(&env));
+
+        let mut already_approved = false;
+        for a in approvals.iter() {
+            if a == guardian {
+                already_approved = true;
+                break;
+            }
+        }
+        if already_approved {
+            return Err(InheritanceError::AlreadyApproved);
+        }
+
+        approvals.push_back(guardian.clone());
+        env.storage().persistent().set(&key_approvals, &approvals);
+
+        env.events().publish(
+            (symbol_short!("EMERG"), symbol_short!("APPROVE")),
+            EmergencyAccessApprovedEvent {
+                plan_id,
+                trusted_contact: trusted_contact.clone(),
+                guardian,
+                approvals_count: approvals.len(),
+            },
+        );
+
+        if approvals.len() >= config.threshold {
+            let now = env.ledger().timestamp();
+            let emergency_access = EmergencyAccessRecord {
+                plan_id,
+                trusted_contact: trusted_contact.clone(),
+                activated_at: now,
+            };
+            env.storage()
+                .persistent()
+                .set(&key_access, &emergency_access);
+
+            env.events().publish(
+                (symbol_short!("EMERG"), symbol_short!("ACTIV")),
+                EmergencyAccessActivatedEvent {
+                    plan_id,
+                    trusted_contact,
+                    activated_at: now,
+                },
+            );
+            log!(
+                &env,
+                "Emergency access activated for plan {} at timestamp {}",
+                plan_id,
+                now
+            );
+        }
+        Ok(())
+    }
+
+    /// Query the emergency access record for a plan.
+    ///
+    /// # Arguments
+    /// * `env` - The environment
+    /// * `plan_id` - The ID of the plan
+    ///
+    /// # Returns
+    /// The EmergencyAccessRecord if emergency access is active, None otherwise
+    pub fn get_emergency_access(env: Env, plan_id: u64) -> Option<EmergencyAccessRecord> {
+        if Self::check_and_expire_emergency_access(&env, plan_id) {
+            let key = DataKey::EmergencyAccess(plan_id);
+            env.storage().persistent().get(&key)
+        } else {
+            None
+        }
+    }
+
+    /// Check if emergency access is active and within the cooldown period for a plan.
+    ///
+    /// # Arguments
+    /// * `env` - The environment
+    /// * `plan_id` - The ID of the plan
+    ///
+    /// # Returns
+    /// True if emergency access was activated within the last 24 hours
+    pub fn is_emergency_active(env: &Env, plan_id: u64) -> bool {
+        if let Some(record) = env
+            .storage()
+            .persistent()
+            .get::<DataKey, EmergencyAccessRecord>(&DataKey::EmergencyAccess(plan_id))
+        {
+            let now = env.ledger().timestamp();
+            let elapsed = now.saturating_sub(record.activated_at);
+            return elapsed < EMERGENCY_COOLDOWN_PERIOD;
+        }
+        false
+    }
+
+    /// Deactivate emergency access for a plan.
+    /// Only the plan owner can deactivate emergency access.
+    ///
+    /// # Arguments
+    /// * `env` - The environment
+    /// * `owner` - The plan owner (must authorize this call)
+    /// * `plan_id` - The ID of the plan to deactivate emergency access for
+    ///
+    /// # Returns
+    /// Ok(()) on success
+    ///
+    /// # Errors
+    /// - Unauthorized: If caller is not the plan owner
+    /// - PlanNotFound: If plan_id doesn't exist
+    pub fn deactivate_emergency_access(
+        env: Env,
+        owner: Address,
+        plan_id: u64,
+    ) -> Result<(), InheritanceError> {
+        // Require owner authorization
+        owner.require_auth();
+
+        // Get the plan
+        let plan = Self::get_plan(&env, plan_id).ok_or(InheritanceError::PlanNotFound)?;
+
+        // Verify caller is the plan owner
+        if plan.owner != owner {
+            return Err(InheritanceError::Unauthorized);
+        }
+
+        // Remove the emergency access record
+        let key = DataKey::EmergencyAccess(plan_id);
+        if env.storage().persistent().has(&key) {
+            env.storage().persistent().remove(&key);
+
+            // Emit revocation event
+            env.events().publish(
+                (symbol_short!("EMERG"), symbol_short!("REVOK")),
+                EmergencyAccessRevocationEvent {
+                    plan_id,
+                    revoked_at: env.ledger().timestamp(),
+                },
+            );
+
+            log!(&env, "Emergency access deactivated for plan {}", plan_id);
+        }
+
+        Ok(())
+    }
+
+    /// Retrieve a specific deactivated plan (User)
+    ///
+    /// # Arguments
+    /// * `env` - The environment
+    /// * `user` - The user requesting the plan (must be owner)
+    /// * `plan_id` - The ID of the plan
+    pub fn get_deactivated_plan(
+        env: Env,
+        user: Address,
+        plan_id: u64,
+    ) -> Result<InheritancePlan, InheritanceError> {
+        user.require_auth();
+
+        let plan = Self::get_plan(&env, plan_id).ok_or(InheritanceError::PlanNotFound)?;
+
+        // Check if plan belongs to user
+        if plan.owner != user {
+            return Err(InheritanceError::Unauthorized);
+        }
+
+        // Check if plan is deactivated
+        if plan.is_active {
+            return Err(InheritanceError::PlanNotActive);
+        }
+
+        Ok(plan)
+    }
+
+    /// Retrieve all deactivated plans for a user
+    pub fn get_user_deactivated_plans(env: Env, user: Address) -> Vec<InheritancePlan> {
+        user.require_auth();
+
+        let key = DataKey::UserPlans(user.clone());
+        let user_plan_ids: Vec<u64> = env
+            .storage()
+            .persistent()
+            .get(&key)
+            .unwrap_or(Vec::new(&env));
+
+        let mut deactivated_plans = Vec::new(&env);
+
+        for plan_id in user_plan_ids.iter() {
+            if let Some(plan) = Self::get_plan(&env, plan_id) {
+                if !plan.is_active {
+                    deactivated_plans.push_back(plan);
+                }
+            }
+        }
+
+        deactivated_plans
+    }
+
+    /// Retrieve all deactivated plans (Admin only)
+    pub fn get_all_deactivated_plans(
+        env: Env,
+        admin: Address,
+    ) -> Result<Vec<InheritancePlan>, InheritanceError> {
+        admin.require_auth();
+
+        // Verify admin
+        let stored_admin: Address = env
+            .storage()
+            .instance()
+            .get(&DataKey::Admin)
+            .ok_or(InheritanceError::Unauthorized)?;
+        if admin != stored_admin {
+            return Err(InheritanceError::Unauthorized);
+        }
+
+        let key = DataKey::DeactivatedPlans;
+        let deactivated_ids: Vec<u64> = env
+            .storage()
+            .persistent()
+            .get(&key)
+            .unwrap_or(Vec::new(&env));
+
+        let mut plans = Vec::new(&env);
+        for plan_id in deactivated_ids.iter() {
+            if let Some(plan) = Self::get_plan(&env, plan_id) {
+                // Double check it's inactive just in case
+                if !plan.is_active {
+                    plans.push_back(plan);
+                }
+            }
+        }
+
+        Ok(plans)
+    }
+
+    /// Retrieve a specific claimed plan belonging to the authenticated user
+    pub fn get_claimed_plan(
+        env: Env,
+        user: Address,
+        plan_id: u64,
+    ) -> Result<InheritancePlan, InheritanceError> {
+        user.require_auth();
+
+        let plan = Self::get_plan(&env, plan_id).ok_or(InheritanceError::PlanNotFound)?;
+
+        if plan.owner != user {
+            return Err(InheritanceError::Unauthorized);
+        }
+
+        let key = DataKey::UserClaimedPlans(user);
+        let user_plans: Vec<u64> = env
+            .storage()
+            .persistent()
+            .get(&key)
+            .unwrap_or(Vec::new(&env));
+
+        if !user_plans.contains(plan_id) {
+            return Err(InheritanceError::PlanNotClaimed);
+        }
+
+        Ok(plan)
+    }
+
+    /// Retrieve all claimed plans for the authenticated user
+    pub fn get_user_claimed_plans(env: Env, user: Address) -> Vec<InheritancePlan> {
+        user.require_auth();
+
+        let key = DataKey::UserClaimedPlans(user);
+        let user_plan_ids: Vec<u64> = env
+            .storage()
+            .persistent()
+            .get(&key)
+            .unwrap_or(Vec::new(&env));
+
+        let mut plans = Vec::new(&env);
+        for id in user_plan_ids.iter() {
+            if let Some(plan) = Self::get_plan(&env, id) {
+                plans.push_back(plan);
+            }
+        }
+        plans
+    }
+
+    /// Retrieve all claimed plans across all users; accessible only by administrators
+    pub fn get_all_claimed_plans(
+        env: Env,
+        admin: Address,
+    ) -> Result<Vec<InheritancePlan>, InheritanceError> {
+        Self::require_admin(&env, &admin)?;
+
+        let key = DataKey::AllClaimedPlans;
+        let all_plan_ids: Vec<u64> = env
+            .storage()
+            .persistent()
+            .get(&key)
+            .unwrap_or(Vec::new(&env));
+
+        let mut plans = Vec::new(&env);
+        for id in all_plan_ids.iter() {
+            if let Some(plan) = Self::get_plan(&env, id) {
+                plans.push_back(plan);
+            }
+        }
+        Ok(plans)
+    }
+
+    // ───────────────────────────────────────────
+    // Loan Recall on Inheritance Trigger
+    // ───────────────────────────────────────────
+
+    fn get_trigger_info(env: &Env, plan_id: u64) -> Option<InheritanceTriggerInfo> {
+        let key = DataKey::InheritanceTrigger(plan_id);
+        env.storage().persistent().get(&key)
+    }
+
+    fn set_trigger_info(env: &Env, plan_id: u64, info: &InheritanceTriggerInfo) {
+        let key = DataKey::InheritanceTrigger(plan_id);
+        env.storage().persistent().set(&key, info);
+    }
+
+    fn get_trigger_config(env: &Env, plan_id: u64) -> Option<TriggerConfig> {
+        env.storage()
+            .persistent()
+            .get(&DataKey::TriggerConditions(plan_id))
+    }
+
+    fn save_trigger_config(env: &Env, plan_id: u64, config: &TriggerConfig) {
+        env.storage()
+            .persistent()
+            .set(&DataKey::TriggerConditions(plan_id), config);
+    }
+
+    pub fn check_trigger_conditions(env: Env, plan_id: u64) -> bool {
+        let config = match Self::get_trigger_config(&env, plan_id) {
+            Some(c) => c,
+            None => return false,
+        };
+        let now = env.ledger().timestamp();
+        for condition in config.conditions.iter() {
+            match condition {
+                TriggerConditionType::Time => {
+                    if config.trigger_date > 0 && now >= config.trigger_date {
+                        return true;
+                    }
+                }
+                TriggerConditionType::Inactivity => {
+                    if config.inactivity_period > 0
+                        && config.last_activity > 0
+                        && now >= config.last_activity + config.inactivity_period
+                    {
+                        return true;
+                    }
+                }
+                TriggerConditionType::Oracle => {
+                    if config.oracle_triggered {
+                        return true;
+                    }
+                }
+                TriggerConditionType::Health => {
+                    if config.health_triggered {
+                        return true;
+                    }
+                }
+                TriggerConditionType::Manual => {}
+            }
+        }
+        false
+    }
+
+    pub fn get_trigger_conditions(env: Env, plan_id: u64) -> Option<TriggerConfig> {
+        Self::get_trigger_config(&env, plan_id)
+    }
+
+    pub fn set_trigger_conditions(
+        env: Env,
+        owner: Address,
+        plan_id: u64,
+        conditions: Vec<TriggerConditionType>,
+        trigger_date: u64,
+        inactivity_period: u64,
+        oracle_address: Option<Address>,
+    ) -> Result<(), InheritanceError> {
+        owner.require_auth();
+        let plan = Self::get_plan(&env, plan_id).ok_or(InheritanceError::PlanNotFound)?;
+        if plan.owner != owner {
+            return Err(InheritanceError::Unauthorized);
+        }
+        if Self::get_trigger_info(&env, plan_id).is_some() {
+            return Err(InheritanceError::InheritanceAlreadyTriggered);
+        }
+        let config = TriggerConfig {
+            conditions: conditions.clone(),
+            trigger_date,
+            inactivity_period,
+            last_activity: env.ledger().timestamp(),
+            oracle_address,
+            oracle_triggered: false,
+            health_triggered: false,
+        };
+        Self::save_trigger_config(&env, plan_id, &config);
+        env.events().publish(
+            (symbol_short!("TRIG"), symbol_short!("CONDSET")),
+            TriggerConditionSetEvent {
+                plan_id,
+                conditions_count: conditions.len(),
+            },
+        );
+        Ok(())
+    }
+
+    pub fn add_time_trigger(
+        env: Env,
+        owner: Address,
+        plan_id: u64,
+        trigger_date: u64,
+    ) -> Result<(), InheritanceError> {
+        owner.require_auth();
+        let plan = Self::get_plan(&env, plan_id).ok_or(InheritanceError::PlanNotFound)?;
+        if plan.owner != owner {
+            return Err(InheritanceError::Unauthorized);
+        }
+        if trigger_date == 0 {
+            return Err(InheritanceError::MissingRequiredField);
+        }
+        if Self::get_trigger_info(&env, plan_id).is_some() {
+            return Err(InheritanceError::InheritanceAlreadyTriggered);
+        }
+        let mut config = Self::get_trigger_config(&env, plan_id).unwrap_or(TriggerConfig {
+            conditions: Vec::new(&env),
+            trigger_date: 0,
+            inactivity_period: 0,
+            last_activity: env.ledger().timestamp(),
+            oracle_address: None,
+            oracle_triggered: false,
+            health_triggered: false,
+        });
+        let mut already = false;
+        for c in config.conditions.iter() {
+            if c == TriggerConditionType::Time {
+                already = true;
+                break;
+            }
+        }
+        if !already {
+            config.conditions.push_back(TriggerConditionType::Time);
+        }
+        config.trigger_date = trigger_date;
+        Self::save_trigger_config(&env, plan_id, &config);
+        Ok(())
+    }
+
+    pub fn add_inactivity_trigger(
+        env: Env,
+        owner: Address,
+        plan_id: u64,
+        period_seconds: u64,
+    ) -> Result<(), InheritanceError> {
+        owner.require_auth();
+        let plan = Self::get_plan(&env, plan_id).ok_or(InheritanceError::PlanNotFound)?;
+        if plan.owner != owner {
+            return Err(InheritanceError::Unauthorized);
+        }
+        if period_seconds == 0 {
+            return Err(InheritanceError::MissingRequiredField);
+        }
+        let mut config = Self::get_trigger_config(&env, plan_id).unwrap_or(TriggerConfig {
+            conditions: Vec::new(&env),
+            trigger_date: 0,
+            inactivity_period: 0,
+            last_activity: env.ledger().timestamp(),
+            oracle_address: None,
+            oracle_triggered: false,
+            health_triggered: false,
+        });
+        let mut already = false;
+        for c in config.conditions.iter() {
+            if c == TriggerConditionType::Inactivity {
+                already = true;
+                break;
+            }
+        }
+        if !already {
+            config
+                .conditions
+                .push_back(TriggerConditionType::Inactivity);
+        }
+        config.inactivity_period = period_seconds;
+        if config.last_activity == 0 {
+            config.last_activity = env.ledger().timestamp();
+        }
+        Self::save_trigger_config(&env, plan_id, &config);
+        Ok(())
+    }
+
+    pub fn add_oracle_trigger(
+        env: Env,
+        owner: Address,
+        plan_id: u64,
+        oracle_address: Address,
+    ) -> Result<(), InheritanceError> {
+        owner.require_auth();
+        let plan = Self::get_plan(&env, plan_id).ok_or(InheritanceError::PlanNotFound)?;
+        if plan.owner != owner {
+            return Err(InheritanceError::Unauthorized);
+        }
+        let mut config = Self::get_trigger_config(&env, plan_id).unwrap_or(TriggerConfig {
+            conditions: Vec::new(&env),
+            trigger_date: 0,
+            inactivity_period: 0,
+            last_activity: env.ledger().timestamp(),
+            oracle_address: None,
+            oracle_triggered: false,
+            health_triggered: false,
+        });
+        let mut already = false;
+        for c in config.conditions.iter() {
+            if c == TriggerConditionType::Oracle {
+                already = true;
+                break;
+            }
+        }
+        if !already {
+            config.conditions.push_back(TriggerConditionType::Oracle);
+        }
+        config.oracle_address = Some(oracle_address);
+        Self::save_trigger_config(&env, plan_id, &config);
+        Ok(())
+    }
+
+    pub fn add_health_trigger(
+        env: Env,
+        owner: Address,
+        plan_id: u64,
+        oracle_address: Address,
+    ) -> Result<(), InheritanceError> {
+        owner.require_auth();
+        let plan = Self::get_plan(&env, plan_id).ok_or(InheritanceError::PlanNotFound)?;
+        if plan.owner != owner {
+            return Err(InheritanceError::Unauthorized);
+        }
+        let mut config = Self::get_trigger_config(&env, plan_id).unwrap_or(TriggerConfig {
+            conditions: Vec::new(&env),
+            trigger_date: 0,
+            inactivity_period: 0,
+            last_activity: env.ledger().timestamp(),
+            oracle_address: None,
+            oracle_triggered: false,
+            health_triggered: false,
+        });
+        let mut already = false;
+        for c in config.conditions.iter() {
+            if c == TriggerConditionType::Health {
+                already = true;
+                break;
+            }
+        }
+        if !already {
+            config.conditions.push_back(TriggerConditionType::Health);
+        }
+        config.oracle_address = Some(oracle_address);
+        Self::save_trigger_config(&env, plan_id, &config);
+        Ok(())
+    }
+
+    pub fn record_activity(env: Env, owner: Address, plan_id: u64) -> Result<(), InheritanceError> {
+        owner.require_auth();
+        let plan = Self::get_plan(&env, plan_id).ok_or(InheritanceError::PlanNotFound)?;
+        if plan.owner != owner {
+            return Err(InheritanceError::Unauthorized);
+        }
+        let mut config =
+            Self::get_trigger_config(&env, plan_id).ok_or(InheritanceError::PlanNotFound)?;
+        config.last_activity = env.ledger().timestamp();
+        Self::save_trigger_config(&env, plan_id, &config);
+        Ok(())
+    }
+
+    pub fn submit_oracle_trigger(
+        env: Env,
+        oracle: Address,
+        plan_id: u64,
+    ) -> Result<(), InheritanceError> {
+        oracle.require_auth();
+        let mut config =
+            Self::get_trigger_config(&env, plan_id).ok_or(InheritanceError::PlanNotFound)?;
+        match &config.oracle_address {
+            Some(addr) if *addr == oracle => {}
+            _ => return Err(InheritanceError::Unauthorized),
+        }
+        config.oracle_triggered = true;
+        Self::save_trigger_config(&env, plan_id, &config);
+        Ok(())
+    }
+
+    pub fn submit_health_trigger(
+        env: Env,
+        oracle: Address,
+        plan_id: u64,
+    ) -> Result<(), InheritanceError> {
+        oracle.require_auth();
+        let mut config =
+            Self::get_trigger_config(&env, plan_id).ok_or(InheritanceError::PlanNotFound)?;
+        match &config.oracle_address {
+            Some(addr) if *addr == oracle => {}
+            _ => return Err(InheritanceError::Unauthorized),
+        }
+        config.health_triggered = true;
+        Self::save_trigger_config(&env, plan_id, &config);
+        Ok(())
+    }
+
+    pub fn auto_trigger_check(env: Env, plan_id: u64) -> Result<(), InheritanceError> {
+        if !Self::check_trigger_conditions(env.clone(), plan_id) {
+            return Ok(());
+        }
+        if Self::get_trigger_info(&env, plan_id).is_some() {
+            return Ok(());
+        }
+        let now = env.ledger().timestamp();
+        let mut plan = Self::get_plan(&env, plan_id).ok_or(InheritanceError::PlanNotFound)?;
+        if !plan.is_active {
+            return Err(InheritanceError::PlanNotActive);
+        }
+        plan.is_lendable = false;
+        Self::store_plan(&env, plan_id, &plan);
+        let trigger_info = InheritanceTriggerInfo {
+            triggered_at: now,
+            loan_freeze_active: true,
+            recall_attempted: false,
+            liquidation_triggered: false,
+            original_loaned: plan.total_loaned,
+            recalled_amount: 0,
+            settled_amount: 0,
+        };
+        Self::set_trigger_info(&env, plan_id, &trigger_info);
+        env.events().publish(
+            (symbol_short!("TRIG"), symbol_short!("CONDMET")),
+            TriggerConditionMetEvent {
+                plan_id,
+                triggered_at: now,
+            },
+        );
+        env.events().publish(
+            (symbol_short!("INHERIT"), symbol_short!("TRIGGER")),
+            InheritanceTriggeredEvent {
+                plan_id,
+                triggered_at: now,
+                outstanding_loans: plan.total_loaned,
+            },
+        );
+        Ok(())
+    }
+
+    /// Trigger inheritance for a plan. This freezes new loans and initiates
+    /// the loan recall process.
+    ///
+    /// # Arguments
+    /// * `env` - The environment
+    /// * `admin` - The admin address (must be the initialized admin)
+    /// * `plan_id` - The ID of the plan to trigger inheritance for
+    ///
+    /// # Effects
+    /// - Sets `is_lendable = false` to freeze new loans against this plan
+    /// - Records the trigger info for tracking recall/liquidation state
+    /// - Emits `INHERIT/TRIGGER` and `LOAN/FREEZE` events
+    ///
+    /// # Errors
+    /// - `PlanNotFound` if plan_id doesn't exist
+    /// - `PlanNotActive` if plan is not active
+    /// - `InheritanceAlreadyTriggered` if inheritance was already triggered
+    pub fn trigger_inheritance(
+        env: Env,
+        caller: Address,
+        plan_id: u64,
+    ) -> Result<(), InheritanceError> {
+        Self::check_not_paused(&env);
+        Self::enter_guard(&env);
+        // Authorization check: Admin OR Owner OR Trusted Contact with active emergency access
+        let mut is_authorized = false;
+
+        // 1. Admin check
+        if let Some(admin) = Self::get_admin(&env) {
+            if admin == caller {
+                caller.require_auth();
+                is_authorized = true;
+            }
+        }
+
+        // 2. Plan check (Owner or Generic Emergency Access)
+        if !is_authorized {
+            let plan = Self::get_plan(&env, plan_id).ok_or(InheritanceError::PlanNotFound)?;
+            if plan.owner == caller {
+                caller.require_auth();
+                is_authorized = true;
+            } else if let Some(record) = Self::get_emergency_access(env.clone(), plan_id) {
+                if record.trusted_contact == caller {
+                    caller.require_auth();
+                    is_authorized = true;
+                }
+            }
+        }
+
+        if !is_authorized {
+            return Err(InheritanceError::Unauthorized);
+        }
+
+        let mut plan = Self::get_plan(&env, plan_id).ok_or(InheritanceError::PlanNotFound)?;
+
+        if !plan.is_active {
+            return Err(InheritanceError::PlanNotActive);
+        }
+
+        // Check if already triggered
+        if Self::get_trigger_info(&env, plan_id).is_some() {
+            return Err(InheritanceError::InheritanceAlreadyTriggered);
+        }
+
+        let now = env.ledger().timestamp();
+
+        // Freeze new loans by setting is_lendable to false
+        plan.is_lendable = false;
+        Self::store_plan(&env, plan_id, &plan);
+
+        // Create trigger info
+        let trigger_info = InheritanceTriggerInfo {
+            triggered_at: now,
+            loan_freeze_active: true,
+            recall_attempted: false,
+            liquidation_triggered: false,
+            original_loaned: plan.total_loaned,
+            recalled_amount: 0,
+            settled_amount: 0,
+        };
+        Self::set_trigger_info(&env, plan_id, &trigger_info);
+
+        // Emit events
+        env.events().publish(
+            (symbol_short!("INHERIT"), symbol_short!("TRIGGER")),
+            InheritanceTriggeredEvent {
+                plan_id,
+                triggered_at: now,
+                outstanding_loans: plan.total_loaned,
+            },
+        );
+
+        env.events().publish(
+            (symbol_short!("LOAN"), symbol_short!("FREEZE")),
+            LoanFreezeEvent {
+                plan_id,
+                frozen_at: now,
+            },
+        );
+
+        log!(
+            &env,
+            "Inheritance triggered for plan {} — loans frozen, outstanding: {}",
+            plan_id,
+            plan.total_loaned
+        );
+
+        Self::exit_guard(&env);
+        Ok(())
+    }
+
+    /// Attempt to recall loaned funds back to the plan.
+    /// Called by admin after loan repayment has been collected off-chain
+    /// or via cross-contract calls to lending/borrowing contracts.
+    ///
+    /// # Arguments
+    /// * `env` - The environment
+    /// * `admin` - The admin address
+    /// * `plan_id` - The plan ID
+    /// * `recall_amount` - Amount of loaned funds being recalled
+    ///
+    /// # Effects
+    /// - Reduces `total_loaned` by the recalled amount
+    /// - Updates trigger info with recall progress
+    /// - Emits `LOAN/RECALL` event
+    ///
+    /// # Errors
+    /// - `InheritanceNotTriggered` if inheritance hasn't been triggered
+    /// - `NoOutstandingLoans` if there are no loans to recall
+    /// - `LoanRecallFailed` if recall_amount exceeds outstanding loans
+    pub fn recall_loan(
+        env: Env,
+        admin: Address,
+        plan_id: u64,
+        recall_amount: u64,
+    ) -> Result<(), InheritanceError> {
+        Self::require_admin(&env, &admin)?;
+
+        let mut plan = Self::get_plan(&env, plan_id).ok_or(InheritanceError::PlanNotFound)?;
+
+        let mut trigger_info = Self::get_trigger_info(&env, plan_id)
+            .ok_or(InheritanceError::InheritanceNotTriggered)?;
+
+        if plan.total_loaned == 0 {
+            return Err(InheritanceError::NoOutstandingLoans);
+        }
+
+        if recall_amount == 0 || recall_amount > plan.total_loaned {
+            return Err(InheritanceError::LoanRecallFailed);
+        }
+
+        // Reduce the loaned amount
+        plan.total_loaned -= recall_amount;
+        Self::store_plan(&env, plan_id, &plan);
+
+        // Update trigger info
+        trigger_info.recall_attempted = true;
+        trigger_info.recalled_amount += recall_amount;
+        Self::set_trigger_info(&env, plan_id, &trigger_info);
+
+        env.events().publish(
+            (symbol_short!("LOAN"), symbol_short!("RECALL")),
+            LoanRecallEvent {
+                plan_id,
+                recalled_amount: recall_amount,
+                remaining_loaned: plan.total_loaned,
+            },
+        );
+
+        log!(
+            &env,
+            "Recalled {} from plan {} loans — {} remaining",
+            recall_amount,
+            plan_id,
+            plan.total_loaned
+        );
+
+        Ok(())
+    }
+
+    /// Trigger liquidation fallback when loans cannot be fully recalled.
+    /// This writes off unrecoverable loaned amounts so that inheritance
+    /// execution cannot be blocked by outstanding loans.
+    ///
+    /// # Arguments
+    /// * `env` - The environment
+    /// * `admin` - The admin address
+    /// * `plan_id` - The plan ID
+    ///
+    /// # Effects
+    /// - Writes off remaining `total_loaned` from `total_amount`
+    /// - Sets `total_loaned` to 0
+    /// - Records liquidation in trigger info
+    /// - Emits `LOAN/LIQUIDATE` event
+    ///
+    /// # Errors
+    /// - `InheritanceNotTriggered` if inheritance hasn't been triggered
+    /// - `NoOutstandingLoans` if there are no loans to liquidate
+    pub fn liquidation_fallback(
+        env: Env,
+        admin: Address,
+        plan_id: u64,
+    ) -> Result<(), InheritanceError> {
+        Self::require_admin(&env, &admin)?;
+
+        let mut plan = Self::get_plan(&env, plan_id).ok_or(InheritanceError::PlanNotFound)?;
+
+        let mut trigger_info = Self::get_trigger_info(&env, plan_id)
+            .ok_or(InheritanceError::InheritanceNotTriggered)?;
+
+        if plan.total_loaned == 0 {
+            return Err(InheritanceError::NoOutstandingLoans);
+        }
+
+        let unrecoverable = plan.total_loaned;
+
+        // Write off the unrecoverable loaned amount from the plan's total
+        plan.total_amount = plan.total_amount.saturating_sub(unrecoverable);
+        plan.total_loaned = 0;
+        Self::store_plan(&env, plan_id, &plan);
+
+        // Update trigger info
+        trigger_info.liquidation_triggered = true;
+        trigger_info.settled_amount += unrecoverable;
+        Self::set_trigger_info(&env, plan_id, &trigger_info);
+
+        env.events().publish(
+            (symbol_short!("LOAN"), symbol_short!("LIQUIDAT")),
+            LiquidationFallbackEvent {
+                plan_id,
+                settled_amount: unrecoverable,
+                claimable_amount: plan.total_amount,
+            },
+        );
+
+        log!(
+            &env,
+            "Liquidation fallback for plan {}: wrote off {}, claimable: {}",
+            plan_id,
+            unrecoverable,
+            plan.total_amount
+        );
+
+        Ok(())
+    }
+
+    /// Query the inheritance trigger status for a plan.
+    pub fn get_inheritance_trigger(env: Env, plan_id: u64) -> Option<InheritanceTriggerInfo> {
+        Self::get_trigger_info(&env, plan_id)
+    }
+
+    /// Calculate the claimable amount for a plan, accounting for outstanding loans.
+    /// Returns the amount available to beneficiaries after any loan deductions.
+    pub fn get_claimable_amount(env: Env, plan_id: u64) -> Result<u64, InheritanceError> {
+        let plan = Self::get_plan(&env, plan_id).ok_or(InheritanceError::PlanNotFound)?;
+        Ok(plan.total_amount.saturating_sub(plan.total_loaned))
+    }
+
+    // ───────────────────────────────────────────
+    // Contract Upgrade Functions
+    // ───────────────────────────────────────────
+
+    /// Get the current contract version.
+    pub fn version(env: Env) -> u32 {
+        env.storage()
+            .instance()
+            .get(&DataKey::Version)
+            .unwrap_or(CONTRACT_VERSION)
+    }
+
+    /// Upgrade the contract to a new WASM binary.
+    ///
+    /// # Arguments
+    /// * `env` - The environment
+    /// * `admin` - The admin address (must be the initialized admin)
+    /// * `new_wasm_hash` - The hash of the new WASM binary to deploy
+    ///
+    /// # Errors
+    /// - `AdminNotSet` if admin has not been initialized
+    /// - `NotAdmin` if the caller is not the admin
+    pub fn upgrade(
+        env: Env,
+        admin: Address,
+        new_wasm_hash: BytesN<32>,
+    ) -> Result<(), InheritanceError> {
+        // Only the contract admin can trigger an upgrade
+        Self::require_admin(&env, &admin)?;
+
+        let old_version = Self::version(env.clone());
+        let new_version = old_version + 1;
+
+        // Store the new version before upgrading
+        env.storage()
+            .instance()
+            .set(&DataKey::Version, &new_version);
+
+        // Emit upgrade event for audit trail
+        env.events().publish(
+            (symbol_short!("CONTRACT"), symbol_short!("UPGRADE")),
+            ContractUpgradedEvent {
+                old_version,
+                new_version,
+                new_wasm_hash: new_wasm_hash.clone(),
+                admin: admin.clone(),
+                upgraded_at: env.ledger().timestamp(),
+            },
+        );
+
+        log!(
+            &env,
+            "Contract upgraded from v{} to v{} by admin",
+            old_version,
+            new_version
+        );
+
+        // Perform the atomic WASM upgrade — this replaces the contract code
+        // while preserving all storage (plans, claims, KYC, admin, etc.)
+        env.deployer().update_current_contract_wasm(new_wasm_hash);
+
+        Ok(())
+    }
+
+    /// Post-upgrade migration hook for data schema changes.
+    ///
+    /// Call this after deploying a new WASM if the new version requires
+    /// storage migrations. If no migration is needed the function is a no-op
+    /// so it is always safe to call.
+    ///
+    /// # Arguments
+    /// * `env` - The environment
+    /// * `admin` - The admin address (must be the initialized admin)
+    pub fn migrate(env: Env, admin: Address) -> Result<(), InheritanceError> {
+        Self::require_admin(&env, &admin)?;
+
+        let stored_version: u32 = env.storage().instance().get(&DataKey::Version).unwrap_or(0);
+
+        if stored_version >= CONTRACT_VERSION {
+            // Already up-to-date — nothing to migrate
+            return Ok(());
+        }
+
+        // ── Version-specific migrations go here ──
+        // Example for a future migration:
+        // if stored_version < 2 {
+        //     // migrate from v1 → v2 schema changes
+        // }
+
+        // Update stored version to current
+        env.storage()
+            .instance()
+            .set(&DataKey::Version, &CONTRACT_VERSION);
+
+        log!(
+            &env,
+            "Contract migrated from v{} to v{}",
+            stored_version,
+            CONTRACT_VERSION
+        );
+
+        Ok(())
+    }
+
+    // ── Will Management System (Issues #314–#317) ──
+
+    /// Store a SHA-256 hash of a will document on-chain, mapped to a plan_id.
+    pub fn store_will_hash(
+        env: Env,
+        owner: Address,
+        plan_id: u64,
+        will_hash: BytesN<32>,
+    ) -> Result<(), InheritanceError> {
+        owner.require_auth();
+
+        let plan = Self::get_plan(&env, plan_id).ok_or(InheritanceError::PlanNotFound)?;
+        if plan.owner != owner {
+            return Err(InheritanceError::Unauthorized);
+        }
+
+        let key = DataKey::WillHash(plan_id);
+        if env
+            .storage()
+            .persistent()
+            .get::<_, BytesN<32>>(&key)
+            .is_some()
+        {
+            return Err(InheritanceError::WillHashAlreadyStored);
+        }
+
+        env.storage().persistent().set(&key, &will_hash);
+
+        env.events().publish(
+            (symbol_short!("WILL"), symbol_short!("STORED")),
+            WillHashStoredEvent { plan_id, will_hash },
+        );
+
+        Ok(())
+    }
+
+    /// Retrieve the stored will hash for a plan.
+    pub fn get_will_hash(env: Env, plan_id: u64) -> Option<BytesN<32>> {
+        let key = DataKey::WillHash(plan_id);
+        env.storage().persistent().get(&key)
+    }
+
+    /// Link a will document hash to a vault (plan). Prevents re-linking unless
+    /// the will versioning system is used (create_will_version updates VaultWill).
+    pub fn link_will_to_vault(
+        env: Env,
+        owner: Address,
+        plan_id: u64,
+        will_hash: BytesN<32>,
+    ) -> Result<(), InheritanceError> {
+        owner.require_auth();
+
+        let plan = Self::get_plan(&env, plan_id).ok_or(InheritanceError::VaultNotFound)?;
+        if plan.owner != owner {
+            return Err(InheritanceError::Unauthorized);
+        }
+
+        let key = DataKey::VaultWill(plan_id);
+        if env
+            .storage()
+            .persistent()
+            .get::<_, BytesN<32>>(&key)
+            .is_some()
+        {
+            return Err(InheritanceError::WillAlreadyLinked);
+        }
+
+        env.storage().persistent().set(&key, &will_hash);
+
+        env.events().publish(
+            (symbol_short!("WILL"), symbol_short!("LINKED")),
+            WillLinkedToVaultEvent { plan_id, will_hash },
+        );
+
+        Ok(())
+    }
+
+    /// Retrieve the will hash linked to a vault.
+    pub fn get_vault_will(env: Env, plan_id: u64) -> Option<BytesN<32>> {
+        let key = DataKey::VaultWill(plan_id);
+        env.storage().persistent().get(&key)
+    }
+
+    /// Verify that the beneficiaries in a will document match those stored in the plan.
+    /// Takes a list of (hashed_email, allocation_bp) pairs and compares against the plan.
+    pub fn verify_beneficiaries(
+        env: Env,
+        plan_id: u64,
+        will_beneficiaries: Vec<(BytesN<32>, u32)>,
+    ) -> Result<bool, InheritanceError> {
+        let plan = Self::get_plan(&env, plan_id).ok_or(InheritanceError::PlanNotFound)?;
+
+        let plan_bens = &plan.beneficiaries;
+        let mut status = true;
+
+        // Check count matches
+        if will_beneficiaries.len() != plan_bens.len() {
+            status = false;
+        } else {
+            // For each will beneficiary, find a matching plan beneficiary
+            for i in 0..will_beneficiaries.len() {
+                let (ref wh_email, w_alloc) = will_beneficiaries.get(i).unwrap();
+                let mut found = false;
+                for j in 0..plan_bens.len() {
+                    let pb = plan_bens.get(j).unwrap();
+                    if pb.hashed_email == *wh_email && pb.allocation_bp == w_alloc {
+                        found = true;
+                        break;
+                    }
+                }
+                if !found {
+                    status = false;
+                    break;
+                }
+            }
+        }
+
+        // Store verification result
+        let ver_key = DataKey::BeneficiaryVerification(plan_id);
+        env.storage().persistent().set(&ver_key, &status);
+
+        env.events().publish(
+            (symbol_short!("WILL"), symbol_short!("VERIFY")),
+            BeneficiariesVerifiedEvent { plan_id, status },
+        );
+
+        Ok(status)
+    }
+
+    /// Get the last beneficiary verification status for a plan.
+    pub fn get_verification_status(env: Env, plan_id: u64) -> Option<bool> {
+        let key = DataKey::BeneficiaryVerification(plan_id);
+        env.storage().persistent().get(&key)
+    }
+
+    /// Create a new will version for a plan. Auto-increments version number and
+    /// deactivates the previously active version. Also updates the VaultWill link.
+    pub fn create_will_version(
+        env: Env,
+        owner: Address,
+        plan_id: u64,
+        will_hash: BytesN<32>,
+    ) -> Result<u32, InheritanceError> {
+        owner.require_auth();
+
+        let plan = Self::get_plan(&env, plan_id).ok_or(InheritanceError::PlanNotFound)?;
+        if plan.owner != owner {
+            return Err(InheritanceError::Unauthorized);
+        }
+
+        // Block creating a new version if the currently active version is finalized
+        let active_key = DataKey::ActiveWillVersion(plan_id);
+        if let Some(active_ver_num) = env.storage().persistent().get::<_, u32>(&active_key) {
+            let fin_key = DataKey::WillFinalized(plan_id, active_ver_num);
+            if env
+                .storage()
+                .persistent()
+                .get::<_, bool>(&fin_key)
+                .unwrap_or(false)
+            {
+                return Err(InheritanceError::WillAlreadyFinalized);
+            }
+        }
+
+        // Get and increment version count
+        let count_key = DataKey::WillVersionCount(plan_id);
+        let current_count: u32 = env.storage().persistent().get(&count_key).unwrap_or(0);
+        let new_version = current_count + 1;
+        env.storage().persistent().set(&count_key, &new_version);
+
+        // Deactivate previously active version if any
+        let active_key = DataKey::ActiveWillVersion(plan_id);
+        if let Some(prev_ver_num) = env.storage().persistent().get::<_, u32>(&active_key) {
+            let prev_key = DataKey::WillVersion(plan_id, prev_ver_num);
+            if let Some(mut prev_ver) = env
+                .storage()
+                .persistent()
+                .get::<_, WillVersionInfo>(&prev_key)
+            {
+                prev_ver.is_active = false;
+                env.storage().persistent().set(&prev_key, &prev_ver);
+            }
+        }
+
+        // Store new version
+        let version_info = WillVersionInfo {
+            version: new_version,
+            will_hash: will_hash.clone(),
+            created_at: env.ledger().timestamp(),
+            is_active: true,
+        };
+        let ver_key = DataKey::WillVersion(plan_id, new_version);
+        env.storage().persistent().set(&ver_key, &version_info);
+
+        // Set as active
+        env.storage().persistent().set(&active_key, &new_version);
+
+        // Update VaultWill link to point to latest will hash
+        let vault_will_key = DataKey::VaultWill(plan_id);
+        env.storage().persistent().set(&vault_will_key, &will_hash);
+
+        env.events().publish(
+            (symbol_short!("WILL"), symbol_short!("VERSION")),
+            WillVersionCreatedEvent {
+                plan_id,
+                version: new_version,
+            },
+        );
+
+        env.events().publish(
+            (symbol_short!("WILL"), symbol_short!("ACTIVE")),
+            WillVersionActivatedEvent {
+                plan_id,
+                version: new_version,
+            },
+        );
+
+        Ok(new_version)
+    }
+
+    /// Get a specific will version for a plan.
+    pub fn get_will_version(env: Env, plan_id: u64, version: u32) -> Option<WillVersionInfo> {
+        let key = DataKey::WillVersion(plan_id, version);
+        env.storage().persistent().get(&key)
+    }
+
+    /// Get the currently active will version for a plan.
+    pub fn get_active_will_version(env: Env, plan_id: u64) -> Option<WillVersionInfo> {
+        let active_key = DataKey::ActiveWillVersion(plan_id);
+        if let Some(active_ver) = env.storage().persistent().get::<_, u32>(&active_key) {
+            let key = DataKey::WillVersion(plan_id, active_ver);
+            env.storage().persistent().get(&key)
+        } else {
+            None
+        }
+    }
+
+    /// Get the total number of will versions for a plan.
+    pub fn get_will_version_count(env: Env, plan_id: u64) -> u32 {
+        let key = DataKey::WillVersionCount(plan_id);
+        env.storage().persistent().get(&key).unwrap_or(0)
+    }
+
+    // ── Will Signature Verification (Issue #318) ──
+
+    /// Record that the vault owner has approved and signed a will.
+    ///
+    /// The caller must be the plan owner. A composite sig_hash is derived from
+    /// (vault_id, will_hash) to bind the signature to a specific will version and
+    /// prevent replay across different vaults or will documents.
+    pub fn sign_will(
+        env: Env,
+        owner: Address,
+        vault_id: u64,
+        will_hash: BytesN<32>,
+    ) -> Result<(), InheritanceError> {
+        owner.require_auth();
+
+        // Verify the plan exists and caller is the owner
+        let plan = Self::get_plan(&env, vault_id).ok_or(InheritanceError::PlanNotFound)?;
+        if plan.owner != owner {
+            return Err(InheritanceError::Unauthorized);
+        }
+
+        // Derive a deterministic sig_hash from (vault_id, will_hash) for replay protection
+        let mut sig_input = Bytes::new(&env);
+        for b in vault_id.to_be_bytes() {
+            sig_input.push_back(b);
+        }
+        for b in will_hash.to_array() {
+            sig_input.push_back(b);
+        }
+        let sig_hash: BytesN<32> = env.crypto().sha256(&sig_input).into();
+
+        // Replay protection: reject if this (vault_id, will_hash) pair was already signed
+        let used_key = DataKey::SignatureUsed(sig_hash.clone());
+        if env
+            .storage()
+            .persistent()
+            .get::<_, bool>(&used_key)
+            .unwrap_or(false)
+        {
+            return Err(InheritanceError::WillAlreadyFinalized);
+        }
+
+        // Mark signature as used
+        env.storage().persistent().set(&used_key, &true);
+
+        // Store the signature proof
+        let proof = WillSignatureProof {
+            vault_id,
+            will_hash,
+            signer: owner.clone(),
+            sig_hash,
+            signed_at: env.ledger().timestamp(),
+        };
+        env.storage()
+            .persistent()
+            .set(&DataKey::WillSignature(vault_id), &proof);
+
+        // Emit WillSigned event
+        env.events().publish(
+            (symbol_short!("WILL"), symbol_short!("SIGNED")),
+            WillSignedEvent {
+                vault_id,
+                signer: owner,
+            },
+        );
+
+        Ok(())
+    }
+
+    /// Retrieve the stored will signature proof for a vault.
+    pub fn get_will_signature(env: Env, vault_id: u64) -> Option<WillSignatureProof> {
+        env.storage()
+            .persistent()
+            .get(&DataKey::WillSignature(vault_id))
+    }
+
+    /// Create a new legacy message with metadata stored on-chain
+    ///
+    /// # Arguments
+    /// * `env` - The Soroban environment
+    /// * `creator` - The address of the message creator (must be vault owner)
+    /// * `params` - Message creation parameters including hash and unlock timestamp
+    ///
+    /// # Requirements
+    /// - Creator must be the vault owner
+    /// - Unlock timestamp must be in the future
+    /// - Vault/plan must exist
+    pub fn create_legacy_message(
+        env: Env,
+        creator: Address,
+        params: CreateLegacyMessageParams,
+    ) -> Result<u64, InheritanceError> {
+        // Verify vault/plan exists and creator is the owner
+        let plan = Self::get_plan(&env, params.vault_id).ok_or(InheritanceError::PlanNotFound)?;
+        if plan.owner != creator {
+            return Err(InheritanceError::Unauthorized);
+        }
+
+        // Validate unlock timestamp is in the future
+        let current_timestamp = env.ledger().timestamp();
+        if params.unlock_timestamp <= current_timestamp {
+            return Err(InheritanceError::InvalidClaimCode); // Reuse for invalid timestamp
+        }
+
+        // Generate unique message ID
+        let message_id = env
+            .storage()
+            .persistent()
+            .get(&DataKey::NextMessageId)
+            .unwrap_or(0u64);
+
+        // Create message metadata
+        let message = LegacyMessageMetadata {
+            vault_id: params.vault_id,
+            message_id,
+            message_hash: params.message_hash,
+            creator: creator.clone(),
+            key_reference: params.key_reference,
+            unlock_timestamp: params.unlock_timestamp,
+            is_unlocked: false,
+            is_finalized: false,
+            created_at: current_timestamp,
+        };
+
+        // Store message metadata
+        env.storage()
+            .persistent()
+            .set(&DataKey::LegacyMessage(message_id), &message);
+
+        // Add message to vault's message list
+        let mut vault_messages: Vec<u64> = env
+            .storage()
+            .persistent()
+            .get(&DataKey::VaultMessages(params.vault_id))
+            .unwrap_or_else(|| vec![&env]);
+        vault_messages.push_back(message_id);
+        env.storage()
+            .persistent()
+            .set(&DataKey::VaultMessages(params.vault_id), &vault_messages);
+
+        // Increment next message ID
+        env.storage()
+            .persistent()
+            .set(&DataKey::NextMessageId, &(message_id + 1));
+
+        // Emit event
+        env.events().publish(
+            (Symbol::new(&env, "message_created"), params.vault_id),
+            MessageCreatedEvent {
+                vault_id: params.vault_id,
+                message_id,
+                timestamp: current_timestamp,
+            },
+        );
+
+        Ok(message_id)
+    }
+
+    pub fn update_legacy_message(
+        env: Env,
+        creator: Address,
+        message_id: u64,
+        params: CreateLegacyMessageParams,
+    ) -> Result<(), InheritanceError> {
+        creator.require_auth();
+
+        let mut message = env
+            .storage()
+            .persistent()
+            .get::<_, LegacyMessageMetadata>(&DataKey::LegacyMessage(message_id))
+            .ok_or(InheritanceError::PlanNotFound)?;
+
+        if message.creator != creator {
+            return Err(InheritanceError::Unauthorized);
+        }
+
+        if message.is_finalized {
+            return Err(InheritanceError::WillAlreadyFinalized);
+        }
+
+        if message.is_unlocked {
+            return Err(InheritanceError::AlreadyClaimed);
+        }
+
+        message.message_hash = params.message_hash;
+        message.unlock_timestamp = params.unlock_timestamp;
+        message.key_reference = params.key_reference;
+
+        env.storage()
+            .persistent()
+            .set(&DataKey::LegacyMessage(message_id), &message);
+
+        env.events().publish(
+            (Symbol::new(&env, "message_updated"), message.vault_id),
+            MessageUpdatedEvent {
+                vault_id: message.vault_id,
+                message_id,
+                timestamp: env.ledger().timestamp(),
+            },
+        );
+        Ok(())
+    }
+
+    pub fn finalize_legacy_message(
+        env: Env,
+        creator: Address,
+        message_id: u64,
+    ) -> Result<(), InheritanceError> {
+        creator.require_auth();
+
+        let mut message = env
+            .storage()
+            .persistent()
+            .get::<_, LegacyMessageMetadata>(&DataKey::LegacyMessage(message_id))
+            .ok_or(InheritanceError::PlanNotFound)?;
+
+        if message.creator != creator {
+            return Err(InheritanceError::Unauthorized);
+        }
+
+        if message.is_finalized {
+            return Err(InheritanceError::WillAlreadyFinalized);
+        }
+
+        message.is_finalized = true;
+
+        env.storage()
+            .persistent()
+            .set(&DataKey::LegacyMessage(message_id), &message);
+
+        env.events().publish(
+            (Symbol::new(&env, "message_finalized"), message.vault_id),
+            MessageFinalizedEvent {
+                vault_id: message.vault_id,
+                message_id,
+                timestamp: env.ledger().timestamp(),
+            },
+        );
+        Ok(())
+    }
+
+    /// Get metadata for a specific legacy message
+    ///
+    /// # Arguments
+    /// * `env` - The Soroban environment
+    /// * `message_id` - The unique message identifier
+    pub fn get_legacy_message(env: Env, message_id: u64) -> Option<LegacyMessageMetadata> {
+        env.storage()
+            .persistent()
+            .get(&DataKey::LegacyMessage(message_id))
+    }
+
+    /// Get all message IDs for a specific vault
+    ///
+    /// # Arguments
+    /// * `env` - The Soroban environment
+    /// * `vault_id` - The vault/plan ID
+    pub fn get_vault_messages(env: Env, vault_id: u64) -> Vec<u64> {
+        env.storage()
+            .persistent()
+            .get(&DataKey::VaultMessages(vault_id))
+            .unwrap_or_else(|| vec![&env])
+    }
+
+    /// Delete a legacy message before it has been finalized.
+    ///
+    /// # Arguments
+    /// * `env` - The Soroban environment
+    /// * `owner` - The vault owner requesting deletion
+    /// * `message_id` - The message to delete
+    ///
+    /// # Errors
+    /// - `PlanNotFound` if the message does not exist
+    /// - `Unauthorized` if caller is not the message creator
+    /// - `WillAlreadyFinalized` if the message has been finalized
+    pub fn delete_legacy_message(
+        env: Env,
+        owner: Address,
+        message_id: u64,
+    ) -> Result<(), InheritanceError> {
+        owner.require_auth();
+
+        let message: LegacyMessageMetadata = env
+            .storage()
+            .persistent()
+            .get(&DataKey::LegacyMessage(message_id))
+            .ok_or(InheritanceError::PlanNotFound)?;
+
+        if message.creator != owner {
+            return Err(InheritanceError::Unauthorized);
+        }
+
+        if message.is_finalized {
+            return Err(InheritanceError::WillAlreadyFinalized);
+        }
+
+        // Remove message metadata
+        env.storage()
+            .persistent()
+            .remove(&DataKey::LegacyMessage(message_id));
+
+        // Remove from vault's message list
+        let vault_messages: Vec<u64> = env
+            .storage()
+            .persistent()
+            .get(&DataKey::VaultMessages(message.vault_id))
+            .unwrap_or_else(|| vec![&env]);
+        let mut updated: Vec<u64> = vec![&env];
+        for id in vault_messages.iter() {
+            if id != message_id {
+                updated.push_back(id);
+            }
+        }
+        env.storage()
+            .persistent()
+            .set(&DataKey::VaultMessages(message.vault_id), &updated);
+
+        env.events().publish(
+            (Symbol::new(&env, "message_deleted"), message.vault_id),
+            MessageDeletedEvent {
+                vault_id: message.vault_id,
+                message_id,
+                timestamp: env.ledger().timestamp(),
+            },
+        );
+
+        Ok(())
+    }
+
+    /// Access a legacy message (returns metadata if accessible)
+    ///
+    /// # Arguments
+    /// * `env` - The Soroban environment
+    /// * `caller` - The address requesting access
+    /// * `message_id` - The message ID to access
+    ///
+    /// # Requirements
+    /// - Caller must be a verified beneficiary of the vault
+    /// - Message must be unlocked (either by timestamp or inheritance trigger)
+    pub fn access_legacy_message(
+        env: Env,
+        caller: Address,
+        message_id: u64,
+    ) -> Result<LegacyMessageMetadata, InheritanceError> {
+        // Get message metadata
+        let mut message: LegacyMessageMetadata = env
+            .storage()
+            .persistent()
+            .get(&DataKey::LegacyMessage(message_id))
+            .ok_or(InheritanceError::PlanNotFound)?; // Reuse PlanNotFound for MessageNotFound
+
+        // Check if already unlocked
+        if !message.is_unlocked {
+            let current_timestamp = env.ledger().timestamp();
+
+            // Check if unlock timestamp has been reached
+            if current_timestamp >= message.unlock_timestamp {
+                // Unlock by timestamp
+                message.is_unlocked = true;
+                env.storage()
+                    .persistent()
+                    .set(&DataKey::LegacyMessage(message_id), &message);
+
+                // Emit unlock event
+                env.events().publish(
+                    (Symbol::new(&env, "message_unlocked"), message.vault_id),
+                    MessageUnlockedEvent {
+                        vault_id: message.vault_id,
+                        message_id,
+                        timestamp: current_timestamp,
+                    },
+                );
+            } else {
+                // Check if inheritance has been triggered
+                let inheritance_triggered: bool = env
+                    .storage()
+                    .persistent()
+                    .get(&DataKey::InheritanceTrigger(message.vault_id))
+                    .map(|info: InheritanceTriggerInfo| info.triggered_at > 0)
+                    .unwrap_or(false);
+
+                if inheritance_triggered {
+                    // Unlock by inheritance trigger
+                    message.is_unlocked = true;
+                    env.storage()
+                        .persistent()
+                        .set(&DataKey::LegacyMessage(message_id), &message);
+
+                    // Emit unlock event
+                    env.events().publish(
+                        (Symbol::new(&env, "message_unlocked"), message.vault_id),
+                        MessageUnlockedEvent {
+                            vault_id: message.vault_id,
+                            message_id,
+                            timestamp: current_timestamp,
+                        },
+                    );
+                } else {
+                    // Message still locked
+                    return Err(InheritanceError::ClaimNotAllowedYet); // Reuse for locked message
+                }
+            }
+        }
+
+        // Verify caller is a beneficiary of this vault
+        let plan = Self::get_plan(&env, message.vault_id).ok_or(InheritanceError::PlanNotFound)?;
+
+        // Hash the caller's address to check against beneficiaries
+        let caller_bytes = Bytes::from_val(&env, &caller.to_val());
+        let caller_hash: BytesN<32> = env.crypto().sha256(&caller_bytes).into();
+        let mut is_beneficiary = false;
+
+        for i in 0..plan.beneficiaries.len() {
+            let beneficiary = plan
+                .beneficiaries
+                .get(i)
+                .ok_or(InheritanceError::BeneficiaryNotFound)?;
+            // Check if caller matches any beneficiary hashed email
+            if beneficiary.hashed_email == caller_hash {
+                is_beneficiary = true;
+                break;
+            }
+        }
+
+        if !is_beneficiary {
+            return Err(InheritanceError::Unauthorized);
+        }
+
+        // Emit access event
+        env.events().publish(
+            (Symbol::new(&env, "message_accessed"), message.vault_id),
+            MessageAccessedEvent {
+                vault_id: message.vault_id,
+                message_id,
+                timestamp: env.ledger().timestamp(),
+            },
+        );
+
+        Ok(message)
+    }
+
+    /// Manually unlock a message when inheritance is triggered
+    /// This can be called during the inheritance trigger process
+    ///
+    /// # Arguments
+    /// * `env` - The Soroban environment
+    /// * `vault_id` - The vault/plan ID for which inheritance was triggered
+    pub fn unlock_messages_on_inheritance(env: Env, vault_id: u64) -> Result<(), InheritanceError> {
+        // Verify inheritance was triggered
+        let trigger_info: InheritanceTriggerInfo = env
+            .storage()
+            .persistent()
+            .get(&DataKey::InheritanceTrigger(vault_id))
+            .ok_or(InheritanceError::InheritanceNotTriggered)?;
+
+        if trigger_info.triggered_at == 0 {
+            return Err(InheritanceError::InheritanceNotTriggered);
+        }
+
+        // Get all messages for this vault
+        let messages = Self::get_vault_messages(env.clone(), vault_id);
+        let current_timestamp = env.ledger().timestamp();
+
+        // Unlock each message
+        for message_id in messages.iter() {
+            let mut message: LegacyMessageMetadata = match env
+                .storage()
+                .persistent()
+                .get(&DataKey::LegacyMessage(message_id))
+            {
+                Some(m) => m,
+                None => continue, // Skip if message doesn't exist
+            };
+
+            if !message.is_unlocked {
+                message.is_unlocked = true;
+                env.storage()
+                    .persistent()
+                    .set(&DataKey::LegacyMessage(message_id), &message);
+
+                // Emit unlock event
+                env.events().publish(
+                    (Symbol::new(&env, "message_unlocked"), vault_id),
+                    MessageUnlockedEvent {
+                        vault_id,
+                        message_id,
+                        timestamp: current_timestamp,
+                    },
+                );
+            }
+        }
+
+        Ok(())
+    }
+
+    // ── Will Finalization (Issue #319) ──
+
+    /// Finalize a specific will version, permanently locking it.
+    ///
+    /// Requirements:
+    /// - Caller must be the plan owner.
+    /// - The will version must exist.
+    /// - The owner must have signed the will (WillSignature must exist).
+    /// - If witnesses are assigned, all must have signed.
+    /// - Cannot finalize an already-finalized version.
+    pub fn finalize_will(
+        env: Env,
+        owner: Address,
+        vault_id: u64,
+        version: u32,
+    ) -> Result<(), InheritanceError> {
+        owner.require_auth();
+
+        let plan = Self::get_plan(&env, vault_id).ok_or(InheritanceError::PlanNotFound)?;
+        if plan.owner != owner {
+            return Err(InheritanceError::Unauthorized);
+        }
+
+        // Version must exist
+        let ver_key = DataKey::WillVersion(vault_id, version);
+        env.storage()
+            .persistent()
+            .get::<_, WillVersionInfo>(&ver_key)
+            .ok_or(InheritanceError::WillVersionNotFound)?;
+
+        // Already finalized?
+        let fin_key = DataKey::WillFinalized(vault_id, version);
+        if env
+            .storage()
+            .persistent()
+            .get::<_, bool>(&fin_key)
+            .unwrap_or(false)
+        {
+            return Err(InheritanceError::WillAlreadyFinalized);
+        }
+
+        // Owner must have signed the will
+        if env
+            .storage()
+            .persistent()
+            .get::<_, WillSignatureProof>(&DataKey::WillSignature(vault_id))
+            .is_none()
+        {
+            return Err(InheritanceError::WillNotVerified);
+        }
+
+        // All assigned witnesses must have signed
+        let witnesses_key = DataKey::WillWitnesses(vault_id);
+        let witnesses: Vec<Address> = env
+            .storage()
+            .persistent()
+            .get(&witnesses_key)
+            .unwrap_or_else(|| Vec::new(&env));
+
+        for i in 0..witnesses.len() {
+            let w = witnesses.get(i).unwrap();
+            let wsig_key = DataKey::WitnessSignature(vault_id, w);
+            if env
+                .storage()
+                .persistent()
+                .get::<_, u64>(&wsig_key)
+                .is_none()
+            {
+                return Err(InheritanceError::MissingRequiredField);
+            }
+        }
+
+        let finalized_at = env.ledger().timestamp();
+        env.storage().persistent().set(&fin_key, &true);
+        env.storage()
+            .persistent()
+            .set(&DataKey::WillFinalizedAt(vault_id, version), &finalized_at);
+
+        env.events().publish(
+            (symbol_short!("WILL"), symbol_short!("FINAL")),
+            WillFinalizedEvent {
+                vault_id,
+                version,
+                finalized_at,
+            },
+        );
+
+        Ok(())
+    }
+
+    /// Check whether a specific will version is finalized.
+    pub fn is_will_finalized(env: Env, vault_id: u64, version: u32) -> bool {
+        env.storage()
+            .persistent()
+            .get::<_, bool>(&DataKey::WillFinalized(vault_id, version))
+            .unwrap_or(false)
+    }
+
+    /// Get the finalization timestamp for a will version (None if not finalized).
+    pub fn get_will_finalized_at(env: Env, vault_id: u64, version: u32) -> Option<u64> {
+        env.storage()
+            .persistent()
+            .get(&DataKey::WillFinalizedAt(vault_id, version))
+    }
+
+    // ── Legal Witness Verification (Issue #320) ──
+
+    /// Assign a witness address to a vault's will. Only the plan owner can add witnesses.
+    pub fn add_witness(
+        env: Env,
+        owner: Address,
+        vault_id: u64,
+        witness: Address,
+    ) -> Result<(), InheritanceError> {
+        owner.require_auth();
+
+        let plan = Self::get_plan(&env, vault_id).ok_or(InheritanceError::PlanNotFound)?;
+        if plan.owner != owner {
+            return Err(InheritanceError::Unauthorized);
+        }
+
+        let key = DataKey::WillWitnesses(vault_id);
+        let mut witnesses: Vec<Address> = env
+            .storage()
+            .persistent()
+            .get(&key)
+            .unwrap_or_else(|| Vec::new(&env));
+
+        // Prevent duplicates
+        for i in 0..witnesses.len() {
+            if witnesses.get(i).unwrap() == witness {
+                return Err(InheritanceError::EmergencyContactAlreadyExists);
+            }
+        }
+
+        witnesses.push_back(witness.clone());
+        env.storage().persistent().set(&key, &witnesses);
+
+        env.events().publish(
+            (symbol_short!("WILL"), symbol_short!("WITNESS")),
+            WitnessAddedEvent { vault_id, witness },
+        );
+
+        Ok(())
+    }
+
+    /// Record a witness signature for a vault's will.
+    ///
+    /// The caller must be a registered witness for this vault.
+    pub fn sign_as_witness(
+        env: Env,
+        witness: Address,
+        vault_id: u64,
+    ) -> Result<(), InheritanceError> {
+        witness.require_auth();
+
+        // Vault must exist
+        Self::get_plan(&env, vault_id).ok_or(InheritanceError::PlanNotFound)?;
+
+        // Witness must be in the registered list
+        let key = DataKey::WillWitnesses(vault_id);
+        let witnesses: Vec<Address> = env
+            .storage()
+            .persistent()
+            .get(&key)
+            .unwrap_or_else(|| Vec::new(&env));
+
+        let mut found = false;
+        for i in 0..witnesses.len() {
+            if witnesses.get(i).unwrap() == witness {
+                found = true;
+                break;
+            }
+        }
+        if !found {
+            return Err(InheritanceError::EmergencyContactNotFound);
+        }
+
+        // Prevent double-signing
+        let wsig_key = DataKey::WitnessSignature(vault_id, witness.clone());
+        if env
+            .storage()
+            .persistent()
+            .get::<_, u64>(&wsig_key)
+            .is_some()
+        {
+            return Err(InheritanceError::AlreadyApproved);
+        }
+
+        let signed_at = env.ledger().timestamp();
+        env.storage().persistent().set(&wsig_key, &signed_at);
+
+        env.events().publish(
+            (symbol_short!("WILL"), symbol_short!("WSIGN")),
+            WitnessSignedEvent { vault_id, witness },
+        );
+
+        Ok(())
+    }
+
+    /// Get all registered witnesses for a vault.
+    pub fn get_witnesses(env: Env, vault_id: u64) -> Vec<Address> {
+        env.storage()
+            .persistent()
+            .get(&DataKey::WillWitnesses(vault_id))
+            .unwrap_or_else(|| Vec::new(&env))
+    }
+
+    /// Get the timestamp at which a witness signed, or None if not yet signed.
+    pub fn get_witness_signature(env: Env, vault_id: u64, witness: Address) -> Option<u64> {
+        env.storage()
+            .persistent()
+            .get(&DataKey::WitnessSignature(vault_id, witness))
+    }
+    // ── Batch Operations (Issue #483) ──
+
+    /// Maximum items allowed per batch operation
+    const BATCH_LIMIT: u32 = 20;
+    /// Lower limit for message batches (larger payloads)
+    const BATCH_MESSAGE_LIMIT: u32 = 10;
+
+    pub fn batch_add_beneficiaries(
+        env: Env,
+        owner: Address,
+        plan_id: u64,
+        inputs: Vec<BeneficiaryInput>,
+    ) -> Result<(u32, u32), InheritanceError> {
+        owner.require_auth();
+        if inputs.len() > Self::BATCH_LIMIT {
+            return Err(InheritanceError::TooManyBeneficiaries);
+        }
+        let mut plan = Self::get_plan(&env, plan_id).ok_or(InheritanceError::PlanNotFound)?;
+        if plan.owner != owner {
+            return Err(InheritanceError::Unauthorized);
+        }
+        let mut success: u32 = 0;
+        let mut fail: u32 = 0;
+        for input in inputs.iter() {
+            if plan.beneficiaries.len() >= 10 {
+                fail += 1;
+                continue;
+            }
+            if input.allocation_bp == 0 {
+                fail += 1;
+                continue;
+            }
+            let new_total = plan.total_allocation_bp + input.allocation_bp;
+            if new_total > 10000 {
+                fail += 1;
+                continue;
+            }
+            match Self::create_beneficiary(
+                &env,
+                input.name.clone(),
+                input.email.clone(),
+                input.claim_code,
+                input.bank_account.clone(),
+                input.allocation_bp,
+                input.priority,
+            ) {
+                Ok(beneficiary) => {
+                    plan.total_allocation_bp = new_total;
+                    plan.beneficiaries.push_back(beneficiary);
+                    success += 1;
+                }
+                Err(_) => {
+                    fail += 1;
+                }
+            }
+        }
+        Self::store_plan(&env, plan_id, &plan);
+        env.events().publish(
+            (symbol_short!("BATCH"), symbol_short!("BEN_ADD")),
+            BatchBeneficiariesAddedEvent {
+                plan_id,
+                success_count: success,
+                fail_count: fail,
+            },
+        );
+        log!(
+            &env,
+            "batch_add_beneficiaries plan {}: {} ok, {} failed",
+            plan_id,
+            success,
+            fail
+        );
+        Ok((success, fail))
+    }
+
+    pub fn batch_remove_beneficiaries(
+        env: Env,
+        owner: Address,
+        plan_id: u64,
+        indices: Vec<u32>,
+    ) -> Result<(u32, u32), InheritanceError> {
+        owner.require_auth();
+        if indices.len() > Self::BATCH_LIMIT {
+            return Err(InheritanceError::TooManyBeneficiaries);
+        }
+        let mut plan = Self::get_plan(&env, plan_id).ok_or(InheritanceError::PlanNotFound)?;
+        if plan.owner != owner {
+            return Err(InheritanceError::Unauthorized);
+        }
+        let mut sorted: Vec<u32> = Vec::new(&env);
+        for idx in indices.iter() {
+            if idx < plan.beneficiaries.len() {
+                let mut already = false;
+                for s in sorted.iter() {
+                    if s == idx {
+                        already = true;
+                        break;
+                    }
+                }
+                if !already {
+                    sorted.push_back(idx);
+                }
+            }
+        }
+        // Sort descending so highest index removed first
+        let n = sorted.len();
+        if n > 1 {
+            let mut i = 0;
+            while i < n {
+                let mut j = i + 1;
+                while j < n {
+                    if sorted.get(i).unwrap() < sorted.get(j).unwrap() {
+                        let a = sorted.get(i).unwrap();
+                        let b = sorted.get(j).unwrap();
+                        sorted.set(i, b);
+                        sorted.set(j, a);
+                    }
+                    j += 1;
+                }
+                i += 1;
+            }
+        }
+        let fail = indices.len().saturating_sub(sorted.len());
+        let mut success: u32 = 0;
+        for idx in sorted.iter() {
+            if idx >= plan.beneficiaries.len() {
+                continue;
+            }
+            let removed = plan.beneficiaries.get(idx).unwrap();
+            plan.total_allocation_bp = plan
+                .total_allocation_bp
+                .saturating_sub(removed.allocation_bp);
+            let last = plan.beneficiaries.len() - 1;
+            if idx != last {
+                let last_ben = plan.beneficiaries.get(last).unwrap();
+                plan.beneficiaries.set(idx, last_ben);
+            }
+            plan.beneficiaries.pop_back();
+            success += 1;
+        }
+        Self::store_plan(&env, plan_id, &plan);
+        env.events().publish(
+            (symbol_short!("BATCH"), symbol_short!("BEN_REM")),
+            BatchBeneficiariesRemovedEvent {
+                plan_id,
+                success_count: success,
+                fail_count: fail,
+            },
+        );
+        log!(
+            &env,
+            "batch_remove_beneficiaries plan {}: {} ok, {} failed",
+            plan_id,
+            success,
+            fail
+        );
+        Ok((success, fail))
+    }
+
+    pub fn batch_update_allocations(
+        env: Env,
+        owner: Address,
+        plan_id: u64,
+        new_allocations: Vec<u32>,
+    ) -> Result<(), InheritanceError> {
+        owner.require_auth();
+        if new_allocations.len() > Self::BATCH_LIMIT {
+            return Err(InheritanceError::TooManyBeneficiaries);
+        }
+        let mut plan = Self::get_plan(&env, plan_id).ok_or(InheritanceError::PlanNotFound)?;
+        if plan.owner != owner {
+            return Err(InheritanceError::Unauthorized);
+        }
+        if new_allocations.len() != plan.beneficiaries.len() {
+            return Err(InheritanceError::InvalidBeneficiaryData);
+        }
+        for bp in new_allocations.iter() {
+            if bp == 0 {
+                return Err(InheritanceError::InvalidAllocation);
+            }
+        }
+        let total: u32 = new_allocations.iter().sum();
+        if total != 10000 {
+            return Err(InheritanceError::AllocationPercentageMismatch);
+        }
+        for i in 0..plan.beneficiaries.len() {
+            let mut ben = plan.beneficiaries.get(i).unwrap();
+            ben.allocation_bp = new_allocations.get(i).unwrap();
+            plan.beneficiaries.set(i, ben);
+        }
+        plan.total_allocation_bp = 10000;
+        Self::store_plan(&env, plan_id, &plan);
+        env.events().publish(
+            (symbol_short!("BATCH"), symbol_short!("ALLOC")),
+            BatchAllocationsUpdatedEvent {
+                plan_id,
+                success_count: plan.beneficiaries.len(),
+            },
+        );
+        log!(&env, "batch_update_allocations plan {}: updated", plan_id);
+        Ok(())
+    }
+
+    pub fn batch_approve_kyc(
+        env: Env,
+        admin: Address,
+        users: Vec<Address>,
+    ) -> Result<(u32, u32), InheritanceError> {
+        Self::require_admin(&env, &admin)?;
+        if users.len() > Self::BATCH_LIMIT {
+            return Err(InheritanceError::TooManyBeneficiaries);
+        }
+        let mut success: u32 = 0;
+        let mut fail: u32 = 0;
+        let now = env.ledger().timestamp();
+        for user in users.iter() {
+            let key = DataKey::Kyc(user.clone());
+            let maybe_status: Option<KycStatus> = env.storage().persistent().get(&key);
+            match maybe_status {
+                None => {
+                    fail += 1;
+                }
+                Some(mut status) => {
+                    if !status.submitted || status.approved {
+                        fail += 1;
+                        continue;
+                    }
+                    status.approved = true;
+                    status.approved_at = now;
+                    env.storage().persistent().set(&key, &status);
+                    env.events().publish(
+                        (symbol_short!("KYC"), symbol_short!("APPROV")),
+                        KycApprovedEvent {
+                            user: user.clone(),
+                            approved_at: now,
+                        },
+                    );
+                    success += 1;
+                }
+            }
+        }
+        env.events().publish(
+            (symbol_short!("BATCH"), symbol_short!("KYC_APP")),
+            BatchKycApprovedEvent {
+                success_count: success,
+                fail_count: fail,
+            },
+        );
+        log!(
+            &env,
+            "batch_approve_kyc: {} approved, {} failed",
+            success,
+            fail
+        );
+        Ok((success, fail))
+    }
+
+    pub fn batch_create_messages(
+        env: Env,
+        creator: Address,
+        params_list: Vec<CreateLegacyMessageParams>,
+    ) -> Result<(Vec<u64>, u32), InheritanceError> {
+        creator.require_auth();
+        if params_list.len() > Self::BATCH_MESSAGE_LIMIT {
+            return Err(InheritanceError::TooManyBeneficiaries);
+        }
+        let current_ts = env.ledger().timestamp();
+        let mut created_ids: Vec<u64> = Vec::new(&env);
+        let mut fail: u32 = 0;
+        let mut batch_vault_id: u64 = 0;
+        for params in params_list.iter() {
+            let plan = match Self::get_plan(&env, params.vault_id) {
+                Some(p) => p,
+                None => {
+                    fail += 1;
+                    continue;
+                }
+            };
+            if plan.owner != creator {
+                fail += 1;
+                continue;
+            }
+            if params.unlock_timestamp <= current_ts {
+                fail += 1;
+                continue;
+            }
+            let message_id: u64 = env
+                .storage()
+                .persistent()
+                .get(&DataKey::NextMessageId)
+                .unwrap_or(0u64);
+            let message = LegacyMessageMetadata {
+                vault_id: params.vault_id,
+                message_id,
+                message_hash: params.message_hash.clone(),
+                creator: creator.clone(),
+                key_reference: params.key_reference.clone(),
+                unlock_timestamp: params.unlock_timestamp,
+                is_unlocked: false,
+                is_finalized: false,
+                created_at: current_ts,
+            };
+            env.storage()
+                .persistent()
+                .set(&DataKey::LegacyMessage(message_id), &message);
+            let mut vault_msgs: Vec<u64> = env
+                .storage()
+                .persistent()
+                .get(&DataKey::VaultMessages(params.vault_id))
+                .unwrap_or_else(|| vec![&env]);
+            vault_msgs.push_back(message_id);
+            env.storage()
+                .persistent()
+                .set(&DataKey::VaultMessages(params.vault_id), &vault_msgs);
+            env.storage()
+                .persistent()
+                .set(&DataKey::NextMessageId, &(message_id + 1));
+            env.events().publish(
+                (Symbol::new(&env, "message_created"), params.vault_id),
+                MessageCreatedEvent {
+                    vault_id: params.vault_id,
+                    message_id,
+                    timestamp: current_ts,
+                },
+            );
+            if batch_vault_id == 0 {
+                batch_vault_id = params.vault_id;
+            }
+            created_ids.push_back(message_id);
+        }
+        let success = created_ids.len();
+        env.events().publish(
+            (symbol_short!("BATCH"), symbol_short!("MSG_CRE")),
+            BatchMessagesCreatedEvent {
+                vault_id: batch_vault_id,
+                success_count: success,
+                fail_count: fail,
+            },
+        );
+        log!(
+            &env,
+            "batch_create_messages: {} created, {} failed",
+            success,
+            fail
+        );
+        Ok((created_ids, fail))
+    }
+
+    pub fn batch_claim(
+        env: Env,
+        plan_id: u64,
+        claimers: Vec<(Address, String, u32)>,
+    ) -> Result<(u32, u32), InheritanceError> {
+        Self::check_not_paused(&env);
+        Self::enter_guard(&env);
+        if claimers.len() > Self::BATCH_LIMIT {
+            return Err(InheritanceError::TooManyBeneficiaries);
+        }
+        let plan = Self::get_plan(&env, plan_id).ok_or(InheritanceError::PlanNotFound)?;
+        let triggered = Self::get_trigger_info(&env, plan_id).is_some();
+        if !plan.is_active {
+            return Err(InheritanceError::PlanNotActive);
+        }
+        if !triggered && !Self::is_claim_time_valid(&env, &plan) {
+            return Err(InheritanceError::ClaimNotAllowedYet);
+        }
+        let mut success: u32 = 0;
+        let mut fail: u32 = 0;
+        for entry in claimers.iter() {
+            let (claimer, email, claim_code) = entry;
+            claimer.require_auth();
+            if Self::check_kyc_approved(&env, &claimer).is_err() {
+                fail += 1;
+                continue;
+            }
+            let hashed_email = Self::hash_string(&env, email.clone());
+            let hashed_claim_code = match Self::hash_claim_code(&env, claim_code) {
+                Ok(h) => h,
+                Err(_) => {
+                    fail += 1;
+                    continue;
+                }
+            };
+            let claim_key = {
+                let mut data = Bytes::new(&env);
+                data.extend_from_slice(&plan_id.to_be_bytes());
+                data.extend_from_slice(&hashed_email.to_array());
+                DataKey::Claim(env.crypto().sha256(&data).into())
+            };
+            if env.storage().persistent().has(&claim_key) {
+                fail += 1;
+                continue;
+            }
+            let current_plan = match Self::get_plan(&env, plan_id) {
+                Some(p) => p,
+                None => {
+                    fail += 1;
+                    continue;
+                }
+            };
+            let mut beneficiary_index: Option<u32> = None;
+            for i in 0..current_plan.beneficiaries.len() {
+                let b = current_plan.beneficiaries.get(i).unwrap();
+                if b.hashed_email == hashed_email && b.hashed_claim_code == hashed_claim_code {
+                    beneficiary_index = Some(i);
+                    break;
+                }
+            }
+            let index = match beneficiary_index {
+                Some(i) => i,
+                None => {
+                    fail += 1;
+                    continue;
+                }
+            };
+            let beneficiary = current_plan.beneficiaries.get(index).unwrap();
+            let base_payout = (current_plan.total_amount as u128)
+                .checked_mul(beneficiary.allocation_bp as u128)
+                .and_then(|v| v.checked_div(10000))
+                .unwrap_or(0) as u64;
+            if Self::is_emergency_active(&env, plan_id) {
+                let limit = (current_plan.total_amount as u128)
+                    .checked_mul(EMERGENCY_TRANSFER_LIMIT_BP as u128)
+                    .and_then(|v| v.checked_div(10000))
+                    .unwrap_or(0) as u64;
+                if base_payout > limit {
+                    fail += 1;
+                    continue;
+                }
+            }
+            let _available = current_plan
+                .total_amount
+                .saturating_sub(current_plan.total_loaned);
+            let claim = ClaimRecord {
+                plan_id,
+                beneficiary_index: index,
+                claimed_at: env.ledger().timestamp(),
+            };
+            env.storage().persistent().set(&claim_key, &claim);
+            let mut updated = current_plan.clone();
+            updated.total_amount = updated.total_amount.saturating_sub(base_payout);
+            Self::store_plan(&env, plan_id, &updated);
+            Self::add_plan_to_claimed(&env, current_plan.owner.clone(), plan_id);
+            env.events().publish(
+                (symbol_short!("CLAIM"), symbol_short!("SUCCESS")),
+                (plan_id, hashed_email, base_payout),
+            );
+            success += 1;
+        }
+        env.events().publish(
+            (symbol_short!("BATCH"), symbol_short!("CLAIM")),
+            BatchClaimEvent {
+                plan_id,
+                success_count: success,
+                fail_count: fail,
+            },
+        );
+        log!(
+            &env,
+            "batch_claim plan {}: {} claimed, {} failed",
+            plan_id,
+            success,
+            fail
+        );
+        Self::exit_guard(&env);
+        Ok((success, fail))
+    }
+
+    // ─── Cross-Contract Integration ──────────────────────────────
+
+    pub fn set_lending_contract(
+        env: Env,
+        admin: Address,
+        contract: Address,
+    ) -> Result<(), InheritanceError> {
+        Self::require_admin(&env, &admin)?;
+        env.storage()
+            .instance()
+            .set(&DataKey::LendingContract, &contract);
+        env.events().publish(
+            (symbol_short!("LINK"), symbol_short!("LEND")),
+            ContractLinkedEvent {
+                contract_type: symbol_short!("LEND"),
+                address: contract,
+            },
+        );
+        Ok(())
+    }
+
+    pub fn get_lending_contract(env: Env) -> Option<Address> {
+        env.storage().instance().get(&DataKey::LendingContract)
+    }
+
+    pub fn set_governance_contract(
+        env: Env,
+        admin: Address,
+        contract: Address,
+    ) -> Result<(), InheritanceError> {
+        Self::require_admin(&env, &admin)?;
+        env.storage()
+            .instance()
+            .set(&DataKey::GovernanceContract, &contract);
+        env.events().publish(
+            (symbol_short!("LINK"), symbol_short!("GOV")),
+            ContractLinkedEvent {
+                contract_type: symbol_short!("GOV"),
+                address: contract,
+            },
+        );
+        Ok(())
+    }
+
+    pub fn get_governance_contract(env: Env) -> Option<Address> {
+        env.storage().instance().get(&DataKey::GovernanceContract)
+    }
+
+    pub fn verify_plan_ownership(env: Env, plan_id: u64, user: Address) -> bool {
+        if let Some(plan) = Self::get_plan(&env, plan_id) {
+            return plan.owner == user;
+        }
+        false
+    }
+
+    // ─── Beneficiary Notification & Acknowledgment ────
+
+    /// Mark a beneficiary as notified on-chain. Only the plan owner or admin can call this.
+    /// Errors: PlanNotFound, InvalidBeneficiaryIndex, Unauthorized, AlreadyApproved (already notified).
+    pub fn notify_beneficiary(
+        env: Env,
+        caller: Address,
+        plan_id: u64,
+        beneficiary_index: u32,
+    ) -> Result<(), InheritanceError> {
+        caller.require_auth();
+
+        let plan = Self::get_plan(&env, plan_id).ok_or(InheritanceError::PlanNotFound)?;
+
+        if caller != plan.owner {
+            Self::require_admin(&env, &caller)?;
+        }
+
+        if beneficiary_index >= plan.beneficiaries.len() {
+            return Err(InheritanceError::InvalidBeneficiaryIndex);
+        }
+
+        let notif_key = DataKey::BeneficiaryNotifiedAt(plan_id, beneficiary_index);
+        if env.storage().instance().has(&notif_key) {
+            return Err(InheritanceError::AlreadyApproved);
+        }
+
+        let now = env.ledger().timestamp();
+        env.storage().instance().set(&notif_key, &now);
+
+        env.events().publish(
+            (symbol_short!("BENEFIC"), symbol_short!("NOTIFY")),
+            BeneficiaryNotifiedEvent {
+                plan_id,
+                beneficiary_index,
+                notified_at: now,
+            },
+        );
+
+        Ok(())
+    }
+
+    /// Called by the beneficiary (via their address) to acknowledge their listing in a plan.
+    /// Requires the beneficiary to have been notified first.
+    /// Errors: PlanNotFound, InvalidBeneficiaryIndex, Unauthorized (not notified yet → ClaimNotAllowedYet), AlreadyApproved (already acknowledged).
+    pub fn acknowledge_beneficiary_status(
+        env: Env,
+        beneficiary_caller: Address,
+        plan_id: u64,
+        beneficiary_index: u32,
+    ) -> Result<(), InheritanceError> {
+        beneficiary_caller.require_auth();
+
+        let plan = Self::get_plan(&env, plan_id).ok_or(InheritanceError::PlanNotFound)?;
+
+        if beneficiary_index >= plan.beneficiaries.len() {
+            return Err(InheritanceError::InvalidBeneficiaryIndex);
+        }
+
+        // Notification must have been sent before acknowledgment is possible
+        let notif_key = DataKey::BeneficiaryNotifiedAt(plan_id, beneficiary_index);
+        if !env.storage().instance().has(&notif_key) {
+            return Err(InheritanceError::ClaimNotAllowedYet);
+        }
+
+        let ack_key = DataKey::BeneficiaryAcknowledgedAt(plan_id, beneficiary_index);
+        if env.storage().instance().has(&ack_key) {
+            return Err(InheritanceError::AlreadyApproved);
+        }
+
+        let now = env.ledger().timestamp();
+        env.storage().instance().set(&ack_key, &now);
+
+        env.events().publish(
+            (symbol_short!("BENEFIC"), symbol_short!("ACK")),
+            BeneficiaryAcknowledgedEvent {
+                plan_id,
+                beneficiary_index,
+                acknowledged_at: now,
+            },
+        );
+
+        Ok(())
+    }
+
+    /// Returns notification and acknowledgment timestamps for a beneficiary, or None if not notified.
+    pub fn get_beneficiary_acknowledgment(
+        env: Env,
+        plan_id: u64,
+        beneficiary_index: u32,
+    ) -> Option<BeneficiaryAcknowledgment> {
+        let notif_key = DataKey::BeneficiaryNotifiedAt(plan_id, beneficiary_index);
+        let notification_sent_at: u64 = env.storage().instance().get(&notif_key)?;
+
+        let ack_key = DataKey::BeneficiaryAcknowledgedAt(plan_id, beneficiary_index);
+        let acknowledged_at: u64 = env.storage().instance().get(&ack_key).unwrap_or(0);
+
+        Some(BeneficiaryAcknowledgment {
+            plan_id,
+            beneficiary_index,
+            acknowledged_at,
+            notification_sent_at,
+        })
+    }
+
+    /// Enable or disable the acknowledgment requirement for a plan.
+    /// When enabled, beneficiaries must acknowledge before they can claim.
+    /// Only the plan owner or admin may call this.
+    pub fn require_acknowledgment(
+        env: Env,
+        caller: Address,
+        plan_id: u64,
+        required: bool,
+    ) -> Result<(), InheritanceError> {
+        caller.require_auth();
+
+        let plan = Self::get_plan(&env, plan_id).ok_or(InheritanceError::PlanNotFound)?;
+
+        if caller != plan.owner {
+            Self::require_admin(&env, &caller)?;
+        }
+
+        env.storage()
+            .instance()
+            .set(&DataKey::RequiresAcknowledgment(plan_id), &required);
+
+        Ok(())
+    }
+
+    /// Returns the indices of beneficiaries who have been notified but have not yet acknowledged.
+    pub fn get_unacknowledged_beneficiaries(
+        env: Env,
+        plan_id: u64,
+    ) -> Result<Vec<u32>, InheritanceError> {
+        let plan = Self::get_plan(&env, plan_id).ok_or(InheritanceError::PlanNotFound)?;
+        let mut unacknowledged: Vec<u32> = Vec::new(&env);
+
+        for idx in 0..plan.beneficiaries.len() {
+            let notif_key = DataKey::BeneficiaryNotifiedAt(plan_id, idx);
+            if env.storage().instance().has(&notif_key) {
+                let ack_key = DataKey::BeneficiaryAcknowledgedAt(plan_id, idx);
+                if !env.storage().instance().has(&ack_key) {
+                    unacknowledged.push_back(idx);
+                }
+            }
+        }
+
+        Ok(unacknowledged)
+    }
+
+    pub fn upgrade_contract(
+        env: Env,
+        admin: Address,
+        new_wasm_hash: BytesN<32>,
+    ) -> Result<(), InheritanceError> {
+        Self::require_admin(&env, &admin)?;
+        env.deployer()
+            .update_current_contract_wasm(new_wasm_hash.clone());
+
+        let old_version = env.storage().instance().get(&DataKey::Version).unwrap_or(0);
+        let new_version = old_version + 1;
+        env.storage()
+            .instance()
+            .set(&DataKey::Version, &new_version);
+
+        env.events().publish(
+            (symbol_short!("UPGRADE"), admin.clone()),
+            ContractUpgradedEvent {
+                old_version,
+                new_version,
+                new_wasm_hash,
+                admin,
+                upgraded_at: env.ledger().timestamp(),
+            },
+        );
+        Ok(())
     }
 }
 
+mod cross_contract_test;
+#[cfg(test)]
+#[allow(clippy::duplicated_attributes)]
+mod message_test;
 mod test;

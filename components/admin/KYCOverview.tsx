@@ -16,7 +16,7 @@ export function KYCOverview() {
         <div className="bg-[#0A0F11] border border-[#161E22] rounded-2xl p-6 flex flex-col gap-6">
             <div className="flex items-center justify-between">
                 <h3 className="font-bold text-white">KYC Overview</h3>
-                <Link href="/admin/kyc" className="text-[#33C5E0] text-xs font-semibold hover:underline">
+                <Link href="/admin/kyc-management" className="text-[#33C5E0] text-xs font-semibold hover:underline">
                     View All
                 </Link>
             </div>

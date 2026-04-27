@@ -1,0 +1,32 @@
+   Compiling inheritx-backend v0.1.0 (/home/edohwares/Desktop/Room/drips/InheritX/backend)
+error[E0432]: unresolved import `http_body_util`
+ --> tests/admin_tests.rs:7:5
+  |
+7 | use http_body_util::BodyExt;
+  |     ^^^^^^^^^^^^^^ use of unresolved module or unlinked crate `http_body_util`
+  |
+  = help: if you wanted to use a crate named `http_body_util`, use `cargo add http_body_util` to add it to your `Cargo.toml`
+
+error[E0599]: `Body` is not an iterator
+   --> tests/admin_tests.rs:166:45
+    |
+166 |     let body_bytes = create_res.into_body().collect().await.unwrap().to_bytes();
+    |                                             ^^^^^^^ `Body` is not an iterator
+    |
+   ::: /home/edohwares/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/axum-core-0.4.5/src/body.rs:39:1
+    |
+ 39 | pub struct Body(BoxBody);
+    | --------------- doesn't satisfy `Body: Iterator`
+    |
+    = note: the following trait bounds were not satisfied:
+            `Body: Iterator`
+            which is required by `&mut Body: Iterator`
+    = help: items from traits can only be used if the trait is in scope
+help: trait `BodyExt` which provides `collect` is implemented but not in scope; perhaps you want to import it
+    |
+  1 + use http_body_util::BodyExt;
+    |
+
+Some errors have detailed explanations: E0432, E0599.
+For more information about an error, try `rustc --explain E0432`.
+error: could not compile `inheritx-backend` (test "admin_tests") due to 2 previous errors
