@@ -701,3 +701,123 @@ fn test_has_voted_reflects_state() {
 
     assert!(client.has_voted(&voter, &proposal_id));
 }
+
+// ─────────────────────────────────────────────────
+// Access Control (RBAC) Tests
+// ─────────────────────────────────────────────────
+
+#[test]
+fn test_admin_role_assigned_on_initialize() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let (client, admin) = setup_contract(&env);
+
+    assert!(client.has_role(&admin, &access_control::Role::Admin));
+    assert!(!client.has_role(&admin, &access_control::Role::Owner));
+}
+
+#[test]
+fn test_admin_can_assign_and_revoke_roles() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let (client, admin) = setup_contract(&env);
+    let user = Address::generate(&env);
+
+    assert!(!client.has_role(&user, &access_control::Role::Guardian));
+
+    client.assign_role(&admin, &user, &access_control::Role::Guardian);
+    assert!(client.has_role(&user, &access_control::Role::Guardian));
+
+    client.revoke_role(&admin, &user, &access_control::Role::Guardian);
+    assert!(!client.has_role(&user, &access_control::Role::Guardian));
+}
+
+#[test]
+fn test_non_admin_cannot_assign_roles() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let (client, _admin) = setup_contract(&env);
+    let non_admin = Address::generate(&env);
+    let target = Address::generate(&env);
+
+    let result = client.try_assign_role(&non_admin, &target, &access_control::Role::Admin);
+    assert!(result.is_err());
+}
+
+#[test]
+fn test_non_admin_cannot_update_interest_rate() {
+    let env = Env::default();
+    let (client, _admin) = setup_contract(&env);
+
+    // call without mocking auths — a non-admin should not succeed
+    let result = client.try_update_interest_rate(&700);
+    assert!(result.is_err());
+}
+
+#[test]
+fn test_get_roles_returns_assigned_roles() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let (client, admin) = setup_contract(&env);
+    let user = Address::generate(&env);
+
+    client.assign_role(&admin, &user, &access_control::Role::Owner);
+    client.assign_role(&admin, &user, &access_control::Role::Beneficiary);
+
+    let roles = client.get_roles(&user);
+    assert_eq!(roles.len(), 2);
+}
+
+#[test]
+fn test_pause_blocks_create_proposal() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let (client, admin) = setup_contract(&env);
+    client.pause(&admin);
+    let proposer = Address::generate(&env);
+    let result = client.try_create_proposal(
+        &proposer,
+        &soroban_sdk::String::from_str(&env, "Test"),
+        &soroban_sdk::String::from_str(&env, "Desc"),
+    );
+    assert!(result.is_err());
+}
+
+#[test]
+fn test_unpause_restores_proposal_creation() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let (client, admin) = setup_contract(&env);
+    client.pause(&admin);
+    client.unpause(&admin);
+    let proposer = Address::generate(&env);
+    client.set_token_balance(&proposer, &1000);
+    let result = client.try_create_proposal(
+        &proposer,
+        &soroban_sdk::String::from_str(&env, "Test"),
+        &soroban_sdk::String::from_str(&env, "Desc"),
+    );
+    assert!(result.is_ok());
+}
+
+#[test]
+fn test_non_admin_cannot_pause_governance() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let (client, _admin) = setup_contract(&env);
+    let non_admin = Address::generate(&env);
+    let result = client.try_pause(&non_admin);
+    assert!(result.is_err());
+}
+
+#[test]
+fn test_is_paused_reflects_state_governance() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let (client, admin) = setup_contract(&env);
+    assert!(!client.is_paused());
+    client.pause(&admin);
+    assert!(client.is_paused());
+    client.unpause(&admin);
+    assert!(!client.is_paused());
+}

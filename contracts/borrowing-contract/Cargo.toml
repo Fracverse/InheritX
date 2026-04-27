@@ -9,6 +9,7 @@ crate-type = ["cdylib"]
 doctest = false
 
 [dependencies]
+access-control = { workspace = true }
 soroban-sdk = { workspace = true }
 
 [dev-dependencies]

@@ -1,6 +1,7 @@
 #![no_std]
+use access_control::{self, Role};
 use soroban_sdk::{
-    contract, contracterror, contractimpl, contracttype, symbol_short, token, Address, Env,
+    contract, contracterror, contractimpl, contracttype, symbol_short, token, Address, Env, Vec,
 };
 
 mod test;
@@ -180,6 +181,8 @@ pub enum BorrowingError {
     AuctionNotActive = 12,
     StillUnhealthy = 13,
     ExtensionLimitReached = 14,
+    ReentrantCall = 15,
+    ContractPaused = 16,
 }
 
 #[contract]
@@ -208,7 +211,79 @@ impl BorrowingContract {
         env.storage()
             .instance()
             .set(&DataKey::LiquidationBonus, &liquidation_bonus_bps);
+        access_control::assign_role(&env, &admin, Role::Admin);
         Ok(())
+    }
+
+    fn require_admin(env: &Env, admin: &Address) -> Result<(), BorrowingError> {
+        admin.require_auth();
+        access_control::require_role(env, admin, Role::Admin, BorrowingError::Unauthorized)
+    }
+
+    /// Assign a role to an address. Admin-only.
+    pub fn assign_role(
+        env: Env,
+        admin: Address,
+        address: Address,
+        role: Role,
+    ) -> Result<(), BorrowingError> {
+        Self::require_admin(&env, &admin)?;
+        access_control::assign_role(&env, &address, role);
+        Ok(())
+    }
+
+    /// Revoke a role from an address. Admin-only.
+    pub fn revoke_role(
+        env: Env,
+        admin: Address,
+        address: Address,
+        role: Role,
+    ) -> Result<(), BorrowingError> {
+        Self::require_admin(&env, &admin)?;
+        access_control::revoke_role(&env, &address, role);
+        Ok(())
+    }
+
+    /// Check whether an address holds a given role.
+    pub fn has_role(env: Env, address: Address, role: Role) -> bool {
+        access_control::has_role(&env, &address, role)
+    }
+
+    /// Return all roles held by an address.
+    pub fn get_roles(env: Env, address: Address) -> Vec<Role> {
+        use access_control::AccessControlKey;
+        env.storage()
+            .persistent()
+            .get(&AccessControlKey::Roles(address))
+            .unwrap_or(Vec::new(&env))
+    }
+
+    pub fn pause(env: Env, admin: Address) -> Result<(), BorrowingError> {
+        Self::require_admin(&env, &admin)?;
+        access_control::pause_contract(&env);
+        env.events().publish(
+            (symbol_short!("ADMIN"), symbol_short!("PAUSE")),
+            env.ledger().timestamp(),
+        );
+        Ok(())
+    }
+
+    pub fn unpause(env: Env, admin: Address) -> Result<(), BorrowingError> {
+        Self::require_admin(&env, &admin)?;
+        access_control::unpause_contract(&env);
+        env.events().publish(
+            (symbol_short!("ADMIN"), symbol_short!("UNPAUSE")),
+            env.ledger().timestamp(),
+        );
+        Ok(())
+    }
+
+    pub fn is_paused(env: Env) -> bool {
+        access_control::is_contract_paused(&env)
+    }
+
+    fn require_not_paused(env: &Env) -> Result<(), BorrowingError> {
+        access_control::require_not_paused(env, BorrowingError::ContractPaused)
     }
 
     pub fn create_loan(
@@ -221,6 +296,8 @@ impl BorrowingContract {
         collateral_amount: i128,
     ) -> Result<u64, BorrowingError> {
         borrower.require_auth();
+        access_control::reentrancy_enter(&env, BorrowingError::ReentrantCall)?;
+        Self::require_not_paused(&env)?;
 
         // Cache storage reads – each instance().get() costs CPU/memory instructions
         let is_whitelisted: bool = env
@@ -303,10 +380,13 @@ impl BorrowingContract {
             },
         );
 
+        access_control::reentrancy_exit(&env);
         Ok(loan_id)
     }
 
-    pub fn repay_loan(env: Env, loan_id: u64, amount: i128) {
+    pub fn repay_loan(env: Env, loan_id: u64, amount: i128) -> Result<(), BorrowingError> {
+        Self::require_not_paused(&env)?;
+        access_control::reentrancy_enter(&env, BorrowingError::ReentrantCall)?;
         let mut loan: Loan = env
             .storage()
             .persistent()
@@ -357,6 +437,9 @@ impl BorrowingContract {
         env.storage()
             .persistent()
             .set(&DataKey::Loan(loan_id), &loan);
+
+        access_control::reentrancy_exit(&env);
+        Ok(())
     }
 
     pub fn get_loan(env: Env, loan_id: u64) -> Loan {
@@ -371,11 +454,7 @@ impl BorrowingContract {
         admin: Address,
         token: Address,
     ) -> Result<(), BorrowingError> {
-        let stored_admin: Address = env.storage().instance().get(&DataKey::Admin).unwrap();
-        if admin != stored_admin {
-            return Err(BorrowingError::Unauthorized);
-        }
-        admin.require_auth();
+        Self::require_admin(&env, &admin)?;
         env.storage()
             .persistent()
             .set(&DataKey::WhitelistedCollateral(token), &true);
@@ -390,11 +469,7 @@ impl BorrowingContract {
     }
 
     pub fn set_global_pause(env: Env, admin: Address, paused: bool) -> Result<(), BorrowingError> {
-        let stored_admin: Address = env.storage().instance().get(&DataKey::Admin).unwrap();
-        if admin != stored_admin {
-            return Err(BorrowingError::Unauthorized);
-        }
-        admin.require_auth();
+        Self::require_admin(&env, &admin)?;
         env.storage().instance().set(&DataKey::GlobalPause, &paused);
         Ok(())
     }
@@ -412,11 +487,7 @@ impl BorrowingContract {
         token: Address,
         paused: bool,
     ) -> Result<(), BorrowingError> {
-        let stored_admin: Address = env.storage().instance().get(&DataKey::Admin).unwrap();
-        if admin != stored_admin {
-            return Err(BorrowingError::Unauthorized);
-        }
-        admin.require_auth();
+        Self::require_admin(&env, &admin)?;
         env.storage()
             .persistent()
             .set(&DataKey::VaultPause(token), &paused);
@@ -444,6 +515,8 @@ impl BorrowingContract {
         liquidate_amount: i128,
     ) -> Result<(), BorrowingError> {
         liquidator.require_auth();
+        access_control::reentrancy_enter(&env, BorrowingError::ReentrantCall)?;
+        Self::require_not_paused(&env)?;
 
         let mut loan: Loan = env
             .storage()
@@ -544,6 +617,7 @@ impl BorrowingContract {
             },
         );
 
+        access_control::reentrancy_exit(&env);
         Ok(())
     }
 
@@ -680,6 +754,8 @@ impl BorrowingContract {
         bid_amount: i128,
     ) -> Result<(), BorrowingError> {
         bidder.require_auth();
+        access_control::reentrancy_enter(&env, BorrowingError::ReentrantCall)?;
+        Self::require_not_paused(&env)?;
 
         let mut auction: LiquidationAuction = env
             .storage()
@@ -743,10 +819,14 @@ impl BorrowingContract {
             },
         );
 
+        access_control::reentrancy_exit(&env);
         Ok(())
     }
 
     pub fn execute_auction(env: Env, loan_id: u64) -> Result<(), BorrowingError> {
+        access_control::reentrancy_enter(&env, BorrowingError::ReentrantCall)?;
+        Self::require_not_paused(&env)?;
+
         let mut auction: LiquidationAuction = env
             .storage()
             .persistent()
@@ -810,6 +890,7 @@ impl BorrowingContract {
             },
         );
 
+        access_control::reentrancy_exit(&env);
         Ok(())
     }
 
@@ -931,6 +1012,9 @@ impl BorrowingContract {
         loan_id: u64,
         extension_seconds: u64,
     ) -> Result<(), BorrowingError> {
+        access_control::reentrancy_enter(&env, BorrowingError::ReentrantCall)?;
+        Self::require_not_paused(&env)?;
+
         let mut loan: Loan = env
             .storage()
             .persistent()
@@ -993,6 +1077,7 @@ impl BorrowingContract {
             },
         );
 
+        access_control::reentrancy_exit(&env);
         Ok(())
     }
 
@@ -1002,6 +1087,9 @@ impl BorrowingContract {
         loan_id: u64,
         additional_amount: i128,
     ) -> Result<(), BorrowingError> {
+        access_control::reentrancy_enter(&env, BorrowingError::ReentrantCall)?;
+        Self::require_not_paused(&env)?;
+
         let mut loan: Loan = env
             .storage()
             .persistent()
@@ -1054,6 +1142,7 @@ impl BorrowingContract {
             },
         );
 
+        access_control::reentrancy_exit(&env);
         Ok(())
     }
 

@@ -2185,3 +2185,117 @@ fn test_get_supply_rate() {
     assert!(supply_rate > 0);
     assert!(supply_rate < 700u32);
 }
+
+// ─────────────────────────────────────────────────
+// Access Control (RBAC) Tests
+// ─────────────────────────────────────────────────
+
+#[test]
+fn test_admin_role_assigned_on_initialize() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let (client, _token_addr, _collateral_addr, admin) = setup(&env);
+
+    assert!(client.has_role(&admin, &access_control::Role::Admin));
+    assert!(!client.has_role(&admin, &access_control::Role::Owner));
+}
+
+#[test]
+fn test_admin_can_assign_and_revoke_roles() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let (client, _token_addr, _collateral_addr, admin) = setup(&env);
+    let user = Address::generate(&env);
+
+    assert!(!client.has_role(&user, &access_control::Role::Beneficiary));
+
+    client.assign_role(&admin, &user, &access_control::Role::Beneficiary);
+    assert!(client.has_role(&user, &access_control::Role::Beneficiary));
+
+    client.revoke_role(&admin, &user, &access_control::Role::Beneficiary);
+    assert!(!client.has_role(&user, &access_control::Role::Beneficiary));
+}
+
+#[test]
+fn test_non_admin_cannot_assign_roles() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let (client, _token_addr, _collateral_addr, _admin) = setup(&env);
+    let non_admin = Address::generate(&env);
+    let target = Address::generate(&env);
+
+    let result = client.try_assign_role(&non_admin, &target, &access_control::Role::Admin);
+    assert!(result.is_err());
+}
+
+#[test]
+fn test_non_admin_cannot_whitelist_collateral() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let (client, _token_addr, collateral_addr, _admin) = setup(&env);
+    let non_admin = Address::generate(&env);
+
+    let result = client.try_whitelist_collateral(&non_admin, &collateral_addr);
+    assert!(result.is_err());
+}
+
+#[test]
+fn test_get_roles_returns_assigned_roles() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let (client, _token_addr, _collateral_addr, admin) = setup(&env);
+    let user = Address::generate(&env);
+
+    client.assign_role(&admin, &user, &access_control::Role::Owner);
+    client.assign_role(&admin, &user, &access_control::Role::Guardian);
+
+    let roles = client.get_roles(&user);
+    assert_eq!(roles.len(), 2);
+}
+
+#[test]
+fn test_pause_blocks_deposit() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let (client, token_addr, _collateral_addr, admin) = setup(&env);
+    client.pause(&admin);
+    let depositor = Address::generate(&env);
+    mint_to(&env, &token_addr, &depositor, 1000);
+    let result = client.try_deposit(&depositor, &500u64);
+    assert!(result.is_err());
+}
+
+#[test]
+fn test_unpause_restores_deposit() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let (client, token_addr, _collateral_addr, admin) = setup(&env);
+    client.pause(&admin);
+    client.unpause(&admin);
+    let depositor = Address::generate(&env);
+    mint_to(&env, &token_addr, &depositor, 2000);
+    let shares = client.deposit(&depositor, &2000u64);
+    assert!(shares > 0);
+}
+
+#[test]
+fn test_non_admin_cannot_pause_lending() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let (client, _token_addr, _collateral_addr, _admin) = setup(&env);
+    let non_admin = Address::generate(&env);
+    let result = client.try_pause(&non_admin);
+    assert!(result.is_err());
+}
+
+#[test]
+fn test_is_paused_reflects_state_lending() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let (client, _token_addr, _collateral_addr, admin) = setup(&env);
+    assert!(!client.is_paused());
+    client.pause(&admin);
+    assert!(client.is_paused());
+    client.unpause(&admin);
+    assert!(!client.is_paused());
+}

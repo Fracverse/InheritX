@@ -1,4 +1,5 @@
 #![no_std]
+use access_control::{self, Role};
 use soroban_sdk::{
     contract, contracterror, contractimpl, contracttype, Address, Env, IntoVal, String, Symbol, Vec,
 };
@@ -174,6 +175,8 @@ pub enum GovernanceError {
     ProposalAlreadyExecuted = 15,
     ProposalAlreadyCancelled = 16,
     NotProposer = 17,
+    ReentrantCall = 18,
+    ContractPaused = 19,
 }
 
 // ─────────────────────────────────────────────────
@@ -207,7 +210,70 @@ impl GovernanceContract {
         env.storage()
             .instance()
             .set(&DataKey::LiquidationBonus, &liquidation_bonus);
+        access_control::assign_role(&env, &admin, Role::Admin);
         Ok(())
+    }
+
+    /// Assign a role to an address. Admin-only.
+    pub fn assign_role(
+        env: Env,
+        admin: Address,
+        address: Address,
+        role: Role,
+    ) -> Result<(), GovernanceError> {
+        admin.require_auth();
+        access_control::require_role(&env, &admin, Role::Admin, GovernanceError::Unauthorized)?;
+        access_control::assign_role(&env, &address, role);
+        Ok(())
+    }
+
+    /// Revoke a role from an address. Admin-only.
+    pub fn revoke_role(
+        env: Env,
+        admin: Address,
+        address: Address,
+        role: Role,
+    ) -> Result<(), GovernanceError> {
+        admin.require_auth();
+        access_control::require_role(&env, &admin, Role::Admin, GovernanceError::Unauthorized)?;
+        access_control::revoke_role(&env, &address, role);
+        Ok(())
+    }
+
+    /// Check whether an address holds a given role.
+    pub fn has_role(env: Env, address: Address, role: Role) -> bool {
+        access_control::has_role(&env, &address, role)
+    }
+
+    /// Return all roles held by an address.
+    pub fn get_roles(env: Env, address: Address) -> Vec<Role> {
+        use access_control::AccessControlKey;
+        env.storage()
+            .persistent()
+            .get(&AccessControlKey::Roles(address))
+            .unwrap_or(Vec::new(&env))
+    }
+
+    pub fn pause(env: Env, admin: Address) -> Result<(), GovernanceError> {
+        admin.require_auth();
+        access_control::require_role(&env, &admin, Role::Admin, GovernanceError::Unauthorized)?;
+        access_control::pause_contract(&env);
+        Ok(())
+    }
+
+    pub fn unpause(env: Env, admin: Address) -> Result<(), GovernanceError> {
+        admin.require_auth();
+        access_control::require_role(&env, &admin, Role::Admin, GovernanceError::Unauthorized)?;
+        access_control::unpause_contract(&env);
+        Ok(())
+    }
+
+    pub fn is_paused(env: Env) -> bool {
+        access_control::is_contract_paused(&env)
+    }
+
+    fn require_not_paused(env: &Env) -> Result<(), GovernanceError> {
+        access_control::require_not_paused(env, GovernanceError::ContractPaused)
     }
 
     pub fn update_interest_rate(env: Env, new_rate: u32) -> Result<(), GovernanceError> {
@@ -269,7 +335,7 @@ impl GovernanceContract {
             .get(&DataKey::Admin)
             .ok_or(GovernanceError::NotInitialized)?;
         admin.require_auth();
-        Ok(())
+        access_control::require_role(env, &admin, Role::Admin, GovernanceError::Unauthorized)
     }
 
     // ─── Token Balance ───────────────────────────────
@@ -450,6 +516,7 @@ impl GovernanceContract {
         description: String,
     ) -> Result<u32, GovernanceError> {
         proposer.require_auth();
+        Self::require_not_paused(&env)?;
 
         let proposal_id: u32 = env
             .storage()
@@ -501,6 +568,7 @@ impl GovernanceContract {
         choice: VoteChoice,
     ) -> Result<(), GovernanceError> {
         voter.require_auth();
+        Self::require_not_paused(&env)?;
 
         // Delegated voters cannot vote directly
         if env
@@ -593,6 +661,8 @@ impl GovernanceContract {
         proposal_id: u32,
     ) -> Result<(), GovernanceError> {
         executor.require_auth();
+        access_control::reentrancy_enter(&env, GovernanceError::ReentrantCall)?;
+        Self::require_not_paused(&env)?;
 
         let status = Self::evaluate_proposal_status(&env, proposal_id)?;
         if status != ProposalStatus::Passed {
@@ -618,6 +688,7 @@ impl GovernanceContract {
             },
         );
 
+        access_control::reentrancy_exit(&env);
         Ok(())
     }
 
@@ -854,6 +925,8 @@ impl GovernanceContract {
         args: Vec<soroban_sdk::Val>,
     ) -> Result<soroban_sdk::Val, GovernanceError> {
         Self::check_admin(&env)?;
+        access_control::reentrancy_enter(&env, GovernanceError::ReentrantCall)?;
+        Self::require_not_paused(&env)?;
 
         let contracts = Self::get_controlled_contracts(env.clone());
         if !contracts.contains(&contract) {
@@ -867,6 +940,7 @@ impl GovernanceContract {
             ContractExecutedEvent { contract, func },
         );
 
+        access_control::reentrancy_exit(&env);
         Ok(result)
     }
 
@@ -877,6 +951,8 @@ impl GovernanceContract {
         new_wasm_hash: soroban_sdk::BytesN<32>,
     ) -> Result<(), GovernanceError> {
         Self::check_admin(&env)?;
+        access_control::reentrancy_enter(&env, GovernanceError::ReentrantCall)?;
+        Self::require_not_paused(&env)?;
 
         let contracts = Self::get_controlled_contracts(env.clone());
         if !contracts.contains(&contract) {
@@ -893,6 +969,7 @@ impl GovernanceContract {
             args,
         );
 
+        access_control::reentrancy_exit(&env);
         Ok(())
     }
 }

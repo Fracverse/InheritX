@@ -3,6 +3,13 @@
 version = 4
 
 [[package]]
+name = "access-control"
+version = "0.1.0"
+dependencies = [
+ "soroban-sdk",
+]
+
+[[package]]
 name = "addr2line"
 version = "0.25.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -99,6 +106,7 @@ dependencies = [
 name = "borrowing-contract"
 version = "0.0.0"
 dependencies = [
+ "access-control",
  "soroban-sdk",
 ]
 
@@ -513,6 +521,7 @@ checksum = "e629b9b98ef3dd8afe6ca2bd0f89306cec16d43d907889945bc5d6687f2f13c7"
 name = "governance-contract"
 version = "0.0.0"
 dependencies = [
+ "access-control",
  "soroban-sdk",
 ]
 
@@ -626,6 +635,7 @@ checksum = "8e04e2fd2b8188ea827b32ef11de88377086d690286ab35747ef7f9bf3ccb590"
 name = "inheritance-contract"
 version = "0.0.0"
 dependencies = [
+ "access-control",
  "mock_token",
  "soroban-sdk",
 ]
@@ -680,6 +690,7 @@ dependencies = [
 name = "lending-contract"
 version = "0.0.0"
 dependencies = [
+ "access-control",
  "loan-nft",
  "soroban-sdk",
 ]

@@ -1,4 +1,5 @@
 #![no_std]
+use access_control::{self, Role};
 use soroban_sdk::{
     contract, contracterror, contractimpl, contracttype, log, symbol_short, token, vec, Address,
     Bytes, BytesN, Env, FromVal, IntoVal, InvokeError, String, Symbol, Val, Vec,
@@ -162,6 +163,7 @@ pub enum DataKey {
     FreezePlan(u64),                 // plan_id -> FreezeRecord
     LegalHold(u64),                  // plan_id -> LegalHold
     FrozenBeneficiary(u64, u32),     // (plan_id, index) -> bool
+    TriggerConditions(u64),          // plan_id -> TriggerConfig
 }
 
 #[contracttype]
@@ -591,6 +593,42 @@ pub struct WitnessSignedEvent {
     pub witness: Address,
 }
 
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum TriggerConditionType {
+    Manual,
+    Time,
+    Inactivity,
+    Oracle,
+    Health,
+}
+
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct TriggerConfig {
+    pub conditions: Vec<TriggerConditionType>,
+    pub trigger_date: u64,
+    pub inactivity_period: u64,
+    pub last_activity: u64,
+    pub oracle_address: Option<Address>,
+    pub oracle_triggered: bool,
+    pub health_triggered: bool,
+}
+
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct TriggerConditionSetEvent {
+    pub plan_id: u64,
+    pub conditions_count: u32,
+}
+
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct TriggerConditionMetEvent {
+    pub plan_id: u64,
+    pub triggered_at: u64,
+}
+
 /// Parameters for creating an inheritance plan (groups args to satisfy Clippy).
 #[contracttype]
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -743,11 +781,43 @@ impl InheritanceContract {
 
     fn require_admin(env: &Env, admin: &Address) -> Result<(), InheritanceError> {
         admin.require_auth();
-        let stored_admin = Self::get_admin(env).ok_or(InheritanceError::AdminNotSet)?;
-        if stored_admin != *admin {
-            return Err(InheritanceError::NotAdmin);
-        }
+        access_control::require_role(env, admin, Role::Admin, InheritanceError::NotAdmin)
+    }
+
+    fn enter_guard(env: &Env) {
+        access_control::reentrancy_enter_or_panic(env);
+    }
+
+    fn exit_guard(env: &Env) {
+        access_control::reentrancy_exit(env);
+    }
+
+    fn check_not_paused(env: &Env) {
+        access_control::require_not_paused_or_panic(env);
+    }
+
+    pub fn pause(env: Env, admin: Address) -> Result<(), InheritanceError> {
+        Self::require_admin(&env, &admin)?;
+        access_control::pause_contract(&env);
+        env.events().publish(
+            (symbol_short!("ADMIN"), symbol_short!("PAUSE")),
+            env.ledger().timestamp(),
+        );
         Ok(())
+    }
+
+    pub fn unpause(env: Env, admin: Address) -> Result<(), InheritanceError> {
+        Self::require_admin(&env, &admin)?;
+        access_control::unpause_contract(&env);
+        env.events().publish(
+            (symbol_short!("ADMIN"), symbol_short!("UNPAUSE")),
+            env.ledger().timestamp(),
+        );
+        Ok(())
+    }
+
+    pub fn is_paused(env: Env) -> bool {
+        access_control::is_contract_paused(&env)
     }
 
     pub fn initialize_admin(env: Env, admin: Address) -> Result<(), InheritanceError> {
@@ -758,7 +828,46 @@ impl InheritanceContract {
 
         let key = DataKey::Admin;
         env.storage().instance().set(&key, &admin);
+        access_control::assign_role(&env, &admin, Role::Admin);
         Ok(())
+    }
+
+    /// Assign a role to an address. Admin-only.
+    pub fn assign_role(
+        env: Env,
+        admin: Address,
+        address: Address,
+        role: Role,
+    ) -> Result<(), InheritanceError> {
+        Self::require_admin(&env, &admin)?;
+        access_control::assign_role(&env, &address, role);
+        Ok(())
+    }
+
+    /// Revoke a role from an address. Admin-only.
+    pub fn revoke_role(
+        env: Env,
+        admin: Address,
+        address: Address,
+        role: Role,
+    ) -> Result<(), InheritanceError> {
+        Self::require_admin(&env, &admin)?;
+        access_control::revoke_role(&env, &address, role);
+        Ok(())
+    }
+
+    /// Check whether an address holds a given role.
+    pub fn has_role(env: Env, address: Address, role: Role) -> bool {
+        access_control::has_role(&env, &address, role)
+    }
+
+    /// Return all roles held by an address.
+    pub fn get_roles(env: Env, address: Address) -> Vec<Role> {
+        use access_control::AccessControlKey;
+        env.storage()
+            .persistent()
+            .get(&AccessControlKey::Roles(address))
+            .unwrap_or(Vec::new(&env))
     }
 
     fn create_beneficiary(
@@ -1113,6 +1222,8 @@ impl InheritanceContract {
     ) -> Result<(), InheritanceError> {
         // Require owner authorization
         owner.require_auth();
+        Self::check_not_paused(&env);
+        Self::enter_guard(&env);
 
         // Get the plan
         let mut plan = Self::get_plan(&env, plan_id).ok_or(InheritanceError::PlanNotFound)?;
@@ -1168,6 +1279,7 @@ impl InheritanceContract {
 
         log!(&env, "Beneficiary added to plan {}", plan_id);
 
+        Self::exit_guard(&env);
         Ok(())
     }
 
@@ -1194,6 +1306,8 @@ impl InheritanceContract {
     ) -> Result<(), InheritanceError> {
         // Require owner authorization
         owner.require_auth();
+        Self::check_not_paused(&env);
+        Self::enter_guard(&env);
 
         // Get the plan
         let mut plan = Self::get_plan(&env, plan_id).ok_or(InheritanceError::PlanNotFound)?;
@@ -1239,6 +1353,7 @@ impl InheritanceContract {
 
         log!(&env, "Beneficiary removed from plan {}", plan_id);
 
+        Self::exit_guard(&env);
         Ok(())
     }
 
@@ -1285,6 +1400,8 @@ impl InheritanceContract {
 
         // Require owner authorization
         owner.require_auth();
+        Self::check_not_paused(&env);
+        Self::enter_guard(&env);
 
         // Check KYC approval - only approved users can create plans
         Self::check_kyc_approved(&env, &owner)?;
@@ -1407,8 +1524,12 @@ impl InheritanceContract {
         // Add to user's plan list
         Self::add_plan_to_user(&env, owner.clone(), plan_id);
 
+        // Grant Owner role so RBAC checks recognise this address as a plan owner
+        access_control::assign_role(&env, &owner, Role::Owner);
+
         log!(&env, "Inheritance plan created with ID: {}", plan_id);
 
+        Self::exit_guard(&env);
         Ok(plan_id)
     }
 
@@ -1446,6 +1567,8 @@ impl InheritanceContract {
         amount: u64,
     ) -> Result<(), InheritanceError> {
         caller.require_auth();
+        Self::check_not_paused(&env);
+        Self::enter_guard(&env);
         if amount == 0 {
             return Err(InheritanceError::InvalidTotalAmount);
         }
@@ -1489,6 +1612,7 @@ impl InheritanceContract {
             VaultDepositEvent { plan_id, amount },
         );
         log!(&env, "Deposited {} into plan {}", amount, plan_id);
+        Self::exit_guard(&env);
         Ok(())
     }
 
@@ -1500,6 +1624,8 @@ impl InheritanceContract {
         amount: u64,
     ) -> Result<(), InheritanceError> {
         caller.require_auth();
+        Self::check_not_paused(&env);
+        Self::enter_guard(&env);
         if amount == 0 {
             return Err(InheritanceError::InvalidTotalAmount);
         }
@@ -1573,6 +1699,7 @@ impl InheritanceContract {
             VaultWithdrawEvent { plan_id, amount },
         );
         log!(&env, "Withdrew {} from plan {}", amount, plan_id);
+        Self::exit_guard(&env);
         Ok(())
     }
 
@@ -1726,6 +1853,8 @@ impl InheritanceContract {
     ) -> Result<(), InheritanceError> {
         // Require claimer authorization
         claimer.require_auth();
+        Self::check_not_paused(&env);
+        Self::enter_guard(&env);
 
         // Check KYC approval - only approved users can claim plans
         Self::check_kyc_approved(&env, &claimer)?;
@@ -1858,6 +1987,9 @@ impl InheritanceContract {
         // Mark plan as claimed
         Self::add_plan_to_claimed(&env, plan.owner.clone(), plan_id);
 
+        // Grant Beneficiary role to the claimer as an on-chain record of a successful claim
+        access_control::assign_role(&env, &claimer, Role::Beneficiary);
+
         // Emit claim event
         env.events().publish(
             (symbol_short!("CLAIM"), symbol_short!("SUCCESS")),
@@ -1871,6 +2003,7 @@ impl InheritanceContract {
             email
         );
 
+        Self::exit_guard(&env);
         Ok(())
     }
 
@@ -2114,12 +2247,16 @@ impl InheritanceContract {
             return Err(InheritanceError::InvalidGuardianThreshold);
         }
         let config = GuardianConfig {
-            guardians,
+            guardians: guardians.clone(),
             threshold,
         };
         env.storage()
             .persistent()
             .set(&DataKey::Guardians(plan_id), &config);
+        // Grant Guardian role to each guardian address for RBAC checks
+        for g in guardians.iter() {
+            access_control::assign_role(&env, &g, Role::Guardian);
+        }
         Ok(())
     }
 
@@ -2244,6 +2381,12 @@ impl InheritanceContract {
         trusted_contact: Address,
     ) -> Result<(), InheritanceError> {
         guardian.require_auth();
+        access_control::require_role(
+            &env,
+            &guardian,
+            Role::Guardian,
+            InheritanceError::Unauthorized,
+        )?;
         let _plan = Self::get_plan(&env, plan_id).ok_or(InheritanceError::PlanNotFound)?;
 
         let key_access = DataKey::EmergencyAccess(plan_id);
@@ -2591,6 +2734,339 @@ impl InheritanceContract {
         env.storage().persistent().set(&key, info);
     }
 
+    fn get_trigger_config(env: &Env, plan_id: u64) -> Option<TriggerConfig> {
+        env.storage()
+            .persistent()
+            .get(&DataKey::TriggerConditions(plan_id))
+    }
+
+    fn save_trigger_config(env: &Env, plan_id: u64, config: &TriggerConfig) {
+        env.storage()
+            .persistent()
+            .set(&DataKey::TriggerConditions(plan_id), config);
+    }
+
+    pub fn check_trigger_conditions(env: Env, plan_id: u64) -> bool {
+        let config = match Self::get_trigger_config(&env, plan_id) {
+            Some(c) => c,
+            None => return false,
+        };
+        let now = env.ledger().timestamp();
+        for condition in config.conditions.iter() {
+            match condition {
+                TriggerConditionType::Time => {
+                    if config.trigger_date > 0 && now >= config.trigger_date {
+                        return true;
+                    }
+                }
+                TriggerConditionType::Inactivity => {
+                    if config.inactivity_period > 0
+                        && config.last_activity > 0
+                        && now >= config.last_activity + config.inactivity_period
+                    {
+                        return true;
+                    }
+                }
+                TriggerConditionType::Oracle => {
+                    if config.oracle_triggered {
+                        return true;
+                    }
+                }
+                TriggerConditionType::Health => {
+                    if config.health_triggered {
+                        return true;
+                    }
+                }
+                TriggerConditionType::Manual => {}
+            }
+        }
+        false
+    }
+
+    pub fn get_trigger_conditions(env: Env, plan_id: u64) -> Option<TriggerConfig> {
+        Self::get_trigger_config(&env, plan_id)
+    }
+
+    pub fn set_trigger_conditions(
+        env: Env,
+        owner: Address,
+        plan_id: u64,
+        conditions: Vec<TriggerConditionType>,
+        trigger_date: u64,
+        inactivity_period: u64,
+        oracle_address: Option<Address>,
+    ) -> Result<(), InheritanceError> {
+        owner.require_auth();
+        let plan = Self::get_plan(&env, plan_id).ok_or(InheritanceError::PlanNotFound)?;
+        if plan.owner != owner {
+            return Err(InheritanceError::Unauthorized);
+        }
+        if Self::get_trigger_info(&env, plan_id).is_some() {
+            return Err(InheritanceError::InheritanceAlreadyTriggered);
+        }
+        let config = TriggerConfig {
+            conditions: conditions.clone(),
+            trigger_date,
+            inactivity_period,
+            last_activity: env.ledger().timestamp(),
+            oracle_address,
+            oracle_triggered: false,
+            health_triggered: false,
+        };
+        Self::save_trigger_config(&env, plan_id, &config);
+        env.events().publish(
+            (symbol_short!("TRIG"), symbol_short!("CONDSET")),
+            TriggerConditionSetEvent {
+                plan_id,
+                conditions_count: conditions.len(),
+            },
+        );
+        Ok(())
+    }
+
+    pub fn add_time_trigger(
+        env: Env,
+        owner: Address,
+        plan_id: u64,
+        trigger_date: u64,
+    ) -> Result<(), InheritanceError> {
+        owner.require_auth();
+        let plan = Self::get_plan(&env, plan_id).ok_or(InheritanceError::PlanNotFound)?;
+        if plan.owner != owner {
+            return Err(InheritanceError::Unauthorized);
+        }
+        if trigger_date == 0 {
+            return Err(InheritanceError::MissingRequiredField);
+        }
+        if Self::get_trigger_info(&env, plan_id).is_some() {
+            return Err(InheritanceError::InheritanceAlreadyTriggered);
+        }
+        let mut config = Self::get_trigger_config(&env, plan_id).unwrap_or(TriggerConfig {
+            conditions: Vec::new(&env),
+            trigger_date: 0,
+            inactivity_period: 0,
+            last_activity: env.ledger().timestamp(),
+            oracle_address: None,
+            oracle_triggered: false,
+            health_triggered: false,
+        });
+        let mut already = false;
+        for c in config.conditions.iter() {
+            if c == TriggerConditionType::Time {
+                already = true;
+                break;
+            }
+        }
+        if !already {
+            config.conditions.push_back(TriggerConditionType::Time);
+        }
+        config.trigger_date = trigger_date;
+        Self::save_trigger_config(&env, plan_id, &config);
+        Ok(())
+    }
+
+    pub fn add_inactivity_trigger(
+        env: Env,
+        owner: Address,
+        plan_id: u64,
+        period_seconds: u64,
+    ) -> Result<(), InheritanceError> {
+        owner.require_auth();
+        let plan = Self::get_plan(&env, plan_id).ok_or(InheritanceError::PlanNotFound)?;
+        if plan.owner != owner {
+            return Err(InheritanceError::Unauthorized);
+        }
+        if period_seconds == 0 {
+            return Err(InheritanceError::MissingRequiredField);
+        }
+        let mut config = Self::get_trigger_config(&env, plan_id).unwrap_or(TriggerConfig {
+            conditions: Vec::new(&env),
+            trigger_date: 0,
+            inactivity_period: 0,
+            last_activity: env.ledger().timestamp(),
+            oracle_address: None,
+            oracle_triggered: false,
+            health_triggered: false,
+        });
+        let mut already = false;
+        for c in config.conditions.iter() {
+            if c == TriggerConditionType::Inactivity {
+                already = true;
+                break;
+            }
+        }
+        if !already {
+            config
+                .conditions
+                .push_back(TriggerConditionType::Inactivity);
+        }
+        config.inactivity_period = period_seconds;
+        if config.last_activity == 0 {
+            config.last_activity = env.ledger().timestamp();
+        }
+        Self::save_trigger_config(&env, plan_id, &config);
+        Ok(())
+    }
+
+    pub fn add_oracle_trigger(
+        env: Env,
+        owner: Address,
+        plan_id: u64,
+        oracle_address: Address,
+    ) -> Result<(), InheritanceError> {
+        owner.require_auth();
+        let plan = Self::get_plan(&env, plan_id).ok_or(InheritanceError::PlanNotFound)?;
+        if plan.owner != owner {
+            return Err(InheritanceError::Unauthorized);
+        }
+        let mut config = Self::get_trigger_config(&env, plan_id).unwrap_or(TriggerConfig {
+            conditions: Vec::new(&env),
+            trigger_date: 0,
+            inactivity_period: 0,
+            last_activity: env.ledger().timestamp(),
+            oracle_address: None,
+            oracle_triggered: false,
+            health_triggered: false,
+        });
+        let mut already = false;
+        for c in config.conditions.iter() {
+            if c == TriggerConditionType::Oracle {
+                already = true;
+                break;
+            }
+        }
+        if !already {
+            config.conditions.push_back(TriggerConditionType::Oracle);
+        }
+        config.oracle_address = Some(oracle_address);
+        Self::save_trigger_config(&env, plan_id, &config);
+        Ok(())
+    }
+
+    pub fn add_health_trigger(
+        env: Env,
+        owner: Address,
+        plan_id: u64,
+        oracle_address: Address,
+    ) -> Result<(), InheritanceError> {
+        owner.require_auth();
+        let plan = Self::get_plan(&env, plan_id).ok_or(InheritanceError::PlanNotFound)?;
+        if plan.owner != owner {
+            return Err(InheritanceError::Unauthorized);
+        }
+        let mut config = Self::get_trigger_config(&env, plan_id).unwrap_or(TriggerConfig {
+            conditions: Vec::new(&env),
+            trigger_date: 0,
+            inactivity_period: 0,
+            last_activity: env.ledger().timestamp(),
+            oracle_address: None,
+            oracle_triggered: false,
+            health_triggered: false,
+        });
+        let mut already = false;
+        for c in config.conditions.iter() {
+            if c == TriggerConditionType::Health {
+                already = true;
+                break;
+            }
+        }
+        if !already {
+            config.conditions.push_back(TriggerConditionType::Health);
+        }
+        config.oracle_address = Some(oracle_address);
+        Self::save_trigger_config(&env, plan_id, &config);
+        Ok(())
+    }
+
+    pub fn record_activity(env: Env, owner: Address, plan_id: u64) -> Result<(), InheritanceError> {
+        owner.require_auth();
+        let plan = Self::get_plan(&env, plan_id).ok_or(InheritanceError::PlanNotFound)?;
+        if plan.owner != owner {
+            return Err(InheritanceError::Unauthorized);
+        }
+        let mut config =
+            Self::get_trigger_config(&env, plan_id).ok_or(InheritanceError::PlanNotFound)?;
+        config.last_activity = env.ledger().timestamp();
+        Self::save_trigger_config(&env, plan_id, &config);
+        Ok(())
+    }
+
+    pub fn submit_oracle_trigger(
+        env: Env,
+        oracle: Address,
+        plan_id: u64,
+    ) -> Result<(), InheritanceError> {
+        oracle.require_auth();
+        let mut config =
+            Self::get_trigger_config(&env, plan_id).ok_or(InheritanceError::PlanNotFound)?;
+        match &config.oracle_address {
+            Some(addr) if *addr == oracle => {}
+            _ => return Err(InheritanceError::Unauthorized),
+        }
+        config.oracle_triggered = true;
+        Self::save_trigger_config(&env, plan_id, &config);
+        Ok(())
+    }
+
+    pub fn submit_health_trigger(
+        env: Env,
+        oracle: Address,
+        plan_id: u64,
+    ) -> Result<(), InheritanceError> {
+        oracle.require_auth();
+        let mut config =
+            Self::get_trigger_config(&env, plan_id).ok_or(InheritanceError::PlanNotFound)?;
+        match &config.oracle_address {
+            Some(addr) if *addr == oracle => {}
+            _ => return Err(InheritanceError::Unauthorized),
+        }
+        config.health_triggered = true;
+        Self::save_trigger_config(&env, plan_id, &config);
+        Ok(())
+    }
+
+    pub fn auto_trigger_check(env: Env, plan_id: u64) -> Result<(), InheritanceError> {
+        if !Self::check_trigger_conditions(env.clone(), plan_id) {
+            return Ok(());
+        }
+        if Self::get_trigger_info(&env, plan_id).is_some() {
+            return Ok(());
+        }
+        let now = env.ledger().timestamp();
+        let mut plan = Self::get_plan(&env, plan_id).ok_or(InheritanceError::PlanNotFound)?;
+        if !plan.is_active {
+            return Err(InheritanceError::PlanNotActive);
+        }
+        plan.is_lendable = false;
+        Self::store_plan(&env, plan_id, &plan);
+        let trigger_info = InheritanceTriggerInfo {
+            triggered_at: now,
+            loan_freeze_active: true,
+            recall_attempted: false,
+            liquidation_triggered: false,
+            original_loaned: plan.total_loaned,
+            recalled_amount: 0,
+            settled_amount: 0,
+        };
+        Self::set_trigger_info(&env, plan_id, &trigger_info);
+        env.events().publish(
+            (symbol_short!("TRIG"), symbol_short!("CONDMET")),
+            TriggerConditionMetEvent {
+                plan_id,
+                triggered_at: now,
+            },
+        );
+        env.events().publish(
+            (symbol_short!("INHERIT"), symbol_short!("TRIGGER")),
+            InheritanceTriggeredEvent {
+                plan_id,
+                triggered_at: now,
+                outstanding_loans: plan.total_loaned,
+            },
+        );
+        Ok(())
+    }
+
     /// Trigger inheritance for a plan. This freezes new loans and initiates
     /// the loan recall process.
     ///
@@ -2613,6 +3089,8 @@ impl InheritanceContract {
         caller: Address,
         plan_id: u64,
     ) -> Result<(), InheritanceError> {
+        Self::check_not_paused(&env);
+        Self::enter_guard(&env);
         // Authorization check: Admin OR Owner OR Trusted Contact with active emergency access
         let mut is_authorized = false;
 
@@ -2696,6 +3174,7 @@ impl InheritanceContract {
             plan.total_loaned
         );
 
+        Self::exit_guard(&env);
         Ok(())
     }
 
@@ -4255,6 +4734,8 @@ impl InheritanceContract {
         plan_id: u64,
         claimers: Vec<(Address, String, u32)>,
     ) -> Result<(u32, u32), InheritanceError> {
+        Self::check_not_paused(&env);
+        Self::enter_guard(&env);
         if claimers.len() > Self::BATCH_LIMIT {
             return Err(InheritanceError::TooManyBeneficiaries);
         }
@@ -4364,6 +4845,7 @@ impl InheritanceContract {
             success,
             fail
         );
+        Self::exit_guard(&env);
         Ok((success, fail))
     }
 

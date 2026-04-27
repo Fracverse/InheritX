@@ -1,4 +1,5 @@
 #![no_std]
+use access_control::{self, Role};
 use soroban_sdk::{
     contract, contracterror, contractimpl, contracttype, log, symbol_short, token, vec, Address,
     Env, IntoVal, InvokeError, Val, Vec,
@@ -360,6 +361,7 @@ pub enum LendingError {
     NoRewardsToClaim = 22,
     InvalidRewardRate = 23,
     InvalidRateModel = 24,
+    ContractPaused = 25,
 }
 
 // ─────────────────────────────────────────────────
@@ -451,7 +453,46 @@ impl LendingContract {
             },
         );
 
+        access_control::assign_role(&env, &admin, Role::Admin);
         Ok(())
+    }
+
+    /// Assign a role to an address. Admin-only.
+    pub fn assign_role(
+        env: Env,
+        admin: Address,
+        address: Address,
+        role: Role,
+    ) -> Result<(), LendingError> {
+        Self::require_admin(&env, &admin)?;
+        access_control::assign_role(&env, &address, role);
+        Ok(())
+    }
+
+    /// Revoke a role from an address. Admin-only.
+    pub fn revoke_role(
+        env: Env,
+        admin: Address,
+        address: Address,
+        role: Role,
+    ) -> Result<(), LendingError> {
+        Self::require_admin(&env, &admin)?;
+        access_control::revoke_role(&env, &address, role);
+        Ok(())
+    }
+
+    /// Check whether an address holds a given role.
+    pub fn has_role(env: Env, address: Address, role: Role) -> bool {
+        access_control::has_role(&env, &address, role)
+    }
+
+    /// Return all roles held by an address.
+    pub fn get_roles(env: Env, address: Address) -> Vec<Role> {
+        use access_control::AccessControlKey;
+        env.storage()
+            .persistent()
+            .get(&AccessControlKey::Roles(address))
+            .unwrap_or(Vec::new(&env))
     }
 
     pub fn set_nft_token(env: Env, admin: Address, nft_token: Address) -> Result<(), LendingError> {
@@ -461,17 +502,31 @@ impl LendingContract {
     }
 
     fn enter_reentrancy_guard(env: &Env) -> Result<(), LendingError> {
-        if env.storage().instance().has(&DataKey::ReentrancyGuard) {
-            return Err(LendingError::ReentrantCall);
-        }
-        env.storage()
-            .instance()
-            .set(&DataKey::ReentrancyGuard, &true);
-        Ok(())
+        access_control::reentrancy_enter(env, LendingError::ReentrantCall)
     }
 
     fn exit_reentrancy_guard(env: &Env) {
-        env.storage().instance().remove(&DataKey::ReentrancyGuard);
+        access_control::reentrancy_exit(env);
+    }
+
+    pub fn pause(env: Env, admin: Address) -> Result<(), LendingError> {
+        Self::require_admin(&env, &admin)?;
+        access_control::pause_contract(&env);
+        Ok(())
+    }
+
+    pub fn unpause(env: Env, admin: Address) -> Result<(), LendingError> {
+        Self::require_admin(&env, &admin)?;
+        access_control::unpause_contract(&env);
+        Ok(())
+    }
+
+    pub fn is_paused(env: Env) -> bool {
+        access_control::is_contract_paused(&env)
+    }
+
+    fn require_not_paused(env: &Env) -> Result<(), LendingError> {
+        access_control::require_not_paused(env, LendingError::ContractPaused)
     }
 
     fn get_nft_token(env: &Env) -> Option<Address> {
@@ -539,7 +594,7 @@ impl LendingContract {
             .unwrap_or(false)
     }
 
-    fn get_admin(env: &Env) -> Option<Address> {
+    pub fn get_admin(env: Env) -> Option<Address> {
         env.storage().instance().get(&DataKey::Admin)
     }
 
@@ -706,11 +761,7 @@ impl LendingContract {
 
     fn require_admin(env: &Env, caller: &Address) -> Result<(), LendingError> {
         caller.require_auth();
-        let admin = Self::get_admin(env).ok_or(LendingError::NotAdmin)?;
-        if *caller != admin {
-            return Err(LendingError::NotAdmin);
-        }
-        Ok(())
+        access_control::require_role(env, caller, Role::Admin, LendingError::NotAdmin)
     }
 
     fn transfer(
@@ -809,6 +860,7 @@ impl LendingContract {
     /// Deposit `amount` of the underlying token into the pool.
     /// Mints proportional pool shares to the depositor.
     pub fn deposit(env: Env, depositor: Address, amount: u64) -> Result<u64, LendingError> {
+        Self::require_not_paused(&env)?;
         Self::require_initialized(&env)?;
         Self::enter_reentrancy_guard(&env)?;
         depositor.require_auth();
@@ -864,6 +916,7 @@ impl LendingContract {
     /// Burn `shares` and return the proportional underlying tokens to the depositor.
     /// Reverts if insufficient liquidity (i.e., tokens are loaned out).
     pub fn withdraw(env: Env, depositor: Address, shares: u64) -> Result<u64, LendingError> {
+        Self::require_not_paused(&env)?;
         Self::require_initialized(&env)?;
         Self::enter_reentrancy_guard(&env)?;
         depositor.require_auth();
@@ -922,6 +975,7 @@ impl LendingContract {
         collateral_amount: u64,
         duration_seconds: u64,
     ) -> Result<u64, LendingError> {
+        Self::require_not_paused(&env)?;
         Self::require_initialized(&env)?;
         Self::enter_reentrancy_guard(&env)?;
         borrower.require_auth();
@@ -1059,6 +1113,7 @@ impl LendingContract {
     /// Includes principal, interest, and any accumulated late fees in the repayment.
     /// Returns the total amount repaid (principal + interest + late fees).
     pub fn repay(env: Env, borrower: Address) -> Result<u64, LendingError> {
+        Self::require_not_paused(&env)?;
         Self::require_initialized(&env)?;
         Self::enter_reentrancy_guard(&env)?;
         borrower.require_auth();
@@ -1233,6 +1288,7 @@ impl LendingContract {
     /// Withdraw prioritized funds from the retained yield.
     /// Used by authorized contracts (like InheritanceContract) to fulfill priority claims.
     pub fn withdraw_priority(env: Env, caller: Address, amount: u64) -> Result<u64, LendingError> {
+        Self::require_not_paused(&env)?;
         Self::require_initialized(&env)?;
         Self::enter_reentrancy_guard(&env)?;
         caller.require_auth();
@@ -1504,6 +1560,7 @@ impl LendingContract {
     }
 
     pub fn flash_loan(env: Env, receiver_id: Address, amount: u64) -> Result<(), LendingError> {
+        Self::require_not_paused(&env)?;
         Self::require_initialized(&env)?;
         Self::enter_reentrancy_guard(&env)?;
 

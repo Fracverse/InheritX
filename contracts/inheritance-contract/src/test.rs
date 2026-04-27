@@ -5815,3 +5815,341 @@ fn test_get_beneficiary_acknowledgment_none_before_notify() {
     let ack = client.get_beneficiary_acknowledgment(&plan_id, &0u32);
     assert!(ack.is_none());
 }
+
+// ─────────────────────────────────────────────────
+// Access Control (RBAC) Tests
+// ─────────────────────────────────────────────────
+
+#[test]
+fn test_admin_role_assigned_on_initialize() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let contract_id = env.register_contract(None, InheritanceContract);
+    let admin = Address::generate(&env);
+    let client = InheritanceContractClient::new(&env, &contract_id);
+    client.initialize_admin(&admin);
+
+    assert!(client.has_role(&admin, &access_control::Role::Admin));
+    assert!(!client.has_role(&admin, &access_control::Role::Owner));
+}
+
+#[test]
+fn test_owner_role_assigned_on_plan_creation() {
+    let env = Env::default();
+    let (client, token_id, _admin, owner) = setup_with_token_and_admin(&env);
+
+    let plan_id = client.create_inheritance_plan(&plan_params(
+        &env,
+        &owner,
+        &token_id,
+        "Plan",
+        "Desc",
+        1_000_000u64,
+        DistributionMethod::LumpSum,
+        &default_beneficiaries(&env),
+    ));
+
+    assert!(client.has_role(&owner, &access_control::Role::Owner));
+    // Owner should not auto-receive Admin role
+    assert!(!client.has_role(&owner, &access_control::Role::Admin));
+    let _ = plan_id;
+}
+
+#[test]
+fn test_admin_can_assign_and_revoke_roles() {
+    let env = Env::default();
+    let (client, _token_id, admin, _owner) = setup_with_token_and_admin(&env);
+    let target = Address::generate(&env);
+
+    assert!(!client.has_role(&target, &access_control::Role::Guardian));
+
+    client.assign_role(&admin, &target, &access_control::Role::Guardian);
+    assert!(client.has_role(&target, &access_control::Role::Guardian));
+
+    client.revoke_role(&admin, &target, &access_control::Role::Guardian);
+    assert!(!client.has_role(&target, &access_control::Role::Guardian));
+}
+
+#[test]
+fn test_non_admin_cannot_assign_roles() {
+    let env = Env::default();
+    let (client, _token_id, _admin, owner) = setup_with_token_and_admin(&env);
+    let target = Address::generate(&env);
+
+    let result = client.try_assign_role(&owner, &target, &access_control::Role::Admin);
+    assert!(result.is_err());
+}
+
+#[test]
+fn test_guardian_role_assigned_via_set_guardians() {
+    let env = Env::default();
+    let (client, token_id, _admin, owner) = setup_with_token_and_admin(&env);
+    let guardian1 = Address::generate(&env);
+    let guardian2 = Address::generate(&env);
+
+    let plan_id = client.create_inheritance_plan(&plan_params(
+        &env,
+        &owner,
+        &token_id,
+        "Plan",
+        "Desc",
+        1_000_000u64,
+        DistributionMethod::LumpSum,
+        &default_beneficiaries(&env),
+    ));
+
+    let guardians = Vec::from_array(&env, [guardian1.clone(), guardian2.clone()]);
+    client.set_guardians(&owner, &plan_id, &guardians, &1u32);
+
+    assert!(client.has_role(&guardian1, &access_control::Role::Guardian));
+    assert!(client.has_role(&guardian2, &access_control::Role::Guardian));
+}
+
+#[test]
+fn test_get_roles_returns_all_assigned_roles() {
+    let env = Env::default();
+    let (client, _token_id, admin, _owner) = setup_with_token_and_admin(&env);
+    let user = Address::generate(&env);
+
+    client.assign_role(&admin, &user, &access_control::Role::Owner);
+    client.assign_role(&admin, &user, &access_control::Role::Guardian);
+
+    let roles = client.get_roles(&user);
+    assert_eq!(roles.len(), 2);
+}
+
+#[test]
+fn test_unauthorized_approve_kyc_rejected() {
+    let env = Env::default();
+    let (client, _token_id, _admin, owner) = setup_with_token_and_admin_no_kyc(&env);
+
+    // Submit KYC first
+    client.submit_kyc(&owner);
+
+    // A non-admin trying to approve KYC should fail
+    let non_admin = Address::generate(&env);
+    let result = client.try_approve_kyc(&non_admin, &owner);
+    assert!(result.is_err());
+}
+
+// ─── Emergency Pause Tests ────────────────────────────────────────────────────
+
+fn setup_plan_for_triggers(env: &Env) -> (InheritanceContractClient<'_>, Address, Address, u64) {
+    let (client, token_id, admin, owner) = setup_with_token_and_admin(env);
+    let plan_id = client.create_inheritance_plan(&plan_params(
+        env,
+        &owner,
+        &token_id,
+        "TrigPlan",
+        "Desc",
+        1_000_000u64,
+        DistributionMethod::LumpSum,
+        &default_beneficiaries(env),
+    ));
+    (client, admin, owner, plan_id)
+}
+
+#[test]
+fn test_pause_blocks_create_plan() {
+    let env = Env::default();
+    let (client, token_id, admin, owner) = setup_with_token_and_admin(&env);
+    client.pause(&admin);
+    let result = client.try_create_inheritance_plan(&plan_params(
+        &env,
+        &owner,
+        &token_id,
+        "Plan",
+        "Desc",
+        1_000_000u64,
+        DistributionMethod::LumpSum,
+        &default_beneficiaries(&env),
+    ));
+    assert!(result.is_err());
+}
+
+#[test]
+fn test_unpause_restores_create_plan() {
+    let env = Env::default();
+    let (client, token_id, admin, owner) = setup_with_token_and_admin(&env);
+    client.pause(&admin);
+    client.unpause(&admin);
+    let plan_id = client.create_inheritance_plan(&plan_params(
+        &env,
+        &owner,
+        &token_id,
+        "Plan",
+        "Desc",
+        1_000_000u64,
+        DistributionMethod::LumpSum,
+        &default_beneficiaries(&env),
+    ));
+    assert!(plan_id > 0);
+}
+
+#[test]
+fn test_non_admin_cannot_pause() {
+    let env = Env::default();
+    let (client, _token_id, _admin, owner) = setup_with_token_and_admin(&env);
+    let result = client.try_pause(&owner);
+    assert!(result.is_err());
+}
+
+#[test]
+fn test_is_paused_reflects_state() {
+    let env = Env::default();
+    let (client, _token_id, admin, _owner) = setup_with_token_and_admin(&env);
+    assert!(!client.is_paused());
+    client.pause(&admin);
+    assert!(client.is_paused());
+    client.unpause(&admin);
+    assert!(!client.is_paused());
+}
+
+// ─── Conditional Trigger Tests ────────────────────────────────────────────────
+
+#[test]
+fn test_time_trigger_fires_after_date() {
+    let env = Env::default();
+    env.ledger().set_timestamp(1000);
+    let (client, _admin, owner, plan_id) = setup_plan_for_triggers(&env);
+
+    client.add_time_trigger(&owner, &plan_id, &2000u64);
+    assert!(!client.check_trigger_conditions(&plan_id));
+
+    env.ledger().set_timestamp(2001);
+    assert!(client.check_trigger_conditions(&plan_id));
+}
+
+#[test]
+fn test_time_trigger_does_not_fire_before_date() {
+    let env = Env::default();
+    env.ledger().set_timestamp(1000);
+    let (client, _admin, owner, plan_id) = setup_plan_for_triggers(&env);
+
+    client.add_time_trigger(&owner, &plan_id, &9999u64);
+    assert!(!client.check_trigger_conditions(&plan_id));
+}
+
+#[test]
+fn test_inactivity_trigger_fires_after_period() {
+    let env = Env::default();
+    env.ledger().set_timestamp(1000);
+    let (client, _admin, owner, plan_id) = setup_plan_for_triggers(&env);
+
+    client.add_inactivity_trigger(&owner, &plan_id, &500u64);
+    client.record_activity(&owner, &plan_id);
+    assert!(!client.check_trigger_conditions(&plan_id));
+
+    env.ledger().set_timestamp(1600);
+    assert!(client.check_trigger_conditions(&plan_id));
+}
+
+#[test]
+fn test_inactivity_reset_by_record_activity() {
+    let env = Env::default();
+    env.ledger().set_timestamp(1000);
+    let (client, _admin, owner, plan_id) = setup_plan_for_triggers(&env);
+
+    client.add_inactivity_trigger(&owner, &plan_id, &500u64);
+
+    env.ledger().set_timestamp(1600);
+    client.record_activity(&owner, &plan_id);
+    assert!(!client.check_trigger_conditions(&plan_id));
+}
+
+#[test]
+fn test_oracle_trigger_fires_on_submit() {
+    let env = Env::default();
+    let (client, _admin, owner, plan_id) = setup_plan_for_triggers(&env);
+    let oracle = Address::generate(&env);
+
+    client.add_oracle_trigger(&owner, &plan_id, &oracle);
+    assert!(!client.check_trigger_conditions(&plan_id));
+
+    client.submit_oracle_trigger(&oracle, &plan_id);
+    assert!(client.check_trigger_conditions(&plan_id));
+}
+
+#[test]
+fn test_non_oracle_cannot_submit_trigger() {
+    let env = Env::default();
+    let (client, _admin, owner, plan_id) = setup_plan_for_triggers(&env);
+    let oracle = Address::generate(&env);
+    let impersonator = Address::generate(&env);
+
+    client.add_oracle_trigger(&owner, &plan_id, &oracle);
+    let result = client.try_submit_oracle_trigger(&impersonator, &plan_id);
+    assert!(result.is_err());
+}
+
+#[test]
+fn test_health_trigger_fires_on_submit() {
+    let env = Env::default();
+    let (client, _admin, owner, plan_id) = setup_plan_for_triggers(&env);
+    let oracle = Address::generate(&env);
+
+    client.add_health_trigger(&owner, &plan_id, &oracle);
+    assert!(!client.check_trigger_conditions(&plan_id));
+
+    client.submit_health_trigger(&oracle, &plan_id);
+    assert!(client.check_trigger_conditions(&plan_id));
+}
+
+#[test]
+fn test_manual_condition_never_auto_fires() {
+    let env = Env::default();
+    env.ledger().set_timestamp(1000);
+    let (client, _admin, owner, plan_id) = setup_plan_for_triggers(&env);
+
+    client.set_trigger_conditions(
+        &owner,
+        &plan_id,
+        &Vec::from_array(&env, [TriggerConditionType::Manual]),
+        &0u64,
+        &0u64,
+        &None,
+    );
+    env.ledger().set_timestamp(9999);
+    assert!(!client.check_trigger_conditions(&plan_id));
+}
+
+#[test]
+fn test_auto_trigger_check_fires_trigger() {
+    let env = Env::default();
+    env.ledger().set_timestamp(1000);
+    let (client, _admin, owner, plan_id) = setup_plan_for_triggers(&env);
+
+    client.add_time_trigger(&owner, &plan_id, &1001u64);
+    env.ledger().set_timestamp(1002);
+
+    client.auto_trigger_check(&plan_id);
+
+    let trigger_info = client.get_inheritance_trigger(&plan_id);
+    assert!(trigger_info.is_some());
+}
+
+#[test]
+fn test_get_trigger_conditions_returns_config() {
+    let env = Env::default();
+    let (client, _admin, owner, plan_id) = setup_plan_for_triggers(&env);
+    let oracle = Address::generate(&env);
+
+    client.add_oracle_trigger(&owner, &plan_id, &oracle);
+    let config = client.get_trigger_conditions(&plan_id).unwrap();
+    assert_eq!(config.conditions.len(), 1);
+    assert!(!config.oracle_triggered);
+}
+
+#[test]
+fn test_set_conditions_blocked_after_trigger() {
+    let env = Env::default();
+    env.ledger().set_timestamp(1000);
+    let (client, _admin, owner, plan_id) = setup_plan_for_triggers(&env);
+
+    client.add_time_trigger(&owner, &plan_id, &1001u64);
+    env.ledger().set_timestamp(1002);
+    client.auto_trigger_check(&plan_id);
+
+    let result = client.try_add_time_trigger(&owner, &plan_id, &9999u64);
+    assert!(result.is_err());
+}
