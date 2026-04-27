@@ -232,7 +232,9 @@ impl GovernanceContract {
             signers,
             threshold: 1,
         };
-        env.storage().instance().set(&DataKey::MultiSigConfig, &multi_sig);
+        env.storage()
+            .instance()
+            .set(&DataKey::MultiSigConfig, &multi_sig);
 
         Ok(())
     }
@@ -414,7 +416,9 @@ impl GovernanceContract {
         }
 
         let multi_sig = MultiSig { signers, threshold };
-        env.storage().instance().set(&DataKey::MultiSigConfig, &multi_sig);
+        env.storage()
+            .instance()
+            .set(&DataKey::MultiSigConfig, &multi_sig);
         Ok(())
     }
 
@@ -455,11 +459,7 @@ impl GovernanceContract {
         Ok(tx_id)
     }
 
-    pub fn sign_transaction(
-        env: Env,
-        signer: Address,
-        tx_id: u32,
-    ) -> Result<(), GovernanceError> {
+    pub fn sign_transaction(env: Env, signer: Address, tx_id: u32) -> Result<(), GovernanceError> {
         signer.require_auth();
         Self::require_not_paused(&env)?;
 

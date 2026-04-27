@@ -1,23 +1,26 @@
-use crate::api_error::ApiError;
-use crate::db::DbPool;
-use crate::notifications::AuditLogService;
 use axum::{
     extract::{Path, State},
-    Json, http::StatusCode,
+    http::StatusCode,
+    Json,
 };
+use base64::engine::general_purpose;
+use rand::Rng;
+use reqwest::Client;
+use ring::hmac;
 use serde::{Deserialize, Serialize};
+use serde_json::json;
 use sqlx::PgPool;
 use std::collections::HashMap;
-use tracing::{error, info, warn};
-use uuid::Uuid;
-use hmac::{Hmac, Mac};
-use sha2::Sha256;
-use base64::{encode};
-use reqwest::Client;
 use std::sync::Arc;
 use tokio::sync::Mutex;
+use tracing::warn;
+use uuid::Uuid;
 
-type HmacSha256 = Hmac<Sha256>;
+use crate::api_error::ApiError;
+use crate::app::AppState;
+use crate::auth::AuthenticatedUser;
+use crate::notifications::AuditLogService;
+
 
 #[derive(Serialize, Deserialize, sqlx::FromRow)]
 pub struct Webhook {
@@ -67,7 +70,9 @@ impl WebhookService {
         request: CreateWebhookRequest,
     ) -> Result<Webhook, ApiError> {
         if request.events.is_empty() {
-            return Err(ApiError::BadRequest("At least one event type required".to_string()));
+            return Err(ApiError::BadRequest(
+                "At least one event type required".to_string(),
+            ));
         }
 
         let secret = self.generate_secret();
@@ -95,10 +100,10 @@ impl WebhookService {
             None,
             "webhook_registered",
             Some(webhook_id),
-            "webhook",
+            Some("webhook"),
             None,
             None,
-            Some(format!("Events: {:?}", request.events)),
+            Some(json!(format!("Events: {:?}", request.events))),
         )
         .await?;
 
@@ -117,13 +122,12 @@ impl WebhookService {
     }
 
     pub async fn delete_webhook(&self, user_id: Uuid, webhook_id: Uuid) -> Result<(), ApiError> {
-        let result = sqlx::query(
-            "UPDATE webhooks SET is_active = false WHERE id = $1 AND user_id = $2",
-        )
-        .bind(webhook_id)
-        .bind(user_id)
-        .execute(&self.db)
-        .await?;
+        let result =
+            sqlx::query("UPDATE webhooks SET is_active = false WHERE id = $1 AND user_id = $2")
+                .bind(webhook_id)
+                .bind(user_id)
+                .execute(&self.db)
+                .await?;
 
         if result.rows_affected() == 0 {
             return Err(ApiError::NotFound("Webhook not found".to_string()));
@@ -135,7 +139,7 @@ impl WebhookService {
             None,
             "webhook_deleted",
             Some(webhook_id),
-            "webhook",
+            Some("webhook"),
             None,
             None,
             None,
@@ -163,30 +167,37 @@ impl WebhookService {
         Ok(())
     }
 
-    async fn deliver_to_webhook(&self, webhook: &Webhook, event: &WebhookEvent) -> Result<(), ApiError> {
-        let payload = serde_json::to_string(event)?;
+    async fn deliver_to_webhook(
+        &self,
+        webhook: &Webhook,
+        event: &WebhookEvent,
+    ) -> Result<(), ApiError> {
+        let payload = serde_json::to_string(event).map_err(|e| ApiError::Internal(e.into()))?;
         let signature = self.generate_signature(&webhook.secret, &payload);
 
-        let response = self.client
+        let response = self
+            .client
             .post(&webhook.url)
             .header("Content-Type", "application/json")
             .header("X-Webhook-Signature", signature)
             .header("X-Webhook-ID", webhook.id.to_string())
             .body(payload)
             .send()
-            .await?;
+            .await
+            .map_err(|e| ApiError::Internal(e.into()))?;
 
         if !response.status().is_success() {
-            return Err(ApiError::InternalServerError(format!("Webhook delivery failed: {}", response.status())));
+            return Err(ApiError::ExternalService(format!(
+                "Webhook delivery failed: {}",
+                response.status(),
+            )));
         }
 
         // Update last delivery
-        sqlx::query(
-            "UPDATE webhooks SET last_delivery = NOW() WHERE id = $1",
-        )
-        .bind(webhook.id)
-        .execute(&self.db)
-        .await?;
+        sqlx::query("UPDATE webhooks SET last_delivery = NOW() WHERE id = $1")
+            .bind(webhook.id)
+            .execute(&self.db)
+            .await?;
 
         Ok(())
     }
@@ -196,9 +207,8 @@ impl WebhookService {
             "UPDATE webhooks SET failure_count = failure_count + 1 WHERE id = $1 RETURNING failure_count",
         )
         .bind(webhook_id)
-        .execute(&self.db)
-        .await?
-        .unwrap_or(0);
+        .fetch_one(&self.db)
+        .await?;
 
         if failure_count >= 5 {
             // Deactivate webhook after 5 failures
@@ -217,7 +227,6 @@ impl WebhookService {
     }
 
     fn generate_secret(&self) -> String {
-        use rand::Rng;
         let secret: String = rand::thread_rng()
             .sample_iter(&rand::distributions::Alphanumeric)
             .take(32)
@@ -227,11 +236,12 @@ impl WebhookService {
     }
 
     fn generate_signature(&self, secret: &str, payload: &str) -> String {
-        let mut mac = HmacSha256::new_from_slice(secret.as_bytes()).unwrap();
-        mac.update(payload.as_bytes());
-        let result = mac.finalize();
-        let code_bytes = result.into_bytes();
-        format!("sha256={}", encode(code_bytes))
+        let key = hmac::Key::new(hmac::HMAC_SHA256, secret.as_bytes());
+        let tag = hmac::sign(&key, payload.as_bytes());
+        format!(
+            "sha256={}",
+            general_purpose::STANDARD.encode(tag.as_ref()),
+        )
     }
 
     pub async fn retry_failed_deliveries(&self) -> Result<(), ApiError> {
@@ -254,32 +264,32 @@ pub mod event_types {
 
 // API handlers
 pub async fn register_webhook(
-    State(service): State<Arc<WebhookService>>,
-    user_id: crate::auth::AuthenticatedUser,
+    State(state): State<Arc<AppState>>,
+    AuthenticatedUser(user): AuthenticatedUser,
     Json(request): Json<CreateWebhookRequest>,
 ) -> Result<Json<Webhook>, (StatusCode, String)> {
-    match service.register_webhook(user_id.0, request).await {
+    match state.webhook_service.register_webhook(user.user_id, request).await {
         Ok(webhook) => Ok(Json(webhook)),
         Err(e) => Err((StatusCode::INTERNAL_SERVER_ERROR, e.to_string())),
     }
 }
 
 pub async fn get_webhooks(
-    State(service): State<Arc<WebhookService>>,
-    user_id: crate::auth::AuthenticatedUser,
+    State(state): State<Arc<AppState>>,
+    AuthenticatedUser(user): AuthenticatedUser,
 ) -> Result<Json<Vec<Webhook>>, (StatusCode, String)> {
-    match service.get_webhooks(user_id.0).await {
+    match state.webhook_service.get_webhooks(user.user_id).await {
         Ok(webhooks) => Ok(Json(webhooks)),
         Err(e) => Err((StatusCode::INTERNAL_SERVER_ERROR, e.to_string())),
     }
 }
 
 pub async fn delete_webhook(
-    State(service): State<Arc<WebhookService>>,
-    user_id: crate::auth::AuthenticatedUser,
+    State(state): State<Arc<AppState>>,
+    AuthenticatedUser(user): AuthenticatedUser,
     Path(webhook_id): Path<Uuid>,
 ) -> Result<StatusCode, (StatusCode, String)> {
-    match service.delete_webhook(user_id.0, webhook_id).await {
+    match state.webhook_service.delete_webhook(user.user_id, webhook_id).await {
         Ok(_) => Ok(StatusCode::NO_CONTENT),
         Err(e) => Err((StatusCode::INTERNAL_SERVER_ERROR, e.to_string())),
     }
