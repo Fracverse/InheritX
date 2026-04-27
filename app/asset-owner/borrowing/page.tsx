@@ -1,12 +1,11 @@
 "use client";
 
-import React, { useState, useEffect } from "react";
+import React, { useState, useEffect, useCallback } from "react";
 import { 
   Plus, 
   LayoutDashboard, 
   History,
   Info,
-  AlertTriangle
 } from "lucide-react";
 import { useWallet } from "@/context/WalletContext";
 import { loanService, Loan } from "@/app/services/loanService";
@@ -20,23 +19,39 @@ export default function BorrowingPage() {
   const [activeTab, setActiveTab] = useState<"dashboard" | "create" | "history">("dashboard");
   const [loans, setLoans] = useState<Loan[]>([]);
   const [isLoading, setIsLoading] = useState(true);
-
   useEffect(() => {
-    if (isConnected && address) {
-      fetchLoans();
-    } else {
-      setIsLoading(false);
-    }
+    let isMounted = true;
+
+    const loadLoans = async () => {
+      if (!address || !isConnected) {
+        if (isMounted) setIsLoading(false);
+        return;
+      }
+
+      if (isMounted) setIsLoading(true);
+      try {
+        const userLoans = await loanService.getUserLoans(address);
+        if (isMounted) setLoans(userLoans);
+      } catch (error) {
+        console.error("Error fetching loans:", error);
+      } finally {
+        if (isMounted) setIsLoading(false);
+      }
+    };
+
+    loadLoans();
+
+    return () => {
+      isMounted = false;
+    };
   }, [isConnected, address]);
 
-  const fetchLoans = async () => {
-    setIsLoading(true);
+  const fetchLoans = useCallback(async () => {
     if (address) {
       const userLoans = await loanService.getUserLoans(address);
       setLoans(userLoans);
     }
-    setIsLoading(false);
-  };
+  }, [address]);
 
   const unhealthyLoans = loans.filter(l => l.status === "ACTIVE" && l.healthFactor < 1.3);
 

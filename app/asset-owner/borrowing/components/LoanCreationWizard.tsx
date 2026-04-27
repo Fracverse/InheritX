@@ -1,6 +1,6 @@
 "use client";
 
-import React, { useState, useEffect } from "react";
+import React, { useState, useEffect, useCallback } from "react";
 import { motion, AnimatePresence } from "framer-motion";
 import { 
   ChevronRight, 
@@ -11,7 +11,6 @@ import {
   CheckCircle2,
   AlertCircle,
   Loader2,
-  ArrowRight
 } from "lucide-react";
 import { useWallet } from "@/context/WalletContext";
 import { loanService, LoanSimulation } from "@/app/services/loanService";
@@ -52,13 +51,7 @@ export default function LoanCreationWizard({ onSuccess }: LoanCreationWizardProp
   const nextStep = () => setCurrentStep(prev => Math.min(prev + 1, STEPS.length - 1));
   const prevStep = () => setCurrentStep(prev => Math.max(prev - 1, 0));
 
-  useEffect(() => {
-    if (currentStep === 3) {
-      handleSimulate();
-    }
-  }, [currentStep]);
-
-  const handleSimulate = async () => {
+  const handleSimulate = useCallback(async () => {
     setIsSimulating(true);
     setError("");
     const result = await loanService.simulateLoan(formData);
@@ -68,7 +61,13 @@ export default function LoanCreationWizard({ onSuccess }: LoanCreationWizardProp
       setError("Failed to simulate loan terms. Please check your inputs.");
     }
     setIsSimulating(false);
-  };
+  }, [formData]);
+
+  useEffect(() => {
+    if (currentStep === 3) {
+      handleSimulate();
+    }
+  }, [currentStep, handleSimulate]);
 
   const handleFinalize = async () => {
     setIsProcessing(true);
@@ -84,8 +83,9 @@ export default function LoanCreationWizard({ onSuccess }: LoanCreationWizardProp
       } else {
         setError(result.error || "Failed to create loan");
       }
-    } catch (err: any) {
-      setError(err.message || "An unexpected error occurred");
+    } catch (err: unknown) {
+      const errorMessage = err instanceof Error ? err.message : "An unexpected error occurred";
+      setError(errorMessage);
     } finally {
       setIsProcessing(false);
     }

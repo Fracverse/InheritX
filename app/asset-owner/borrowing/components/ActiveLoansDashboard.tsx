@@ -3,10 +3,7 @@
 import React, { useState } from "react";
 import { 
   ShieldCheck, 
-  TrendingUp, 
-  Clock, 
   ArrowRightLeft,
-  ChevronRight
 } from "lucide-react";
 import { Loan } from "@/app/services/loanService";
 import RepaymentModal from "./RepaymentModal";
@@ -37,7 +34,7 @@ export default function ActiveLoansDashboard({ loans, onRefresh }: ActiveLoansDa
         <ShieldCheck className="text-[#33C5E0] mb-4" size={48} />
         <h2 className="text-xl text-[#FCFFFF] font-semibold mb-2">No Active Loans</h2>
         <p className="text-[#92A5A8] max-w-md">
-          You don't have any active loans at the moment. Click "New Loan" to get started.
+          You don&apos;t have any active loans at the moment. Click &quot;New Loan&quot; to get started.
         </p>
       </div>
     );
