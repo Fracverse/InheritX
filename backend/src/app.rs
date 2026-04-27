@@ -57,13 +57,13 @@ use crate::service::{
 use crate::stress_testing::StressTestingEngine;
 use crate::webhook::{delete_webhook, get_webhooks, register_webhook, WebhookService};
 use crate::will_compliance::{ValidationResult, WillComplianceService};
-use crate::yield_service::{DefaultOnChainYieldService, OnChainYieldService};
 use crate::will_pdf::{WillDocumentInput, WillPdfService, WillTemplate};
 use crate::will_signature::{
     SigningChallengeRequest, SubmitSignatureRequest, WillSignatureService,
 };
 use crate::will_version::{PaginatedVersions, PaginationParams, WillVersionService};
 use crate::witness::{InviteWitnessRequest, WitnessService, WitnessSignRequest};
+use crate::yield_service::{DefaultOnChainYieldService, OnChainYieldService};
 use base64::Engine as _;
 
 pub struct AppState {

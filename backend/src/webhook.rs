@@ -4,6 +4,7 @@ use axum::{
     Json,
 };
 use base64::engine::general_purpose;
+use base64::Engine as _;
 use rand::Rng;
 use reqwest::Client;
 use ring::hmac;
@@ -20,7 +21,6 @@ use crate::api_error::ApiError;
 use crate::app::AppState;
 use crate::auth::AuthenticatedUser;
 use crate::notifications::AuditLogService;
-
 
 #[derive(Serialize, Deserialize, sqlx::FromRow)]
 pub struct Webhook {
@@ -218,7 +218,7 @@ impl WebhookService {
                 .await?;
         } else {
             // Add to retry queue
-            let mut queue = self.retry_queue.lock().await;
+            let _queue = self.retry_queue.lock().await;
             // For simplicity, just increment failure count
             // In production, implement proper retry logic with exponential backoff
         }
@@ -238,10 +238,7 @@ impl WebhookService {
     fn generate_signature(&self, secret: &str, payload: &str) -> String {
         let key = hmac::Key::new(hmac::HMAC_SHA256, secret.as_bytes());
         let tag = hmac::sign(&key, payload.as_bytes());
-        format!(
-            "sha256={}",
-            general_purpose::STANDARD.encode(tag.as_ref()),
-        )
+        format!("sha256={}", general_purpose::STANDARD.encode(tag.as_ref()),)
     }
 
     pub async fn retry_failed_deliveries(&self) -> Result<(), ApiError> {
@@ -268,7 +265,11 @@ pub async fn register_webhook(
     AuthenticatedUser(user): AuthenticatedUser,
     Json(request): Json<CreateWebhookRequest>,
 ) -> Result<Json<Webhook>, (StatusCode, String)> {
-    match state.webhook_service.register_webhook(user.user_id, request).await {
+    match state
+        .webhook_service
+        .register_webhook(user.user_id, request)
+        .await
+    {
         Ok(webhook) => Ok(Json(webhook)),
         Err(e) => Err((StatusCode::INTERNAL_SERVER_ERROR, e.to_string())),
     }
@@ -289,7 +290,11 @@ pub async fn delete_webhook(
     AuthenticatedUser(user): AuthenticatedUser,
     Path(webhook_id): Path<Uuid>,
 ) -> Result<StatusCode, (StatusCode, String)> {
-    match state.webhook_service.delete_webhook(user.user_id, webhook_id).await {
+    match state
+        .webhook_service
+        .delete_webhook(user.user_id, webhook_id)
+        .await
+    {
         Ok(_) => Ok(StatusCode::NO_CONTENT),
         Err(e) => Err((StatusCode::INTERNAL_SERVER_ERROR, e.to_string())),
     }
