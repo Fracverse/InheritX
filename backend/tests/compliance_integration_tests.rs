@@ -4,11 +4,35 @@ use sqlx::PgPool;
 use std::sync::Arc;
 use uuid::Uuid;
 
+async fn insert_test_user(db: &PgPool, user_id: Uuid) {
+    sqlx::query(
+        "INSERT INTO users (id, email, password_hash, is_verified) VALUES ($1, $2, 'hash', true)",
+    )
+    .bind(user_id)
+    .bind(format!("user_{}@test.com", user_id))
+    .execute(db)
+    .await
+    .unwrap();
+}
+
+async fn insert_test_plan(db: &PgPool, plan_id: Uuid, user_id: Uuid) {
+    sqlx::query(
+        "INSERT INTO plans (id, user_id, title, is_flagged) VALUES ($1, $2, 'Test Plan', false)",
+    )
+    .bind(plan_id)
+    .bind(user_id)
+    .execute(db)
+    .await
+    .unwrap();
+}
+
 #[sqlx::test]
 async fn test_velocity_detection_logic(db: PgPool) {
-    // Setup test data
     let user_id = Uuid::new_v4();
     let plan_id = Uuid::new_v4();
+
+    insert_test_user(&db, user_id).await;
+    insert_test_plan(&db, plan_id, user_id).await;
 
     // Insert multiple lending events within velocity window
     for i in 0..5 {
@@ -30,10 +54,8 @@ async fn test_velocity_detection_logic(db: PgPool) {
     let engine = ComplianceEngine::new(db.clone(), 3, 10, dec!(100000));
     let engine = Arc::new(engine);
 
-    // Run compliance scan
     engine.scan_suspicious_activity().await.unwrap();
 
-    // Check if plan was flagged
     let flagged: bool = sqlx::query_scalar("SELECT is_flagged FROM plans WHERE id = $1")
         .bind(plan_id)
         .fetch_one(&db)
@@ -48,13 +70,8 @@ async fn test_volume_threshold_detection(db: PgPool) {
     let user_id = Uuid::new_v4();
     let plan_id = Uuid::new_v4();
 
-    // Insert plan
-    sqlx::query("INSERT INTO plans (id, user_id, is_flagged) VALUES ($1, $2, false)")
-        .bind(plan_id)
-        .bind(user_id)
-        .execute(&db)
-        .await
-        .unwrap();
+    insert_test_user(&db, user_id).await;
+    insert_test_plan(&db, plan_id, user_id).await;
 
     // Insert large volume borrow event
     sqlx::query(
@@ -86,8 +103,6 @@ async fn test_volume_threshold_detection(db: PgPool) {
 
 #[sqlx::test]
 async fn test_sanctions_screening_integration(db: PgPool) {
-    // This would test integration with external sanctions screening service
-    // For now, placeholder test
     let engine = ComplianceEngine::new(db, 3, 10, dec!(100000));
     assert_eq!(engine.velocity_threshold, 3);
     // TODO: Implement actual sanctions screening test when service is integrated
@@ -95,8 +110,6 @@ async fn test_sanctions_screening_integration(db: PgPool) {
 
 #[sqlx::test]
 async fn test_risk_scoring_algorithms(db: PgPool) {
-    // Test risk scoring logic
-    // Placeholder for risk scoring tests
     let engine = ComplianceEngine::new(db, 3, 10, dec!(100000));
     assert_eq!(engine.volume_threshold, dec!(100000));
     // TODO: Implement risk scoring algorithm tests
@@ -107,11 +120,13 @@ async fn test_compliance_violation_scenarios(db: PgPool) {
     let user_id = Uuid::new_v4();
     let plan_id = Uuid::new_v4();
 
+    insert_test_user(&db, user_id).await;
+
     // Insert old plan with no recent activity
     sqlx::query(
         r#"
-        INSERT INTO plans (id, user_id, is_flagged, created_at)
-        VALUES ($1, $2, false, NOW() - INTERVAL '60 days')
+        INSERT INTO plans (id, user_id, title, is_flagged, created_at)
+        VALUES ($1, $2, 'Old Plan', false, NOW() - INTERVAL '60 days')
         "#,
     )
     .bind(plan_id)
@@ -150,16 +165,11 @@ async fn test_compliance_violation_scenarios(db: PgPool) {
 
 #[sqlx::test]
 async fn test_edge_cases_covered(db: PgPool) {
-    // Test edge cases like exactly at threshold
     let user_id = Uuid::new_v4();
     let plan_id = Uuid::new_v4();
 
-    sqlx::query("INSERT INTO plans (id, user_id, is_flagged) VALUES ($1, $2, false)")
-        .bind(plan_id)
-        .bind(user_id)
-        .execute(&db)
-        .await
-        .unwrap();
+    insert_test_user(&db, user_id).await;
+    insert_test_plan(&db, plan_id, user_id).await;
 
     // Insert exactly threshold volume
     sqlx::query(
