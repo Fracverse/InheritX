@@ -61,11 +61,7 @@ pub fn known_versions() -> Vec<ApiVersionInfo> {
 // ── Versioned Router builder ──────────────────────────────────────────────────
 
 /// Nest an existing router under the `/api/v{version}/` prefix.
-///
-/// ```
-/// use crate::api_versioning::versioned;
-/// let router = versioned("v1", my_router);
-/// ```
+/// Pass `"v1"` and your route `Router` to produce `/api/v1/<routes>`.
 pub fn versioned(version: &str, router: Router) -> Router {
     Router::new().nest(&format!("/api/{}/", version), router)
 }
