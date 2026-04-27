@@ -637,6 +637,7 @@ async fn db_health_check(
 async fn create_plan(
     State(state): State<Arc<AppState>>,
     AuthenticatedUser(user): AuthenticatedUser,
+    Query(_pagination): Query<PaginationQuery>,
     Json(req): Json<CreatePlanRequest>,
 ) -> Result<Json<Value>, ApiError> {
     let plan = PlanService::create_plan(&state.db, user.user_id, &req).await?;
