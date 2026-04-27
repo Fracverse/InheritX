@@ -78,8 +78,9 @@ CREATE INDEX IF NOT EXISTS idx_emergency_access_grants_status
 CREATE INDEX IF NOT EXISTS idx_will_documents_generated_at ON will_documents (generated_at);
 
 -- ── action_logs ───────────────────────────────────────────────────────────────
-CREATE INDEX IF NOT EXISTS idx_action_logs_user_id    ON action_logs (user_id);
-CREATE INDEX IF NOT EXISTS idx_action_logs_created_at ON action_logs (created_at);
+-- timestamp column is named "timestamp" (not created_at); user_id already indexed
+CREATE INDEX IF NOT EXISTS idx_action_logs_user_id   ON action_logs (user_id);
+CREATE INDEX IF NOT EXISTS idx_action_logs_timestamp ON action_logs (timestamp);
 
 -- ── price_feeds ───────────────────────────────────────────────────────────────
 CREATE INDEX IF NOT EXISTS idx_price_feeds_asset_code ON price_feeds (asset_code);
