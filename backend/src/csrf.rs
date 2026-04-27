@@ -102,8 +102,12 @@ pub async fn get_csrf_token(
 
 /// Validates `X-CSRF-Token` for all state-changing HTTP methods.
 ///
-/// GET / HEAD / OPTIONS pass through without a token (they are safe/idempotent).
-/// All other methods require a valid, unexpired, single-use token.
+/// GET / HEAD / OPTIONS pass through (safe/idempotent).
+/// Requests with **no** `Authorization` header pass through — the auth
+/// middleware downstream will return 401 for unauthenticated requests, so
+/// we must not intercept them with 403 here.
+/// Only authenticated state-changing requests are required to carry a
+/// valid CSRF token.
 pub async fn csrf_protection_middleware(
     State(state): State<Arc<AppState>>,
     req: Request<Body>,
@@ -112,6 +116,12 @@ pub async fn csrf_protection_middleware(
     let method = req.method().clone();
 
     if method == Method::GET || method == Method::HEAD || method == Method::OPTIONS {
+        return next.run(req).await;
+    }
+
+    // No Authorization header → not authenticated; let auth middleware handle it
+    let has_auth = req.headers().contains_key("Authorization");
+    if !has_auth {
         return next.run(req).await;
     }
 
