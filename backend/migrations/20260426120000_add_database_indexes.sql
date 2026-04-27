@@ -63,14 +63,19 @@ CREATE INDEX IF NOT EXISTS idx_loan_lifecycle_status     ON loan_lifecycle (stat
 CREATE INDEX IF NOT EXISTS idx_loan_lifecycle_user_status ON loan_lifecycle (user_id, status);
 
 -- ── emergency_access_grants ───────────────────────────────────────────────────
-CREATE INDEX IF NOT EXISTS idx_emergency_access_grants_user_id
-    ON emergency_access_grants (user_id);
+-- Table has no user_id; grantee is stored in granted_to (FK → users.id)
+CREATE INDEX IF NOT EXISTS idx_emergency_access_grants_granted_to
+    ON emergency_access_grants (granted_to);
+CREATE INDEX IF NOT EXISTS idx_emergency_access_grants_plan_id
+    ON emergency_access_grants (plan_id);
 CREATE INDEX IF NOT EXISTS idx_emergency_access_grants_status
     ON emergency_access_grants (status);
 
 -- ── will_documents ────────────────────────────────────────────────────────────
-CREATE INDEX IF NOT EXISTS idx_will_documents_plan_id ON will_documents (plan_id);
-CREATE INDEX IF NOT EXISTS idx_will_documents_status  ON will_documents (status);
+-- plan_id and user_id indexes already exist from the original migration;
+-- no status column exists in this table — skipping both.
+-- Additional index on generated_at for recency-ordered queries.
+CREATE INDEX IF NOT EXISTS idx_will_documents_generated_at ON will_documents (generated_at);
 
 -- ── action_logs ───────────────────────────────────────────────────────────────
 CREATE INDEX IF NOT EXISTS idx_action_logs_user_id    ON action_logs (user_id);
@@ -80,10 +85,11 @@ CREATE INDEX IF NOT EXISTS idx_action_logs_created_at ON action_logs (created_at
 CREATE INDEX IF NOT EXISTS idx_price_feeds_asset_code ON price_feeds (asset_code);
 
 -- ── asset_price_history ───────────────────────────────────────────────────────
+-- Timestamp column is price_timestamp (not recorded_at)
 CREATE INDEX IF NOT EXISTS idx_asset_price_history_asset_code
     ON asset_price_history (asset_code);
-CREATE INDEX IF NOT EXISTS idx_asset_price_history_recorded_at
-    ON asset_price_history (recorded_at);
+CREATE INDEX IF NOT EXISTS idx_asset_price_history_price_timestamp
+    ON asset_price_history (price_timestamp);
 -- Composite for "price history between dates" queries
 CREATE INDEX IF NOT EXISTS idx_asset_price_history_asset_time
-    ON asset_price_history (asset_code, recorded_at DESC);
+    ON asset_price_history (asset_code, price_timestamp DESC);
