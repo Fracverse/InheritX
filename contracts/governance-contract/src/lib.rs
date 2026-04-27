@@ -35,6 +35,9 @@ pub enum DataKey {
     MultiSigConfig,
     PendingTransaction(u32),
     NextTxId,
+    NextProposalId,
+    Proposal(u32),
+    UserVoteChoice(Address, u32),
 }
 
 // ─────────────────────────────────────────────────
@@ -90,6 +93,13 @@ pub struct VoteCount {
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct ContractLinkedEvent {
     pub contract: Address,
+}
+
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct ContractExecutedEvent {
+    pub contract: Address,
+    pub func: Symbol,
 }
 
 #[contracttype]
@@ -239,6 +249,13 @@ impl GovernanceContract {
         Ok(())
     }
 
+    pub fn get_admin(env: Env) -> Address {
+        env.storage()
+            .instance()
+            .get(&DataKey::Admin)
+            .expect("Not initialized")
+    }
+
     /// Assign a role to an address. Admin-only.
     pub fn assign_role(
         env: Env,
@@ -334,7 +351,7 @@ impl GovernanceContract {
         let mut args = Vec::new(&env);
         args.push_back(new_rate.into_val(&env));
         Self::propose_transaction(
-            env,
+            env.clone(),
             proposer,
             env.current_contract_address(),
             Symbol::new(&env, "update_interest_rate"),
@@ -350,7 +367,7 @@ impl GovernanceContract {
         let mut args = Vec::new(&env);
         args.push_back(new_ratio.into_val(&env));
         Self::propose_transaction(
-            env,
+            env.clone(),
             proposer,
             env.current_contract_address(),
             Symbol::new(&env, "update_collateral_ratio"),
@@ -366,7 +383,7 @@ impl GovernanceContract {
         let mut args = Vec::new(&env);
         args.push_back(new_bonus.into_val(&env));
         Self::propose_transaction(
-            env,
+            env.clone(),
             proposer,
             env.current_contract_address(),
             Symbol::new(&env, "update_liquidation_bonus"),
@@ -411,7 +428,7 @@ impl GovernanceContract {
         admin.require_auth();
         Self::check_admin(&env)?;
 
-        if signers.is_empty() || threshold == 0 || threshold > signers.len() as u32 {
+        if signers.is_empty() || threshold == 0 || threshold > signers.len() {
             return Err(GovernanceError::Unauthorized);
         }
 
@@ -508,7 +525,7 @@ impl GovernanceContract {
         }
 
         let multi_sig = Self::get_multi_sig_config(env.clone());
-        if pending_tx.signatures.len() < multi_sig.threshold as usize {
+        if pending_tx.signatures.len() < multi_sig.threshold {
             return Err(GovernanceError::QuorumNotMet);
         }
 
