@@ -1,6 +1,6 @@
 use inheritx_backend::{
-    create_app, db, error_tracking, metrics, telemetry, Config,
-    LegacyMessageDeliveryService, LendingDataWarehouseService, MessageKeyService,
+    create_app, db, error_tracking, metrics, telemetry, Config, LegacyMessageDeliveryService,
+    LendingDataWarehouseService, MessageKeyService,
 };
 use std::net::SocketAddr;
 use std::sync::Arc;
@@ -62,7 +62,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     compliance_engine.start();
 
     // Initialize Interest Reconciliation Service
-    let yield_service = Arc::new(inheritx_backend::yield_service::DefaultOnChainYieldService::new());
+    let yield_service =
+        Arc::new(inheritx_backend::yield_service::DefaultOnChainYieldService::new());
     let interest_reconciliation = Arc::new(inheritx_backend::InterestReconciliationService::new(
         db_pool.clone(),
         yield_service,
