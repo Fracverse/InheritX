@@ -13,10 +13,11 @@ CREATE TABLE IF NOT EXISTS csrf_tokens (
 -- Fast lookup by token value (the hot path in the validation middleware)
 CREATE INDEX IF NOT EXISTS idx_csrf_tokens_token ON csrf_tokens (token);
 
--- Partial index for the active-token query: token + not-expired + not-used
-CREATE INDEX IF NOT EXISTS idx_csrf_tokens_active
+-- Partial index for unused tokens only — no NOW() because non-immutable
+-- functions are forbidden in index predicates; expiry is checked at query time
+CREATE INDEX IF NOT EXISTS idx_csrf_tokens_unused
     ON csrf_tokens (token)
-    WHERE used = FALSE AND expires_at > NOW();
+    WHERE used = FALSE;
 
 -- Housekeeping: TTL-based cleanup selects by expiry and user
 CREATE INDEX IF NOT EXISTS idx_csrf_tokens_user_id    ON csrf_tokens (user_id);
