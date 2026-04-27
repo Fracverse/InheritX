@@ -140,42 +140,48 @@ impl MockToken {
 mod property_tests {
     use super::*;
     use proptest::prelude::*;
-    use soroban_sdk::{Env, String};
+    use soroban_sdk::testutils::Address as _;
+    use soroban_sdk::{Address, Env};
 
+    #[allow(dead_code)]
     fn valid_amount_strategy() -> impl Strategy<Value = i128> {
         0i128..(MAX_SUPPLY / 10)
     }
 
-    fn setup_env() -> Env {
-        Env::default()
+    // Helper macro to correctly register the contract and return the client frame
+    macro_rules! setup {
+        () => {{
+            let env = Env::default();
+            env.mock_all_auths(); // Globally disable auth checks for tests
+            let contract_id = env.register_contract(None, MockToken);
+            let client = MockTokenClient::new(&env, &contract_id);
+            (env, client)
+        }};
     }
 
     fn addr_a(env: &Env) -> Address {
-        Address::from_string(&String::from_str(
-            env,
-            "GAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAWHF",
-        ))
+        // Automatically generates a valid random test address
+        Address::generate(env)
     }
 
     fn addr_b(env: &Env) -> Address {
-        Address::from_string(&String::from_str(
-            env,
-            "GBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBWHF",
-        ))
+        // Automatically generates a valid random test address
+        Address::generate(env)
     }
 
     proptest! {
         #[test]
         fn prop_zero_operations_are_no_ops(_ in proptest::bool::ANY) {
-            let env = setup_env();
+            let (env, client) = setup!();
             let addr = addr_a(&env);
 
-            let supply_before = MockToken::total_supply(env.clone());
+            let supply_before = client.total_supply();
 
-            let _ = MockToken::mint(env.clone(), addr.clone(), 0);
+            // Using `try_mint` catches the Result from your contract
+            let _ = client.try_mint(&addr, &0);
 
             prop_assert_eq!(
-                MockToken::total_supply(env.clone()),
+                client.total_supply(),
                 supply_before
             );
         }
@@ -184,16 +190,17 @@ mod property_tests {
     proptest! {
         #[test]
         fn prop_max_supply_boundary(_ in proptest::bool::ANY) {
-            let env = setup_env();
+            let (env, client) = setup!();
 
             let addr1 = addr_a(&env);
             let addr2 = addr_b(&env);
 
-            let result = MockToken::mint(env.clone(), addr1.clone(), MAX_SUPPLY);
-            prop_assert!(result.is_ok());
+            // Remove .unwrap() so we can gracefully inspect the Results
+            let result1 = client.try_mint(&addr1, &MAX_SUPPLY);
+            prop_assert!(result1.is_ok()); // This one should succeed
 
-            let result = MockToken::mint(env.clone(), addr2, 1);
-            prop_assert!(result.is_err());
+            let result2 = client.try_mint(&addr2, &1);
+            prop_assert!(result2.is_err()); // This one SHOULD fail
         }
     }
 
@@ -203,24 +210,23 @@ mod property_tests {
         mint_amount in 1i128..(MAX_SUPPLY / 10),
         transfer_amount in 0i128..(MAX_SUPPLY / 10)
     ) {
-        let env = setup_env();
+        let (env, client) = setup!();
         let from = addr_a(&env);
         let to = addr_b(&env);
 
         // Setup
-        if MockToken::mint(env.clone(), from.clone(), mint_amount).is_ok() {
-            let supply_before = MockToken::total_supply(env.clone());
+        if client.try_mint(&from, &mint_amount).unwrap().is_ok() {
+            let supply_before = client.total_supply();
 
             if transfer_amount <= mint_amount {
-                env.mock_all_auths();
-                let _ = MockToken::transfer(
-                    env.clone(),
-                    from.clone(),
-                    to.clone(),
-                    transfer_amount
+                // Auth is already mocked globally from setup!()
+                let _ = client.try_transfer(
+                    &from,
+                    &to,
+                    &transfer_amount
                 );
 
-                let supply_after = MockToken::total_supply(env.clone());
+                let supply_after = client.total_supply();
 
                 // INVARIANT: transfer must not change total supply
                 prop_assert_eq!(supply_before, supply_after);
@@ -234,13 +240,13 @@ mod property_tests {
         fn prop_mint_increases_supply(
             amount in 0i128..(MAX_SUPPLY / 10)
         ) {
-            let env = setup_env();
+            let (env, client) = setup!();
             let addr = addr_a(&env);
 
-            let before = MockToken::total_supply(env.clone());
+            let before = client.total_supply();
 
-            if MockToken::mint(env.clone(), addr.clone(), amount).is_ok() {
-                let after = MockToken::total_supply(env.clone());
+            if client.try_mint(&addr, &amount).unwrap().is_ok() {
+                let after = client.total_supply();
 
                 // INVARIANT
                 prop_assert_eq!(after, before + amount);
@@ -254,15 +260,13 @@ mod property_tests {
             mint_amount in 0i128..(MAX_SUPPLY / 10),
             burn_amount in 0i128..(MAX_SUPPLY / 10)
         ) {
-            let env = setup_env();
+            let (env, client) = setup!();
             let addr = addr_a(&env);
 
-            let _ = MockToken::mint(env.clone(), addr.clone(), mint_amount);
+            let _ = client.try_mint(&addr, &mint_amount);
+            let _ = client.try_burn(&addr, &burn_amount);
 
-            env.mock_all_auths();
-            let _ = MockToken::burn(env.clone(), addr.clone(), burn_amount);
-
-            let balance = MockToken::balance(env.clone(), addr);
+            let balance = client.balance(&addr);
 
             // INVARIANT
             prop_assert!(balance >= 0);
