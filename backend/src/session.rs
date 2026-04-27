@@ -19,7 +19,6 @@ use axum::{
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use serde_json::json;
-use sha2::{Digest, Sha256};
 use sqlx::PgPool;
 use std::sync::Arc;
 use uuid::Uuid;
@@ -146,13 +145,14 @@ pub async fn logout(
     State(state): State<Arc<AppState>>,
     req: Request<Body>,
 ) -> Result<Json<serde_json::Value>, ApiError> {
-    let raw_token = extract_bearer(&req)
-        .ok_or_else(|| ApiError::Unauthorized)?;
+    let raw_token = extract_bearer(&req).ok_or_else(|| ApiError::Unauthorized)?;
 
     let rows = revoke_by_hash(&state.db, &hash_token(&raw_token)).await?;
 
     if rows == 0 {
-        return Err(ApiError::NotFound("Session not found or already revoked".into()));
+        return Err(ApiError::NotFound(
+            "Session not found or already revoked".into(),
+        ));
     }
 
     Ok(Json(json!({ "message": "Logged out successfully" })))
@@ -165,8 +165,7 @@ pub async fn logout_all(
     State(state): State<Arc<AppState>>,
     req: Request<Body>,
 ) -> Result<Json<serde_json::Value>, ApiError> {
-    let raw_token = extract_bearer(&req)
-        .ok_or_else(|| ApiError::Unauthorized)?;
+    let raw_token = extract_bearer(&req).ok_or_else(|| ApiError::Unauthorized)?;
 
     let claims = decode_claims(&raw_token, &state.config.jwt_secret)
         .ok_or_else(|| ApiError::Unauthorized)?;
@@ -195,8 +194,7 @@ pub async fn list_sessions(
     State(state): State<Arc<AppState>>,
     req: Request<Body>,
 ) -> Result<Json<SessionListResponse>, ApiError> {
-    let raw_token = extract_bearer(&req)
-        .ok_or_else(|| ApiError::Unauthorized)?;
+    let raw_token = extract_bearer(&req).ok_or_else(|| ApiError::Unauthorized)?;
 
     let claims = decode_claims(&raw_token, &state.config.jwt_secret)
         .ok_or_else(|| ApiError::Unauthorized)?;
@@ -225,7 +223,9 @@ pub async fn list_sessions(
         })
         .collect();
 
-    Ok(Json(SessionListResponse { sessions: summaries }))
+    Ok(Json(SessionListResponse {
+        sessions: summaries,
+    }))
 }
 
 /// `DELETE /api/v1/auth/sessions/:session_id`
@@ -236,8 +236,7 @@ pub async fn revoke_session(
     axum::extract::Path(session_id): axum::extract::Path<Uuid>,
     req: Request<Body>,
 ) -> Result<Json<serde_json::Value>, ApiError> {
-    let raw_token = extract_bearer(&req)
-        .ok_or_else(|| ApiError::Unauthorized)?;
+    let raw_token = extract_bearer(&req).ok_or_else(|| ApiError::Unauthorized)?;
 
     let claims = decode_claims(&raw_token, &state.config.jwt_secret)
         .ok_or_else(|| ApiError::Unauthorized)?;
@@ -257,7 +256,9 @@ pub async fn revoke_session(
     .rows_affected();
 
     if rows == 0 {
-        return Err(ApiError::NotFound("Session not found or already revoked".into()));
+        return Err(ApiError::NotFound(
+            "Session not found or already revoked".into(),
+        ));
     }
 
     Ok(Json(json!({ "message": "Session revoked" })))

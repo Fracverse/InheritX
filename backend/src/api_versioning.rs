@@ -18,16 +18,14 @@
 
 use axum::{
     body::Body,
-    extract::{Request, State},
-    http::{HeaderName, HeaderValue, StatusCode},
+    extract::Request,
+    http::{HeaderName, HeaderValue},
     middleware::Next,
-    response::{IntoResponse, Json, Response},
+    response::{Json, Response},
     Router,
 };
-use chrono::{DateTime, Utc};
 use serde::Serialize;
 use serde_json::json;
-use std::collections::HashMap;
 
 // ── Version catalogue ─────────────────────────────────────────────────────────
 
@@ -109,10 +107,7 @@ pub async fn versioning_middleware(req: Request<Body>, next: Next) -> Response {
 
     // Always inject the detected version
     if let Ok(val) = HeaderValue::from_str(&detected) {
-        headers.insert(
-            HeaderName::from_static("x-api-version"),
-            val,
-        );
+        headers.insert(HeaderName::from_static("x-api-version"), val);
     }
 
     // Add deprecation notice for non-current versions
@@ -153,14 +148,20 @@ mod tests {
 
     #[test]
     fn v1_is_stable_with_no_sunset() {
-        let v1 = known_versions().into_iter().find(|v| v.version == "v1").unwrap();
+        let v1 = known_versions()
+            .into_iter()
+            .find(|v| v.version == "v1")
+            .unwrap();
         assert_eq!(v1.status, "stable");
         assert!(v1.sunset.is_none());
     }
 
     #[test]
     fn v0_is_deprecated_with_sunset() {
-        let v0 = known_versions().into_iter().find(|v| v.version == "v0").unwrap();
+        let v0 = known_versions()
+            .into_iter()
+            .find(|v| v.version == "v0")
+            .unwrap();
         assert_eq!(v0.status, "deprecated");
         assert!(v0.sunset.is_some());
     }

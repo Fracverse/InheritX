@@ -20,7 +20,6 @@ use chrono::{Duration, Utc};
 use ring::rand::{SecureRandom, SystemRandom};
 use serde::Serialize;
 use serde_json::json;
-use sqlx::PgPool;
 use std::sync::Arc;
 use uuid::Uuid;
 
