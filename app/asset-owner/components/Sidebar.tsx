@@ -12,6 +12,7 @@ import PlansIcon from "@/app/svg/PlansIcon";
 import PortfolioIcon from "@/app/svg/PortfolioIcon";
 import SecurityIcon from "@/app/svg/SecurityIcon";
 import SwapIcon from "@/app/svg/SwapIcon";
+import BorrowingIcon from "@/app/svg/BorrowingIcon";
 
 const normalizePath = (path: string) => {
   if (path !== "/" && path.endsWith("/")) {
@@ -23,6 +24,7 @@ const normalizePath = (path: string) => {
 const SIDEBAR_ITEMS = [
   { label: "Home", href: "/asset-owner/", icon: HomeIcon, exact: true },
   { label: "Plans", href: "/asset-owner/plans", icon: PlansIcon },
+  { label: "Borrowing", href: "/asset-owner/borrowing", icon: BorrowingIcon },
   { label: "Claim", href: "/asset-owner/claim", icon: ClaimIcon },
   { label: "Swap", href: "/asset-owner/swap", icon: SwapIcon },
   { label: "Portfolio", href: "/asset-owner/portfolio", icon: PortfolioIcon },
