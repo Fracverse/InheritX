@@ -140,7 +140,7 @@ export default function WillDocumentsPage() {
                 <p className="font-medium text-gray-900">Document Integrity</p>
                 <p>
                   Each document has a unique SHA-256 hash that ensures its
-                  integrity. You can verify that a document hasn't been tampered
+                  integrity. You can verify that a document hasn&apos;t been tampered
                   with using the Verify button.
                 </p>
               </div>
@@ -164,7 +164,7 @@ export default function WillDocumentsPage() {
                 <p>
                   Downloaded documents are legally formatted PDFs that can be
                   printed, signed, and witnessed according to your
-                  jurisdiction's requirements.
+                  jurisdiction&apos;s requirements.
                 </p>
               </div>
             </div>

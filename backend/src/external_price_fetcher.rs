@@ -1,4 +1,6 @@
 use crate::api_error::ApiError;
+use crate::circuit_breaker::CircuitBreaker;
+use crate::retry::{retry_async, RetryConfig};
 use async_trait::async_trait;
 use reqwest::Client;
 use rust_decimal::Decimal;
@@ -36,6 +38,7 @@ pub trait ExternalPriceProvider: Send + Sync {
 pub struct CoinGeckoProvider {
     client: Client,
     base_url: String,
+    circuit_breaker: CircuitBreaker,
 }
 
 impl Default for CoinGeckoProvider {
@@ -49,6 +52,7 @@ impl CoinGeckoProvider {
         Self {
             client: Client::new(),
             base_url: "https://api.coingecko.com/api/v3".to_string(),
+            circuit_breaker: CircuitBreaker::new("coingecko", 5, Duration::from_secs(30)),
         }
     }
 
@@ -87,42 +91,71 @@ impl ExternalPriceProvider for CoinGeckoProvider {
             self.base_url, coin_id
         );
 
-        let response = self
-            .client
-            .get(&url)
-            .timeout(Duration::from_secs(10))
-            .send()
-            .await
-            .map_err(|e| {
-                error!("CoinGecko request failed: {}", e);
-                ApiError::Internal(anyhow::anyhow!("CoinGecko fetch failed"))
-            })?;
+        retry_async(
+            RetryConfig::external_service(),
+            || {
+                let cb = self.circuit_breaker.clone();
+                let client = self.client.clone();
+                let url = url.clone();
+                let coin_id = coin_id.to_string();
+                let asset_code = asset_code.to_string();
 
-        if !response.status().is_success() {
-            return Err(ApiError::Internal(anyhow::anyhow!(
-                "CoinGecko returned status: {}",
-                response.status()
-            )));
-        }
+                async move {
+                    cb.call(|| async move {
+                        let response = client
+                            .get(&url)
+                            .timeout(Duration::from_secs(10))
+                            .send()
+                            .await
+                            .map_err(|e| {
+                                if e.is_timeout() {
+                                    ApiError::Timeout
+                                } else {
+                                    ApiError::ExternalService(format!(
+                                        "CoinGecko request failed: {e}"
+                                    ))
+                                }
+                            })?;
 
-        let data: HashMap<String, CoinGeckoResponse> = response.json().await.map_err(|e| {
-            error!("Failed to parse CoinGecko response: {}", e);
-            ApiError::Internal(anyhow::anyhow!("Invalid CoinGecko response"))
-        })?;
+                        if !response.status().is_success() {
+                            return Err(ApiError::ExternalService(format!(
+                                "CoinGecko returned status {}",
+                                response.status()
+                            )));
+                        }
 
-        let coin_data = data.get(coin_id).ok_or_else(|| {
-            ApiError::Internal(anyhow::anyhow!("Coin data not found in response"))
-        })?;
+                        let data: HashMap<String, CoinGeckoResponse> =
+                            response.json().await.map_err(|e| {
+                                ApiError::ExternalService(format!(
+                                    "CoinGecko response parse failed: {e}"
+                                ))
+                            })?;
 
-        let price = Decimal::from_f64_retain(coin_data.price)
-            .ok_or_else(|| ApiError::Internal(anyhow::anyhow!("Invalid price value")))?;
+                        let coin_data = data.get(&coin_id).ok_or_else(|| {
+                            ApiError::ExternalService(
+                                "CoinGecko response missing requested coin".to_string(),
+                            )
+                        })?;
 
-        Ok(ExternalPrice {
-            asset_code: asset_code.to_uppercase(),
-            price,
-            source: "coingecko".to_string(),
-            timestamp_seconds: chrono::Utc::now().timestamp(),
-        })
+                        let price = Decimal::from_f64_retain(coin_data.price).ok_or_else(|| {
+                            ApiError::ExternalService(
+                                "CoinGecko returned an invalid price value".to_string(),
+                            )
+                        })?;
+
+                        Ok(ExternalPrice {
+                            asset_code: asset_code.to_uppercase(),
+                            price,
+                            source: "coingecko".to_string(),
+                            timestamp_seconds: chrono::Utc::now().timestamp(),
+                        })
+                    })
+                    .await
+                }
+            },
+            |e: &ApiError| e.is_transient(),
+        )
+        .await
     }
 
     fn name(&self) -> &'static str {
@@ -134,6 +167,7 @@ impl ExternalPriceProvider for CoinGeckoProvider {
 pub struct BinanceProvider {
     client: Client,
     base_url: String,
+    circuit_breaker: CircuitBreaker,
 }
 
 impl Default for BinanceProvider {
@@ -147,6 +181,7 @@ impl BinanceProvider {
         Self {
             client: Client::new(),
             base_url: "https://api.binance.com/api/v3".to_string(),
+            circuit_breaker: CircuitBreaker::new("binance", 5, Duration::from_secs(30)),
         }
     }
 
@@ -182,40 +217,59 @@ impl ExternalPriceProvider for BinanceProvider {
 
         let url = format!("{}/ticker/price?symbol={}", self.base_url, symbol);
 
-        let response = self
-            .client
-            .get(&url)
-            .timeout(Duration::from_secs(10))
-            .send()
-            .await
-            .map_err(|e| {
-                error!("Binance request failed: {}", e);
-                ApiError::Internal(anyhow::anyhow!("Binance fetch failed"))
-            })?;
+        retry_async(
+            RetryConfig::external_service(),
+            || {
+                let cb = self.circuit_breaker.clone();
+                let client = self.client.clone();
+                let url = url.clone();
+                let asset_code = asset_code.to_string();
 
-        if !response.status().is_success() {
-            return Err(ApiError::Internal(anyhow::anyhow!(
-                "Binance returned status: {}",
-                response.status()
-            )));
-        }
+                async move {
+                    cb.call(|| async move {
+                        let response = client
+                            .get(&url)
+                            .timeout(Duration::from_secs(10))
+                            .send()
+                            .await
+                            .map_err(|e| {
+                                if e.is_timeout() {
+                                    ApiError::Timeout
+                                } else {
+                                    ApiError::ExternalService(format!(
+                                        "Binance request failed: {e}"
+                                    ))
+                                }
+                            })?;
 
-        let data: BinancePriceResponse = response.json().await.map_err(|e| {
-            error!("Failed to parse Binance response: {}", e);
-            ApiError::Internal(anyhow::anyhow!("Invalid Binance response"))
-        })?;
+                        if !response.status().is_success() {
+                            return Err(ApiError::ExternalService(format!(
+                                "Binance returned status {}",
+                                response.status()
+                            )));
+                        }
 
-        let price = Decimal::from_str(&data.price).map_err(|e| {
-            error!("Failed to parse price as Decimal: {}", e);
-            ApiError::Internal(anyhow::anyhow!("Invalid price format"))
-        })?;
+                        let data: BinancePriceResponse = response.json().await.map_err(|e| {
+                            ApiError::ExternalService(format!("Binance response parse failed: {e}"))
+                        })?;
 
-        Ok(ExternalPrice {
-            asset_code: asset_code.to_uppercase(),
-            price,
-            source: "binance".to_string(),
-            timestamp_seconds: chrono::Utc::now().timestamp(),
-        })
+                        let price = Decimal::from_str(&data.price).map_err(|e| {
+                            ApiError::ExternalService(format!("Invalid Binance price format: {e}"))
+                        })?;
+
+                        Ok(ExternalPrice {
+                            asset_code: asset_code.to_uppercase(),
+                            price,
+                            source: "binance".to_string(),
+                            timestamp_seconds: chrono::Utc::now().timestamp(),
+                        })
+                    })
+                    .await
+                }
+            },
+            |e: &ApiError| e.is_transient(),
+        )
+        .await
     }
 
     fn name(&self) -> &'static str {

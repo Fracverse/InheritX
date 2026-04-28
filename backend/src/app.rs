@@ -1,18 +1,29 @@
 use axum::{
     extract::{Path, Query, State},
+    middleware,
     routing::{delete, get, post, put},
     Json, Router,
 };
+use metrics_exporter_prometheus::PrometheusHandle;
 use serde_json::{json, Value};
 use sqlx::PgPool;
 use std::sync::Arc;
-use tower::ServiceBuilder;
+use std::time::Duration;
 use tower_governor::{governor::GovernorConfigBuilder, GovernorLayer};
-use tower_http::trace::TraceLayer;
+use tower_http::{
+    cors::{AllowHeaders, AllowMethods, AllowOrigin, CorsLayer},
+    trace::TraceLayer,
+};
+
+use crate::middleware::{
+    request_id_middleware, request_logging_middleware, request_timeout_middleware,
+    security_headers_middleware,
+};
 use uuid::Uuid;
 
 use crate::analytics::analytics_router;
 use crate::api_error::ApiError;
+use crate::api_versioning::{list_api_versions, versioning_middleware};
 use crate::auth::{AuthenticatedAdmin, AuthenticatedUser};
 use crate::beneficiary_sync::{BeneficiarySyncService, DocumentBeneficiary};
 use crate::collateral_management::{
@@ -24,6 +35,7 @@ use crate::contingent_beneficiary::{
     AddContingentBeneficiaryRequest, ContingentBeneficiaryService, PromoteContingentRequest,
     RemoveContingentBeneficiaryRequest, SetContingencyConditionsRequest,
 };
+use crate::csrf::{csrf_protection_middleware, get_csrf_token};
 use crate::document_storage::DocumentStorageService;
 use crate::governance::{
     CreateProposalRequest, GovernanceService, ParameterUpdateRequest, Proposal, VoteRequest,
@@ -32,6 +44,7 @@ use crate::insurance_fund::{CreateInsuranceClaimRequest, ProcessInsuranceClaimRe
 use crate::legacy_content::{ContentListFilters, LegacyContentService};
 use crate::loan_lifecycle::{CreateLoanRequest, LoanLifecycleService, LoanListFilters};
 use crate::message_access_audit::{MessageAccessAuditService, MessageAuditFilters};
+use crate::pagination::PaginationQuery;
 use crate::secure_messages::{
     CreateLegacyMessageRequest, LegacyMessageDeliveryService, MessageEncryptionService,
     MessageKeyService,
@@ -44,7 +57,9 @@ use crate::service::{
     RevokeEmergencyAccessGrantRequest, RiskOverrideRequest, StartSessionRequest,
     UnpausePlanRequest, UpdateEmergencyContactRequest,
 };
+use crate::session::{list_sessions, logout, logout_all, revoke_session, session_guard_middleware};
 use crate::stress_testing::StressTestingEngine;
+use crate::webhook::{delete_webhook, get_webhooks, register_webhook, WebhookService};
 use crate::will_compliance::{ValidationResult, WillComplianceService};
 use crate::will_pdf::{WillDocumentInput, WillPdfService, WillTemplate};
 use crate::will_signature::{
@@ -61,9 +76,14 @@ pub struct AppState {
     pub yield_service: Arc<dyn OnChainYieldService>,
     pub stress_testing_engine: Arc<StressTestingEngine>,
     pub insurance_fund_service: Arc<crate::insurance_fund::InsuranceFundService>,
+    pub webhook_service: Arc<WebhookService>,
 }
 
-pub async fn create_app(db: PgPool, config: Config) -> Result<Router, ApiError> {
+pub async fn create_app(
+    db: PgPool,
+    config: Config,
+    prometheus_handle: PrometheusHandle,
+) -> Result<Router, ApiError> {
     let price_feed = Arc::new(crate::price_feed::DefaultPriceFeedService::new(
         db.clone(),
         3600,
@@ -91,41 +111,108 @@ pub async fn create_app(db: PgPool, config: Config) -> Result<Router, ApiError> 
         Arc::new(crate::insurance_fund::InsuranceFundService::new(db.clone()));
     insurance_fund_service.clone().start();
 
+    let webhook_service = Arc::new(WebhookService::new(db.clone()));
+
     let state = Arc::new(AppState {
         db: db.clone(),
         config: config.clone(),
         yield_service,
         stress_testing_engine,
         insurance_fund_service,
+        webhook_service,
     });
 
-    // Rate limiting configuration
-    let governor_conf = Arc::new(
-        GovernorConfigBuilder::default()
-            .per_second(2)
-            .burst_size(5)
-            .finish()
-            .unwrap(),
+    // ── Rate limiting (config-driven) ────────────────────────────────────────
+    // Limits are read from environment variables via Config::load() so every
+    // deployment can tune them without a code change.  Hardcoded fallbacks
+    // (2 req/s, burst 5) are preserved as defaults when the variables are absent.
+    let rl = &config.rate_limit;
+
+    let mut governor_builder = GovernorConfigBuilder::default();
+    governor_builder
+        .per_second(rl.default_limit().per_second)
+        .burst_size(rl.default_limit().burst_size);
+    let mut governor_builder = governor_builder.key_extractor(
+        crate::middleware::RateLimitKeyExtractor::new(rl.bypass_tokens.clone()),
     );
+    governor_builder.error_handler(crate::middleware::rate_limit_error_response);
+    let governor_conf = Arc::new(governor_builder.use_headers().finish().unwrap());
 
     let emergency_governor_conf = Arc::new(
         GovernorConfigBuilder::default()
-            .per_second(1)
-            .burst_size(2)
+            .per_second(rl.emergency_limit().per_second)
+            .burst_size(rl.emergency_limit().burst_size)
+            .use_headers()
             .finish()
             .unwrap(),
     );
+
+    let admin_login_governor_conf = Arc::new(
+        GovernorConfigBuilder::default()
+            .per_second(rl.admin_login_limit().per_second)
+            .burst_size(rl.admin_login_limit().burst_size)
+            .use_headers()
+            .finish()
+            .unwrap(),
+    );
+
+    tracing::info!(
+        default_rps = rl.default_per_second,
+        default_burst = rl.default_burst_size,
+        emergency_rps = rl.emergency_per_second,
+        admin_login_rps = rl.admin_login_per_second,
+        "Rate limiting configuration loaded"
+    );
+
+    // ── CORS configuration (Issue #408) ──────────────────────────────────────
+    // Allowed origins are read from CORS_ALLOWED_ORIGINS (comma-separated).
+    // Falls back to permissive any-origin in development.
+    let cors_layer = {
+        let allowed_origins_env = std::env::var("CORS_ALLOWED_ORIGINS").unwrap_or_default();
+        if allowed_origins_env.is_empty() {
+            CorsLayer::permissive()
+        } else {
+            let origins: Vec<axum::http::HeaderValue> = allowed_origins_env
+                .split(',')
+                .filter_map(|s| s.trim().parse().ok())
+                .collect();
+            CorsLayer::new()
+                .allow_origin(AllowOrigin::list(origins))
+                .allow_methods(AllowMethods::any())
+                .allow_headers(AllowHeaders::any())
+                .allow_credentials(true)
+        }
+    };
+
+    // Request timeout (configurable via REQUEST_TIMEOUT_SECS, default 30 s).
+    let timeout_secs: u64 = std::env::var("REQUEST_TIMEOUT_SECS")
+        .ok()
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(30);
+    let timeout_duration = Duration::from_secs(timeout_secs);
 
     let app = Router::new()
         .route("/health", get(health_check))
         .route("/health/db", get(db_health_check))
-        .route("/admin/login", post(crate::auth::login_admin))
-        .layer(
-            ServiceBuilder::new()
-                .layer(TraceLayer::new_for_http())
-                .layer(GovernorLayer {
-                    config: governor_conf,
-                }),
+        // Admin login gets its own, tighter rate limit (brute-force protection).
+        .route("/health/db/metrics", get(db_metrics))
+        // ── API version discovery (Issue #439) ────────────────────────────────
+        .route("/api/versions", get(list_api_versions))
+        // ── CSRF token issuance (Issue #434) ──────────────────────────────────
+        .route("/api/v1/csrf-token", get(get_csrf_token))
+        // ── Session management (Issue #436) ───────────────────────────────────
+        .route("/api/v1/auth/logout", post(logout))
+        .route("/api/v1/auth/logout-all", post(logout_all))
+        .route("/api/v1/auth/sessions", get(list_sessions))
+        .route("/api/v1/auth/sessions/:session_id", delete(revoke_session))
+        // Prometheus metrics scrape endpoint (Issue #423).
+        // Restrict access at the network/ingress layer in production.
+        .route("/metrics", get(crate::metrics::metrics_handler))
+        .route(
+            "/admin/login",
+            post(crate::auth::login_admin).layer(GovernorLayer {
+                config: admin_login_governor_conf,
+            }),
         )
         .route(
             "/api/plans/due-for-claim",
@@ -511,6 +598,9 @@ pub async fn create_app(db: PgPool, config: Config) -> Result<Router, ApiError> 
         .route("/api/admin/will/audit/search", get(search_admin_audit_logs))
         .route("/api/admin/logs", get(get_admin_logs))
         .route("/api/notifications", get(get_notifications))
+        // ── Webhook System ───────────────────────────────────────────────────
+        .route("/api/webhooks", post(register_webhook).get(get_webhooks))
+        .route("/api/webhooks/:webhook_id", delete(delete_webhook))
         .route(
             "/api/admin/will/audit/user/:user_id",
             get(get_user_audit_activity),
@@ -530,6 +620,35 @@ pub async fn create_app(db: PgPool, config: Config) -> Result<Router, ApiError> 
         .route("/api/content/:content_id/download", get(download_content))
         .route("/api/content/stats", get(get_storage_stats))
         .layer(axum::Extension(config.clone()))
+        // ── Middleware stack (Issues #408, #409, #423, #424, #434, #436, #439)
+        // track_metrics must be outermost so it captures the full request
+        // duration including all inner middleware.
+        .layer(middleware::from_fn(crate::metrics::track_metrics))
+        .layer(middleware::from_fn(security_headers_middleware))
+        .layer(middleware::from_fn(request_logging_middleware))
+        .layer(middleware::from_fn(request_id_middleware))
+        // API versioning: inject X-API-Version header (Issue #439)
+        .layer(middleware::from_fn(versioning_middleware))
+        // Session revocation guard: reject revoked JWTs (Issue #436)
+        .layer(middleware::from_fn_with_state(
+            state.clone(),
+            session_guard_middleware,
+        ))
+        // CSRF protection for state-changing requests (Issue #434)
+        .layer(middleware::from_fn_with_state(
+            state.clone(),
+            csrf_protection_middleware,
+        ))
+        // Enrich Sentry scope with request_id and user_id after they are set.
+        .layer(middleware::from_fn(
+            crate::error_tracking::enrich_sentry_context,
+        ))
+        .layer(middleware::from_fn(move |req, next| {
+            request_timeout_middleware(req, next, timeout_duration)
+        }))
+        .layer(cors_layer)
+        // Inject the Prometheus handle so the /metrics handler can render output.
+        .layer(axum::Extension(prometheus_handle))
         .with_state(state);
 
     // Add price feed routes with separate state
@@ -572,25 +691,91 @@ pub async fn create_app(db: PgPool, config: Config) -> Result<Router, ApiError> 
         )
         .with_state(price_feed_state);
 
-    Ok(app.merge(price_routes))
+    Ok(app
+        .merge(price_routes)
+        .layer(axum::middleware::from_fn(
+            crate::middleware::attach_correlation_id,
+        ))
+        .layer(axum::middleware::from_fn(
+            crate::middleware::log_rate_limit_violations,
+        ))
+        .layer(TraceLayer::new_for_http())
+        .layer(GovernorLayer {
+            config: governor_conf,
+        }))
 }
 
 async fn health_check() -> Json<Value> {
     Json(json!({ "status": "ok", "message": "App is healthy" }))
 }
 
+/// Liveness + readiness probe for the database (Issue #420).
+///
+/// Executes a lightweight `SELECT 1` and returns:
+/// - `status`: "ok" | "degraded" | "error"
+/// - `latency_ms`: round-trip time for the ping query
+/// - `pool`: current pool metrics (size, idle, active, utilisation)
+///
+/// HTTP 200 → healthy or degraded (caller decides alerting threshold).
+/// HTTP 503 → database unreachable.
 async fn db_health_check(
     axum::extract::State(state): axum::extract::State<Arc<AppState>>,
 ) -> Result<Json<Value>, ApiError> {
-    sqlx::query("SELECT 1").execute(&state.db).await?;
-    Ok(Json(
-        json!({ "status": "ok", "message": "Database is connected" }),
-    ))
+    let metrics = crate::db::pool_metrics(&state.db);
+
+    match crate::db::ping(&state.db).await {
+        Ok(latency_ms) => {
+            // Warn in the response body when utilisation is high so
+            // operators can spot saturation before it becomes an outage.
+            let status = if metrics.utilisation >= 0.9 {
+                "degraded"
+            } else {
+                "ok"
+            };
+
+            Ok(Json(json!({
+                "status": status,
+                "latency_ms": latency_ms,
+                "pool": {
+                    "size": metrics.size,
+                    "idle": metrics.idle,
+                    "active": metrics.active,
+                    "max_connections": metrics.max_connections,
+                    "utilisation": (metrics.utilisation * 100.0).round() / 100.0,
+                }
+            })))
+        }
+        Err(e) => {
+            tracing::error!(error = %e, "Database health check failed");
+            Err(ApiError::Internal(anyhow::anyhow!(
+                "Database health check failed: {}",
+                e
+            )))
+        }
+    }
+}
+
+/// Exposes raw pool metrics for Prometheus / monitoring scraping (Issue #420).
+///
+/// Returns the same pool statistics as `/health/db` but without the ping
+/// latency, so it is safe to call at high frequency from a metrics collector.
+async fn db_metrics(
+    axum::extract::State(state): axum::extract::State<Arc<AppState>>,
+) -> Json<Value> {
+    let m = crate::db::pool_metrics(&state.db);
+    Json(json!({
+        "pool_size": m.size,
+        "pool_idle": m.idle,
+        "pool_active": m.active,
+        "pool_max_connections": m.max_connections,
+        "pool_utilisation": (m.utilisation * 100.0).round() / 100.0,
+    }))
 }
 
 async fn create_plan(
     State(state): State<Arc<AppState>>,
     AuthenticatedUser(user): AuthenticatedUser,
+    Query(_pagination): Query<PaginationQuery>,
     Json(req): Json<CreatePlanRequest>,
 ) -> Result<Json<Value>, ApiError> {
     let plan = PlanService::create_plan(&state.db, user.user_id, &req).await?;
@@ -771,37 +956,53 @@ async fn get_my_message_activity(
 async fn get_all_due_for_claim_plans_user(
     State(state): State<Arc<AppState>>,
     AuthenticatedUser(user): AuthenticatedUser,
+    Query(pagination): Query<PaginationQuery>,
 ) -> Result<Json<Value>, ApiError> {
-    let plans = PlanService::get_all_due_for_claim_plans_for_user(&state.db, user.user_id).await?;
+    let (_page, limit, offset) = pagination.normalize();
+    let plans = PlanService::get_all_due_for_claim_plans_for_user_paginated(
+        &state.db,
+        user.user_id,
+        limit as i64,
+        offset,
+    )
+    .await?;
+    let total_count =
+        PlanService::count_due_for_claim_plans_for_user(&state.db, user.user_id).await?;
 
-    Ok(Json(json!({
-        "status": "success",
-        "data": plans,
-        "count": plans.len()
-    })))
+    Ok(Json(json!(pagination.create_response(plans, total_count))))
 }
 
 async fn get_all_due_for_claim_plans_admin(
     State(state): State<Arc<AppState>>,
     AuthenticatedAdmin(_admin): AuthenticatedAdmin,
+    Query(pagination): Query<PaginationQuery>,
 ) -> Result<Json<Value>, ApiError> {
-    let plans = PlanService::get_all_due_for_claim_plans_admin(&state.db).await?;
+    let (_page, limit, offset) = pagination.normalize();
+    let plans =
+        PlanService::get_all_due_for_claim_plans_admin_paginated(&state.db, limit as i64, offset)
+            .await?;
+    let total_count = PlanService::count_due_for_claim_plans_admin(&state.db).await?;
 
-    Ok(Json(json!({
-        "status": "success",
-        "data": plans,
-        "count": plans.len()
-    })))
+    Ok(Json(json!(pagination.create_response(plans, total_count))))
 }
 
 async fn list_emergency_contacts(
     State(state): State<Arc<AppState>>,
     AuthenticatedUser(user): AuthenticatedUser,
+    Query(pagination): Query<PaginationQuery>,
 ) -> Result<Json<Value>, ApiError> {
-    let contacts = EmergencyContactService::list_for_user(&state.db, user.user_id).await?;
-    Ok(Json(
-        json!({ "status": "success", "data": contacts, "count": contacts.len() }),
-    ))
+    let (_page, limit, offset) = pagination.normalize();
+    let contacts = EmergencyContactService::list_for_user_paginated(
+        &state.db,
+        user.user_id,
+        limit as i64,
+        offset,
+    )
+    .await?;
+    let total_count = EmergencyContactService::count_for_user(&state.db, user.user_id).await?;
+    Ok(Json(json!(
+        pagination.create_response(contacts, total_count)
+    )))
 }
 
 async fn create_emergency_contact(
@@ -1054,7 +1255,7 @@ async fn create_lifecycle_loan(
 
 /// List loans, optionally filtered by status.
 ///
-/// `GET /api/loans/lifecycle[?status=active|repaid|overdue|liquidated]`
+/// `GET /api/loans/lifecycle[?status=active|repaid|overdue|liquidated&page=1&limit=20]`
 async fn list_lifecycle_loans(
     State(state): State<Arc<AppState>>,
     AuthenticatedUser(user): AuthenticatedUser,
@@ -1062,12 +1263,19 @@ async fn list_lifecycle_loans(
 ) -> Result<Json<Value>, ApiError> {
     // Users may only see their own loans.
     filters.user_id = Some(user.user_id);
-    let loans = LoanLifecycleService::list_loans(&state.db, &filters).await?;
-    Ok(Json(json!({
-        "status": "success",
-        "data": loans,
-        "count": loans.len()
-    })))
+
+    // Extract pagination from filters
+    let pagination = PaginationQuery {
+        page: filters.page,
+        limit: filters.limit,
+    };
+    let (_page, limit, offset) = pagination.normalize();
+
+    let loans =
+        LoanLifecycleService::list_loans_paginated(&state.db, &filters, limit as i64, offset)
+            .await?;
+    let total_count = LoanLifecycleService::count_loans(&state.db, &filters).await?;
+    Ok(Json(json!(pagination.create_response(loans, total_count))))
 }
 
 /// Aggregate counts by lifecycle status for the authenticated user.
@@ -2400,25 +2608,36 @@ async fn get_storage_stats(
 async fn get_notifications(
     State(state): State<Arc<AppState>>,
     AuthenticatedUser(user): AuthenticatedUser,
+    Query(pagination): Query<PaginationQuery>,
 ) -> Result<Json<Value>, ApiError> {
-    let notifications =
-        crate::notifications::NotificationService::list_for_user(&state.db, user.user_id).await?;
-    Ok(Json(json!({
-        "status": "success",
-        "data": notifications
-    })))
+    let (page, limit, _offset) = pagination.normalize();
+    let notifications = crate::notifications::NotificationService::list_for_user_paginated(
+        &state.db,
+        user.user_id,
+        page,
+        limit,
+    )
+    .await?;
+    let total_count =
+        crate::notifications::NotificationService::count_for_user(&state.db, user.user_id).await?;
+
+    Ok(Json(json!(
+        pagination.create_response(notifications, total_count)
+    )))
 }
 
 /// Admin: Get audit logs
 async fn get_admin_logs(
     State(state): State<Arc<AppState>>,
     AuthenticatedAdmin(_admin): AuthenticatedAdmin,
+    Query(pagination): Query<PaginationQuery>,
 ) -> Result<Json<Value>, ApiError> {
-    let logs = crate::notifications::AuditLogService::list_all(&state.db).await?;
-    Ok(Json(json!({
-        "status": "success",
-        "data": logs
-    })))
+    let (page, limit, _offset) = pagination.normalize();
+    let logs =
+        crate::notifications::AuditLogService::list_all_paginated(&state.db, page, limit).await?;
+    let total_count = crate::notifications::AuditLogService::count_all(&state.db).await?;
+
+    Ok(Json(json!(pagination.create_response(logs, total_count))))
 }
 
 // ─────────────────────────────────────────────────────────────────────────────

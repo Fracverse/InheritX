@@ -1,6 +1,7 @@
 use crate::api_error::ApiError;
 use crate::app::AppState;
 use crate::auth::AuthenticatedAdmin;
+use crate::lending_data_warehouse::LendingDataWarehouseService;
 use crate::service::{
     AdminService, ClaimMetricsService, EmergencyAccessMetricsService, LendingMonitoringService,
     PlanStatisticsService, RevenueMetricsService, UserMetricsService, YieldReportFilters,
@@ -237,6 +238,24 @@ async fn get_dashboard(
     })))
 }
 
+/// GET /api/admin/analytics/lending/history?range=hourly|daily|weekly|monthly
+/// Returns historical lending performance snapshots aggregated by period.
+async fn get_lending_history(
+    State(state): State<Arc<AppState>>,
+    AuthenticatedAdmin(_admin): AuthenticatedAdmin,
+    Query(params): Query<RevenueRangeQuery>,
+) -> Result<Json<Value>, ApiError> {
+    let svc = LendingDataWarehouseService::new(state.db.clone());
+    let points = svc.get_historical_metrics(&params.range).await?;
+    Ok(Json(json!({
+        "status": "success",
+        "data": {
+            "range": params.range,
+            "points": points,
+        }
+    })))
+}
+
 // ── Legacy Routes (for backwards compatibility) ────────────────────────────
 
 /// Legacy: GET /admin/metrics/overview
@@ -318,6 +337,10 @@ pub fn analytics_router() -> Router<Arc<AppState>> {
         .route("/api/admin/analytics/claims", get(get_claim_metrics))
         .route("/api/admin/analytics/revenue", get(get_revenue_metrics))
         .route("/api/admin/analytics/lending", get(get_lending_metrics))
+        .route(
+            "/api/admin/analytics/lending/history",
+            get(get_lending_history),
+        )
         .route("/api/admin/analytics/yield", get(get_yield_summary))
         .route(
             "/api/admin/analytics/yield/history",

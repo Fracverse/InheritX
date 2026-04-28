@@ -1,3 +1,5 @@
+"use client";
+
 import { AdminAuthProvider } from "@/context/AdminAuthContext";
 import AllPlansPageContent from "./AllPlansPageContent";
 
