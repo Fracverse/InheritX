@@ -99,24 +99,6 @@ pub enum InheritanceError {
     FeeTransferFailed = 30,
     InsufficientLiquidity = 31,
     InheritanceAlreadyTriggered = 32,
-    InheritanceNotTriggered = 33,
-    LoanRecallFailed = 34,
-    NoOutstandingLoans = 35,
-    EmergencyAccessAlreadyActive = 36,
-    EmergencyCooldownActive = 37,
-    InvalidGuardianThreshold = 38,
-    GuardianNotFound = 39,
-    AlreadyApproved = 40,
-    EmergencyContactNotFound = 41,
-    EmergencyContactAlreadyExists = 42,
-    TooManyEmergencyContacts = 43,
-    WillHashAlreadyStored = 44,
-    WillAlreadyLinked = 45,
-    VaultNotFound = 46,
-    VerificationFailed = 47,
-    WillVersionNotFound = 48,
-    WillAlreadyFinalized = 49,
-    WillNotVerified = 50,
 }
 
 #[contracttype]
@@ -164,6 +146,7 @@ pub enum DataKey {
     LegalHold(u64),                  // plan_id -> LegalHold
     FrozenBeneficiary(u64, u32),     // (plan_id, index) -> bool
     TriggerConditions(u64),          // plan_id -> TriggerConfig
+    VestingExitSettlement(u64, u32), // (plan_id, beneficiary_index) -> exit settlement data
 }
 
 #[contracttype]
@@ -591,6 +574,15 @@ pub struct WitnessAddedEvent {
 pub struct WitnessSignedEvent {
     pub vault_id: u64,
     pub witness: Address,
+}
+
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct PlanOwnershipTransferredEvent {
+    pub plan_id: u64,
+    pub old_owner: Address,
+    pub new_owner: Address,
+    pub transferred_at: u64,
 }
 
 #[contracttype]
@@ -1030,6 +1022,23 @@ impl InheritanceContract {
             .unwrap_or(Vec::new(env));
 
         plans.push_back(plan_id);
+        env.storage().persistent().set(&key, &plans);
+    }
+
+    fn remove_plan_from_user(env: &Env, owner: Address, plan_id: u64) {
+        let key = DataKey::UserPlans(owner);
+        let mut plans: Vec<u64> = env
+            .storage()
+            .persistent()
+            .get(&key)
+            .unwrap_or(Vec::new(env));
+
+        for i in 0..plans.len() {
+            if plans.get(i).unwrap() == plan_id {
+                plans.remove(i);
+                break;
+            }
+        }
         env.storage().persistent().set(&key, &plans);
     }
 
@@ -1816,6 +1825,22 @@ impl InheritanceContract {
         entitlement.min(plan.total_amount)
     }
 
+    /// Check if a beneficiary has an active vesting schedule
+    fn has_active_vesting_schedule(_env: &Env, _plan_id: u64, _beneficiary_index: u32) -> bool {
+        // For MVP, we don't implement vesting schedules yet
+        // This is a placeholder that always returns false
+        false
+    }
+
+    /// Get vesting exit settlement amount for a beneficiary
+    fn get_vesting_exit_settlement(env: &Env, plan_id: u64, beneficiary_index: u32) -> u64 {
+        let settle_key = DataKey::VestingExitSettlement(plan_id, beneficiary_index);
+        env.storage()
+            .persistent()
+            .get(&settle_key)
+            .unwrap_or(0u64)
+    }
+
     pub fn get_claimable_by_priority(
         env: Env,
         plan_id: u64,
@@ -1915,6 +1940,10 @@ impl InheritanceContract {
 
         let index = beneficiary_index.ok_or(InheritanceError::BeneficiaryNotFound)?;
 
+        if Self::has_active_vesting_schedule(&env, plan_id, index) {
+            return Err(InheritanceError::VestingScheduleActive);
+        }
+
         // Waterfall ordering: if enabled, every strictly higher-priority
         // beneficiary (non-zero priority) must have claimed first.
         if plan.waterfall_enabled {
@@ -1927,17 +1956,13 @@ impl InheritanceContract {
             }
         }
 
-        // Record the claim
-        let claim = ClaimRecord {
-            plan_id,
-            beneficiary_index: index,
-            claimed_at: env.ledger().timestamp(),
-        };
-
-        env.storage().persistent().set(&claim_key, &claim);
-
         // --- Payout Logic ---
-        let payout = Self::calculate_waterfall_payout(&env, &plan, index);
+        let mut payout = Self::calculate_waterfall_payout(&env, &plan, index);
+
+        let exit_settlement = Self::get_vesting_exit_settlement(&env, plan_id, index);
+        if exit_settlement > 0 {
+            payout = payout.min(exit_settlement);
+        }
 
         // Emergency Guard: Limit claim if emergency access was recently activated
         if Self::is_emergency_active(&env, plan_id) {
@@ -1968,24 +1993,51 @@ impl InheritanceContract {
             return Err(InheritanceError::InsufficientLiquidity);
         }
 
+        if payout == 0 {
+            return Err(InheritanceError::NothingToClaim);
+        }
+
         // Transfer funds to beneficiary
         // Note: For fiat (bank_account), this would typically emit an event for off-chain processing.
         // Here, we'll try to transfer USDC if an address can be derived, or just emit an event.
         // As a simplification, we'll emit the event first.
 
-        // Update plan balances and mark beneficiary as claimed
+        // Update plan balances and mark beneficiary as claimed when fully finalized
         let mut updated_plan = plan.clone();
+
+        let exit_remaining_after = exit_settlement.saturating_sub(payout);
+        let exit_finalized = exit_settlement == 0 || exit_remaining_after == 0;
 
         // Update the specific beneficiary in the vector
         let mut b = updated_plan.beneficiaries.get(index).unwrap();
-        b.is_claimed = true;
+        if exit_finalized {
+            b.is_claimed = true;
+        }
         updated_plan.beneficiaries.set(index, b);
 
         updated_plan.total_amount = updated_plan.total_amount.saturating_sub(payout);
         Self::store_plan(&env, plan_id, &updated_plan);
 
-        // Mark plan as claimed
-        Self::add_plan_to_claimed(&env, plan.owner.clone(), plan_id);
+        if exit_settlement > 0 {
+            let settle_key = DataKey::VestingExitSettlement(plan_id, index);
+            if exit_remaining_after == 0 {
+                env.storage().persistent().remove(&settle_key);
+            } else {
+                env.storage()
+                    .persistent()
+                    .set(&settle_key, &exit_remaining_after);
+            }
+        }
+
+        if exit_finalized {
+            let claim = ClaimRecord {
+                plan_id,
+                beneficiary_index: index,
+                claimed_at: env.ledger().timestamp(),
+            };
+            env.storage().persistent().set(&claim_key, &claim);
+            Self::add_plan_to_claimed(&env, plan.owner.clone(), plan_id);
+        }
 
         // Grant Beneficiary role to the claimer as an on-chain record of a successful claim
         access_control::assign_role(&env, &claimer, Role::Beneficiary);
@@ -5079,6 +5131,66 @@ impl InheritanceContract {
                 upgraded_at: env.ledger().timestamp(),
             },
         );
+        Ok(())
+    }
+
+    /// Transfer ownership of an inheritance plan to another address.
+    ///
+    /// # Arguments
+    /// * `owner` - The current plan owner (must authorize)
+    /// * `new_owner` - The address of the new owner
+    /// * `plan_id` - The ID of the plan to transfer
+    ///
+    /// # Errors
+    /// - `Unauthorized`: Not the current plan owner
+    /// - `PlanNotFound`: Plan does not exist
+    /// - `PlanNotActive`: Plan is inactive or inheritance already triggered
+    pub fn transfer_plan_ownership(
+        env: Env,
+        owner: Address,
+        new_owner: Address,
+        plan_id: u64,
+    ) -> Result<(), InheritanceError> {
+        owner.require_auth();
+
+        let mut plan = Self::get_plan(&env, plan_id).ok_or(InheritanceError::PlanNotFound)?;
+
+        if plan.owner != owner {
+            return Err(InheritanceError::Unauthorized);
+        }
+
+        // Cannot transfer if inheritance triggered
+        if Self::get_trigger_info(&env, plan_id).is_some() {
+            return Err(InheritanceError::PlanNotActive);
+        }
+
+        // Update user registries
+        Self::remove_plan_from_user(&env, owner.clone(), plan_id);
+        Self::add_plan_to_user(&env, new_owner.clone(), plan_id);
+
+        let old_owner = plan.owner.clone();
+        plan.owner = new_owner.clone();
+        Self::store_plan(&env, plan_id, &plan);
+
+        // Emit event
+        env.events().publish(
+            (symbol_short!("PLAN"), symbol_short!("TRANSFER")),
+            PlanOwnershipTransferredEvent {
+                plan_id,
+                old_owner,
+                new_owner: new_owner.clone(),
+                transferred_at: env.ledger().timestamp(),
+            },
+        );
+
+        log!(
+            &env,
+            "Plan {} ownership transferred from {} to {}",
+            plan_id,
+            owner,
+            new_owner
+        );
+
         Ok(())
     }
 }

@@ -2509,6 +2509,7 @@ dependencies = [
  "metrics",
  "metrics-exporter-prometheus",
  "postgres-types",
+ "rand 0.8.6",
  "regex",
  "reqwest 0.11.27",
  "ring",

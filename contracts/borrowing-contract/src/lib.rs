@@ -149,6 +149,52 @@ pub struct LoanIncreasedEvent {
 }
 
 #[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct ContractInitializedEvent {
+    pub admin: Address,
+    pub collateral_ratio_bps: u32,
+    pub liquidation_threshold_bps: u32,
+    pub liquidation_bonus_bps: u32,
+    pub timestamp: u64,
+}
+
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct RoleUpdatedEvent {
+    pub admin: Address,
+    pub account: Address,
+    pub role: Role,
+    pub granted: bool,
+    pub timestamp: u64,
+}
+
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct CollateralWhitelistUpdatedEvent {
+    pub admin: Address,
+    pub token: Address,
+    pub whitelisted: bool,
+    pub timestamp: u64,
+}
+
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct GlobalPauseUpdatedEvent {
+    pub admin: Address,
+    pub paused: bool,
+    pub timestamp: u64,
+}
+
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct VaultPauseUpdatedEvent {
+    pub admin: Address,
+    pub token: Address,
+    pub paused: bool,
+    pub timestamp: u64,
+}
+
+#[contracttype]
 pub enum DataKey {
     Admin,
     CollateralRatio,
@@ -212,6 +258,16 @@ impl BorrowingContract {
             .instance()
             .set(&DataKey::LiquidationBonus, &liquidation_bonus_bps);
         access_control::assign_role(&env, &admin, Role::Admin);
+        env.events().publish(
+            (symbol_short!("ADMIN"), symbol_short!("INIT")),
+            ContractInitializedEvent {
+                admin: admin.clone(),
+                collateral_ratio_bps,
+                liquidation_threshold_bps,
+                liquidation_bonus_bps,
+                timestamp: env.ledger().timestamp(),
+            },
+        );
         Ok(())
     }
 
@@ -228,7 +284,17 @@ impl BorrowingContract {
         role: Role,
     ) -> Result<(), BorrowingError> {
         Self::require_admin(&env, &admin)?;
-        access_control::assign_role(&env, &address, role);
+        access_control::assign_role(&env, &address, role.clone());
+        env.events().publish(
+            (symbol_short!("ADMIN"), symbol_short!("R_GRANT")),
+            RoleUpdatedEvent {
+                admin,
+                account: address,
+                role,
+                granted: true,
+                timestamp: env.ledger().timestamp(),
+            },
+        );
         Ok(())
     }
 
@@ -240,7 +306,17 @@ impl BorrowingContract {
         role: Role,
     ) -> Result<(), BorrowingError> {
         Self::require_admin(&env, &admin)?;
-        access_control::revoke_role(&env, &address, role);
+        access_control::revoke_role(&env, &address, role.clone());
+        env.events().publish(
+            (symbol_short!("ADMIN"), symbol_short!("R_REVOKE")),
+            RoleUpdatedEvent {
+                admin,
+                account: address,
+                role,
+                granted: false,
+                timestamp: env.ledger().timestamp(),
+            },
+        );
         Ok(())
     }
 
@@ -457,7 +533,16 @@ impl BorrowingContract {
         Self::require_admin(&env, &admin)?;
         env.storage()
             .persistent()
-            .set(&DataKey::WhitelistedCollateral(token), &true);
+            .set(&DataKey::WhitelistedCollateral(token.clone()), &true);
+        env.events().publish(
+            (symbol_short!("ADMIN"), symbol_short!("WHITELIST")),
+            CollateralWhitelistUpdatedEvent {
+                admin,
+                token,
+                whitelisted: true,
+                timestamp: env.ledger().timestamp(),
+            },
+        );
         Ok(())
     }
 
@@ -471,6 +556,14 @@ impl BorrowingContract {
     pub fn set_global_pause(env: Env, admin: Address, paused: bool) -> Result<(), BorrowingError> {
         Self::require_admin(&env, &admin)?;
         env.storage().instance().set(&DataKey::GlobalPause, &paused);
+        env.events().publish(
+            (symbol_short!("ADMIN"), symbol_short!("GPAUSE")),
+            GlobalPauseUpdatedEvent {
+                admin,
+                paused,
+                timestamp: env.ledger().timestamp(),
+            },
+        );
         Ok(())
     }
 
@@ -490,7 +583,16 @@ impl BorrowingContract {
         Self::require_admin(&env, &admin)?;
         env.storage()
             .persistent()
-            .set(&DataKey::VaultPause(token), &paused);
+            .set(&DataKey::VaultPause(token.clone()), &paused);
+        env.events().publish(
+            (symbol_short!("ADMIN"), symbol_short!("VPAUSE")),
+            VaultPauseUpdatedEvent {
+                admin,
+                token,
+                paused,
+                timestamp: env.ledger().timestamp(),
+            },
+        );
         Ok(())
     }
 

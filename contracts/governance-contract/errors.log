@@ -1,0 +1,242 @@
+    Checking governance-contract v0.0.0 (/home/ndii/Desktop/C888 repos/Nevo/InheritX_temp/contracts/governance-contract)
+error[E0422]: cannot find struct, variant or union type `ContractExecutedEvent` in this scope
+    --> governance-contract/src/lib.rs:1141:13
+     |
+  91 | pub struct ContractLinkedEvent {
+     | ------------------------------ similarly named struct `ContractLinkedEvent` defined here
+...
+1141 |             ContractExecutedEvent { contract, func },
+     |             ^^^^^^^^^^^^^^^^^^^^^ help: a struct with a similar name exists: `ContractLinkedEvent`
+
+error[E0308]: mismatched types
+   --> governance-contract/src/lib.rs:511:42
+    |
+511 |         if pending_tx.signatures.len() < multi_sig.threshold as usize {
+    |            ---------------------------   ^^^^^^^^^^^^^^^^^^^^^^^^^^^^ expected `u32`, found `usize`
+    |            |
+    |            expected because this is `u32`
+    |
+help: you can convert a `usize` to a `u32` and panic if the converted value doesn't fit
+    |
+511 |         if pending_tx.signatures.len() < (multi_sig.threshold as usize).try_into().unwrap() {
+    |                                          +                            +++++++++++++++++++++
+
+error[E0599]: no variant or associated item named `NextProposalId` found for enum `DataKey` in the current scope
+   --> governance-contract/src/lib.rs:725:28
+    |
+ 21 | pub enum DataKey {
+    | ---------------- variant or associated item `NextProposalId` not found for this enum
+...
+725 |             .get(&DataKey::NextProposalId)
+    |                            ^^^^^^^^^^^^^^ variant or associated item not found in `DataKey`
+
+error[E0599]: no variant or associated item named `Proposal` found for enum `DataKey` in the current scope
+   --> governance-contract/src/lib.rs:746:28
+    |
+ 21 | pub enum DataKey {
+    | ---------------- variant or associated item `Proposal` not found for this enum
+...
+746 |             .set(&DataKey::Proposal(proposal_id), &proposal);
+    |                            ^^^^^^^^ variant or associated item not found in `DataKey`
+
+error[E0599]: no variant or associated item named `NextProposalId` found for enum `DataKey` in the current scope
+   --> governance-contract/src/lib.rs:749:28
+    |
+ 21 | pub enum DataKey {
+    | ---------------- variant or associated item `NextProposalId` not found for this enum
+...
+749 |             .set(&DataKey::NextProposalId, &(proposal_id + 1));
+    |                            ^^^^^^^^^^^^^^ variant or associated item not found in `DataKey`
+
+error[E0599]: no variant or associated item named `Proposal` found for enum `DataKey` in the current scope
+   --> governance-contract/src/lib.rs:812:28
+    |
+ 21 | pub enum DataKey {
+    | ---------------- variant or associated item `Proposal` not found for this enum
+...
+812 |             .get(&DataKey::Proposal(proposal_id))
+    |                            ^^^^^^^^ variant or associated item not found in `DataKey`
+
+error[E0599]: no variant or associated item named `UserVoteChoice` found for enum `DataKey` in the current scope
+   --> governance-contract/src/lib.rs:825:40
+    |
+ 21 | pub enum DataKey {
+    | ---------------- variant or associated item `UserVoteChoice` not found for this enum
+...
+825 |         let vote_choice_key = DataKey::UserVoteChoice(voter.clone(), proposal_id);
+    |                                        ^^^^^^^^^^^^^^ variant or associated item not found in `DataKey`
+
+error[E0599]: no variant or associated item named `Proposal` found for enum `DataKey` in the current scope
+   --> governance-contract/src/lib.rs:843:28
+    |
+ 21 | pub enum DataKey {
+    | ---------------- variant or associated item `Proposal` not found for this enum
+...
+843 |             .set(&DataKey::Proposal(proposal_id), &proposal);
+    |                            ^^^^^^^^ variant or associated item not found in `DataKey`
+
+error[E0599]: no variant or associated item named `Proposal` found for enum `DataKey` in the current scope
+   --> governance-contract/src/lib.rs:876:28
+    |
+ 21 | pub enum DataKey {
+    | ---------------- variant or associated item `Proposal` not found for this enum
+...
+876 |             .get(&DataKey::Proposal(proposal_id))
+    |                            ^^^^^^^^ variant or associated item not found in `DataKey`
+
+error[E0599]: no variant or associated item named `Proposal` found for enum `DataKey` in the current scope
+   --> governance-contract/src/lib.rs:882:28
+    |
+ 21 | pub enum DataKey {
+    | ---------------- variant or associated item `Proposal` not found for this enum
+...
+882 |             .set(&DataKey::Proposal(proposal_id), &proposal);
+    |                            ^^^^^^^^ variant or associated item not found in `DataKey`
+
+error[E0599]: no variant or associated item named `Proposal` found for enum `DataKey` in the current scope
+   --> governance-contract/src/lib.rs:900:28
+    |
+ 21 | pub enum DataKey {
+    | ---------------- variant or associated item `Proposal` not found for this enum
+...
+900 |             .get(&DataKey::Proposal(proposal_id))
+    |                            ^^^^^^^^ variant or associated item not found in `DataKey`
+
+error[E0599]: no variant or associated item named `Proposal` found for enum `DataKey` in the current scope
+   --> governance-contract/src/lib.rs:916:28
+    |
+ 21 | pub enum DataKey {
+    | ---------------- variant or associated item `Proposal` not found for this enum
+...
+916 |             .get(&DataKey::Proposal(proposal_id))
+    |                            ^^^^^^^^ variant or associated item not found in `DataKey`
+
+error[E0599]: no variant or associated item named `UserVoteChoice` found for enum `DataKey` in the current scope
+   --> governance-contract/src/lib.rs:929:28
+    |
+ 21 | pub enum DataKey {
+    | ---------------- variant or associated item `UserVoteChoice` not found for this enum
+...
+929 |             .get(&DataKey::UserVoteChoice(voter, proposal_id))
+    |                            ^^^^^^^^^^^^^^ variant or associated item not found in `DataKey`
+
+error[E0599]: no variant or associated item named `Proposal` found for enum `DataKey` in the current scope
+   --> governance-contract/src/lib.rs:943:28
+    |
+ 21 | pub enum DataKey {
+    | ---------------- variant or associated item `Proposal` not found for this enum
+...
+943 |             .get(&DataKey::Proposal(proposal_id))
+    |                            ^^^^^^^^ variant or associated item not found in `DataKey`
+
+error[E0599]: no variant or associated item named `Proposal` found for enum `DataKey` in the current scope
+   --> governance-contract/src/lib.rs:957:28
+    |
+ 21 | pub enum DataKey {
+    | ---------------- variant or associated item `Proposal` not found for this enum
+...
+957 |             .set(&DataKey::Proposal(proposal_id), &proposal);
+    |                            ^^^^^^^^ variant or associated item not found in `DataKey`
+
+error[E0599]: no variant or associated item named `Proposal` found for enum `DataKey` in the current scope
+   --> governance-contract/src/lib.rs:974:49
+    |
+ 21 | pub enum DataKey {
+    | ---------------- variant or associated item `Proposal` not found for this enum
+...
+974 |             .get::<DataKey, Proposal>(&DataKey::Proposal(proposal_id))
+    |                                                 ^^^^^^^^ variant or associated item not found in `DataKey`
+
+error[E0599]: no variant or associated item named `UserVoteChoice` found for enum `DataKey` in the current scope
+   --> governance-contract/src/lib.rs:983:28
+    |
+ 21 | pub enum DataKey {
+    | ---------------- variant or associated item `UserVoteChoice` not found for this enum
+...
+983 |             .has(&DataKey::UserVoteChoice(voter, proposal_id))
+    |                            ^^^^^^^^^^^^^^ variant or associated item not found in `DataKey`
+
+error[E0599]: no variant or associated item named `Proposal` found for enum `DataKey` in the current scope
+   --> governance-contract/src/lib.rs:995:28
+    |
+ 21 | pub enum DataKey {
+    | ---------------- variant or associated item `Proposal` not found for this enum
+...
+995 |             .get(&DataKey::Proposal(proposal_id))
+    |                            ^^^^^^^^ variant or associated item not found in `DataKey`
+
+error[E0382]: borrow of moved value: `env`
+   --> governance-contract/src/lib.rs:337:13
+    |
+328 |         env: Env,
+    |         --- move occurs because `env` has type `Env`, which does not implement the `Copy` trait
+...
+335 |             env,
+    |             --- value moved here
+336 |             proposer,
+337 |             env.current_contract_address(),
+    |             ^^^ value borrowed here after move
+    |
+note: consider changing this parameter type in method `propose_transaction` to borrow instead if owning the value isn't necessary
+   --> governance-contract/src/lib.rs:422:14
+    |
+421 |     pub fn propose_transaction(
+    |            ------------------- in this method
+422 |         env: Env,
+    |              ^^^ this parameter takes ownership of the value
+help: consider cloning the value if the performance cost is acceptable
+    |
+335 |             env.clone(),
+    |                ++++++++
+
+error[E0382]: borrow of moved value: `env`
+   --> governance-contract/src/lib.rs:353:13
+    |
+344 |         env: Env,
+    |         --- move occurs because `env` has type `Env`, which does not implement the `Copy` trait
+...
+351 |             env,
+    |             --- value moved here
+352 |             proposer,
+353 |             env.current_contract_address(),
+    |             ^^^ value borrowed here after move
+    |
+note: consider changing this parameter type in method `propose_transaction` to borrow instead if owning the value isn't necessary
+   --> governance-contract/src/lib.rs:422:14
+    |
+421 |     pub fn propose_transaction(
+    |            ------------------- in this method
+422 |         env: Env,
+    |              ^^^ this parameter takes ownership of the value
+help: consider cloning the value if the performance cost is acceptable
+    |
+351 |             env.clone(),
+    |                ++++++++
+
+error[E0382]: borrow of moved value: `env`
+   --> governance-contract/src/lib.rs:369:13
+    |
+360 |         env: Env,
+    |         --- move occurs because `env` has type `Env`, which does not implement the `Copy` trait
+...
+367 |             env,
+    |             --- value moved here
+368 |             proposer,
+369 |             env.current_contract_address(),
+    |             ^^^ value borrowed here after move
+    |
+note: consider changing this parameter type in method `propose_transaction` to borrow instead if owning the value isn't necessary
+   --> governance-contract/src/lib.rs:422:14
+    |
+421 |     pub fn propose_transaction(
+    |            ------------------- in this method
+422 |         env: Env,
+    |              ^^^ this parameter takes ownership of the value
+help: consider cloning the value if the performance cost is acceptable
+    |
+367 |             env.clone(),
+    |                ++++++++
+
+Some errors have detailed explanations: E0308, E0382, E0422, E0599.
+For more information about an error, try `rustc --explain E0308`.
+error: could not compile `governance-contract` (lib) due to 21 previous errors

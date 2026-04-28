@@ -69,12 +69,12 @@ fn test_deposit_mints_shares() {
     let depositor = Address::generate(&env);
     mint_to(&env, &token_addr, &depositor, 10_000);
 
-    let shares = client.deposit(&depositor, &2000u64);
+    let shares = client.deposit(&depositor, &token_addr, &2000u64);
     // First deposit: 1:1 ratio minus lock
     assert_eq!(shares, 1000u64);
-    assert_eq!(client.get_shares_of(&depositor), 1000u64);
+    assert_eq!(client.get_shares_of(&token_addr, &depositor), 1000u64);
 
-    let pool = client.get_pool_state();
+    let pool = client.get_pool_state(&token_addr).unwrap();
     assert_eq!(pool.total_deposits, 2000);
     assert_eq!(pool.total_shares, 2000);
     assert_eq!(pool.total_borrowed, 0);
@@ -92,14 +92,14 @@ fn test_second_deposit_proportional_shares() {
     mint_to(&env, &token_addr, &depositor2, 10_000);
 
     // First deposit: 2000 tokens → 1000 shares
-    client.deposit(&depositor1, &2000u64);
+    client.deposit(&depositor1, &token_addr, &2000u64);
 
     // Second deposit: pool has 2000 shares, 2000 deposits. ratio 1:1
     // 500 tokens -> 500 shares
-    let shares2 = client.deposit(&depositor2, &500u64);
+    let shares2 = client.deposit(&depositor2, &token_addr, &500u64);
     assert_eq!(shares2, 500u64);
 
-    let pool = client.get_pool_state();
+    let pool = client.get_pool_state(&token_addr).unwrap();
     assert_eq!(pool.total_deposits, 2500);
     assert_eq!(pool.total_shares, 2500);
 }
@@ -113,19 +113,19 @@ fn test_withdraw_burns_shares_and_returns_tokens() {
     let depositor = Address::generate(&env);
     mint_to(&env, &token_addr, &depositor, 10_000);
 
-    client.deposit(&depositor, &2000u64);
+    client.deposit(&depositor, &token_addr, &2000u64).unwrap();
     let balance_before = tok_client(&env, &token_addr).balance(&depositor);
 
     // Withdraw 500 shares → should get 500 tokens back
-    let returned = client.withdraw(&depositor, &500u64);
+    let returned = client.withdraw(&depositor, &token_addr, &500u64).unwrap();
     assert_eq!(returned, 500u64);
     assert_eq!(
         tok_client(&env, &token_addr).balance(&depositor),
         balance_before + 500
     );
-    assert_eq!(client.get_shares_of(&depositor), 500u64);
+    assert_eq!(client.get_shares_of(&token_addr, &depositor), 500u64);
 
-    let pool = client.get_pool_state();
+    let pool = client.get_pool_state(&token_addr).unwrap();
     assert_eq!(pool.total_deposits, 1500);
     assert_eq!(pool.total_shares, 1500);
 }
@@ -138,10 +138,10 @@ fn test_withdraw_fails_not_enough_shares() {
 
     let depositor = Address::generate(&env);
     mint_to(&env, &token_addr, &depositor, 10_000);
-    client.deposit(&depositor, &2000u64);
+    client.deposit(&depositor, &token_addr, &2000u64).unwrap();
 
     // Try to withdraw more shares than owned
-    let result = client.try_withdraw(&depositor, &2000u64);
+    let result = client.try_withdraw(&depositor, &token_addr, &2000u64);
     assert!(result.is_err());
 }
 
@@ -156,17 +156,18 @@ fn test_borrow_reduces_available_liquidity() {
     mint_to(&env, &collateral_addr, &borrower, 100_000);
     mint_to(&env, &token_addr, &depositor, 10_000);
     mint_to(&env, &collateral_addr, &borrower, 10_000);
-    client.deposit(&depositor, &2000u64);
+    client.deposit(&depositor, &token_addr, &2000u64).unwrap();
 
     let borrow_amount = 400u64;
     let balance_before = tok_client(&env, &token_addr).balance(&borrower);
     let loan_id = client.borrow(
         &borrower,
+        &token_addr,
         &borrow_amount,
         &collateral_addr,
         &600u64,
         &(30 * 24 * 60 * 60),
-    ); // 30 days
+    ).unwrap(); // 30 days
 
     assert!(loan_id > 0);
     assert_eq!(
@@ -174,11 +175,11 @@ fn test_borrow_reduces_available_liquidity() {
         balance_before + 400
     );
 
-    let pool = client.get_pool_state();
+    let pool = client.get_pool_state(&token_addr).unwrap();
     assert_eq!(pool.total_borrowed, 400);
     assert_eq!(pool.total_deposits, 2000);
 
-    assert_eq!(client.available_liquidity(), 1600u64);
+    assert_eq!(client.available_liquidity(&token_addr).unwrap(), 1600u64);
 }
 
 #[test]
@@ -189,10 +190,11 @@ fn test_borrow_fails_if_insufficient_liquidity() {
 
     let depositor = Address::generate(&env);
     mint_to(&env, &token_addr, &depositor, 10_000);
-    client.deposit(&depositor, &2000u64);
+    client.deposit(&depositor, &token_addr, &2000u64).unwrap();
 
     let result = client.try_borrow(
         &depositor,
+        &token_addr,
         &2001u64,
         &collateral_addr,
         &3001u64,
@@ -211,18 +213,20 @@ fn test_borrow_fails_with_existing_loan() {
     let borrower = Address::generate(&env);
     mint_to(&env, &collateral_addr, &borrower, 100_000);
     mint_to(&env, &token_addr, &depositor, 10_000);
-    client.deposit(&depositor, &2000u64);
+    client.deposit(&depositor, &token_addr, &2000u64).unwrap();
     client.borrow(
         &borrower,
+        &token_addr,
         &200u64,
         &collateral_addr,
         &300u64,
         &(30 * 24 * 60 * 60),
-    );
+    ).unwrap();
 
     // Second borrow should fail
     let result = client.try_borrow(
         &borrower,
+        &token_addr,
         &100u64,
         &collateral_addr,
         &150u64,
@@ -243,24 +247,25 @@ fn test_repay_restores_liquidity() {
     mint_to(&env, &token_addr, &depositor, 10_000);
     mint_to(&env, &token_addr, &borrower, 10_000); // pre-fund borrower for repayment
 
-    client.deposit(&depositor, &2000u64);
+    client.deposit(&depositor, &token_addr, &2000u64).unwrap();
     client.borrow(
         &borrower,
+        &token_addr,
         &400u64,
         &collateral_addr,
         &600u64,
         &(30 * 24 * 60 * 60),
-    );
+    ).unwrap();
 
-    assert_eq!(client.available_liquidity(), 1600u64);
+    assert_eq!(client.available_liquidity(&token_addr).unwrap(), 1600u64);
 
-    let repaid = client.repay(&borrower);
+    let repaid = client.repay(&borrower).unwrap();
     assert_eq!(repaid, 400u64);
 
-    let pool = client.get_pool_state();
+    let pool = client.get_pool_state(&token_addr).unwrap();
     assert_eq!(pool.total_borrowed, 0);
     assert_eq!(pool.total_deposits, 2000);
-    assert_eq!(client.available_liquidity(), 2000u64);
+    assert_eq!(client.available_liquidity(&token_addr).unwrap(), 2000u64);
 
     // Loan should be gone
     let loan = client.get_loan(&borrower);
@@ -288,21 +293,22 @@ fn test_withdraw_fails_if_funds_are_borrowed() {
     mint_to(&env, &collateral_addr, &borrower, 100_000);
     mint_to(&env, &token_addr, &depositor, 10_000);
 
-    client.deposit(&depositor, &2000u64);
+    client.deposit(&depositor, &token_addr, &2000u64).unwrap();
     client.borrow(
         &borrower,
+        &token_addr,
         &1900u64,
         &collateral_addr,
         &2850u64,
         &(30 * 24 * 60 * 60),
-    ); // only 100 tokens left un-borrowed
+    ).unwrap(); // only 100 tokens left un-borrowed
 
     // Depositor tries to withdraw 500 → only 100 available
-    let result = client.try_withdraw(&depositor, &500u64);
+    let result = client.try_withdraw(&depositor, &token_addr, &500u64);
     assert!(result.is_err());
 
     // Can still withdraw 100's worth of shares
-    assert!(client.try_withdraw(&depositor, &100u64).is_ok());
+    assert!(client.try_withdraw(&depositor, &token_addr, &100u64).is_ok());
 }
 
 #[test]
@@ -317,22 +323,23 @@ fn test_available_liquidity_before_and_after() {
     mint_to(&env, &token_addr, &depositor, 10_000);
     mint_to(&env, &token_addr, &borrower, 10_000);
 
-    assert_eq!(client.available_liquidity(), 0u64);
+    assert_eq!(client.available_liquidity(&token_addr).unwrap(), 0u64);
 
-    client.deposit(&depositor, &2000u64);
-    assert_eq!(client.available_liquidity(), 2000u64);
+    client.deposit(&depositor, &token_addr, &2000u64).unwrap();
+    assert_eq!(client.available_liquidity(&token_addr).unwrap(), 2000u64);
 
     client.borrow(
         &borrower,
+        &token_addr,
         &1500u64,
         &collateral_addr,
         &2250u64,
         &(30 * 24 * 60 * 60),
-    );
-    assert_eq!(client.available_liquidity(), 500u64);
+    ).unwrap();
+    assert_eq!(client.available_liquidity(&token_addr).unwrap(), 500u64);
 
-    client.repay(&borrower);
-    assert_eq!(client.available_liquidity(), 2000u64);
+    client.repay(&borrower).unwrap();
+    assert_eq!(client.available_liquidity(&token_addr).unwrap(), 2000u64);
 }
 
 #[test]
@@ -357,14 +364,15 @@ fn test_get_loan_returns_record_when_active() {
     mint_to(&env, &collateral_addr, &borrower, 100_000);
     mint_to(&env, &token_addr, &depositor, 10_000);
 
-    client.deposit(&depositor, &2000u64);
+    client.deposit(&depositor, &token_addr, &2000u64).unwrap();
     let loan_id = client.borrow(
         &borrower,
+        &token_addr,
         &300u64,
         &collateral_addr,
         &450u64,
         &(30 * 24 * 60 * 60),
-    );
+    ).unwrap();
 
     let loan = client.get_loan(&borrower).unwrap();
     assert_eq!(loan.loan_id, loan_id);
@@ -385,10 +393,10 @@ fn test_invalid_amounts_rejected() {
     let (client, _token_addr, collateral_addr, admin) = setup(&env);
 
     let depositor = Address::generate(&env);
-    assert!(client.try_deposit(&depositor, &0u64).is_err());
-    assert!(client.try_withdraw(&depositor, &0u64).is_err());
+    assert!(client.try_deposit(&depositor, &token_addr, &0u64).is_err());
+    assert!(client.try_withdraw(&depositor, &token_addr, &0u64).is_err());
     assert!(client
-        .try_borrow(&admin, &0u64, &collateral_addr, &0u64, &(30 * 24 * 60 * 60))
+        .try_borrow(&admin, &token_addr, &0u64, &collateral_addr, &0u64, &(30 * 24 * 60 * 60))
         .is_err());
 }
 #[test]
@@ -403,12 +411,12 @@ fn test_rounding_loss_exploit_prevented() {
     mint_to(&env, &token_addr, &victim, 10_000);
 
     // Attacker deposits minimum allowed to get some shares
-    assert!(client.try_deposit(&attacker, &1000u64).is_err());
-    let attack_shares = client.deposit(&attacker, &1001u64);
+    assert!(client.try_deposit(&attacker, &token_addr, &1000u64).is_err());
+    let attack_shares = client.deposit(&attacker, &token_addr, &1001u64).unwrap();
     assert_eq!(attack_shares, 1);
 
     // Victim tries to deposit an amount that would yield 0 shares
-    let victim_shares_err = client.try_deposit(&victim, &0u64);
+    let victim_shares_err = client.try_deposit(&victim, &token_addr, &0u64);
     assert!(victim_shares_err.is_err()); // caught by InvalidAmount
 }
 
@@ -426,20 +434,21 @@ fn test_interest_accrual() {
     mint_to(&env, &token_addr, &borrower, 100_000);
 
     // 1. Deposit 10,000 → 10,000 shares
-    client.deposit(&depositor, &10_000u64);
+    client.deposit(&depositor, &token_addr, &10_000u64).unwrap();
 
     // 2. Borrow 5,000
     // Utilization = 5000 / 10000 = 50%.
     // Rate = 5% + (50% * 20%) = 15% (1500 bps)
     client.borrow(
         &borrower,
+        &token_addr,
         &5_000u64,
         &collateral_addr,
         &7500u64,
         &(365 * 24 * 60 * 60),
-    ); // 1 year duration
+    ).unwrap(); // 1 year duration
 
-    let current_rate = client.get_current_interest_rate();
+    let current_rate = client.get_current_interest_rate(&token_addr).unwrap();
     assert_eq!(current_rate, 1500u32);
 
     // 3. Jump time by 1 year (31,536,000 seconds)
@@ -447,14 +456,14 @@ fn test_interest_accrual() {
         .set_timestamp(env.ledger().timestamp() + 31_536_000);
 
     // 4. Expected interest: 5,000 * 0.15 * 1 year = 750
-    let repayment_amount = client.get_repayment_amount(&borrower);
+    let repayment_amount = client.get_repayment_amount(&borrower).unwrap();
     assert_eq!(repayment_amount, 5_750u64);
 
     // 5. Repay
-    client.repay(&borrower);
+    client.repay(&borrower).unwrap();
 
     // 6. Verify pool state
-    let pool = client.get_pool_state();
+    let pool = client.get_pool_state(&token_addr).unwrap();
     // total_deposits should be 10,000 (initial) + 675 (90% of 750 interest) = 10,675
     assert_eq!(pool.total_deposits, 10_675);
     assert_eq!(pool.total_borrowed, 0);
@@ -464,7 +473,7 @@ fn test_interest_accrual() {
     // 7. Verify depositor can withdraw more than they put in
     // shares = 9,000, pool_shares = 10,000, pool_deposits = 10,675
     // amount = 9,000 * 10,675 / 10,000 = 9,607
-    let withdrawn = client.withdraw(&depositor, &9_000u64);
+    let withdrawn = client.withdraw(&depositor, &token_addr, &9_000u64).unwrap();
     assert_eq!(withdrawn, 9_607u64);
 }
 
@@ -480,18 +489,19 @@ fn test_interest_precision_short_time() {
     mint_to(&env, &token_addr, &depositor, 100_000);
     mint_to(&env, &token_addr, &borrower, 100_000);
 
-    client.deposit(&depositor, &10_000u64);
+    client.deposit(&depositor, &token_addr, &10_000u64).unwrap();
     client.borrow(
         &borrower,
+        &token_addr,
         &5_000u64,
         &collateral_addr,
         &7500u64,
         &(30 * 24 * 60 * 60),
-    ); // 30 days
+    ).unwrap(); // 30 days
 
     env.ledger().set_timestamp(env.ledger().timestamp() + 3600);
 
-    let repayment_amount = client.get_repayment_amount(&borrower);
+    let repayment_amount = client.get_repayment_amount(&borrower).unwrap();
     assert_eq!(repayment_amount, 5_000u64);
 }
 
@@ -503,10 +513,10 @@ fn test_dynamic_interest_rate_increases_with_utilization() {
 
     let depositor = Address::generate(&env);
     mint_to(&env, &token_addr, &depositor, 100_000);
-    client.deposit(&depositor, &10_000u64);
+    client.deposit(&depositor, &token_addr, &10_000u64).unwrap();
 
     // At 0 utilization, rate should be base rate (500)
-    assert_eq!(client.get_current_interest_rate(), 500u32);
+    assert_eq!(client.get_current_interest_rate(&token_addr).unwrap(), 500u32);
 
     let borrower1 = Address::generate(&env);
     mint_to(&env, &collateral_addr, &borrower1, 100_000);
@@ -514,16 +524,17 @@ fn test_dynamic_interest_rate_increases_with_utilization() {
     // Dynamic rate should be 500 + (2000 * 2000 / 10000) = 500 + 400 = 900
     client.borrow(
         &borrower1,
+        &token_addr,
         &2_000u64,
         &collateral_addr,
         &3000u64,
         &(30 * 24 * 60 * 60),
-    );
+    ).unwrap();
     let loan1 = client.get_loan(&borrower1).unwrap();
     assert_eq!(loan1.interest_rate_bps, 900u32);
 
     // Now utilization is 20%. The *next* borrower will get 900.
-    assert_eq!(client.get_current_interest_rate(), 900u32);
+    assert_eq!(client.get_current_interest_rate(&token_addr).unwrap(), 900u32);
 
     let borrower2 = Address::generate(&env);
     mint_to(&env, &collateral_addr, &borrower2, 100_000);
@@ -535,11 +546,12 @@ fn test_dynamic_interest_rate_increases_with_utilization() {
     // Rate = 500 + (5000 * 2000 / 10000) = 500 + 1000 = 1500.
     client.borrow(
         &borrower2,
+        &token_addr,
         &3_000u64,
         &collateral_addr,
         &4500u64,
         &(30 * 24 * 60 * 60),
-    );
+    ).unwrap();
     let loan2 = client.get_loan(&borrower2).unwrap();
     assert_eq!(loan2.interest_rate_bps, 1500u32);
 }
@@ -552,7 +564,7 @@ fn test_unique_loan_ids() {
 
     let depositor = Address::generate(&env);
     mint_to(&env, &token_addr, &depositor, 100_000);
-    client.deposit(&depositor, &50_000u64);
+    client.deposit(&depositor, &token_addr, &50_000u64).unwrap();
 
     let borrower1 = Address::generate(&env);
     let borrower2 = Address::generate(&env);
@@ -564,24 +576,26 @@ fn test_unique_loan_ids() {
     // Create first loan
     let loan_id_1 = client.borrow(
         &borrower1,
+        &token_addr,
         &1_000u64,
         &collateral_addr,
         &1500u64,
         &(30 * 24 * 60 * 60),
-    );
+    ).unwrap();
     assert_eq!(loan_id_1, 1);
 
     // Repay first loan
-    client.repay(&borrower1);
+    client.repay(&borrower1).unwrap();
 
     // Create second loan - should have different ID
     let loan_id_2 = client.borrow(
         &borrower2,
+        &token_addr,
         &2_000u64,
         &collateral_addr,
         &3000u64,
         &(60 * 24 * 60 * 60),
-    );
+    ).unwrap();
     assert_eq!(loan_id_2, 2);
 
     // Verify loan can be retrieved by ID
@@ -603,12 +617,12 @@ fn test_loan_tracks_due_date() {
     mint_to(&env, &token_addr, &depositor, 100_000);
     mint_to(&env, &token_addr, &borrower, 100_000);
 
-    client.deposit(&depositor, &10_000u64);
+    client.deposit(&depositor, &token_addr, &10_000u64).unwrap();
 
     let duration = 30 * 24 * 60 * 60u64; // 30 days
     let borrow_time = env.ledger().timestamp();
 
-    client.borrow(&borrower, &1_000u64, &collateral_addr, &1_500u64, &duration);
+    client.borrow(&borrower, &token_addr, &1_000u64, &collateral_addr, &1_500u64, &duration).unwrap();
 
     let loan = client.get_loan(&borrower).unwrap();
     assert_eq!(loan.borrow_time, borrow_time);
@@ -627,28 +641,29 @@ fn test_repayment_updates_state_correctly() {
     mint_to(&env, &token_addr, &depositor, 100_000);
     mint_to(&env, &token_addr, &borrower, 100_000);
 
-    client.deposit(&depositor, &10_000u64);
+    client.deposit(&depositor, &token_addr, &10_000u64).unwrap();
     let loan_id = client.borrow(
         &borrower,
+        &token_addr,
         &5_000u64,
         &collateral_addr,
         &7500u64,
         &(365 * 24 * 60 * 60),
-    );
+    ).unwrap();
 
     // Advance time to accrue interest
     env.ledger()
         .set_timestamp(env.ledger().timestamp() + 31_536_000); // 1 year
 
-    let pool_before = client.get_pool_state();
+    let pool_before = client.get_pool_state(&token_addr).unwrap();
     assert_eq!(pool_before.total_borrowed, 5_000);
 
     // Repay
-    let total_repaid = client.repay(&borrower);
+    let total_repaid = client.repay(&borrower).unwrap();
     assert_eq!(total_repaid, 5_750); // 5000 + 750 interest
 
     // Verify state updates
-    let pool_after = client.get_pool_state();
+    let pool_after = client.get_pool_state(&token_addr).unwrap();
     assert_eq!(pool_after.total_borrowed, 0);
     assert_eq!(pool_after.total_deposits, 10_675); // Original + 90% interest
     assert_eq!(pool_after.retained_yield, 38);
@@ -667,7 +682,7 @@ fn test_repay_decreases_interest_rate() {
 
     let depositor = Address::generate(&env);
     mint_to(&env, &token_addr, &depositor, 100_000);
-    client.deposit(&depositor, &10_000u64);
+    client.deposit(&depositor, &token_addr, &10_000u64).unwrap();
 
     let borrower = Address::generate(&env);
     mint_to(&env, &collateral_addr, &borrower, 100_000);
@@ -677,18 +692,19 @@ fn test_repay_decreases_interest_rate() {
     // Borrow 50% (5,000). Rate becomes 15% (1500)
     client.borrow(
         &borrower,
+        &token_addr,
         &5_000u64,
         &collateral_addr,
         &7500u64,
         &(30 * 24 * 60 * 60),
-    );
-    assert_eq!(client.get_current_interest_rate(), 1500u32);
+    ).unwrap();
+    assert_eq!(client.get_current_interest_rate(&token_addr).unwrap(), 1500u32);
 
     // Repay immediately
-    client.repay(&borrower);
+    client.repay(&borrower).unwrap();
 
     // Utilization goes back to 0. Rate goes back to 5% (500)
-    assert_eq!(client.get_current_interest_rate(), 500u32);
+    assert_eq!(client.get_current_interest_rate(&token_addr).unwrap(), 500u32);
 }
 
 #[test]
@@ -703,11 +719,12 @@ fn test_collateral_required() {
     mint_to(&env, &token_addr, &depositor, 100_000);
     mint_to(&env, &collateral_addr, &borrower, 100_000);
 
-    client.deposit(&depositor, &10_000u64);
+    client.deposit(&depositor, &token_addr, &10_000u64).unwrap();
 
     // Try to borrow without sufficient collateral (need 150% = 1500 for 1000 borrow)
     let result = client.try_borrow(
         &borrower,
+        &token_addr,
         &1_000u64,
         &collateral_addr,
         &1_400u64,
@@ -718,11 +735,12 @@ fn test_collateral_required() {
     // With exact collateral should work
     let loan_id = client.borrow(
         &borrower,
+        &token_addr,
         &1_000u64,
         &collateral_addr,
         &1_500u64,
         &(30 * 24 * 60 * 60),
-    );
+    ).unwrap();
     assert!(loan_id > 0);
 }
 
@@ -740,11 +758,12 @@ fn test_collateral_not_whitelisted() {
     mint_to(&env, &token_addr, &depositor, 100_000);
     mint_to(&env, &bad_collateral, &borrower, 100_000);
 
-    client.deposit(&depositor, &10_000u64);
+    client.deposit(&depositor, &token_addr, &10_000u64).unwrap();
 
     // Try to borrow with non-whitelisted collateral
     let result = client.try_borrow(
         &borrower,
+        &token_addr,
         &1_000u64,
         &bad_collateral,
         &1_500u64,
@@ -766,17 +785,18 @@ fn test_collateral_returned_on_repay() {
     mint_to(&env, &token_addr, &borrower, 100_000);
     mint_to(&env, &collateral_addr, &borrower, 100_000);
 
-    client.deposit(&depositor, &10_000u64);
+    client.deposit(&depositor, &token_addr, &10_000u64).unwrap();
 
     let collateral_balance_before = tok_client(&env, &collateral_addr).balance(&borrower);
 
     client.borrow(
         &borrower,
+        &token_addr,
         &1_000u64,
         &collateral_addr,
         &1_500u64,
         &(30 * 24 * 60 * 60),
-    );
+    ).unwrap();
 
     // Collateral should be locked
     assert_eq!(
@@ -784,7 +804,7 @@ fn test_collateral_returned_on_repay() {
         collateral_balance_before - 1_500
     );
 
-    client.repay(&borrower);
+    client.repay(&borrower).unwrap();
 
     // Collateral should be returned
     assert_eq!(
@@ -844,11 +864,12 @@ fn test_utilization_cap_enforced() {
     mint_to(&env, &token_addr, &depositor, 100_000);
     mint_to(&env, &collateral_addr, &borrower, 100_000);
 
-    client.deposit(&depositor, &10_000u64);
+    client.deposit(&depositor, &token_addr, &10_000u64).unwrap();
 
     // Try to borrow 8,001 (80.01% utilization) - should fail
     let result = client.try_borrow(
         &borrower,
+        &token_addr,
         &8_001u64,
         &collateral_addr,
         &12_002u64,
@@ -859,11 +880,12 @@ fn test_utilization_cap_enforced() {
     // Borrow exactly 8,000 (80% utilization) - should succeed
     let loan_id = client.borrow(
         &borrower,
+        &token_addr,
         &8_000u64,
         &collateral_addr,
         &12_000u64,
         &(30 * 24 * 60 * 60),
-    );
+    ).unwrap();
     assert!(loan_id > 0);
 }
 #[test]
@@ -886,16 +908,17 @@ fn test_nft_minting_and_burning() {
     mint_to(&env, &token_addr, &depositor, 100_000);
     mint_to(&env, &token_addr, &borrower, 100_000);
 
-    client.deposit(&depositor, &10_000u64);
+    client.deposit(&depositor, &token_addr, &10_000u64).unwrap();
 
     // Borrow 1000
     let loan_id = client.borrow(
         &borrower,
+        &token_addr,
         &1_000u64,
         &collateral_addr,
         &1_500u64,
         &(30 * 24 * 60 * 60),
-    );
+    ).unwrap();
 
     // Verify NFT is minted
     assert_eq!(nft_client.owner_of(&loan_id), Some(borrower.clone()));
@@ -905,7 +928,7 @@ fn test_nft_minting_and_burning() {
     assert_eq!(metadata.principal, 1_000u64);
 
     // Repay
-    client.repay(&borrower);
+    client.repay(&borrower).unwrap();
 
     // Verify NFT is burned
     assert_eq!(nft_client.owner_of(&loan_id), None);
@@ -969,7 +992,7 @@ fn test_reentrancy_attack_fails() {
     mint_to(&env, &collateral_addr, &borrower, 100_000);
     mint_to(&env, &token_addr, &depositor, 100_000);
 
-    client.deposit(&depositor, &10_000u64);
+    client.deposit(&depositor, &token_addr, &10_000u64).unwrap();
 
     // This borrow will trigger MaliciousNFT::mint, which calls client.borrow again.
     // The inner borrow should return ReentrantCall error.
@@ -981,16 +1004,17 @@ fn test_reentrancy_attack_fails() {
 
     client.borrow(
         &borrower,
+        &token_addr,
         &1_000u64,
         &collateral_addr,
         &1_500u64,
         &(30 * 24 * 60 * 60),
-    );
+    ).unwrap();
 
     // If reentrancy was successful, next loan ID would be 3 (1 from first successful, 1 from reentrant).
     // If blocked, next loan ID should be 2.
     // Actually, in our implementation, pool.total_borrowed would be double if successful.
-    let pool = client.get_pool_state();
+    let pool = client.get_pool_state(&token_addr).unwrap();
     assert_eq!(pool.total_borrowed, 1000); // Only the first borrow succeeded
 }
 
@@ -1064,16 +1088,17 @@ fn test_no_late_fees_during_grace_period() {
     mint_to(&env, &token_addr, &depositor, 100_000);
     mint_to(&env, &token_addr, &borrower, 100_000);
 
-    client.deposit(&depositor, &10_000u64);
+    client.deposit(&depositor, &token_addr, &10_000u64).unwrap();
 
     // Borrow with 1 day duration
     client.borrow(
         &borrower,
+        &token_addr,
         &1_000u64,
         &collateral_addr,
         &1_500u64,
         &(24 * 60 * 60),
-    );
+    ).unwrap();
 
     // Jump to just after due date (within grace period)
     // Grace period is 3 days (259200 seconds), so due_date + grace = due_date + 259200
@@ -1081,15 +1106,15 @@ fn test_no_late_fees_during_grace_period() {
         .set_timestamp(env.ledger().timestamp() + 2 * 24 * 60 * 60); // Jump 2 days
 
     // Should still be in grace period
-    let in_grace = client.is_in_grace_period(&borrower);
+    let in_grace = client.is_in_grace_period(&borrower).unwrap();
     assert!(in_grace);
 
     // Late fees should be 0
-    let late_fee = client.calculate_late_fee(&borrower);
+    let late_fee = client.calculate_late_fee(&borrower).unwrap();
     assert_eq!(late_fee, 0u64);
 
     // Total due should only include principal + interest, no late fees
-    let repayment = client.get_repayment_amount(&borrower);
+    let repayment = client.get_repayment_amount(&borrower).unwrap();
     // 1000 principal at ~15% APY for ~2 days = 1000 + ~8 interest
     assert!(repayment < 1_100u64);
 }
@@ -1106,20 +1131,21 @@ fn test_late_fees_after_grace_period() {
     mint_to(&env, &token_addr, &depositor, 100_000);
     mint_to(&env, &token_addr, &borrower, 100_000);
 
-    client.deposit(&depositor, &10_000u64);
+    client.deposit(&depositor, &token_addr, &10_000u64).unwrap();
 
     // Set grace period to 1 day and late fee to 5% per day for easier testing
-    client.set_grace_period(&admin, &(24 * 60 * 60));
-    client.set_late_fee_rate(&admin, &500u32); // 5% per day
+    client.set_grace_period(&admin, &(24 * 60 * 60)).unwrap();
+    client.set_late_fee_rate(&admin, &500u32).unwrap(); // 5% per day
 
     // Borrow 10,000 (so late fees are 500 per day)
     client.borrow(
         &borrower,
+        &token_addr,
         &10_000u64,
         &collateral_addr,
         &15_000u64,
         &(24 * 60 * 60), // 1 day duration
-    );
+    ).unwrap();
 
     // Jump to 3 days after due date (2 days past grace period)
     // late fees = 10000 * 0.05 * 2 = 1000
@@ -1127,15 +1153,15 @@ fn test_late_fees_after_grace_period() {
         .set_timestamp(env.ledger().timestamp() + 4 * 24 * 60 * 60);
 
     // Should be out of grace period
-    let in_grace = client.is_in_grace_period(&borrower);
+    let in_grace = client.is_in_grace_period(&borrower).unwrap();
     assert!(!in_grace);
 
     // Late fee should be ~1000 (2 days * 500 per day = 1000)
-    let late_fee = client.calculate_late_fee(&borrower);
+    let late_fee = client.calculate_late_fee(&borrower).unwrap();
     assert_eq!(late_fee, 1_000u64);
 
     // Total due should include late fees
-    let repayment = client.get_repayment_amount(&borrower);
+    let repayment = client.get_repayment_amount(&borrower).unwrap();
     // 10000 principal + interest (~825 for 4 days at ~15%) + 1000 late fees = ~11825
     assert!(repayment > 11_000u64);
 }
@@ -1153,16 +1179,17 @@ fn test_liquidation_blocked_during_grace_period() {
     mint_to(&env, &token_addr, &depositor, 50_000);
     mint_to(&env, &token_addr, &liquidator, 50_000);
 
-    client.deposit(&depositor, &20_000u64);
+    client.deposit(&depositor, &token_addr, &20_000u64).unwrap();
 
     // Borrow with very high collateral (so health factor starts good)
     client.borrow(
         &borrower,
+        &token_addr,
         &5_000u64,
         &collateral_addr,
         &7_500u64, // Exactly 150% collateral ratio
         &(24 * 60 * 60),
-    );
+    ).unwrap();
 
     // Even though health factor might be bad, liquidation should fail during grace period
     let result = client.try_liquidate(&liquidator, &borrower, &1_000u64);
@@ -1190,37 +1217,38 @@ fn test_late_fee_collected_on_repay() {
     mint_to(&env, &token_addr, &depositor, 100_000);
     mint_to(&env, &token_addr, &borrower, 100_000);
 
-    client.deposit(&depositor, &10_000u64);
+    client.deposit(&depositor, &token_addr, &10_000u64).unwrap();
 
     // Set simple rates for testing
-    client.set_grace_period(&admin, &(24 * 60 * 60));
-    client.set_late_fee_rate(&admin, &500u32); // 5% per day
+    client.set_grace_period(&admin, &(24 * 60 * 60)).unwrap();
+    client.set_late_fee_rate(&admin, &500u32).unwrap(); // 5% per day
 
     // Borrow 5000
     client.borrow(
         &borrower,
+        &token_addr,
         &5_000u64,
         &collateral_addr,
         &7_500u64,
         &(24 * 60 * 60),
-    );
+    ).unwrap();
 
     // Jump 4 days (1 day maturity + 1 day grace + 2 days late)
     env.ledger()
         .set_timestamp(env.ledger().timestamp() + 4 * 24 * 60 * 60);
 
     // Late fees should be 5000 * 0.05 * 2 = 500
-    let late_fee = client.calculate_late_fee(&borrower);
+    let late_fee = client.calculate_late_fee(&borrower).unwrap();
     assert_eq!(late_fee, 500u64);
 
     // Get pool state before repay
-    let pool_before = client.get_pool_state();
+    let pool_before = client.get_pool_state(&token_addr).unwrap();
 
     // Repay - should include late fees
-    client.repay(&borrower);
+    client.repay(&borrower).unwrap();
 
     // Get pool state after repay
-    let pool_after = client.get_pool_state();
+    let pool_after = client.get_pool_state(&token_addr).unwrap();
 
     // Late fee (500) should be added to retained_yield
     // Protocol gets 10% of interest, but 100% of late fees
@@ -1243,32 +1271,33 @@ fn test_grace_period_expires_correctly() {
     mint_to(&env, &token_addr, &depositor, 100_000);
     mint_to(&env, &token_addr, &borrower, 100_000);
 
-    client.deposit(&depositor, &10_000u64);
+    client.deposit(&depositor, &token_addr, &10_000u64).unwrap();
 
     // Set 2 day grace period
-    client.set_grace_period(&admin, &(2 * 24 * 60 * 60));
+    client.set_grace_period(&admin, &(2 * 24 * 60 * 60)).unwrap();
 
     // Borrow with 1 day maturity
     client.borrow(
         &borrower,
+        &token_addr,
         &1_000u64,
         &collateral_addr,
         &1_500u64,
         &(24 * 60 * 60),
-    );
+    ).unwrap();
 
     // At 1.5 days: should be in grace period
     env.ledger()
         .set_timestamp(env.ledger().timestamp() + 36 * 60 * 60);
-    assert!(client.is_in_grace_period(&borrower));
+    assert!(client.is_in_grace_period(&borrower).unwrap());
 
     // At 4.5 days: should be out of grace period (3 days) and have at least 1 day overdue
     env.ledger()
         .set_timestamp(env.ledger().timestamp() + 3 * 24 * 60 * 60); // Total 4.5 days
-    assert!(!client.is_in_grace_period(&borrower));
+    assert!(!client.is_in_grace_period(&borrower).unwrap());
 
     // Late fees should start accruing
-    assert!(client.calculate_late_fee(&borrower) > 0u64);
+    assert!(client.calculate_late_fee(&borrower).unwrap() > 0u64);
 }
 
 #[test]
@@ -1279,7 +1308,7 @@ fn test_multiple_loans_grace_period() {
 
     let depositor = Address::generate(&env);
     mint_to(&env, &token_addr, &depositor, 200_000);
-    client.deposit(&depositor, &100_000u64);
+    client.deposit(&depositor, &token_addr, &100_000u64).unwrap();
 
     let borrower1 = Address::generate(&env);
     let borrower2 = Address::generate(&env);
@@ -1288,38 +1317,40 @@ fn test_multiple_loans_grace_period() {
     mint_to(&env, &token_addr, &borrower1, 100_000);
     mint_to(&env, &token_addr, &borrower2, 100_000);
 
-    client.set_grace_period(&admin, &(24 * 60 * 60));
+    client.set_grace_period(&admin, &(24 * 60 * 60)).unwrap();
 
     // Create two loans with different maturities
     client.borrow(
         &borrower1,
+        &token_addr,
         &1_000u64,
         &collateral_addr,
         &1_500u64,
         &(24 * 60 * 60),
-    );
+    ).unwrap();
 
     env.ledger().set_timestamp(env.ledger().timestamp() + 1_000);
 
     client.borrow(
         &borrower2,
+        &token_addr,
         &2_000u64,
         &collateral_addr,
         &3_000u64,
         &(2 * 24 * 60 * 60),
-    );
+    ).unwrap();
 
     // Jump 3 days to ensure borrower1 is past grace period
     env.ledger()
         .set_timestamp(env.ledger().timestamp() + 3 * 24 * 60 * 60);
 
     // borrower1 should be out of grace period
-    assert!(!client.is_in_grace_period(&borrower1));
-    assert!(client.calculate_late_fee(&borrower1) > 0u64);
+    assert!(!client.is_in_grace_period(&borrower1).unwrap());
+    assert!(client.calculate_late_fee(&borrower1).unwrap() > 0u64);
 
     // borrower2 should still be in grace period (due_date is 2 days after borrow, grace = 1 day, so still in grace)
-    assert!(client.is_in_grace_period(&borrower2));
-    assert_eq!(client.calculate_late_fee(&borrower2), 0u64);
+    assert!(client.is_in_grace_period(&borrower2).unwrap());
+    assert_eq!(client.calculate_late_fee(&borrower2).unwrap(), 0u64);
 }
 
 // ─────────────────────────────────────────────────
@@ -1339,19 +1370,20 @@ fn test_get_refinance_terms() {
     mint_to(&env, &token_addr, &depositor, 10_000);
 
     // Deposit funds to provide liquidity
-    client.deposit(&depositor, &5000u64);
+    client.deposit(&depositor, &token_addr, &5000u64).unwrap();
 
     // Borrow 1000 with 1500 collateral for 30 days
     client.borrow(
         &borrower,
+        &token_addr,
         &1000u64,
         &collateral_addr,
         &1500u64,
         &(30 * 24 * 60 * 60),
-    );
+    ).unwrap();
 
     // Get refinancing terms for 60 days
-    let terms = client.get_refinance_terms(&borrower, &(60 * 24 * 60 * 60));
+    let terms = client.get_refinance_terms(&borrower, &(60 * 24 * 60 * 60)).unwrap();
 
     // Should have outstanding balance (principal + accrued interest)
     assert!(terms.outstanding_balance >= 1000u64);
@@ -1375,22 +1407,23 @@ fn test_refinance_loan() {
     mint_to(&env, &token_addr, &depositor, 10_000);
 
     // Deposit funds to provide liquidity
-    client.deposit(&depositor, &5000u64);
+    client.deposit(&depositor, &token_addr, &5000u64).unwrap();
 
     // Borrow 1000 with 1500 collateral for 30 days
     let old_loan_id = client.borrow(
         &borrower,
+        &token_addr,
         &1000u64,
         &collateral_addr,
         &1500u64,
         &(30 * 24 * 60 * 60),
-    );
+    ).unwrap();
 
     // Get initial loan details
     let old_loan = client.get_loan(&borrower).unwrap();
 
     // Refinance for 60 days
-    let new_loan_id = client.refinance_loan(&borrower, &(60 * 24 * 60 * 60));
+    let new_loan_id = client.refinance_loan(&borrower, &(60 * 24 * 60 * 60)).unwrap();
 
     // Verify new loan exists with different terms
     let new_loan = client.get_loan(&borrower).unwrap();
@@ -1419,16 +1452,17 @@ fn test_refinance_loan_fails_when_overdue() {
     mint_to(&env, &token_addr, &depositor, 10_000);
 
     // Deposit funds to provide liquidity
-    client.deposit(&depositor, &5000u64);
+    client.deposit(&depositor, &token_addr, &5000u64).unwrap();
 
     // Borrow 1000 for 1 day
     client.borrow(
         &borrower,
+        &token_addr,
         &1000u64,
         &collateral_addr,
         &1500u64,
         &(24 * 60 * 60),
-    );
+    ).unwrap();
 
     // Jump past grace period
     env.ledger()
@@ -1452,7 +1486,7 @@ fn test_consolidate_loans() {
     mint_to(&env, &token_addr, &depositor, 10_000);
 
     // Deposit funds to provide liquidity
-    client.deposit(&depositor, &5000u64);
+    client.deposit(&depositor, &token_addr, &5000u64).unwrap();
 
     // Create multiple loans by using different borrowers first, then transferring
     // For this test, we'll need a different approach since the contract only allows one loan per user
@@ -1461,17 +1495,18 @@ fn test_consolidate_loans() {
     // For now, let's test the consolidation logic with a single loan (edge case)
     let loan_id1 = client.borrow(
         &borrower,
+        &token_addr,
         &1000u64,
         &collateral_addr,
         &1500u64,
         &(30 * 24 * 60 * 60),
-    );
+    ).unwrap();
 
     // Try to consolidate single loan (should work but be similar to refinance)
     let mut loan_ids = Vec::new(&env);
     loan_ids.push_back(loan_id1);
 
-    let new_loan_id = client.consolidate_loans(&borrower, &loan_ids, &(60 * 24 * 60 * 60));
+    let new_loan_id = client.consolidate_loans(&borrower, &loan_ids, &(60 * 24 * 60 * 60)).unwrap();
 
     // Verify consolidation worked
     let new_loan = client.get_loan(&borrower).unwrap();
@@ -1492,23 +1527,24 @@ fn test_split_loan() {
     mint_to(&env, &token_addr, &depositor, 10_000);
 
     // Deposit funds to provide liquidity
-    client.deposit(&depositor, &5000u64);
+    client.deposit(&depositor, &token_addr, &5000u64).unwrap();
 
     // Borrow 2000 with 3000 collateral
     let old_loan_id = client.borrow(
         &borrower,
+        &token_addr,
         &2000u64,
         &collateral_addr,
         &3000u64,
         &(30 * 24 * 60 * 60),
-    );
+    ).unwrap();
 
     // Jump forward a bit to accrue some interest
     env.ledger()
         .set_timestamp(env.ledger().timestamp() + 10 * 24 * 60 * 60);
 
     // Get current outstanding balance
-    let outstanding = client.get_repayment_amount(&borrower);
+    let outstanding = client.get_repayment_amount(&borrower).unwrap();
 
     // Split into two loans: 60% and 40%
     let split1 = (outstanding * 60) / 100;
@@ -1518,7 +1554,7 @@ fn test_split_loan() {
     split_amounts.push_back(split1);
     split_amounts.push_back(split2);
 
-    let new_loan_ids = client.split_loan(&borrower, &split_amounts, &(45 * 24 * 60 * 60));
+    let new_loan_ids = client.split_loan(&borrower, &split_amounts, &(45 * 24 * 60 * 60)).unwrap();
 
     // Verify split worked
     assert_eq!(new_loan_ids.len(), 2);
@@ -1548,16 +1584,17 @@ fn test_split_loan_invalid_amounts() {
     mint_to(&env, &token_addr, &depositor, 10_000);
 
     // Deposit funds to provide liquidity
-    client.deposit(&depositor, &5000u64);
+    client.deposit(&depositor, &token_addr, &5000u64).unwrap();
 
     // Borrow 1000
     client.borrow(
         &borrower,
+        &token_addr,
         &1000u64,
         &collateral_addr,
         &1500u64,
         &(30 * 24 * 60 * 60),
-    );
+    ).unwrap();
 
     // Try to split with amounts that don't sum to outstanding
     let mut split_amounts = Vec::new(&env);
@@ -1590,7 +1627,7 @@ fn test_user_loan_tracking() {
     mint_to(&env, &token_addr, &depositor, 10_000);
 
     // Deposit funds to provide liquidity
-    client.deposit(&depositor, &5000u64);
+    client.deposit(&depositor, &token_addr, &5000u64).unwrap();
 
     // Initially should have no loans
     let user_loans = client.get_user_loan_ids(&borrower);
@@ -1599,11 +1636,12 @@ fn test_user_loan_tracking() {
     // Borrow a loan
     let loan_id = client.borrow(
         &borrower,
+        &token_addr,
         &1000u64,
         &collateral_addr,
         &1500u64,
         &(30 * 24 * 60 * 60),
-    );
+    ).unwrap();
 
     // Should have one loan
     let user_loans = client.get_user_loan_ids(&borrower);
@@ -1615,14 +1653,14 @@ fn test_user_loan_tracking() {
     split_amounts.push_back(500u64);
     split_amounts.push_back(500u64);
 
-    client.split_loan(&borrower, &split_amounts, &(30 * 24 * 60 * 60));
+    client.split_loan(&borrower, &split_amounts, &(30 * 24 * 60 * 60)).unwrap();
 
     // Should have two loans
     let user_loans = client.get_user_loan_ids(&borrower);
     assert_eq!(user_loans.len(), 2);
 
     // Repay one loan (by getting the primary loan and repaying)
-    client.repay(&borrower);
+    client.repay(&borrower).unwrap();
 
     // Should have one loan left
     let user_loans = client.get_user_loan_ids(&borrower);
@@ -1670,7 +1708,7 @@ fn test_flash_loan_success() {
 
     let depositor = Address::generate(&env);
     mint_to(&env, &token_addr, &depositor, 1_000_000);
-    client.deposit(&depositor, &100_000u64);
+    client.deposit(&depositor, &token_addr, &100_000u64).unwrap();
 
     let receiver_id = env.register_contract(None, MockFlashLoanReceiver);
 
@@ -1688,11 +1726,11 @@ fn test_flash_loan_success() {
     let flash_loan_amount = 50_000u64;
     let expected_fee = (50_000u64 * 9) / 10000;
 
-    let pool_before = client.get_pool_state();
+    let pool_before = client.get_pool_state(&token_addr).unwrap();
 
-    client.flash_loan(&receiver_id, &flash_loan_amount);
+    client.flash_loan(&token_addr, &receiver_id, &flash_loan_amount).unwrap();
 
-    let pool_after = client.get_pool_state();
+    let pool_after = client.get_pool_state(&token_addr).unwrap();
     assert_eq!(
         pool_after.total_deposits,
         pool_before.total_deposits + expected_fee
@@ -1715,21 +1753,21 @@ fn test_stake_lp_tokens() {
     mint_to(&env, &token_addr, &depositor, 10_000);
 
     // Deposit funds to get shares
-    client.deposit(&user, &5000u64);
-    client.deposit(&depositor, &5000u64);
+    client.deposit(&user, &token_addr, &5000u64).unwrap();
+    client.deposit(&depositor, &token_addr, &5000u64).unwrap();
 
     // Check initial state
-    assert_eq!(client.get_staked_balance(&user), 0);
-    assert_eq!(client.get_total_staked(), 0);
+    assert_eq!(client.get_staked_balance(&user, &token_addr), 0);
+    assert_eq!(client.get_total_staked(&token_addr), 0);
 
     // Stake LP tokens
     let stake_amount = 1000u64;
-    client.stake_lp_tokens(&user, &stake_amount);
+    client.stake_lp_tokens(&user, &token_addr, &stake_amount).unwrap();
 
     // Verify staking
-    assert_eq!(client.get_staked_balance(&user), stake_amount);
-    assert_eq!(client.get_total_staked(), stake_amount);
-    assert_eq!(client.get_pending_rewards(&user), 0); // No rewards yet
+    assert_eq!(client.get_staked_balance(&user, &token_addr), stake_amount);
+    assert_eq!(client.get_total_staked(&token_addr), stake_amount);
+    assert_eq!(client.get_pending_rewards(&user, &token_addr), 0); // No rewards yet
 }
 
 /*
@@ -1761,23 +1799,23 @@ fn test_unstake_lp_tokens() {
     mint_to(&env, &token_addr, &user, 10_000);
 
     // Deposit and stake
-    client.deposit(&user, &5000u64);
+    client.deposit(&user, &token_addr, &5000u64).unwrap();
     let stake_amount = 1000u64;
-    client.stake_lp_tokens(&user, &stake_amount);
+    client.stake_lp_tokens(&user, &token_addr, &stake_amount).unwrap();
 
     // Jump forward in time to accumulate rewards
     env.ledger().set_timestamp(env.ledger().timestamp() + 1000);
 
     // Unstake
     let unstake_amount = 500u64;
-    client.unstake_lp_tokens(&user, &unstake_amount);
+    client.unstake_lp_tokens(&user, &token_addr, &unstake_amount).unwrap();
 
     // Verify unstaking
     assert_eq!(
-        client.get_staked_balance(&user),
+        client.get_staked_balance(&user, &token_addr),
         stake_amount - unstake_amount
     );
-    assert_eq!(client.get_total_staked(), stake_amount - unstake_amount);
+    assert_eq!(client.get_total_staked(&token_addr), stake_amount - unstake_amount);
 }
 
 #[test]
@@ -1790,11 +1828,11 @@ fn test_unstake_lp_tokens_insufficient_stake() {
     mint_to(&env, &token_addr, &user, 10_000);
 
     // Deposit and stake small amount
-    client.deposit(&user, &5000u64);
-    client.stake_lp_tokens(&user, &1000u64);
+    client.deposit(&user, &token_addr, &5000u64).unwrap();
+    client.stake_lp_tokens(&user, &token_addr, &1000u64).unwrap();
 
     // Try to unstake more than staked
-    let result = client.try_unstake_lp_tokens(&user, &2000u64);
+    let result = client.try_unstake_lp_tokens(&user, &token_addr, &2000u64);
     assert_eq!(result.err(), Some(Ok(LendingError::InsufficientStake)));
 }
 
@@ -1808,8 +1846,8 @@ fn test_claim_rewards() {
     mint_to(&env, &token_addr, &user, 10_000);
 
     // Deposit and stake
-    client.deposit(&user, &5000u64);
-    client.stake_lp_tokens(&user, &1000u64);
+    client.deposit(&user, &token_addr, &5000u64).unwrap();
+    client.stake_lp_tokens(&user, &token_addr, &1000u64).unwrap();
 
     // Jump forward in time to accumulate rewards
     let time_jump = 10_000u64;
@@ -1817,16 +1855,16 @@ fn test_claim_rewards() {
         .set_timestamp(env.ledger().timestamp() + time_jump);
 
     // Check pending rewards
-    let pending_before = client.get_pending_rewards(&user);
+    let pending_before = client.get_pending_rewards(&user, &token_addr);
     assert!(pending_before > 0);
 
     // Claim rewards
-    let claimed = client.claim_rewards(&user);
+    let claimed = client.claim_rewards(&user, &token_addr).unwrap();
     assert!(claimed > 0);
     assert_eq!(claimed, pending_before);
 
     // Verify rewards are reset after claiming
-    assert_eq!(client.get_pending_rewards(&user), 0);
+    assert_eq!(client.get_pending_rewards(&user, &token_addr), 0);
 }
 
 #[test]
@@ -1839,11 +1877,11 @@ fn test_claim_rewards_no_rewards() {
     mint_to(&env, &token_addr, &user, 10_000);
 
     // Deposit and stake
-    client.deposit(&user, &5000u64);
-    client.stake_lp_tokens(&user, &1000u64);
+    client.deposit(&user, &token_addr, &5000u64).unwrap();
+    client.stake_lp_tokens(&user, &token_addr, &1000u64).unwrap();
 
     // Try to claim immediately (no time passed)
-    let result = client.try_claim_rewards(&user);
+    let result = client.try_claim_rewards(&user, &token_addr);
     assert_eq!(result.err(), Some(Ok(LendingError::NoRewardsToClaim)));
 }
 
@@ -1854,19 +1892,19 @@ fn test_set_reward_rate() {
     let (client, token_addr, collateral_addr, admin) = setup(&env);
 
     // Check default reward rate
-    let default_rate = client.get_reward_rate();
+    let default_rate = client.get_reward_rate(&token_addr);
     assert_eq!(default_rate, 1_000_000_000); // DEFAULT_REWARD_RATE
 
     // Set new reward rate as admin
     let new_rate = 2000u64;
-    client.set_reward_rate(&admin, &new_rate);
+    client.set_reward_rate(&admin, &token_addr, &new_rate).unwrap();
 
     // Verify rate was updated
-    assert_eq!(client.get_reward_rate(), new_rate);
+    assert_eq!(client.get_reward_rate(&token_addr), new_rate);
 
     // Try to set as non-admin (should fail)
     let user = Address::generate(&env);
-    let result = client.try_set_reward_rate(&user, &3000u64);
+    let result = client.try_set_reward_rate(&user, &token_addr, &3000u64);
     assert_eq!(result.err(), Some(Ok(LendingError::NotAdmin)));
 }
 
@@ -1877,7 +1915,7 @@ fn test_set_reward_rate_invalid_rate() {
     let (client, token_addr, collateral_addr, admin) = setup(&env);
 
     // Try to set zero reward rate
-    let result = client.try_set_reward_rate(&admin, &0u64);
+    let result = client.try_set_reward_rate(&admin, &token_addr, &0u64);
     assert_eq!(result.err(), Some(Ok(LendingError::InvalidRewardRate)));
 }
 
@@ -1893,23 +1931,23 @@ fn test_multiple_users_staking() {
     mint_to(&env, &token_addr, &user2, 10_000);
 
     // Both users deposit and stake
-    client.deposit(&user1, &5000u64);
-    client.deposit(&user2, &5000u64);
-    client.stake_lp_tokens(&user1, &1000u64);
-    client.stake_lp_tokens(&user2, &2000u64);
+    client.deposit(&user1, &token_addr, &5000u64).unwrap();
+    client.deposit(&user2, &token_addr, &5000u64).unwrap();
+    client.stake_lp_tokens(&user1, &token_addr, &1000u64).unwrap();
+    client.stake_lp_tokens(&user2, &token_addr, &2000u64).unwrap();
 
     // Verify total staked
-    assert_eq!(client.get_total_staked(), 3000u64);
-    assert_eq!(client.get_staked_balance(&user1), 1000u64);
-    assert_eq!(client.get_staked_balance(&user2), 2000u64);
+    assert_eq!(client.get_total_staked(&token_addr), 3000u64);
+    assert_eq!(client.get_staked_balance(&user1, &token_addr), 1000u64);
+    assert_eq!(client.get_staked_balance(&user2, &token_addr), 2000u64);
 
     // Jump forward in time
     env.ledger()
         .set_timestamp(env.ledger().timestamp() + 10_000);
 
     // Check rewards (user2 should have more due to larger stake)
-    let rewards1 = client.get_pending_rewards(&user1);
-    let rewards2 = client.get_pending_rewards(&user2);
+    let rewards1 = client.get_pending_rewards(&user1, &token_addr);
+    let rewards2 = client.get_pending_rewards(&user2, &token_addr);
     assert!(rewards1 > 0);
     assert!(rewards2 > 0);
     assert!(rewards2 > rewards1); // user2 has 2x stake, should get 2x rewards
@@ -1925,19 +1963,19 @@ fn test_reward_calculation_accuracy() {
     mint_to(&env, &token_addr, &user, 10_000);
 
     // Deposit and stake known amount
-    client.deposit(&user, &5000u64);
+    client.deposit(&user, &token_addr, &5000u64).unwrap();
     let stake_amount = 1000u64;
-    client.stake_lp_tokens(&user, &stake_amount);
+    client.stake_lp_tokens(&user, &token_addr, &stake_amount).unwrap();
 
     // Set known reward rate and jump exact time
-    client.set_reward_rate(&admin, &1_000_000_000u64); // 1 reward per second per token
+    client.set_reward_rate(&admin, &token_addr, &1_000_000_000u64).unwrap(); // 1 reward per second per token
     let time_elapsed = 1000u64; // 1000 seconds
     env.ledger()
         .set_timestamp(env.ledger().timestamp() + time_elapsed);
 
     // Calculate expected rewards: rate * stake_amount * time_elapsed / precision
     let expected_rewards = (1_000_000_000u64 * stake_amount * time_elapsed) / 1_000_000_000;
-    let actual_rewards = client.get_pending_rewards(&user);
+    let actual_rewards = client.get_pending_rewards(&user, &token_addr);
 
     // Should be very close (accounting for precision)
     assert!(actual_rewards >= expected_rewards);
@@ -1954,22 +1992,22 @@ fn test_partial_unstake_preserves_rewards() {
     mint_to(&env, &token_addr, &user, 10_000);
 
     // Deposit and stake
-    client.deposit(&user, &5000u64);
-    client.stake_lp_tokens(&user, &1000u64);
+    client.deposit(&user, &token_addr, &5000u64).unwrap();
+    client.stake_lp_tokens(&user, &token_addr, &1000u64).unwrap();
 
     // Jump forward to accumulate rewards
     env.ledger()
         .set_timestamp(env.ledger().timestamp() + 10_000);
 
-    let rewards_before = client.get_pending_rewards(&user);
+    let rewards_before = client.get_pending_rewards(&user, &token_addr);
     assert!(rewards_before > 0);
 
     // Partial unstake
-    client.unstake_lp_tokens(&user, &500u64);
+    client.unstake_lp_tokens(&user, &token_addr, &500u64).unwrap();
 
     // Should still have remaining stake and rewards preserved
-    assert_eq!(client.get_staked_balance(&user), 500u64);
-    let rewards_after = client.get_pending_rewards(&user);
+    assert_eq!(client.get_staked_balance(&user, &token_addr), 500u64);
+    let rewards_after = client.get_pending_rewards(&user, &token_addr);
     assert!(rewards_after >= rewards_before); // Rewards should not decrease
 }
 
@@ -1983,27 +2021,27 @@ fn test_full_unstake_resets_tracking() {
     mint_to(&env, &token_addr, &user, 10_000);
 
     // Deposit and stake
-    client.deposit(&user, &5000u64);
-    client.stake_lp_tokens(&user, &1000u64);
+    client.deposit(&user, &token_addr, &5000u64).unwrap();
+    client.stake_lp_tokens(&user, &token_addr, &1000u64).unwrap();
 
     // Jump forward to accumulate rewards
     env.ledger()
         .set_timestamp(env.ledger().timestamp() + 10_000);
 
     // Full unstake
-    client.unstake_lp_tokens(&user, &1000u64);
+    client.unstake_lp_tokens(&user, &token_addr, &1000u64).unwrap();
 
     // Should have no stake left
-    assert_eq!(client.get_staked_balance(&user), 0);
-    assert_eq!(client.get_total_staked(), 0);
+    assert_eq!(client.get_staked_balance(&user, &token_addr), 0);
+    assert_eq!(client.get_total_staked(&token_addr), 0);
 
     // Jump forward again and verify no new rewards accumulate
     env.ledger()
         .set_timestamp(env.ledger().timestamp() + 10_000);
-    let rewards_later = client.get_pending_rewards(&user);
+    let rewards_later = client.get_pending_rewards(&user, &token_addr);
 
     // Rewards should be the same (no new accumulation)
-    let rewards_immediately = client.get_pending_rewards(&user);
+    let rewards_immediately = client.get_pending_rewards(&user, &token_addr);
     assert_eq!(rewards_later, rewards_immediately);
 }
 
@@ -2016,13 +2054,104 @@ fn test_yield_farming_functions_exposed() {
     let user = Address::generate(&env);
 
     // Test that yield farming functions are properly exposed
-    assert_eq!(client.get_staked_balance(&user), 0);
-    assert_eq!(client.get_total_staked(), 0);
-    assert_eq!(client.get_pending_rewards(&user), 0);
-    assert_eq!(client.get_reward_rate(), 1_000_000_000); // DEFAULT_REWARD_RATE
+    assert_eq!(client.get_staked_balance(&user, &token_addr), 0);
+    assert_eq!(client.get_total_staked(&token_addr), 0);
+    assert_eq!(client.get_pending_rewards(&user, &token_addr), 0);
+    assert_eq!(client.get_reward_rate(&token_addr), 1_000_000_000); // DEFAULT_REWARD_RATE
 }
 
 // ─────────────────────────────────────────────────
+// Insurance Tests
+// ─────────────────────────────────────────────────
+
+#[test]
+fn test_insurance_premium_calculation() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let (client, token_addr, collateral_addr, admin) = setup(&env);
+
+    // Test premium calculation for various loan amounts
+    let premium_100 = client.get_insurance_premium(&100u64).unwrap();
+    // 100 * 2% = 2
+    assert_eq!(premium_100, 2u64);
+
+    let premium_1000 = client.get_insurance_premium(&1000u64).unwrap();
+    // 1000 * 2% = 20
+    assert_eq!(premium_1000, 20u64);
+
+    let premium_10000 = client.get_insurance_premium(&10000u64).unwrap();
+    // 10000 * 2% = 200
+    assert_eq!(premium_10000, 200u64);
+}
+
+#[test]
+fn test_set_insurance_premium_rate() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let (client, token_addr, collateral_addr, admin) = setup(&env);
+
+    // Admin can set premium rate
+    client.set_insurance_premium_rate(&admin, &500u32).unwrap(); // 5%
+
+    let premium = client.get_insurance_premium(&1000u64).unwrap();
+    // 1000 * 5% = 50
+    assert_eq!(premium, 50u64);
+}
+
+#[test]
+fn test_purchase_loan_insurance_success() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let (client, token_addr, collateral_addr, admin) = setup(&env);
+
+    let lender = Address::generate(&env);
+    let borrower = Address::generate(&env);
+
+    // Setup: lender deposits
+    mint_to(&env, &token_addr, &lender, 100_000);
+    client.deposit(&lender, &token_addr, &50_000u64).unwrap();
+
+    // Setup: borrower borrows with collateral
+    mint_to(&env, &token_addr, &borrower, 10_000);
+    mint_to(&env, &collateral_addr, &borrower, 50_000);
+
+    client.borrow(
+        &borrower,
+        &token_addr,
+        &5_000u64,
+        &collateral_addr,
+        &10_000u64,
+        &7_200u64, // 2 hours
+    ).unwrap();
+
+    // Borrower has funds for premium
+    mint_to(&env, &token_addr, &borrower, 1_000);
+
+    // Purchase insurance for loan 0
+    let premium = client.purchase_loan_insurance(&borrower, &0u64).unwrap();
+    // Premium should be 2% of 5000 = 100
+    assert_eq!(premium, 100u64);
+
+    // Verify insurance exists
+    assert_eq!(client.is_loan_insured(&0u64), true);
+
+    let coverage = client.get_insurance_coverage(&0u64);
+    assert_eq!(coverage, 5_000u64); // 100% coverage
+
+    let insurance = client.get_insurance_details(&0u64);
+    assert!(insurance.is_some());
+    let ins = insurance.unwrap();
+    assert_eq!(ins.loan_id, 0);
+    assert_eq!(ins.borrower, borrower);
+    assert_eq!(ins.coverage_amount, 5_000u64);
+    assert_eq!(ins.premium_paid, 100u64);
+}
+
+#[test]
+fn test_cannot_purchase_insurance_twice() {
+    // TODO: Implement test
+}
+
 // Interest Rate Model Tests (#489)
 // ─────────────────────────────────────────────────
 
@@ -2087,27 +2216,117 @@ fn test_get_borrow_rate_at_optimal() {
     env.mock_all_auths();
     let (client, token_addr, collateral_addr, admin) = setup(&env);
 
+    let lender = Address::generate(&env);
+    let borrower = Address::generate(&env);
+
+    // Setup: lender deposits and borrower borrows
+    mint_to(&env, &token_addr, &lender, 100_000);
+    client.deposit(&lender, &50_000u64);
+
+    mint_to(&env, &token_addr, &borrower, 10_000);
+    mint_to(&env, &collateral_addr, &borrower, 50_000);
+
+    client.borrow(
+        &borrower,
+        &token_addr,
+        &5_000u64,
+        &collateral_addr,
+        &10_000u64,
+        &7_200u64,
+    );
+
+    mint_to(&env, &token_addr, &borrower, 2_000);
+
+    // Purchase insurance first time
+    client.purchase_loan_insurance(&borrower, &0u64).unwrap();
+
+    // Try to purchase again - should fail
+    let result = client.try_purchase_loan_insurance(&borrower, &0u64);
+    assert!(result.is_err());
+}
+
+#[test]
+fn test_insurance_fund_tracking() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let (client, token_addr, collateral_addr, admin) = setup(&env);
+
+    let lender = Address::generate(&env);
+    let borrower = Address::generate(&env);
+
+    // Setup
+    mint_to(&env, &token_addr, &lender, 100_000);
+    client.deposit(&lender, &token_addr, &50_000u64).unwrap();
+
+    mint_to(&env, &token_addr, &borrower, 10_000);
+    mint_to(&env, &collateral_addr, &borrower, 50_000);
+
+    client.borrow(
+        &borrower,
+        &token_addr,
+        &5_000u64,
+        &collateral_addr,
+        &10_000u64,
+        &7_200u64,
+    ).unwrap();
+
+    mint_to(&env, &token_addr, &borrower, 1_000);
+
+    // Check initial fund state
+    let fund_before = client.get_insurance_fund_state();
+    assert_eq!(fund_before.total_premiums_collected, 0);
+    assert_eq!(fund_before.total_claims_paid, 0);
+    assert_eq!(fund_before.available_balance, 0);
+
+    // Purchase insurance
+    let premium = client.purchase_loan_insurance(&borrower, &0u64).unwrap();
+
+    // Check fund state after purchase
+    let fund_after = client.get_insurance_fund_state();
+    assert_eq!(fund_after.total_premiums_collected, premium);
+    assert_eq!(fund_after.available_balance, premium);
+    assert_eq!(fund_after.total_claims_paid, 0);
+}
+
+#[test]
+fn test_deposit_to_insurance_fund() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let (client, token_addr, collateral_addr, admin) = setup(&env);
+
+    mint_to(&env, &token_addr, &admin, 10_000);
+
+    // Deposit to insurance fund
+    client.deposit_to_insurance_fund(&admin, &5_000u64).unwrap();
+
+    let fund = client.get_insurance_fund_state();
+    assert_eq!(fund.available_balance, 5_000u64);
+}
+
+#[test]
+fn test_claim_insurance_after_default() {
     // Deposit 2000 (must exceed MINIMUM_LIQUIDITY=1000 for first deposit)
     let depositor = Address::generate(&env);
     mint_to(&env, &token_addr, &depositor, 2000);
-    client.deposit(&depositor, &2000u64);
+    client.deposit(&depositor, &token_addr, &2000u64).unwrap();
 
     // Borrow 1600 → 80% utilization (1600/2000 = 80%)
     let borrower = Address::generate(&env);
     mint_to(&env, &collateral_addr, &borrower, 3000);
     client.borrow(
         &borrower,
+        &token_addr,
         &1600u64,
         &collateral_addr,
         &3000u64,
         &31536000u64,
-    );
+    ).unwrap();
 
     // Configure model: base=200, optimal=80%, slope1=800, slope2=10000
-    client.set_rate_model(&admin, &200u32, &8000u32, &800u32, &10000u32, &1000u32);
+    client.set_rate_model(&admin, &200u32, &8000u32, &800u32, &10000u32, &1000u32).unwrap();
 
     // rate = base + (8000 / 8000) * slope1 = 200 + 800 = 1000
-    let borrow_rate = client.get_borrow_rate();
+    let borrow_rate = client.get_borrow_rate().unwrap();
     assert_eq!(borrow_rate, 1000u32);
 }
 
@@ -2118,10 +2337,10 @@ fn test_simulate_rate_below_optimal() {
     let (client, _token_addr, _collateral_addr, admin) = setup(&env);
 
     // base=200, optimal=8000, slope1=800, slope2=10000
-    client.set_rate_model(&admin, &200u32, &8000u32, &800u32, &10000u32, &1000u32);
+    client.set_rate_model(&admin, &200u32, &8000u32, &800u32, &10000u32, &1000u32).unwrap();
 
     // At 40% utilization: rate = 200 + (4000 / 8000) * 800 = 200 + 400 = 600
-    let rate = client.simulate_rate(&4000u32);
+    let rate = client.simulate_rate(&4000u32).unwrap();
     assert_eq!(rate, 600u32);
 }
 
@@ -2132,12 +2351,12 @@ fn test_simulate_rate_above_optimal() {
     let (client, _token_addr, _collateral_addr, admin) = setup(&env);
 
     // base=200, optimal=8000, slope1=800, slope2=10000
-    client.set_rate_model(&admin, &200u32, &8000u32, &800u32, &10000u32, &1000u32);
+    client.set_rate_model(&admin, &200u32, &8000u32, &800u32, &10000u32, &1000u32).unwrap();
 
     // At 90% utilization (above optimal 80%):
     // excess = 9000 - 8000 = 1000, max_excess = 10000 - 8000 = 2000
     // rate = 200 + 800 + (1000 / 2000) * 10000 = 200 + 800 + 5000 = 6000
-    let rate = client.simulate_rate(&9000u32);
+    let rate = client.simulate_rate(&9000u32).unwrap();
     assert_eq!(rate, 6000u32);
 }
 
@@ -2149,7 +2368,7 @@ fn test_simulate_rate_fallback_to_legacy() {
 
     // No rate model set — uses legacy linear model (base_rate=500, multiplier=2000)
     // At 50% utilization: rate = 500 + (5000 * 2000) / 10000 = 500 + 1000 = 1500
-    let rate = client.simulate_rate(&5000u32);
+    let rate = client.simulate_rate(&5000u32).unwrap();
     assert_eq!(rate, 1500u32);
 }
 
@@ -2159,28 +2378,118 @@ fn test_get_supply_rate() {
     env.mock_all_auths();
     let (client, token_addr, collateral_addr, admin) = setup(&env);
 
+    let lender = Address::generate(&env);
+    let borrower = Address::generate(&env);
+
+    // Setup
+    mint_to(&env, &token_addr, &lender, 100_000);
+    client.deposit(&lender, &token_addr, &50_000u64).unwrap();
+
+    mint_to(&env, &token_addr, &borrower, 10_000);
+    mint_to(&env, &collateral_addr, &borrower, 50_000);
+
+    let loan_amount = 5_000u64;
+    let loan_duration = 7_200u64; // 2 hours
+    let due_date = env.ledger().timestamp() + loan_duration;
+
+    client.borrow(
+        &borrower,
+        &token_addr,
+        &loan_amount,
+        &collateral_addr,
+        &10_000u64,
+        &loan_duration,
+    ).unwrap();
+
+    mint_to(&env, &token_addr, &borrower, 1_000);
+
+    // Purchase insurance
+    let premium = client.purchase_loan_insurance(&borrower, &0u64).unwrap();
+
+    // Fund the insurance pool for claims
+    mint_to(&env, &token_addr, &admin, 20_000);
+    client
+        .deposit_to_insurance_fund(&admin, &10_000u64)
+        .unwrap();
+
+    // Jump past due date
+    env.ledger().set_timestamp(due_date + 1);
+
+    // Claim insurance
+    let claim_amount = client.claim_insurance(&0u64).unwrap();
+    assert_eq!(claim_amount, loan_amount); // 100% coverage
+
+    // Verify insurance is marked as claimed
+    assert_eq!(client.is_loan_insured(&0u64), false);
+
+    // Verify fund was updated
+    let fund = client.get_insurance_fund_state();
+    assert_eq!(fund.total_claims_paid, claim_amount);
+    assert_eq!(fund.available_balance, 10_000u64 - claim_amount);
+}
+
+#[test]
+fn test_cannot_claim_expired_insurance() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let (client, token_addr, collateral_addr, admin) = setup(&env);
+
+    let lender = Address::generate(&env);
+    let borrower = Address::generate(&env);
+
+    // Setup
+    mint_to(&env, &token_addr, &lender, 100_000);
+    client.deposit(&lender, &token_addr, &50_000u64).unwrap();
+
+    mint_to(&env, &token_addr, &borrower, 10_000);
+    mint_to(&env, &collateral_addr, &borrower, 50_000);
+
+    let loan_amount = 5_000u64;
+    let loan_duration = 7_200u64;
+    let due_date = env.ledger().timestamp() + loan_duration;
+
+    client.borrow(
+        &borrower,
+        &token_addr,
+        &loan_amount,
+        &collateral_addr,
+        &10_000u64,
+        &loan_duration,
+    ).unwrap();
+
+    mint_to(&env, &token_addr, &borrower, 1_000);
+
+    // Purchase insurance
+    client.purchase_loan_insurance(&borrower, &0u64).unwrap();
+
+    // Jump past due date + some extra time
+    env.ledger().set_timestamp(due_date + 100_000);
+
+    // Try to claim - should fail because insurance expired
+    let result = client.try_claim_insurance(&0u64);
     // Deposit 2000 (must exceed MINIMUM_LIQUIDITY=1000 for first deposit)
     let depositor = Address::generate(&env);
     mint_to(&env, &token_addr, &depositor, 2000);
-    client.deposit(&depositor, &2000u64);
+    client.deposit(&depositor, &token_addr, &2000u64).unwrap();
 
     // Borrow 1000 → 50% utilization (1000/2000 = 50%)
     let borrower = Address::generate(&env);
     mint_to(&env, &collateral_addr, &borrower, 2000);
     client.borrow(
         &borrower,
+        &token_addr,
         &1000u64,
         &collateral_addr,
         &2000u64,
         &31536000u64,
-    );
+    ).unwrap();
 
     // Configure model: base=200, optimal=8000, slope1=800, slope2=10000, reserve=1000
-    client.set_rate_model(&admin, &200u32, &8000u32, &800u32, &10000u32, &1000u32);
+    client.set_rate_model(&admin, &200u32, &8000u32, &800u32, &10000u32, &1000u32).unwrap();
 
     // borrow_rate at 50% util = 200 + (5000/8000)*800 = 200 + 500 = 700
     // supply_rate = 700 * 5000 * (10000-1000) / 10000^2 = 700 * 5000 * 9000 / 100000000 = 315
-    let supply_rate = client.get_supply_rate();
+    let supply_rate = client.get_supply_rate().unwrap();
     // Value may differ slightly due to integer arithmetic — just ensure it's non-zero and less than borrow_rate
     assert!(supply_rate > 0);
     assert!(supply_rate < 700u32);
@@ -2209,10 +2518,10 @@ fn test_admin_can_assign_and_revoke_roles() {
 
     assert!(!client.has_role(&user, &access_control::Role::Beneficiary));
 
-    client.assign_role(&admin, &user, &access_control::Role::Beneficiary);
+    client.assign_role(&admin, &user, &access_control::Role::Beneficiary).unwrap();
     assert!(client.has_role(&user, &access_control::Role::Beneficiary));
 
-    client.revoke_role(&admin, &user, &access_control::Role::Beneficiary);
+    client.revoke_role(&admin, &user, &access_control::Role::Beneficiary).unwrap();
     assert!(!client.has_role(&user, &access_control::Role::Beneficiary));
 }
 
@@ -2225,6 +2534,152 @@ fn test_non_admin_cannot_assign_roles() {
     let target = Address::generate(&env);
 
     let result = client.try_assign_role(&non_admin, &target, &access_control::Role::Admin);
+    assert!(result.is_err());
+}
+
+#[test]
+fn test_cancel_insurance_with_refund() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let (client, token_addr, collateral_addr, admin) = setup(&env);
+
+    let lender = Address::generate(&env);
+    let borrower = Address::generate(&env);
+
+    // Setup
+    mint_to(&env, &token_addr, &lender, 100_000);
+    client.deposit(&lender, &token_addr, &50_000u64).unwrap();
+
+    mint_to(&env, &token_addr, &borrower, 10_000);
+    mint_to(&env, &collateral_addr, &borrower, 50_000);
+
+    let loan_amount = 5_000u64;
+    let loan_duration = 7_200u64;
+    let due_date = env.ledger().timestamp() + loan_duration;
+
+    client.borrow(
+        &borrower,
+        &token_addr,
+        &loan_amount,
+        &collateral_addr,
+        &10_000u64,
+        &loan_duration,
+    ).unwrap();
+
+    mint_to(&env, &token_addr, &borrower, 1_000);
+
+    // Purchase insurance
+    let premium = client.purchase_loan_insurance(&borrower, &0u64).unwrap();
+
+    let fund_after_purchase = client.get_insurance_fund_state();
+    let initial_balance = fund_after_purchase.available_balance;
+
+    // Cancel insurance halfway through the duration
+    let half_duration = loan_duration / 2;
+    env.ledger()
+        .set_timestamp(env.ledger().timestamp() + half_duration);
+
+    let refund = client.cancel_insurance(&borrower, &0u64).unwrap();
+
+    // Refund should be approximately half the premium (pro-rata)
+    assert!(refund > 0);
+    assert!(refund < premium);
+
+    // Verify insurance is removed
+    assert_eq!(client.is_loan_insured(&0u64), false);
+
+    // Verify fund was updated
+    let fund_after_cancel = client.get_insurance_fund_state();
+    assert_eq!(
+        fund_after_cancel.available_balance,
+        initial_balance - refund
+    );
+}
+
+#[test]
+fn test_cancel_insurance_no_refund_after_expiry() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let (client, token_addr, collateral_addr, admin) = setup(&env);
+
+    let lender = Address::generate(&env);
+    let borrower = Address::generate(&env);
+
+    // Setup
+    mint_to(&env, &token_addr, &lender, 100_000);
+    client.deposit(&lender, &token_addr, &50_000u64).unwrap();
+
+    mint_to(&env, &token_addr, &borrower, 10_000);
+    mint_to(&env, &collateral_addr, &borrower, 50_000);
+
+    let loan_amount = 5_000u64;
+    let loan_duration = 7_200u64;
+    let due_date = env.ledger().timestamp() + loan_duration;
+
+    client.borrow(
+        &borrower,
+        &token_addr,
+        &loan_amount,
+        &collateral_addr,
+        &10_000u64,
+        &loan_duration,
+    ).unwrap();
+
+    mint_to(&env, &token_addr, &borrower, 1_000);
+
+    // Purchase insurance
+    client.purchase_loan_insurance(&borrower, &0u64).unwrap();
+
+    let fund_after_purchase = client.get_insurance_fund_state();
+    let initial_balance = fund_after_purchase.available_balance;
+
+    // Jump past expiry
+    env.ledger().set_timestamp(due_date + 1);
+
+    // Cancel insurance after expiry
+    let refund = client.cancel_insurance(&borrower, &0u64).unwrap();
+
+    // No refund after expiry
+    assert_eq!(refund, 0);
+
+    // Fund balance should remain the same
+    let fund_after_cancel = client.get_insurance_fund_state();
+    assert_eq!(fund_after_cancel.available_balance, initial_balance);
+}
+
+#[test]
+fn test_unauthorized_cancel_insurance() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let (client, token_addr, collateral_addr, admin) = setup(&env);
+
+    let lender = Address::generate(&env);
+    let borrower = Address::generate(&env);
+    let unauthorized_user = Address::generate(&env);
+
+    // Setup
+    mint_to(&env, &token_addr, &lender, 100_000);
+    client.deposit(&lender, &token_addr, &50_000u64).unwrap();
+
+    mint_to(&env, &token_addr, &borrower, 10_000);
+    mint_to(&env, &collateral_addr, &borrower, 50_000);
+
+    client.borrow(
+        &borrower,
+        &token_addr,
+        &5_000u64,
+        &collateral_addr,
+        &10_000u64,
+        &7_200u64,
+    ).unwrap();
+
+    mint_to(&env, &token_addr, &borrower, 1_000);
+
+    // Purchase insurance
+    client.purchase_loan_insurance(&borrower, &0u64).unwrap();
+
+    // Try to cancel as unauthorized user
+    let result = client.try_cancel_insurance(&unauthorized_user, &0u64);
     assert!(result.is_err());
 }
 
@@ -2258,11 +2713,99 @@ fn test_pause_blocks_deposit() {
     let env = Env::default();
     env.mock_all_auths();
     let (client, token_addr, _collateral_addr, admin) = setup(&env);
-    client.pause(&admin);
+    client.pause(&admin).unwrap();
     let depositor = Address::generate(&env);
     mint_to(&env, &token_addr, &depositor, 1000);
-    let result = client.try_deposit(&depositor, &500u64);
+    let result = client.try_deposit(&depositor, &token_addr, &500u64);
     assert!(result.is_err());
+}
+
+#[test]
+fn test_withdraw_from_insurance_fund() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let (client, token_addr, collateral_addr, admin) = setup(&env);
+
+    mint_to(&env, &token_addr, &admin, 10_000);
+
+    // Deposit to insurance fund
+    client.deposit_to_insurance_fund(&admin, &5_000u64).unwrap();
+
+    let fund_before = client.get_insurance_fund_state();
+    assert_eq!(fund_before.available_balance, 5_000u64);
+
+    // Withdraw from insurance fund
+    client
+        .withdraw_from_insurance_fund(&admin, &2_000u64)
+        .unwrap();
+
+    let fund_after = client.get_insurance_fund_state();
+    assert_eq!(fund_after.available_balance, 3_000u64);
+}
+
+#[test]
+fn test_insurance_lifecycle_complete() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let (client, token_addr, collateral_addr, admin) = setup(&env);
+
+    let lender = Address::generate(&env);
+    let borrower = Address::generate(&env);
+
+    // Step 1: Lender deposits
+    mint_to(&env, &token_addr, &lender, 100_000);
+    client.deposit(&lender, &token_addr, &50_000u64).unwrap();
+
+    // Step 2: Borrower borrows
+    mint_to(&env, &token_addr, &borrower, 10_000);
+    mint_to(&env, &collateral_addr, &borrower, 50_000);
+
+    let loan_amount = 5_000u64;
+    let loan_duration = 7_200u64;
+
+    client.borrow(
+        &borrower,
+        &token_addr,
+        &loan_amount,
+        &collateral_addr,
+        &10_000u64,
+        &loan_duration,
+    ).unwrap();
+
+    // Step 3: Borrower purchases insurance
+    mint_to(&env, &token_addr, &borrower, 1_000);
+    let premium = client.purchase_loan_insurance(&borrower, &0u64).unwrap();
+
+    assert_eq!(client.is_loan_insured(&0u64), true);
+
+    // Step 4: Fund insurance for potential claims
+    mint_to(&env, &token_addr, &admin, 20_000);
+    client
+        .deposit_to_insurance_fund(&admin, &10_000u64)
+        .unwrap();
+
+    // Step 5: Verify fund state
+    let fund = client.get_insurance_fund_state();
+    assert_eq!(fund.total_premiums_collected, premium);
+    assert_eq!(fund.available_balance, 10_000u64 + premium);
+
+    // Step 6: Loan defaults (jump past due date)
+    env.ledger()
+        .set_timestamp(env.ledger().timestamp() + loan_duration + 1);
+
+    // Step 7: Claim insurance
+    let claim_amount = client.claim_insurance(&0u64).unwrap();
+    assert_eq!(claim_amount, loan_amount);
+
+    // Step 8: Verify final state
+    assert_eq!(client.is_loan_insured(&0u64), false);
+
+    let final_fund = client.get_insurance_fund_state();
+    assert_eq!(final_fund.total_claims_paid, claim_amount);
+    assert_eq!(
+        final_fund.available_balance,
+        10_000u64 + premium - claim_amount
+    );
 }
 
 #[test]
@@ -2270,11 +2813,11 @@ fn test_unpause_restores_deposit() {
     let env = Env::default();
     env.mock_all_auths();
     let (client, token_addr, _collateral_addr, admin) = setup(&env);
-    client.pause(&admin);
-    client.unpause(&admin);
+    client.pause(&admin).unwrap();
+    client.unpause(&admin).unwrap();
     let depositor = Address::generate(&env);
     mint_to(&env, &token_addr, &depositor, 2000);
-    let shares = client.deposit(&depositor, &2000u64);
+    let shares = client.deposit(&depositor, &token_addr, &2000u64).unwrap();
     assert!(shares > 0);
 }
 

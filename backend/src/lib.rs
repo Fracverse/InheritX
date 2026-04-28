@@ -32,6 +32,7 @@ pub mod message_access_audit;
 pub mod metrics;
 pub mod middleware;
 pub mod notifications;
+pub mod pagination;
 pub mod price_feed;
 pub mod price_feed_handlers;
 pub mod reputation;
@@ -44,7 +45,7 @@ pub mod service;
 pub mod session;
 pub mod stress_testing;
 pub mod telemetry;
-pub mod validation;
+pub mod webhook;
 pub mod will_audit;
 pub mod will_compliance;
 pub mod will_events;
@@ -73,4 +74,4 @@ pub use secure_messages::{
     LegacyMessageDeliveryService, MessageEncryptionService, MessageKeyService,
 };
 pub use stress_testing::StressTestingEngine;
-pub use yield_service::{DefaultOnChainYieldService, OnChainYieldService};
+pub use webhook::{event_types, WebhookService};

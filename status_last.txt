@@ -1,0 +1,9 @@
+On branch feature/inheritance-ownership-494
+Untracked files:
+  (use "git add <file>..." to include in what will be committed)
+	contracts/lending-contract/git_status_check_3.txt
+	git_diff_remote.txt
+	git_status_check_2.txt
+	status_last.txt
+
+nothing added to commit but untracked files present (use "git add" to track)

@@ -31,9 +31,12 @@ pub enum DataKey {
     Vote(Address, u32),
     ProposalVotes(u32),
     ControlledContracts,
-    // Proposal governance
-    Proposal(u32),
+    // Multi-sig
+    MultiSigConfig,
+    PendingTransaction(u32),
+    NextTxId,
     NextProposalId,
+    Proposal(u32),
     UserVoteChoice(Address, u32),
 }
 
@@ -97,6 +100,26 @@ pub struct ContractLinkedEvent {
 pub struct ContractExecutedEvent {
     pub contract: Address,
     pub func: Symbol,
+}
+
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct MultiSig {
+    pub signers: Vec<Address>,
+    pub threshold: u32,
+}
+
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct PendingTransaction {
+    pub id: u32,
+    pub proposer: Address,
+    pub target: Address,
+    pub function: Symbol,
+    pub args: Vec<soroban_sdk::Val>,
+    pub signatures: Vec<Address>,
+    pub created_at: u64,
+    pub executed: bool,
 }
 
 #[contracttype]
@@ -211,7 +234,26 @@ impl GovernanceContract {
             .instance()
             .set(&DataKey::LiquidationBonus, &liquidation_bonus);
         access_control::assign_role(&env, &admin, Role::Admin);
+
+        // Initialize multi-sig with single admin initially
+        let mut signers = Vec::new(&env);
+        signers.push_back(admin.clone());
+        let multi_sig = MultiSig {
+            signers,
+            threshold: 1,
+        };
+        env.storage()
+            .instance()
+            .set(&DataKey::MultiSigConfig, &multi_sig);
+
         Ok(())
+    }
+
+    pub fn get_admin(env: Env) -> Address {
+        env.storage()
+            .instance()
+            .get(&DataKey::Admin)
+            .expect("Not initialized")
     }
 
     /// Assign a role to an address. Admin-only.
@@ -300,6 +342,55 @@ impl GovernanceContract {
         Ok(())
     }
 
+    // Multi-sig versions of critical functions
+    pub fn propose_update_interest_rate(
+        env: Env,
+        proposer: Address,
+        new_rate: u32,
+    ) -> Result<u32, GovernanceError> {
+        let mut args = Vec::new(&env);
+        args.push_back(new_rate.into_val(&env));
+        Self::propose_transaction(
+            env.clone(),
+            proposer,
+            env.current_contract_address(),
+            Symbol::new(&env, "update_interest_rate"),
+            args,
+        )
+    }
+
+    pub fn propose_update_collateral_ratio(
+        env: Env,
+        proposer: Address,
+        new_ratio: u32,
+    ) -> Result<u32, GovernanceError> {
+        let mut args = Vec::new(&env);
+        args.push_back(new_ratio.into_val(&env));
+        Self::propose_transaction(
+            env.clone(),
+            proposer,
+            env.current_contract_address(),
+            Symbol::new(&env, "update_collateral_ratio"),
+            args,
+        )
+    }
+
+    pub fn propose_update_liquidation_bonus(
+        env: Env,
+        proposer: Address,
+        new_bonus: u32,
+    ) -> Result<u32, GovernanceError> {
+        let mut args = Vec::new(&env);
+        args.push_back(new_bonus.into_val(&env));
+        Self::propose_transaction(
+            env.clone(),
+            proposer,
+            env.current_contract_address(),
+            Symbol::new(&env, "update_liquidation_bonus"),
+            args,
+        )
+    }
+
     pub fn get_interest_rate(env: Env) -> u32 {
         env.storage()
             .instance()
@@ -321,11 +412,138 @@ impl GovernanceContract {
             .unwrap_or(0)
     }
 
-    pub fn get_admin(env: Env) -> Address {
+    pub fn get_multi_sig_config(env: Env) -> MultiSig {
         env.storage()
             .instance()
-            .get(&DataKey::Admin)
-            .expect("Not initialized")
+            .get(&DataKey::MultiSigConfig)
+            .expect("Multi-sig not initialized")
+    }
+
+    pub fn update_multi_sig_config(
+        env: Env,
+        admin: Address,
+        signers: Vec<Address>,
+        threshold: u32,
+    ) -> Result<(), GovernanceError> {
+        admin.require_auth();
+        Self::check_admin(&env)?;
+
+        if signers.is_empty() || threshold == 0 || threshold > signers.len() {
+            return Err(GovernanceError::Unauthorized);
+        }
+
+        let multi_sig = MultiSig { signers, threshold };
+        env.storage()
+            .instance()
+            .set(&DataKey::MultiSigConfig, &multi_sig);
+        Ok(())
+    }
+
+    pub fn propose_transaction(
+        env: Env,
+        proposer: Address,
+        target: Address,
+        function: Symbol,
+        args: Vec<soroban_sdk::Val>,
+    ) -> Result<u32, GovernanceError> {
+        proposer.require_auth();
+        Self::require_not_paused(&env)?;
+
+        let tx_id: u32 = env
+            .storage()
+            .instance()
+            .get(&DataKey::NextTxId)
+            .unwrap_or(1u32);
+
+        let pending_tx = PendingTransaction {
+            id: tx_id,
+            proposer: proposer.clone(),
+            target,
+            function,
+            args,
+            signatures: Vec::new(&env),
+            created_at: env.ledger().timestamp(),
+            executed: false,
+        };
+
+        env.storage()
+            .instance()
+            .set(&DataKey::PendingTransaction(tx_id), &pending_tx);
+        env.storage()
+            .instance()
+            .set(&DataKey::NextTxId, &(tx_id + 1));
+
+        Ok(tx_id)
+    }
+
+    pub fn sign_transaction(env: Env, signer: Address, tx_id: u32) -> Result<(), GovernanceError> {
+        signer.require_auth();
+        Self::require_not_paused(&env)?;
+
+        let multi_sig = Self::get_multi_sig_config(env.clone());
+        if !multi_sig.signers.contains(&signer) {
+            return Err(GovernanceError::Unauthorized);
+        }
+
+        let mut pending_tx: PendingTransaction = env
+            .storage()
+            .instance()
+            .get(&DataKey::PendingTransaction(tx_id))
+            .ok_or(GovernanceError::ProposalNotFound)?;
+
+        if pending_tx.executed {
+            return Err(GovernanceError::ProposalAlreadyExecuted);
+        }
+
+        if !pending_tx.signatures.contains(&signer) {
+            pending_tx.signatures.push_back(signer);
+            env.storage()
+                .instance()
+                .set(&DataKey::PendingTransaction(tx_id), &pending_tx);
+        }
+
+        Ok(())
+    }
+
+    pub fn execute_transaction(
+        env: Env,
+        executor: Address,
+        tx_id: u32,
+    ) -> Result<soroban_sdk::Val, GovernanceError> {
+        executor.require_auth();
+        access_control::reentrancy_enter(&env, GovernanceError::ReentrantCall)?;
+        Self::require_not_paused(&env)?;
+
+        let mut pending_tx: PendingTransaction = env
+            .storage()
+            .instance()
+            .get(&DataKey::PendingTransaction(tx_id))
+            .ok_or(GovernanceError::ProposalNotFound)?;
+
+        if pending_tx.executed {
+            return Err(GovernanceError::ProposalAlreadyExecuted);
+        }
+
+        let multi_sig = Self::get_multi_sig_config(env.clone());
+        if pending_tx.signatures.len() < multi_sig.threshold {
+            return Err(GovernanceError::QuorumNotMet);
+        }
+
+        pending_tx.executed = true;
+        env.storage()
+            .instance()
+            .set(&DataKey::PendingTransaction(tx_id), &pending_tx);
+
+        let result = env.invoke_contract(&pending_tx.target, &pending_tx.function, pending_tx.args);
+
+        access_control::reentrancy_exit(&env);
+        Ok(result)
+    }
+
+    pub fn get_pending_transaction(env: Env, tx_id: u32) -> Option<PendingTransaction> {
+        env.storage()
+            .instance()
+            .get(&DataKey::PendingTransaction(tx_id))
     }
 
     fn check_admin(env: &Env) -> Result<(), GovernanceError> {
