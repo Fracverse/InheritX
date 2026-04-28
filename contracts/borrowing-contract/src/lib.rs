@@ -1,6 +1,7 @@
 #![no_std]
+use access_control::{self, Role};
 use soroban_sdk::{
-    contract, contracterror, contractimpl, contracttype, symbol_short, token, Address, Env,
+    contract, contracterror, contractimpl, contracttype, symbol_short, token, Address, Env, Vec,
 };
 
 mod test;
@@ -16,6 +17,7 @@ pub struct Loan {
     pub collateral_amount: i128,
     pub collateral_token: Address,
     pub is_active: bool,
+    pub extension_count: u32,
 }
 
 // ─────────────────────────────────────────────────
@@ -126,6 +128,73 @@ pub struct AuctionCancelledEvent {
 }
 
 #[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct LoanExtendedEvent {
+    pub loan_id: u64,
+    pub borrower: Address,
+    pub new_due_date: u64,
+    pub extension_fee: i128,
+    pub extension_count: u32,
+    pub timestamp: u64,
+}
+
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct LoanIncreasedEvent {
+    pub loan_id: u64,
+    pub borrower: Address,
+    pub additional_amount: i128,
+    pub new_principal: i128,
+    pub timestamp: u64,
+}
+
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct ContractInitializedEvent {
+    pub admin: Address,
+    pub collateral_ratio_bps: u32,
+    pub liquidation_threshold_bps: u32,
+    pub liquidation_bonus_bps: u32,
+    pub timestamp: u64,
+}
+
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct RoleUpdatedEvent {
+    pub admin: Address,
+    pub account: Address,
+    pub role: Role,
+    pub granted: bool,
+    pub timestamp: u64,
+}
+
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct CollateralWhitelistUpdatedEvent {
+    pub admin: Address,
+    pub token: Address,
+    pub whitelisted: bool,
+    pub timestamp: u64,
+}
+
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct GlobalPauseUpdatedEvent {
+    pub admin: Address,
+    pub paused: bool,
+    pub timestamp: u64,
+}
+
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct VaultPauseUpdatedEvent {
+    pub admin: Address,
+    pub token: Address,
+    pub paused: bool,
+    pub timestamp: u64,
+}
+
+#[contracttype]
 pub enum DataKey {
     Admin,
     CollateralRatio,
@@ -137,6 +206,8 @@ pub enum DataKey {
     LoanCounter,
     Loan(u64),
     Auction(u64),
+    MaxExtensions,
+    ExtensionFeeBps,
 }
 
 #[contracterror]
@@ -155,6 +226,9 @@ pub enum BorrowingError {
     AuctionAlreadyActive = 11,
     AuctionNotActive = 12,
     StillUnhealthy = 13,
+    ExtensionLimitReached = 14,
+    ReentrantCall = 15,
+    ContractPaused = 16,
 }
 
 #[contract]
@@ -183,7 +257,109 @@ impl BorrowingContract {
         env.storage()
             .instance()
             .set(&DataKey::LiquidationBonus, &liquidation_bonus_bps);
+        access_control::assign_role(&env, &admin, Role::Admin);
+        env.events().publish(
+            (symbol_short!("ADMIN"), symbol_short!("INIT")),
+            ContractInitializedEvent {
+                admin: admin.clone(),
+                collateral_ratio_bps,
+                liquidation_threshold_bps,
+                liquidation_bonus_bps,
+                timestamp: env.ledger().timestamp(),
+            },
+        );
         Ok(())
+    }
+
+    fn require_admin(env: &Env, admin: &Address) -> Result<(), BorrowingError> {
+        admin.require_auth();
+        access_control::require_role(env, admin, Role::Admin, BorrowingError::Unauthorized)
+    }
+
+    /// Assign a role to an address. Admin-only.
+    pub fn assign_role(
+        env: Env,
+        admin: Address,
+        address: Address,
+        role: Role,
+    ) -> Result<(), BorrowingError> {
+        Self::require_admin(&env, &admin)?;
+        access_control::assign_role(&env, &address, role.clone());
+        env.events().publish(
+            (symbol_short!("ADMIN"), symbol_short!("R_GRANT")),
+            RoleUpdatedEvent {
+                admin,
+                account: address,
+                role,
+                granted: true,
+                timestamp: env.ledger().timestamp(),
+            },
+        );
+        Ok(())
+    }
+
+    /// Revoke a role from an address. Admin-only.
+    pub fn revoke_role(
+        env: Env,
+        admin: Address,
+        address: Address,
+        role: Role,
+    ) -> Result<(), BorrowingError> {
+        Self::require_admin(&env, &admin)?;
+        access_control::revoke_role(&env, &address, role.clone());
+        env.events().publish(
+            (symbol_short!("ADMIN"), symbol_short!("R_REVOKE")),
+            RoleUpdatedEvent {
+                admin,
+                account: address,
+                role,
+                granted: false,
+                timestamp: env.ledger().timestamp(),
+            },
+        );
+        Ok(())
+    }
+
+    /// Check whether an address holds a given role.
+    pub fn has_role(env: Env, address: Address, role: Role) -> bool {
+        access_control::has_role(&env, &address, role)
+    }
+
+    /// Return all roles held by an address.
+    pub fn get_roles(env: Env, address: Address) -> Vec<Role> {
+        use access_control::AccessControlKey;
+        env.storage()
+            .persistent()
+            .get(&AccessControlKey::Roles(address))
+            .unwrap_or(Vec::new(&env))
+    }
+
+    pub fn pause(env: Env, admin: Address) -> Result<(), BorrowingError> {
+        Self::require_admin(&env, &admin)?;
+        access_control::pause_contract(&env);
+        env.events().publish(
+            (symbol_short!("ADMIN"), symbol_short!("PAUSE")),
+            env.ledger().timestamp(),
+        );
+        Ok(())
+    }
+
+    pub fn unpause(env: Env, admin: Address) -> Result<(), BorrowingError> {
+        Self::require_admin(&env, &admin)?;
+        access_control::unpause_contract(&env);
+        env.events().publish(
+            (symbol_short!("ADMIN"), symbol_short!("UNPAUSE")),
+            env.ledger().timestamp(),
+        );
+        Ok(())
+    }
+
+    pub fn is_paused(env: Env) -> bool {
+        access_control::is_contract_paused(&env)
+    }
+
+    fn require_not_paused(env: &Env) -> Result<(), BorrowingError> {
+        access_control::require_not_paused(env, BorrowingError::ContractPaused)
     }
 
     pub fn create_loan(
@@ -196,21 +372,40 @@ impl BorrowingContract {
         collateral_amount: i128,
     ) -> Result<u64, BorrowingError> {
         borrower.require_auth();
+        access_control::reentrancy_enter(&env, BorrowingError::ReentrantCall)?;
+        Self::require_not_paused(&env)?;
 
-        // Check collateral is whitelisted
-        if !Self::is_whitelisted(env.clone(), collateral_token.clone()) {
+        // Cache storage reads – each instance().get() costs CPU/memory instructions
+        let is_whitelisted: bool = env
+            .storage()
+            .persistent()
+            .get(&DataKey::WhitelistedCollateral(collateral_token.clone()))
+            .unwrap_or(false);
+        if !is_whitelisted {
             return Err(BorrowingError::CollateralNotWhitelisted);
         }
 
-        // Check if paused
-        if Self::is_global_paused(env.clone())
-            || Self::is_vault_paused(env.clone(), collateral_token.clone())
-        {
+        // Single read for global pause, single read for vault pause
+        let global_paused: bool = env
+            .storage()
+            .instance()
+            .get(&DataKey::GlobalPause)
+            .unwrap_or(false);
+        let vault_paused: bool = env
+            .storage()
+            .persistent()
+            .get(&DataKey::VaultPause(collateral_token.clone()))
+            .unwrap_or(false);
+        if global_paused || vault_paused {
             return Err(BorrowingError::Paused);
         }
 
-        // Check collateral ratio
-        let ratio = Self::get_collateral_ratio(env.clone());
+        // Single read for collateral ratio (avoids a second instance().get() call)
+        let ratio: u32 = env
+            .storage()
+            .instance()
+            .get(&DataKey::CollateralRatio)
+            .unwrap_or(15000);
         let required_collateral = (principal as u128)
             .checked_mul(ratio as u128)
             .and_then(|v| v.checked_div(10000))
@@ -239,6 +434,7 @@ impl BorrowingContract {
             collateral_amount,
             collateral_token: collateral_token.clone(),
             is_active: true,
+            extension_count: 0,
         };
 
         env.storage()
@@ -260,10 +456,13 @@ impl BorrowingContract {
             },
         );
 
+        access_control::reentrancy_exit(&env);
         Ok(loan_id)
     }
 
-    pub fn repay_loan(env: Env, loan_id: u64, amount: i128) {
+    pub fn repay_loan(env: Env, loan_id: u64, amount: i128) -> Result<(), BorrowingError> {
+        Self::require_not_paused(&env)?;
+        access_control::reentrancy_enter(&env, BorrowingError::ReentrantCall)?;
         let mut loan: Loan = env
             .storage()
             .persistent()
@@ -286,6 +485,13 @@ impl BorrowingContract {
             );
         }
 
+        // Invariant I-2: amount_repaid must not exceed principal (over-repayment guard)
+        // NOTE: this is a known open finding (F-1) – the excess is not refunded yet.
+        debug_assert!(
+            loan.amount_repaid <= loan.principal || !loan.is_active,
+            "invariant I-2 violated: amount_repaid > principal on active loan"
+        );
+
         // Emit repay event
         env.events().publish(
             (symbol_short!("LOAN"), symbol_short!("REPAY")),
@@ -307,6 +513,9 @@ impl BorrowingContract {
         env.storage()
             .persistent()
             .set(&DataKey::Loan(loan_id), &loan);
+
+        access_control::reentrancy_exit(&env);
+        Ok(())
     }
 
     pub fn get_loan(env: Env, loan_id: u64) -> Loan {
@@ -321,14 +530,19 @@ impl BorrowingContract {
         admin: Address,
         token: Address,
     ) -> Result<(), BorrowingError> {
-        let stored_admin: Address = env.storage().instance().get(&DataKey::Admin).unwrap();
-        if admin != stored_admin {
-            return Err(BorrowingError::Unauthorized);
-        }
-        admin.require_auth();
+        Self::require_admin(&env, &admin)?;
         env.storage()
             .persistent()
-            .set(&DataKey::WhitelistedCollateral(token), &true);
+            .set(&DataKey::WhitelistedCollateral(token.clone()), &true);
+        env.events().publish(
+            (symbol_short!("ADMIN"), symbol_short!("WHITELIST")),
+            CollateralWhitelistUpdatedEvent {
+                admin,
+                token,
+                whitelisted: true,
+                timestamp: env.ledger().timestamp(),
+            },
+        );
         Ok(())
     }
 
@@ -340,12 +554,16 @@ impl BorrowingContract {
     }
 
     pub fn set_global_pause(env: Env, admin: Address, paused: bool) -> Result<(), BorrowingError> {
-        let stored_admin: Address = env.storage().instance().get(&DataKey::Admin).unwrap();
-        if admin != stored_admin {
-            return Err(BorrowingError::Unauthorized);
-        }
-        admin.require_auth();
+        Self::require_admin(&env, &admin)?;
         env.storage().instance().set(&DataKey::GlobalPause, &paused);
+        env.events().publish(
+            (symbol_short!("ADMIN"), symbol_short!("GPAUSE")),
+            GlobalPauseUpdatedEvent {
+                admin,
+                paused,
+                timestamp: env.ledger().timestamp(),
+            },
+        );
         Ok(())
     }
 
@@ -362,14 +580,19 @@ impl BorrowingContract {
         token: Address,
         paused: bool,
     ) -> Result<(), BorrowingError> {
-        let stored_admin: Address = env.storage().instance().get(&DataKey::Admin).unwrap();
-        if admin != stored_admin {
-            return Err(BorrowingError::Unauthorized);
-        }
-        admin.require_auth();
+        Self::require_admin(&env, &admin)?;
         env.storage()
             .persistent()
-            .set(&DataKey::VaultPause(token), &paused);
+            .set(&DataKey::VaultPause(token.clone()), &paused);
+        env.events().publish(
+            (symbol_short!("ADMIN"), symbol_short!("VPAUSE")),
+            VaultPauseUpdatedEvent {
+                admin,
+                token,
+                paused,
+                timestamp: env.ledger().timestamp(),
+            },
+        );
         Ok(())
     }
 
@@ -394,6 +617,8 @@ impl BorrowingContract {
         liquidate_amount: i128,
     ) -> Result<(), BorrowingError> {
         liquidator.require_auth();
+        access_control::reentrancy_enter(&env, BorrowingError::ReentrantCall)?;
+        Self::require_not_paused(&env)?;
 
         let mut loan: Loan = env
             .storage()
@@ -411,7 +636,7 @@ impl BorrowingContract {
             return Err(BorrowingError::InvalidAmount);
         }
 
-        // Calculate health factor
+        // Calculate health factor inline – avoids a redundant storage read from get_health_factor
         let health_factor = if debt == 0 {
             10000
         } else {
@@ -421,7 +646,17 @@ impl BorrowingContract {
                 .unwrap_or(0) as u32
         };
 
-        let liquidation_threshold = Self::get_liquidation_threshold(&env);
+        // Cache both threshold and bonus in a single pass over instance storage
+        let liquidation_threshold: u32 = env
+            .storage()
+            .instance()
+            .get(&DataKey::LiquidationThreshold)
+            .unwrap_or(12000);
+        let liquidation_bonus: u32 = env
+            .storage()
+            .instance()
+            .get(&DataKey::LiquidationBonus)
+            .unwrap_or(500);
 
         // Check if loan is unhealthy (health factor below threshold)
         if health_factor >= liquidation_threshold {
@@ -429,7 +664,6 @@ impl BorrowingContract {
         }
 
         // Calculate liquidation amounts based on liquidate_amount
-        let liquidation_bonus = Self::get_liquidation_bonus(&env);
         let bonus_amount = (liquidate_amount as u128)
             .checked_mul(liquidation_bonus as u128)
             .and_then(|v| v.checked_div(10000))
@@ -456,6 +690,17 @@ impl BorrowingContract {
             loan.is_active = false;
         }
 
+        // Invariant I-3: liquidation only proceeds when health factor < threshold
+        debug_assert!(
+            health_factor < liquidation_threshold,
+            "invariant I-3 violated: liquidated a healthy loan"
+        );
+        // Invariant I-1: collateral_amount must not go negative
+        debug_assert!(
+            loan.collateral_amount >= 0,
+            "invariant I-1 violated: collateral_amount underflow"
+        );
+
         env.storage()
             .persistent()
             .set(&DataKey::Loan(loan_id), &loan);
@@ -474,6 +719,7 @@ impl BorrowingContract {
             },
         );
 
+        access_control::reentrancy_exit(&env);
         Ok(())
     }
 
@@ -504,15 +750,33 @@ impl BorrowingContract {
         initial_discount_bps: u32,
         max_discount_bps: u32,
     ) -> Result<(), BorrowingError> {
-        let loan = Self::get_loan(env.clone(), loan_id);
+        // Single storage read for the loan – reuse it instead of calling get_loan + get_health_factor
+        let loan: Loan = env
+            .storage()
+            .persistent()
+            .get(&DataKey::Loan(loan_id))
+            .ok_or(BorrowingError::LoanNotFound)?;
 
         let debt = loan.principal - loan.amount_repaid;
         if debt <= 0 || !loan.is_active {
             return Err(BorrowingError::LoanNotActive);
         }
 
-        let health_factor = Self::get_health_factor(env.clone(), loan_id)?;
-        let liquidation_threshold = Self::get_liquidation_threshold(&env);
+        // Compute health factor inline (avoids second storage read via get_health_factor)
+        let health_factor = if debt == 0 {
+            10000u32
+        } else {
+            (loan.collateral_amount as u128)
+                .checked_mul(10000)
+                .and_then(|v| v.checked_div(debt as u128))
+                .unwrap_or(0) as u32
+        };
+
+        let liquidation_threshold: u32 = env
+            .storage()
+            .instance()
+            .get(&DataKey::LiquidationThreshold)
+            .unwrap_or(12000);
         if health_factor >= liquidation_threshold {
             return Err(BorrowingError::LoanHealthy);
         }
@@ -592,6 +856,8 @@ impl BorrowingContract {
         bid_amount: i128,
     ) -> Result<(), BorrowingError> {
         bidder.require_auth();
+        access_control::reentrancy_enter(&env, BorrowingError::ReentrantCall)?;
+        Self::require_not_paused(&env)?;
 
         let mut auction: LiquidationAuction = env
             .storage()
@@ -603,7 +869,12 @@ impl BorrowingContract {
             return Err(BorrowingError::AuctionNotActive);
         }
 
-        let loan = Self::get_loan(env.clone(), loan_id);
+        // Single storage read for the loan (avoids calling get_loan which re-reads)
+        let loan: Loan = env
+            .storage()
+            .persistent()
+            .get(&DataKey::Loan(loan_id))
+            .ok_or(BorrowingError::LoanNotFound)?;
         let debt = loan.principal - loan.amount_repaid;
 
         if bid_amount <= 0 || bid_amount > debt {
@@ -614,7 +885,23 @@ impl BorrowingContract {
             return Err(BorrowingError::AuctionAlreadyActive);
         }
 
-        let current_discount = Self::get_liquidation_discount(env.clone(), loan_id)?;
+        // Compute discount inline from already-loaded auction data (avoids re-reading auction)
+        let current_discount = {
+            let current_time = env.ledger().timestamp();
+            let elapsed = current_time.saturating_sub(auction.start_time);
+            if elapsed >= auction.duration {
+                auction.max_discount_bps
+            } else {
+                let discount_diff = auction
+                    .max_discount_bps
+                    .saturating_sub(auction.initial_discount_bps);
+                let current_addition = (discount_diff as u64)
+                    .checked_mul(elapsed)
+                    .and_then(|v| v.checked_div(auction.duration))
+                    .unwrap_or(0) as u32;
+                auction.initial_discount_bps + current_addition
+            }
+        };
 
         auction.winning_bidder = Some(bidder.clone());
         auction.winning_bid_amount = bid_amount;
@@ -634,10 +921,14 @@ impl BorrowingContract {
             },
         );
 
+        access_control::reentrancy_exit(&env);
         Ok(())
     }
 
     pub fn execute_auction(env: Env, loan_id: u64) -> Result<(), BorrowingError> {
+        access_control::reentrancy_enter(&env, BorrowingError::ReentrantCall)?;
+        Self::require_not_paused(&env)?;
+
         let mut auction: LiquidationAuction = env
             .storage()
             .persistent()
@@ -701,6 +992,7 @@ impl BorrowingContract {
             },
         );
 
+        access_control::reentrancy_exit(&env);
         Ok(())
     }
 
@@ -725,8 +1017,26 @@ impl BorrowingContract {
             return Err(BorrowingError::AuctionNotActive);
         }
 
-        let health_factor = Self::get_health_factor(env.clone(), loan_id)?;
-        let liquidation_threshold = Self::get_liquidation_threshold(&env);
+        // Compute health factor inline – avoids a second persistent storage read via get_health_factor
+        let loan: Loan = env
+            .storage()
+            .persistent()
+            .get(&DataKey::Loan(loan_id))
+            .ok_or(BorrowingError::LoanNotFound)?;
+        let debt = loan.principal - loan.amount_repaid;
+        let health_factor = if debt == 0 {
+            10000u32
+        } else {
+            (loan.collateral_amount as u128)
+                .checked_mul(10000)
+                .and_then(|v| v.checked_div(debt as u128))
+                .unwrap_or(0) as u32
+        };
+        let liquidation_threshold: u32 = env
+            .storage()
+            .instance()
+            .get(&DataKey::LiquidationThreshold)
+            .unwrap_or(12000);
 
         if health_factor < liquidation_threshold {
             return Err(BorrowingError::StillUnhealthy);
@@ -745,29 +1055,210 @@ impl BorrowingContract {
         Ok(())
     }
 
-    fn get_liquidation_threshold(env: &Env) -> u32 {
-        env.storage()
+    /// Returns the extension fee for a loan (1% of remaining principal by default).
+    pub fn get_extension_fee(env: Env, loan_id: u64) -> Result<i128, BorrowingError> {
+        let loan: Loan = env
+            .storage()
+            .persistent()
+            .get(&DataKey::Loan(loan_id))
+            .ok_or(BorrowingError::LoanNotFound)?;
+
+        if !loan.is_active {
+            return Err(BorrowingError::LoanNotActive);
+        }
+
+        let fee_bps: u32 = env
+            .storage()
             .instance()
-            .get(&DataKey::LiquidationThreshold)
-            .unwrap_or(12000) // 120% default
+            .get(&DataKey::ExtensionFeeBps)
+            .unwrap_or(100); // 1% default
+
+        let remaining = loan.principal - loan.amount_repaid;
+        let fee = (remaining as u128)
+            .checked_mul(fee_bps as u128)
+            .and_then(|v| v.checked_div(10000))
+            .unwrap_or(0) as i128;
+
+        Ok(fee)
     }
 
-    fn get_liquidation_bonus(env: &Env) -> u32 {
-        env.storage()
+    /// Returns the maximum additional amount a borrower can take against existing collateral.
+    pub fn get_max_additional_borrow(env: Env, loan_id: u64) -> Result<i128, BorrowingError> {
+        let loan: Loan = env
+            .storage()
+            .persistent()
+            .get(&DataKey::Loan(loan_id))
+            .ok_or(BorrowingError::LoanNotFound)?;
+
+        if !loan.is_active {
+            return Err(BorrowingError::LoanNotActive);
+        }
+
+        let ratio = Self::get_collateral_ratio(env.clone());
+        // max_borrow = collateral * 10000 / ratio
+        let max_borrow = (loan.collateral_amount as u128)
+            .checked_mul(10000)
+            .and_then(|v| v.checked_div(ratio as u128))
+            .unwrap_or(0) as i128;
+
+        let current_debt = loan.principal - loan.amount_repaid;
+        let additional = max_borrow.saturating_sub(current_debt);
+
+        Ok(additional.max(0))
+    }
+
+    /// Extends the loan due date by `extension_days` seconds. Charges an extension fee.
+    /// Maximum 2 extensions per loan.
+    pub fn extend_loan(
+        env: Env,
+        loan_id: u64,
+        extension_seconds: u64,
+    ) -> Result<(), BorrowingError> {
+        access_control::reentrancy_enter(&env, BorrowingError::ReentrantCall)?;
+        Self::require_not_paused(&env)?;
+
+        let mut loan: Loan = env
+            .storage()
+            .persistent()
+            .get(&DataKey::Loan(loan_id))
+            .ok_or(BorrowingError::LoanNotFound)?;
+
+        loan.borrower.require_auth();
+
+        if !loan.is_active {
+            return Err(BorrowingError::LoanNotActive);
+        }
+
+        // Cache both instance values in one pass to avoid two separate reads
+        let max_extensions: u32 = env
+            .storage()
             .instance()
-            .get(&DataKey::LiquidationBonus)
-            .unwrap_or(500) // 5% default
+            .get(&DataKey::MaxExtensions)
+            .unwrap_or(2);
+        let fee_bps: u32 = env
+            .storage()
+            .instance()
+            .get(&DataKey::ExtensionFeeBps)
+            .unwrap_or(100);
+
+        if loan.extension_count >= max_extensions {
+            return Err(BorrowingError::ExtensionLimitReached);
+        }
+
+        let remaining = loan.principal - loan.amount_repaid;
+        let fee = (remaining as u128)
+            .checked_mul(fee_bps as u128)
+            .and_then(|v| v.checked_div(10000))
+            .unwrap_or(0) as i128;
+
+        if fee > 0 {
+            let token_client = token::Client::new(&env, &loan.collateral_token);
+            token_client.transfer(&loan.borrower, &env.current_contract_address(), &fee);
+        }
+
+        loan.due_date += extension_seconds;
+        loan.extension_count += 1;
+
+        let new_due_date = loan.due_date;
+        let extension_count = loan.extension_count;
+        let borrower = loan.borrower.clone();
+
+        env.storage()
+            .persistent()
+            .set(&DataKey::Loan(loan_id), &loan);
+
+        env.events().publish(
+            (symbol_short!("LOAN"), symbol_short!("EXTEND")),
+            LoanExtendedEvent {
+                loan_id,
+                borrower,
+                new_due_date,
+                extension_fee: fee,
+                extension_count,
+                timestamp: env.ledger().timestamp(),
+            },
+        );
+
+        access_control::reentrancy_exit(&env);
+        Ok(())
+    }
+
+    /// Increases the loan principal if the health factor allows it.
+    pub fn increase_loan_amount(
+        env: Env,
+        loan_id: u64,
+        additional_amount: i128,
+    ) -> Result<(), BorrowingError> {
+        access_control::reentrancy_enter(&env, BorrowingError::ReentrantCall)?;
+        Self::require_not_paused(&env)?;
+
+        let mut loan: Loan = env
+            .storage()
+            .persistent()
+            .get(&DataKey::Loan(loan_id))
+            .ok_or(BorrowingError::LoanNotFound)?;
+
+        loan.borrower.require_auth();
+
+        if !loan.is_active {
+            return Err(BorrowingError::LoanNotActive);
+        }
+
+        if additional_amount <= 0 {
+            return Err(BorrowingError::InvalidAmount);
+        }
+
+        // Compute max additional inline – avoids a second persistent storage read
+        let ratio: u32 = env
+            .storage()
+            .instance()
+            .get(&DataKey::CollateralRatio)
+            .unwrap_or(15000);
+        let max_borrow = (loan.collateral_amount as u128)
+            .checked_mul(10000)
+            .and_then(|v| v.checked_div(ratio as u128))
+            .unwrap_or(0) as i128;
+        let current_debt = loan.principal - loan.amount_repaid;
+        let max_additional = max_borrow.saturating_sub(current_debt).max(0);
+
+        if additional_amount > max_additional {
+            return Err(BorrowingError::InsufficientCollateral);
+        }
+
+        loan.principal += additional_amount;
+        let new_principal = loan.principal;
+        let borrower = loan.borrower.clone();
+
+        env.storage()
+            .persistent()
+            .set(&DataKey::Loan(loan_id), &loan);
+
+        env.events().publish(
+            (symbol_short!("LOAN"), symbol_short!("INCREASE")),
+            LoanIncreasedEvent {
+                loan_id,
+                borrower,
+                additional_amount,
+                new_principal,
+                timestamp: env.ledger().timestamp(),
+            },
+        );
+
+        access_control::reentrancy_exit(&env);
+        Ok(())
     }
 
     fn get_next_loan_id(env: &Env) -> u64 {
+        // Use instance storage for the counter – cheaper than persistent for a single
+        // frequently-updated scalar value that doesn't need long-term archival.
         let counter: u64 = env
             .storage()
-            .persistent()
+            .instance()
             .get(&DataKey::LoanCounter)
             .unwrap_or(0);
         let next_id = counter + 1;
         env.storage()
-            .persistent()
+            .instance()
             .set(&DataKey::LoanCounter, &next_id);
         next_id
     }

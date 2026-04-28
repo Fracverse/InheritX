@@ -1,4 +1,5 @@
 #![no_std]
+use access_control::{self, Role};
 use soroban_sdk::{
     contract, contracterror, contractimpl, contracttype, log, symbol_short, token, vec, Address,
     Env, IntoVal, InvokeError, Val, Vec,
@@ -18,6 +19,10 @@ const DEFAULT_LATE_FEE_RATE_BPS: u32 = 500; // 5% per day = 0.058% per second (a
 const REFINANCING_FEE_BPS: u32 = 50; // 0.5% refinancing fee
 const DEFAULT_REWARD_RATE: u64 = 1_000_000_000; // Default reward rate per second (1 reward per second with 9 decimals)
 const REWARD_PRECISION: u64 = 1_000_000_000; // 9 decimals for reward calculations
+
+// Insurance constants
+const DEFAULT_INSURANCE_PREMIUM_RATE_BPS: u32 = 200; // 2% premium of loan principal
+const INSURANCE_CLAIM_PAYBACK_BPS: u32 = 10000; // 100% coverage
 
 // ─────────────────────────────────────────────────
 // Data Types
@@ -81,6 +86,27 @@ pub struct LoanMetadata {
     pub due_date: u64,
 }
 
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct LoanInsurance {
+    pub loan_id: u64,
+    pub borrower: Address,
+    pub coverage_amount: u64,    // Coverage limit (typically 100% of loan principal)
+    pub premium_paid: u64,       // Premium amount paid upfront
+    pub premium_rate_bps: u32,   // Premium rate in basis points (e.g., 200 = 2%)
+    pub purchase_time: u64,      // Timestamp when insurance was purchased
+    pub expires_at: u64,         // Expiration timestamp (typically loan due date)
+    pub claimed: bool,           // Whether insurance has been claimed
+}
+
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct InsuranceFund {
+    pub total_premiums_collected: u64, // Total premiums accumulated
+    pub total_claims_paid: u64,        // Total claims paid out
+    pub available_balance: u64,        // Current available balance for claims
+}
+
 #[soroban_sdk::contractclient(name = "LoanNFTClient")]
 pub trait LoanNFTInterface {
     fn initialize(env: Env, admin: Address);
@@ -95,9 +121,21 @@ pub trait FlashLoanReceiverInterface {
     fn execute_operation(env: Env, amount: u64, fee: u64, initiator: Address);
 }
 
+#[soroban_sdk::contractclient(name = "InheritanceContractClient")]
+pub trait InheritanceContractInterface {
+    fn verify_plan_ownership(env: Env, plan_id: u64, user: Address) -> bool;
+}
+
 // ─────────────────────────────────────────────────
 // Events
 // ─────────────────────────────────────────────────
+
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct ContractLinkedEvent {
+    pub contract_type: soroban_sdk::Symbol,
+    pub address: Address,
+}
 
 #[contracttype]
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -308,6 +346,62 @@ pub struct RewardRateUpdatedEvent {
 }
 
 // ─────────────────────────────────────────────────
+// Insurance Events
+// ─────────────────────────────────────────────────
+
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct InsurancePurchasedEvent {
+    pub loan_id: u64,
+    pub borrower: Address,
+    pub coverage_amount: u64,
+    pub premium_paid: u64,
+    pub premium_rate_bps: u32,
+    pub expires_at: u64,
+    pub timestamp: u64,
+}
+
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct InsuranceClaimedEvent {
+    pub loan_id: u64,
+    pub borrower: Address,
+    pub claim_amount: u64,
+    pub coverage_amount: u64,
+    pub timestamp: u64,
+// Interest Rate Model
+// ─────────────────────────────────────────────────
+
+/// Two-slope interest rate model parameters.
+/// Before optimal utilization: rate = base_rate + (utilization / optimal_utilization) * slope1
+/// After optimal utilization:  rate = base_rate + slope1 + ((utilization - optimal) / (1 - optimal)) * slope2
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct RateModel {
+    pub base_rate_bps: u32,
+    pub optimal_utilization_bps: u32,
+    pub slope1_bps: u32,
+    pub slope2_bps: u32,
+    pub reserve_factor_bps: u32,
+}
+
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct InsuranceCancelledEvent {
+    pub loan_id: u64,
+    pub borrower: Address,
+    pub refund_amount: u64,
+pub struct RateModelUpdatedEvent {
+    pub base_rate_bps: u32,
+    pub optimal_utilization_bps: u32,
+    pub slope1_bps: u32,
+    pub slope2_bps: u32,
+    pub reserve_factor_bps: u32,
+    pub updated_by: Address,
+    pub timestamp: u64,
+}
+
+// ─────────────────────────────────────────────────
 // Errors
 // ─────────────────────────────────────────────────
 
@@ -339,6 +433,14 @@ pub enum LendingError {
     InvalidRewardRate = 23,
     PoolPaused = 24,
     AssetNotSupported = 25,
+    InsuranceAlreadyPurchased = 24,
+    InsuranceNotFound = 25,
+    InsuranceExpired = 26,
+    InsuranceAlreadyClaimed = 27,
+    InsufficientInsuranceFund = 28,
+    InvalidInsuranceAmount = 29,
+    InvalidRateModel = 24,
+    ContractPaused = 25,
 }
 
 // ─────────────────────────────────────────────────
@@ -364,6 +466,15 @@ pub enum DataKey {
     UserLoans(Address),          // Track multiple loans per user (Vec<u64>)
     RewardPool(Address),         // Per-asset reward pool
     UserStake(Address, Address), // (User, Asset) staking position
+    UserLoans(Address), // Track multiple loans per user (Vec<u64>)
+    RewardPool,
+    UserStake(Address), // Track user's staking position
+    Insurance(u64),            // Insurance record for a loan_id
+    InsuranceFund,             // Global insurance fund state
+    InsurancePremiumRate,      // Premium rate in basis points (default 200 = 2%)
+    InheritanceContract,
+    GovernanceContract,
+    RateModel,
 }
 
 // ─────────────────────────────────────────────────
@@ -499,6 +610,46 @@ impl LendingContract {
             },
         );
 
+        // Initialize insurance fund
+        env.storage().instance().set(
+            &DataKey::InsuranceFund,
+            &InsuranceFund {
+                total_premiums_collected: 0,
+                total_claims_paid: 0,
+                available_balance: 0,
+            },
+        );
+
+        // Initialize insurance premium rate
+        env.storage()
+            .instance()
+            .set(&DataKey::InsurancePremiumRate, &DEFAULT_INSURANCE_PREMIUM_RATE_BPS);
+
+        access_control::assign_role(&env, &admin, Role::Admin);
+        Ok(())
+    }
+
+    /// Assign a role to an address. Admin-only.
+    pub fn assign_role(
+        env: Env,
+        admin: Address,
+        address: Address,
+        role: Role,
+    ) -> Result<(), LendingError> {
+        Self::require_admin(&env, &admin)?;
+        access_control::assign_role(&env, &address, role);
+        Ok(())
+    }
+
+    /// Revoke a role from an address. Admin-only.
+    pub fn revoke_role(
+        env: Env,
+        admin: Address,
+        address: Address,
+        role: Role,
+    ) -> Result<(), LendingError> {
+        Self::require_admin(&env, &admin)?;
+        access_control::revoke_role(&env, &address, role);
         Ok(())
     }
 
@@ -527,6 +678,18 @@ impl LendingContract {
             .instance()
             .get(&DataKey::SupportedAssets)
             .unwrap_or_else(|| Vec::new(&env))
+    /// Check whether an address holds a given role.
+    pub fn has_role(env: Env, address: Address, role: Role) -> bool {
+        access_control::has_role(&env, &address, role)
+    }
+
+    /// Return all roles held by an address.
+    pub fn get_roles(env: Env, address: Address) -> Vec<Role> {
+        use access_control::AccessControlKey;
+        env.storage()
+            .persistent()
+            .get(&AccessControlKey::Roles(address))
+            .unwrap_or(Vec::new(&env))
     }
 
     pub fn set_nft_token(env: Env, admin: Address, nft_token: Address) -> Result<(), LendingError> {
@@ -536,17 +699,31 @@ impl LendingContract {
     }
 
     fn enter_reentrancy_guard(env: &Env) -> Result<(), LendingError> {
-        if env.storage().instance().has(&DataKey::ReentrancyGuard) {
-            return Err(LendingError::ReentrantCall);
-        }
-        env.storage()
-            .instance()
-            .set(&DataKey::ReentrancyGuard, &true);
-        Ok(())
+        access_control::reentrancy_enter(env, LendingError::ReentrantCall)
     }
 
     fn exit_reentrancy_guard(env: &Env) {
-        env.storage().instance().remove(&DataKey::ReentrancyGuard);
+        access_control::reentrancy_exit(env);
+    }
+
+    pub fn pause(env: Env, admin: Address) -> Result<(), LendingError> {
+        Self::require_admin(&env, &admin)?;
+        access_control::pause_contract(&env);
+        Ok(())
+    }
+
+    pub fn unpause(env: Env, admin: Address) -> Result<(), LendingError> {
+        Self::require_admin(&env, &admin)?;
+        access_control::unpause_contract(&env);
+        Ok(())
+    }
+
+    pub fn is_paused(env: Env) -> bool {
+        access_control::is_contract_paused(&env)
+    }
+
+    fn require_not_paused(env: &Env) -> Result<(), LendingError> {
+        access_control::require_not_paused(env, LendingError::ContractPaused)
     }
 
     fn get_nft_token(env: &Env) -> Option<Address> {
@@ -615,7 +792,7 @@ impl LendingContract {
             .unwrap_or(false)
     }
 
-    fn get_admin(env: &Env) -> Option<Address> {
+    pub fn get_admin(env: Env) -> Option<Address> {
         env.storage().instance().get(&DataKey::Admin)
     }
 
@@ -781,11 +958,7 @@ impl LendingContract {
 
     fn require_admin(env: &Env, caller: &Address) -> Result<(), LendingError> {
         caller.require_auth();
-        let admin = Self::get_admin(env).ok_or(LendingError::NotAdmin)?;
-        if *caller != admin {
-            return Err(LendingError::NotAdmin);
-        }
-        Ok(())
+        access_control::require_role(env, caller, Role::Admin, LendingError::NotAdmin)
     }
 
     fn transfer(
@@ -889,6 +1062,8 @@ impl LendingContract {
         asset: Address,
         amount: u64,
     ) -> Result<u64, LendingError> {
+    pub fn deposit(env: Env, depositor: Address, amount: u64) -> Result<u64, LendingError> {
+        Self::require_not_paused(&env)?;
         Self::require_initialized(&env)?;
         Self::enter_reentrancy_guard(&env)?;
         depositor.require_auth();
@@ -954,6 +1129,8 @@ impl LendingContract {
         asset: Address,
         shares: u64,
     ) -> Result<u64, LendingError> {
+    pub fn withdraw(env: Env, depositor: Address, shares: u64) -> Result<u64, LendingError> {
+        Self::require_not_paused(&env)?;
         Self::require_initialized(&env)?;
         Self::enter_reentrancy_guard(&env)?;
         depositor.require_auth();
@@ -1024,6 +1201,7 @@ impl LendingContract {
         collateral_amount: u64,
         duration_seconds: u64,
     ) -> Result<u64, LendingError> {
+        Self::require_not_paused(&env)?;
         Self::require_initialized(&env)?;
         Self::enter_reentrancy_guard(&env)?;
         borrower.require_auth();
@@ -1168,6 +1346,7 @@ impl LendingContract {
     /// Includes principal, interest, and any accumulated late fees in the repayment.
     /// Returns the total amount repaid (principal + interest + late fees).
     pub fn repay(env: Env, borrower: Address) -> Result<u64, LendingError> {
+        Self::require_not_paused(&env)?;
         Self::require_initialized(&env)?;
         Self::enter_reentrancy_guard(&env)?;
         borrower.require_auth();
@@ -1351,6 +1530,8 @@ impl LendingContract {
         asset: Address,
         amount: u64,
     ) -> Result<u64, LendingError> {
+    pub fn withdraw_priority(env: Env, caller: Address, amount: u64) -> Result<u64, LendingError> {
+        Self::require_not_paused(&env)?;
         Self::require_initialized(&env)?;
         Self::enter_reentrancy_guard(&env)?;
         caller.require_auth();
@@ -1634,6 +1815,8 @@ impl LendingContract {
         asset: Address,
         amount: u64,
     ) -> Result<(), LendingError> {
+    pub fn flash_loan(env: Env, receiver_id: Address, amount: u64) -> Result<(), LendingError> {
+        Self::require_not_paused(&env)?;
         Self::require_initialized(&env)?;
         Self::enter_reentrancy_guard(&env)?;
 
@@ -2791,6 +2974,769 @@ impl LendingContract {
 
         Ok(())
     }
+
+    // ─────────────────────────────────────────────────
+    // Loan Insurance Functions
+    // ─────────────────────────────────────────────────
+
+    /// Initialize insurance fund (called during contract initialization or by admin)
+    fn init_insurance_fund_if_needed(env: &Env) {
+        if !env.storage().instance().has(&DataKey::InsuranceFund) {
+            env.storage().instance().set(
+                &DataKey::InsuranceFund,
+                &InsuranceFund {
+                    total_premiums_collected: 0,
+                    total_claims_paid: 0,
+                    available_balance: 0,
+                },
+            );
+        }
+        if !env.storage().instance().has(&DataKey::InsurancePremiumRate) {
+            env.storage()
+                .instance()
+                .set(&DataKey::InsurancePremiumRate, &DEFAULT_INSURANCE_PREMIUM_RATE_BPS);
+        }
+    }
+
+    /// Get insurance premium for a given loan amount
+    pub fn get_insurance_premium(env: Env, loan_amount: u64) -> Result<u64, LendingError> {
+        Self::init_insurance_fund_if_needed(&env);
+        let premium_rate_bps: u32 = env
+            .storage()
+            .instance()
+            .get::<_, u32>(&DataKey::InsurancePremiumRate)
+            .unwrap_or(DEFAULT_INSURANCE_PREMIUM_RATE_BPS);
+
+        let premium = (loan_amount as u128)
+            .checked_mul(premium_rate_bps as u128)
+            .and_then(|v| v.checked_div(10000u128))
+            .ok_or(LendingError::InvalidAmount)? as u64;
+
+        Ok(premium)
+    }
+
+    /// Set insurance premium rate (admin only)
+    pub fn set_insurance_premium_rate(
+        env: Env,
+        admin: Address,
+        premium_rate_bps: u32,
+    ) -> Result<(), LendingError> {
+        admin.require_auth();
+        Self::require_admin(&env, &admin)?;
+
+        if premium_rate_bps > 10000 {
+            return Err(LendingError::InvalidAmount);
+        }
+
+        Self::init_insurance_fund_if_needed(&env);
+        env.storage()
+            .instance()
+            .set(&DataKey::InsurancePremiumRate, &premium_rate_bps);
+
+        log!(&env, "InsurancePremiumRateUpdated: rate_bps={}", premium_rate_bps);
+
+        Ok(())
+    }
+
+    /// Purchase insurance for a loan
+    pub fn purchase_loan_insurance(
+        env: Env,
+        borrower: Address,
+        loan_id: u64,
+    ) -> Result<u64, LendingError> {
+        borrower.require_auth();
+        Self::init_insurance_fund_if_needed(&env);
+
+        // Get loan record
+        let loan_key = DataKey::LoanById(loan_id);
+        let loan = env
+            .storage()
+            .instance()
+            .get::<_, LoanRecord>(&loan_key)
+            .ok_or(LendingError::LoanNotFound)?;
+
+        // Verify borrower matches
+        if loan.borrower != borrower {
+            return Err(LendingError::Unauthorized);
+        }
+
+        // Check if insurance already exists for this loan
+        let insurance_key = DataKey::Insurance(loan_id);
+        if env.storage().instance().has(&insurance_key) {
+            return Err(LendingError::InsuranceAlreadyPurchased);
+        }
+
+        // Calculate premium
+        let premium_rate_bps: u32 = env
+            .storage()
+            .instance()
+            .get::<_, u32>(&DataKey::InsurancePremiumRate)
+            .unwrap_or(DEFAULT_INSURANCE_PREMIUM_RATE_BPS);
+
+        let premium = (loan.principal as u128)
+            .checked_mul(premium_rate_bps as u128)
+            .and_then(|v| v.checked_div(10000u128))
+            .ok_or(LendingError::InvalidAmount)? as u64;
+
+        if premium == 0 {
+            return Err(LendingError::InvalidInsuranceAmount);
+        }
+
+        // Transfer premium from borrower to insurance fund (using underlying token)
+        let token: Address = env.storage().instance().get(&DataKey::Token).unwrap();
+        let token_client = token::Client::new(&env, &token);
+
+        token_client.transfer(&borrower, &env.current_contract_address(), &(premium as i128));
+
+        // Coverage is 100% of principal
+        let coverage_amount = loan.principal;
+
+        // Create insurance record
+        let insurance = LoanInsurance {
+            loan_id,
+            borrower: borrower.clone(),
+            coverage_amount,
+            premium_paid: premium,
+            premium_rate_bps,
+            purchase_time: env.ledger().timestamp(),
+            expires_at: loan.due_date,
+            claimed: false,
+        };
+
+        env.storage().instance().set(&insurance_key, &insurance);
+
+        // Update insurance fund
+        let mut fund: InsuranceFund = env
+            .storage()
+            .instance()
+            .get(&DataKey::InsuranceFund)
+            .unwrap_or(InsuranceFund {
+                total_premiums_collected: 0,
+                total_claims_paid: 0,
+                available_balance: 0,
+            });
+
+        fund.total_premiums_collected = fund.total_premiums_collected.saturating_add(premium);
+        fund.available_balance = fund.available_balance.saturating_add(premium);
+
+        env.storage()
+            .instance()
+            .set(&DataKey::InsuranceFund, &fund);
+
+        // Emit event
+        env.events().publish(
+            (symbol_short!("INS"), symbol_short!("BOUGHT")),
+            InsurancePurchasedEvent {
+                loan_id,
+                borrower: borrower.clone(),
+                coverage_amount,
+                premium_paid: premium,
+                premium_rate_bps,
+                expires_at: loan.due_date,
+                timestamp: env.ledger().timestamp(),
+            },
+        );
+
+        log!(
+            &env,
+            "InsurancePurchased: loan_id={}, borrower={}, premium={}, coverage={}",
+            loan_id,
+            borrower,
+            premium,
+            coverage_amount
+        );
+
+        Ok(premium)
+    }
+
+    /// Check if a loan has active insurance
+    pub fn is_loan_insured(env: Env, loan_id: u64) -> Result<bool, LendingError> {
+        let insurance_key = DataKey::Insurance(loan_id);
+        let insurance: Option<LoanInsurance> = env.storage().instance().get(&insurance_key);
+
+        if let Some(ins) = insurance {
+            // Check if not expired and not already claimed
+            let current_time = env.ledger().timestamp();
+            Ok(!ins.claimed && current_time < ins.expires_at)
+        } else {
+            Ok(false)
+        }
+    }
+
+    /// Get insurance coverage amount for a loan
+    pub fn get_insurance_coverage(env: Env, loan_id: u64) -> Result<u64, LendingError> {
+        let insurance_key = DataKey::Insurance(loan_id);
+        let insurance: Option<LoanInsurance> = env.storage().instance().get(&insurance_key);
+
+        if let Some(ins) = insurance {
+            if !ins.claimed && env.ledger().timestamp() < ins.expires_at {
+                return Ok(ins.coverage_amount);
+            }
+        }
+
+        Ok(0)
+    }
+
+    /// Get insurance details for a loan
+    pub fn get_insurance_details(env: Env, loan_id: u64) -> Result<Option<LoanInsurance>, LendingError> {
+        let insurance_key = DataKey::Insurance(loan_id);
+        Ok(env.storage().instance().get(&insurance_key))
+    }
+
+    /// Claim insurance when loan defaults
+    pub fn claim_insurance(env: Env, loan_id: u64) -> Result<u64, LendingError> {
+        let insurance_key = DataKey::Insurance(loan_id);
+        let mut insurance: LoanInsurance = env
+            .storage()
+            .instance()
+            .get(&insurance_key)
+            .ok_or(LendingError::InsuranceNotFound)?;
+
+        // Check if insurance is still valid
+        if insurance.claimed {
+            return Err(LendingError::InsuranceAlreadyClaimed);
+        }
+
+        let current_time = env.ledger().timestamp();
+        if current_time >= insurance.expires_at {
+            return Err(LendingError::InsuranceExpired);
+        }
+
+        // Get loan to verify it exists and is in default
+        let loan_key = DataKey::LoanById(loan_id);
+        let loan = env
+            .storage()
+            .instance()
+            .get::<_, LoanRecord>(&loan_key)
+            .ok_or(LendingError::LoanNotFound)?;
+
+        // Verify loan is past due
+        if current_time <= loan.due_date {
+            return Err(LendingError::InvalidAmount);
+        }
+
+        // Get insurance fund and verify sufficient balance
+        let mut fund: InsuranceFund = env
+            .storage()
+            .instance()
+            .get(&DataKey::InsuranceFund)
+            .ok_or(LendingError::InsuranceNotFound)?;
+
+        let claim_amount = insurance.coverage_amount;
+
+        if fund.available_balance < claim_amount {
+            return Err(LendingError::InsufficientInsuranceFund);
+        }
+
+        // Mark as claimed
+        insurance.claimed = true;
+        env.storage().instance().set(&insurance_key, &insurance);
+
+        // Update insurance fund
+        fund.total_claims_paid = fund.total_claims_paid.saturating_add(claim_amount);
+        fund.available_balance = fund.available_balance.saturating_sub(claim_amount);
+        env.storage()
+            .instance()
+            .set(&DataKey::InsuranceFund, &fund);
+
+        // Transfer claim amount to contract (funds holder for protocol)
+        // In a real system, this would be transferred to a claims reserve
+        let token: Address = env.storage().instance().get(&DataKey::Token).unwrap();
+        let token_client = token::Client::new(&env, &token);
+
+        // Transfer from contract to claims reserve (in this case, just update balance tracking)
+        // The actual transfer would happen when liquidation processes the claim
+
+        // Emit event
+        env.events().publish(
+            (symbol_short!("INS"), symbol_short!("CLAIM")),
+            InsuranceClaimedEvent {
+                loan_id,
+                borrower: insurance.borrower.clone(),
+                claim_amount,
+                coverage_amount: insurance.coverage_amount,
+                timestamp: current_time,
+            },
+        );
+
+        log!(
+            &env,
+            "InsuranceClaimed: loan_id={}, claim_amount={}, remaining_fund={}",
+            loan_id,
+            claim_amount,
+            fund.available_balance
+        );
+
+        Ok(claim_amount)
+    }
+
+    /// Cancel insurance and get partial refund (pro-rata based on time remaining)
+    pub fn cancel_insurance(env: Env, borrower: Address, loan_id: u64) -> Result<u64, LendingError> {
+        borrower.require_auth();
+
+        let insurance_key = DataKey::Insurance(loan_id);
+        let insurance: LoanInsurance = env
+            .storage()
+            .instance()
+            .get(&insurance_key)
+            .ok_or(LendingError::InsuranceNotFound)?;
+
+        // Verify borrower matches
+        if insurance.borrower != borrower {
+            return Err(LendingError::Unauthorized);
+        }
+
+        // Cannot cancel claimed insurance
+        if insurance.claimed {
+            return Err(LendingError::InsuranceAlreadyClaimed);
+        }
+
+        let current_time = env.ledger().timestamp();
+
+        // Calculate time-based refund: if cancelled before expiry, refund pro-rata
+        let refund_amount = if current_time < insurance.expires_at {
+            let total_duration = insurance.expires_at.saturating_sub(insurance.purchase_time);
+            let elapsed = current_time.saturating_sub(insurance.purchase_time);
+            let remaining = total_duration.saturating_sub(elapsed);
+
+            // Refund = premium * (remaining time / total time)
+            if total_duration > 0 {
+                (insurance.premium_paid as u128)
+                    .checked_mul(remaining as u128)
+                    .and_then(|v| v.checked_div(total_duration as u128))
+                    .unwrap_or(0) as u64
+            } else {
+                0
+            }
+        } else {
+            // Insurance expired, no refund
+            0
+        };
+
+        // Remove insurance record
+        env.storage().instance().remove(&insurance_key);
+
+        // Update insurance fund
+        if refund_amount > 0 {
+            let mut fund: InsuranceFund = env
+                .storage()
+                .instance()
+                .get(&DataKey::InsuranceFund)
+                .unwrap_or(InsuranceFund {
+                    total_premiums_collected: 0,
+                    total_claims_paid: 0,
+                    available_balance: 0,
+                });
+
+            fund.available_balance = fund.available_balance.saturating_sub(refund_amount);
+            env.storage()
+                .instance()
+                .set(&DataKey::InsuranceFund, &fund);
+
+            // Transfer refund to borrower
+            let token: Address = env.storage().instance().get(&DataKey::Token).unwrap();
+            let token_client = token::Client::new(&env, &token);
+            token_client.transfer(
+                &env.current_contract_address(),
+                &borrower,
+                &(refund_amount as i128),
+            );
+        }
+
+        // Emit event
+        env.events().publish(
+            (symbol_short!("INS"), symbol_short!("CANC")),
+            InsuranceCancelledEvent {
+                loan_id,
+                borrower: borrower.clone(),
+                refund_amount,
+                timestamp: current_time,
+            },
+        );
+
+        log!(
+            &env,
+            "InsuranceCancelled: loan_id={}, refund_amount={}",
+            loan_id,
+            refund_amount
+        );
+
+        Ok(refund_amount)
+    }
+
+    /// Get insurance fund state
+    pub fn get_insurance_fund_state(env: Env) -> Result<InsuranceFund, LendingError> {
+        Self::init_insurance_fund_if_needed(&env);
+        Ok(env
+            .storage()
+            .instance()
+            .get(&DataKey::InsuranceFund)
+            .unwrap_or(InsuranceFund {
+                total_premiums_collected: 0,
+                total_claims_paid: 0,
+                available_balance: 0,
+            }))
+    }
+
+    /// Deposit funds to insurance fund (admin function for funding)
+    pub fn deposit_to_insurance_fund(
+        env: Env,
+        admin: Address,
+        amount: u64,
+    ) -> Result<(), LendingError> {
+        admin.require_auth();
+        Self::require_admin(&env, &admin)?;
+
+        if amount == 0 {
+            return Err(LendingError::InvalidAmount);
+        }
+
+        Self::init_insurance_fund_if_needed(&env);
+
+        // Transfer from admin to contract
+        let token: Address = env.storage().instance().get(&DataKey::Token).unwrap();
+        let token_client = token::Client::new(&env, &token);
+        token_client.transfer(&admin, &env.current_contract_address(), &(amount as i128));
+
+        // Update insurance fund balance
+        let mut fund: InsuranceFund = env
+            .storage()
+            .instance()
+            .get(&DataKey::InsuranceFund)
+            .unwrap_or(InsuranceFund {
+                total_premiums_collected: 0,
+                total_claims_paid: 0,
+                available_balance: 0,
+            });
+
+        fund.available_balance = fund.available_balance.saturating_add(amount);
+        env.storage()
+            .instance()
+            .set(&DataKey::InsuranceFund, &fund);
+
+        log!(
+            &env,
+            "InsuranceFundDeposited: amount={}, new_balance={}",
+            amount,
+            fund.available_balance
+        );
+
+        Ok(())
+    }
+
+    /// Withdraw from insurance fund (admin function)
+    pub fn withdraw_from_insurance_fund(
+        env: Env,
+        admin: Address,
+        amount: u64,
+    ) -> Result<(), LendingError> {
+        admin.require_auth();
+        Self::require_admin(&env, &admin)?;
+
+        if amount == 0 {
+            return Err(LendingError::InvalidAmount);
+        }
+
+        Self::init_insurance_fund_if_needed(&env);
+
+        let mut fund: InsuranceFund = env
+            .storage()
+            .instance()
+            .get(&DataKey::InsuranceFund)
+            .ok_or(LendingError::InsuranceNotFound)?;
+
+        if fund.available_balance < amount {
+            return Err(LendingError::InsufficientLiquidity);
+        }
+
+        fund.available_balance = fund.available_balance.saturating_sub(amount);
+        env.storage()
+            .instance()
+            .set(&DataKey::InsuranceFund, &fund);
+
+        // Transfer to admin
+        let token: Address = env.storage().instance().get(&DataKey::Token).unwrap();
+        let token_client = token::Client::new(&env, &token);
+        token_client.transfer(
+            &env.current_contract_address(),
+            &admin,
+            &(amount as i128),
+        );
+
+        log!(
+            &env,
+            "InsuranceFundWithdrawn: amount={}, new_balance={}",
+            amount,
+            fund.available_balance
+        );
+
+        Ok(())
+    }
+
+    // ─── Cross-Contract Integration ──────────────────────────────
+
+    pub fn set_inheritance_contract(
+        env: Env,
+        admin: Address,
+        contract: Address,
+    ) -> Result<(), LendingError> {
+        Self::require_admin(&env, &admin)?;
+        env.storage()
+            .instance()
+            .set(&DataKey::InheritanceContract, &contract);
+        env.events().publish(
+            (
+                soroban_sdk::symbol_short!("LINK"),
+                soroban_sdk::symbol_short!("INHERIT"),
+            ),
+            ContractLinkedEvent {
+                contract_type: soroban_sdk::symbol_short!("INHERIT"),
+                address: contract,
+            },
+        );
+        Ok(())
+    }
+
+    pub fn get_inheritance_contract(env: Env) -> Option<Address> {
+        env.storage().instance().get(&DataKey::InheritanceContract)
+    }
+
+    pub fn set_governance_contract(
+        env: Env,
+        admin: Address,
+        contract: Address,
+    ) -> Result<(), LendingError> {
+        Self::require_admin(&env, &admin)?;
+        env.storage()
+            .instance()
+            .set(&DataKey::GovernanceContract, &contract);
+        env.events().publish(
+            (
+                soroban_sdk::symbol_short!("LINK"),
+                soroban_sdk::symbol_short!("GOV"),
+            ),
+            ContractLinkedEvent {
+                contract_type: soroban_sdk::symbol_short!("GOV"),
+                address: contract,
+            },
+        );
+        Ok(())
+    }
+
+    pub fn get_governance_contract(env: Env) -> Option<Address> {
+        env.storage().instance().get(&DataKey::GovernanceContract)
+    }
+
+    // ─── Interest Rate Model ─────────────────────────
+
+    /// Update the interest rate model parameters. Admin only.
+    pub fn set_rate_model(
+        env: Env,
+        admin: Address,
+        base_rate_bps: u32,
+        optimal_utilization_bps: u32,
+        slope1_bps: u32,
+        slope2_bps: u32,
+        reserve_factor_bps: u32,
+    ) -> Result<(), LendingError> {
+        Self::require_admin(&env, &admin)?;
+
+        if optimal_utilization_bps == 0 || optimal_utilization_bps >= 10000 {
+            return Err(LendingError::InvalidRateModel);
+        }
+        if reserve_factor_bps >= 10000 {
+            return Err(LendingError::InvalidRateModel);
+        }
+
+        let model = RateModel {
+            base_rate_bps,
+            optimal_utilization_bps,
+            slope1_bps,
+            slope2_bps,
+            reserve_factor_bps,
+        };
+
+        env.storage().instance().set(&DataKey::RateModel, &model);
+
+        env.events().publish(
+            (symbol_short!("RATE"), symbol_short!("MODEL")),
+            RateModelUpdatedEvent {
+                base_rate_bps,
+                optimal_utilization_bps,
+                slope1_bps,
+                slope2_bps,
+                reserve_factor_bps,
+                updated_by: admin,
+                timestamp: env.ledger().timestamp(),
+            },
+        );
+
+        Ok(())
+    }
+
+    /// Get the base interest rate from the rate model, falling back to pool state.
+    pub fn get_base_rate(env: Env) -> Result<u32, LendingError> {
+        Self::require_initialized(&env)?;
+        if let Some(model) = env
+            .storage()
+            .instance()
+            .get::<DataKey, RateModel>(&DataKey::RateModel)
+        {
+            return Ok(model.base_rate_bps);
+        }
+        Ok(Self::get_pool(&env).base_rate_bps)
+    }
+
+    /// Get the optimal (target) utilization rate from the rate model.
+    pub fn get_optimal_utilization(env: Env) -> Result<u32, LendingError> {
+        Self::require_initialized(&env)?;
+        if let Some(model) = env
+            .storage()
+            .instance()
+            .get::<DataKey, RateModel>(&DataKey::RateModel)
+        {
+            return Ok(model.optimal_utilization_bps);
+        }
+        // Default: use utilization cap as the optimal target
+        Ok(Self::get_pool(&env).utilization_cap_bps)
+    }
+
+    /// Get slope1 — the rate increase per unit utilization before optimal utilization.
+    pub fn get_slope1(env: Env) -> Result<u32, LendingError> {
+        Self::require_initialized(&env)?;
+        if let Some(model) = env
+            .storage()
+            .instance()
+            .get::<DataKey, RateModel>(&DataKey::RateModel)
+        {
+            return Ok(model.slope1_bps);
+        }
+        // Fallback: use pool multiplier as slope1
+        Ok(Self::get_pool(&env).multiplier_bps)
+    }
+
+    /// Get slope2 — the steep rate increase per unit utilization above optimal utilization.
+    pub fn get_slope2(env: Env) -> Result<u32, LendingError> {
+        Self::require_initialized(&env)?;
+        if let Some(model) = env
+            .storage()
+            .instance()
+            .get::<DataKey, RateModel>(&DataKey::RateModel)
+        {
+            return Ok(model.slope2_bps);
+        }
+        // Fallback: slope2 is 10× slope1 when not configured
+        Ok(Self::get_pool(&env).multiplier_bps.saturating_mul(10))
+    }
+
+    /// Get the current borrow rate using the two-slope model if configured,
+    /// or the legacy linear model otherwise.
+    pub fn get_borrow_rate(env: Env) -> Result<u32, LendingError> {
+        Self::require_initialized(&env)?;
+        let pool = Self::get_pool(&env);
+        let utilization_bps = Self::get_utilization_bps(pool.total_borrowed, pool.total_deposits);
+
+        if let Some(model) = env
+            .storage()
+            .instance()
+            .get::<DataKey, RateModel>(&DataKey::RateModel)
+        {
+            return Ok(Self::two_slope_rate(&model, utilization_bps));
+        }
+
+        Ok(Self::calculate_dynamic_rate(
+            pool.base_rate_bps,
+            pool.multiplier_bps,
+            utilization_bps,
+        ))
+    }
+
+    /// Get the current supply (deposit) rate.
+    /// supply_rate = borrow_rate × utilization × (1 − reserve_factor)
+    pub fn get_supply_rate(env: Env) -> Result<u32, LendingError> {
+        Self::require_initialized(&env)?;
+        let pool = Self::get_pool(&env);
+        let utilization_bps = Self::get_utilization_bps(pool.total_borrowed, pool.total_deposits);
+        let borrow_rate = Self::get_borrow_rate(env.clone())?;
+
+        let reserve_factor = if let Some(model) = env
+            .storage()
+            .instance()
+            .get::<DataKey, RateModel>(&DataKey::RateModel)
+        {
+            model.reserve_factor_bps
+        } else {
+            pool.reserve_factor_bps
+        };
+
+        // supply_rate = borrow_rate * utilization * (10000 - reserve_factor) / 10000^2
+        let supply_rate = (borrow_rate as u128)
+            .checked_mul(utilization_bps as u128)
+            .unwrap_or(0)
+            .checked_mul((10000u32.saturating_sub(reserve_factor)) as u128)
+            .unwrap_or(0)
+            / (10000u128 * 10000u128);
+
+        Ok(supply_rate as u32)
+    }
+
+    /// Simulate the borrow rate at an arbitrary utilization level (in basis points).
+    /// Useful for modelling rate impact before taking on or repaying debt.
+    pub fn simulate_rate(env: Env, utilization_bps: u32) -> Result<u32, LendingError> {
+        Self::require_initialized(&env)?;
+        if let Some(model) = env
+            .storage()
+            .instance()
+            .get::<DataKey, RateModel>(&DataKey::RateModel)
+        {
+            return Ok(Self::two_slope_rate(&model, utilization_bps));
+        }
+        let pool = Self::get_pool(&env);
+        Ok(Self::calculate_dynamic_rate(
+            pool.base_rate_bps,
+            pool.multiplier_bps,
+            utilization_bps,
+        ))
+    }
+
+    /// Two-slope interest rate calculation.
+    fn two_slope_rate(model: &RateModel, utilization_bps: u32) -> u32 {
+        let optimal = model.optimal_utilization_bps;
+        if utilization_bps <= optimal {
+            // Linear ramp up to slope1 at optimal utilization
+            let variable = (utilization_bps as u64)
+                .checked_mul(model.slope1_bps as u64)
+                .unwrap_or(0)
+                / optimal as u64;
+            model.base_rate_bps.saturating_add(variable as u32)
+        } else {
+            // Above optimal: base + slope1 + steep slope2 portion
+            let excess = utilization_bps.saturating_sub(optimal);
+            let max_excess = (10000u32).saturating_sub(optimal);
+            let steep = if max_excess == 0 {
+                model.slope2_bps as u64
+            } else {
+                (excess as u64)
+                    .checked_mul(model.slope2_bps as u64)
+                    .unwrap_or(0)
+                    / max_excess as u64
+            };
+            model
+                .base_rate_bps
+                .saturating_add(model.slope1_bps)
+                .saturating_add(steep as u32)
+        }
+    }
+
+    pub fn verify_plan_ownership(env: Env, plan_id: u64, caller: Address) -> bool {
+        if let Some(inheritance_contract) = Self::get_inheritance_contract(env.clone()) {
+            let client = InheritanceContractClient::new(&env, &inheritance_contract);
+            client.verify_plan_ownership(&plan_id, &caller)
+        } else {
+            false
+        }
+    }
 }
 
+mod cross_contract_test;
 mod test;

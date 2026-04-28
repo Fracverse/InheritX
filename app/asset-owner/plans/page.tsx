@@ -4,6 +4,7 @@ import React, { useState } from "react";
 import Link from "next/link";
 import { Plus, SlidersHorizontal, Trash2 } from "lucide-react";
 import CreatePlanModal from "./components/CreatePlanModal";
+import { PlansPageSkeleton } from "@/components/ui/Skeleton";
 
 // Static mock data for plans
 const MOCK_PLANS = [
@@ -98,6 +99,9 @@ const getTriggerStyle = (trigger: string) => {
 export default function PlansPage() {
   const [activeTab, setActiveTab] = useState<"plans" | "activities">("plans");
   const [showCreateModal, setShowCreateModal] = useState(false);
+  const [isLoading] = useState(false); // set to true while fetching real data
+
+  if (isLoading) return <PlansPageSkeleton />;
 
   return (
     <div>

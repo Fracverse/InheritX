@@ -1,0 +1,109 @@
+
+> inheritx@0.1.0 lint
+> eslint
+
+
+/home/jahrulez/Desktop/oss/J/InheritX/app/admin/all-plans/AllPlansPageContent.tsx
+  11:31  warning  'setIsWalletConnected' is assigned a value but never used  @typescript-eslint/no-unused-vars
+
+/home/jahrulez/Desktop/oss/J/InheritX/app/admin/insurance-fund/page.tsx
+    5:70  warning  'Download' is defined but never used          @typescript-eslint/no-unused-vars
+  108:12  warning  'loading' is assigned a value but never used  @typescript-eslint/no-unused-vars
+
+/home/jahrulez/Desktop/oss/J/InheritX/app/admin/users/page.tsx
+  4:31  warning  'Filter' is defined but never used  @typescript-eslint/no-unused-vars
+
+/home/jahrulez/Desktop/oss/J/InheritX/app/asset-owner/borrowing/components/RepaymentModal.tsx
+  28:14  warning  'err' is defined but never used  @typescript-eslint/no-unused-vars
+
+/home/jahrulez/Desktop/oss/J/InheritX/app/asset-owner/borrowing/page.tsx
+  34:7  error  Error: Calling setState synchronously within an effect can trigger cascading renders
+
+Effects are intended to synchronize state between React and external systems such as manually updating the DOM, state management libraries, or other platform APIs. In general, the body of an effect should do one or both of the following:
+* Update external systems with the latest state from React.
+* Subscribe for updates from some external system, calling setState in a callback function when external state changes.
+
+Calling setState synchronously within an effect body causes cascading renders that can hurt performance, and is not recommended. (https://react.dev/learn/you-might-not-need-an-effect).
+
+/home/jahrulez/Desktop/oss/J/InheritX/app/asset-owner/borrowing/page.tsx:34:7
+  32 |   useEffect(() => {
+  33 |     if (isConnected && address) {
+> 34 |       fetchLoans();
+     |       ^^^^^^^^^^ Avoid calling setState() directly within an effect
+  35 |     } else {
+  36 |       setIsLoading(false);
+  37 |     }  react-hooks/set-state-in-effect
+
+/home/jahrulez/Desktop/oss/J/InheritX/app/asset-owner/claim/page.tsx
+  18:10  warning  'selectedClaim' is assigned a value but never used      @typescript-eslint/no-unused-vars
+  20:30  warning  'formData' is defined but never used                    @typescript-eslint/no-unused-vars
+  40:9   warning  'handleErrorCancel' is assigned a value but never used  @typescript-eslint/no-unused-vars
+
+/home/jahrulez/Desktop/oss/J/InheritX/app/asset-owner/components/ActivityBox.tsx
+  1:10  warning  'div' is defined but never used  @typescript-eslint/no-unused-vars
+
+/home/jahrulez/Desktop/oss/J/InheritX/app/asset-owner/components/RecentTransactions.tsx
+  2:10  warning  'Plus' is defined but never used  @typescript-eslint/no-unused-vars
+
+/home/jahrulez/Desktop/oss/J/InheritX/app/asset-owner/components/SwapRateSlippage.tsx
+   2:8  warning  'Image' is defined but never used  @typescript-eslint/no-unused-vars
+  10:3  warning  'icon' is defined but never used   @typescript-eslint/no-unused-vars
+
+/home/jahrulez/Desktop/oss/J/InheritX/app/asset-owner/emergency/page.tsx
+   3:27  warning  'useEffect' is defined but never used              @typescript-eslint/no-unused-vars
+  64:21  warning  'setGuardians' is assigned a value but never used  @typescript-eslint/no-unused-vars
+
+/home/jahrulez/Desktop/oss/J/InheritX/app/asset-owner/plans/[id]/will-documents/page.tsx
+  10:3  warning  'verifyAndDownload' is defined but never used  @typescript-eslint/no-unused-vars
+
+/home/jahrulez/Desktop/oss/J/InheritX/app/asset-owner/plans/components/WillDocumentList.tsx
+  29:6  warning  React Hook useEffect has a missing dependency: 'fetchDocuments'. Either include it or remove the dependency array  react-hooks/exhaustive-deps
+
+/home/jahrulez/Desktop/oss/J/InheritX/app/asset-owner/portfolio/page.tsx
+  6:9  warning  'chartData' is assigned a value but never used  @typescript-eslint/no-unused-vars
+
+/home/jahrulez/Desktop/oss/J/InheritX/app/asset-owner/security/components/EnableTwoFactorModal.tsx
+   4:21  warning  'Copy' is defined but never used                 @typescript-eslint/no-unused-vars
+   4:27  warning  'Check' is defined but never used                @typescript-eslint/no-unused-vars
+  18:10  warning  'copied' is assigned a value but never used      @typescript-eslint/no-unused-vars
+  71:9   warning  'handleCopy' is assigned a value but never used  @typescript-eslint/no-unused-vars
+
+/home/jahrulez/Desktop/oss/J/InheritX/app/asset-owner/security/page.tsx
+   6:3   warning  'ArrowUpRight' is defined but never used  @typescript-eslint/no-unused-vars
+   8:3   warning  'CheckIcon' is defined but never used     @typescript-eslint/no-unused-vars
+  92:31  warning  '_deviceIndex' is defined but never used  @typescript-eslint/no-unused-vars
+
+/home/jahrulez/Desktop/oss/J/InheritX/app/components/Navbar.tsx
+  3:26  warning  'Globe' is defined but never used   @typescript-eslint/no-unused-vars
+  3:33  warning  'Shield' is defined but never used  @typescript-eslint/no-unused-vars
+  3:41  warning  'Zap' is defined but never used     @typescript-eslint/no-unused-vars
+
+/home/jahrulez/Desktop/oss/J/InheritX/app/lib/api/emergency.ts
+  160:22  warning  'planId' is defined but never used  @typescript-eslint/no-unused-vars
+
+/home/jahrulez/Desktop/oss/J/InheritX/components/ConnectButton.tsx
+  60:13  warning  Using `<img>` could result in slower LCP and higher bandwidth. Consider using `<Image />` from `next/image` or a custom image loader to automatically optimize images. This may incur additional usage or cost from your provider. See: https://nextjs.org/docs/messages/no-img-element  @next/next/no-img-element
+
+/home/jahrulez/Desktop/oss/J/InheritX/components/WalletModal.tsx
+  5:10  warning  'Loader2' is defined but never used  @typescript-eslint/no-unused-vars
+
+/home/jahrulez/Desktop/oss/J/InheritX/components/admin/InsuranceFundMonitoring.tsx
+  5:87  warning  'XCircle' is defined but never used  @typescript-eslint/no-unused-vars
+
+/home/jahrulez/Desktop/oss/J/InheritX/components/admin/Sidebar.tsx
+  16:10  warning  'motion' is defined but never used          @typescript-eslint/no-unused-vars
+  33:21  warning  'admin' is assigned a value but never used  @typescript-eslint/no-unused-vars
+
+/home/jahrulez/Desktop/oss/J/InheritX/components/admin/Topbar.tsx
+  5:8  warning  'Image' is defined but never used  @typescript-eslint/no-unused-vars
+
+/home/jahrulez/Desktop/oss/J/InheritX/hooks/useUpdateEffect.tsx
+  12:6  warning  React Hook useEffect was passed a dependency list that is not an array literal. This means we can't statically verify whether you've passed the correct dependencies                                                             react-hooks/exhaustive-deps
+  12:6  warning  React Hook useEffect has a missing dependency: 'callback'. Either include it or remove the dependency array. If 'callback' changes too often, find the parent component that defines it and wrap that definition in useCallback  react-hooks/exhaustive-deps
+
+/home/jahrulez/Desktop/oss/J/InheritX/tests/mocks/handlers.ts
+   19:47  warning  'params' is defined but never used         @typescript-eslint/no-unused-vars
+  208:11  warning  'body' is assigned a value but never used  @typescript-eslint/no-unused-vars
+
+✖ 39 problems (1 error, 38 warnings)
+

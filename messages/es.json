@@ -1,0 +1,116 @@
+{
+  "common": {
+    "loading": "Cargando...",
+    "error": "Algo salió mal",
+    "retry": "Reintentar",
+    "cancel": "Cancelar",
+    "confirm": "Confirmar",
+    "save": "Guardar",
+    "delete": "Eliminar",
+    "edit": "Editar",
+    "close": "Cerrar",
+    "back": "Atrás",
+    "next": "Siguiente",
+    "submit": "Enviar",
+    "connect": "Conectar",
+    "disconnect": "Desconectar",
+    "search": "Buscar",
+    "filter": "Filtrar",
+    "noData": "No hay datos disponibles"
+  },
+  "nav": {
+    "home": "Inicio",
+    "plans": "Planes",
+    "portfolio": "Portafolio",
+    "lending": "Préstamo",
+    "claim": "Reclamación",
+    "emergency": "Emergencia",
+    "security": "Seguridad",
+    "swap": "Intercambio",
+    "messages": "Mensajes",
+    "inactivity": "Inactividad"
+  },
+  "wallet": {
+    "connect": "Conectar billetera",
+    "connecting": "Conectando...",
+    "connected": "Conectado",
+    "disconnect": "Desconectar",
+    "selectWallet": "Selecciona una billetera",
+    "description": "Conecta tu billetera para comenzar con InheritX"
+  },
+  "kyc": {
+    "title": "Verificación KYC",
+    "pending": "Pendiente",
+    "submitted": "Enviado",
+    "approved": "Aprobado",
+    "rejected": "Rechazado",
+    "submit": "Enviar KYC",
+    "submitting": "Enviando...",
+    "fullName": "Nombre completo",
+    "email": "Correo electrónico",
+    "dateOfBirth": "Fecha de nacimiento",
+    "nationality": "Nacionalidad",
+    "idType": "Tipo de identificación",
+    "idNumber": "Número de identificación",
+    "expiryDate": "Fecha de vencimiento",
+    "streetAddress": "Dirección",
+    "city": "Ciudad",
+    "country": "País",
+    "postalCode": "Código postal"
+  },
+  "plans": {
+    "title": "Mis Planes",
+    "createPlan": "Crear plan",
+    "noPlan": "Sin planes aún",
+    "active": "Activo",
+    "completed": "Completado",
+    "pending": "Pendiente",
+    "expired": "Expirado",
+    "assets": "Activos",
+    "beneficiaries": "Beneficiarios",
+    "trigger": "Disparador",
+    "status": "Estado"
+  },
+  "lending": {
+    "title": "Pool de préstamos",
+    "deposit": "Depositar",
+    "withdraw": "Retirar",
+    "totalDeposits": "Total de depósitos",
+    "totalBorrowed": "Total prestado",
+    "utilizationRate": "Tasa de utilización",
+    "currentApy": "APY actual",
+    "yourBalance": "Tu saldo",
+    "totalEarnings": "Ganancias totales",
+    "depositHistory": "Historial de depósitos"
+  },
+  "claim": {
+    "title": "Reclamaciones",
+    "submitClaim": "Enviar reclamación",
+    "claimCode": "Código de reclamación",
+    "activities": "Actividades",
+    "noClaims": "No se encontraron reclamaciones"
+  },
+  "emergency": {
+    "title": "Acceso de emergencia",
+    "activate": "Activar emergencia",
+    "revoke": "Revocar acceso",
+    "contacts": "Contactos de emergencia",
+    "guardians": "Guardianes",
+    "auditLog": "Registro de auditoría",
+    "status": "Estado"
+  },
+  "dashboard": {
+    "goodMorning": "Buenos días",
+    "activePlans": "Planes activos",
+    "guardians": "Guardianes",
+    "createdPlans": "Planes creados",
+    "recentActivity": "Actividad reciente"
+  },
+  "errors": {
+    "networkError": "Error de red. Verifica tu conexión.",
+    "authRequired": "Autenticación requerida.",
+    "notFound": "Recurso no encontrado.",
+    "serverError": "Error del servidor. Inténtalo de nuevo.",
+    "unauthorized": "No estás autorizado para realizar esta acción."
+  }
+}

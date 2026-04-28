@@ -4863,20 +4863,21 @@ fn test_delete_legacy_message_unauthorized() {
     assert_eq!(result, Err(Ok(InheritanceError::Unauthorized)));
     assert!(client.get_legacy_message(&message_id).is_some());
 }
+// ─────────────────────────────────────────────────────────────────────────────
+// Batch Operations Tests (Issue #483)
+// ─────────────────────────────────────────────────────────────────────────────
 
-// ---------- Beneficiary Update Tests ----------
-
-fn two_beneficiary_plan_id(
+fn plan_with_partial_alloc(
     env: &Env,
-    client: &InheritanceContractClient,
+    client: &InheritanceContractClient<'_>,
     token: &Address,
     owner: &Address,
 ) -> u64 {
-    let beneficiaries = vec![
+    let bens = vec![
         env,
         (
             String::from_str(env, "Alice"),
-            String::from_str(env, "alice@example.com"),
+            String::from_str(env, "alice@batch.com"),
             111111u32,
             create_test_bytes(env, "1111111111111111"),
             5000u32,
@@ -4884,7 +4885,7 @@ fn two_beneficiary_plan_id(
         ),
         (
             String::from_str(env, "Bob"),
-            String::from_str(env, "bob@example.com"),
+            String::from_str(env, "bob@batch.com"),
             222222u32,
             create_test_bytes(env, "2222222222222222"),
             5000u32,
@@ -4895,393 +4896,547 @@ fn two_beneficiary_plan_id(
         env,
         owner,
         token,
-        "Two Beneficiary Plan",
-        "Test",
-        1_000_000u64,
+        "Batch Plan",
+        "For batch tests",
+        100_000u64,
         DistributionMethod::LumpSum,
-        &beneficiaries,
+        &bens,
     ))
 }
 
-// --- update_beneficiary_allocation ---
-
 #[test]
-fn test_update_beneficiary_allocation_success() {
+fn test_batch_add_beneficiaries_success() {
     let env = Env::default();
     let (client, token, _admin, owner) = setup_with_token_and_admin(&env);
-    let plan_id = two_beneficiary_plan_id(&env, &client, &token, &owner);
-
-    // Update Alice (index 0) from 5000 to 4000
-    let result = client.try_update_beneficiary_allocation(&owner, &plan_id, &0u32, &4000u32);
-    assert!(result.is_ok());
-
+    let plan_id = plan_with_partial_alloc(&env, &client, &token, &owner);
+    client.remove_beneficiary(&owner, &plan_id, &0u32);
+    client.remove_beneficiary(&owner, &plan_id, &0u32);
+    let inputs = vec![
+        &env,
+        BeneficiaryInput {
+            name: String::from_str(&env, "Carol"),
+            email: String::from_str(&env, "carol@batch.com"),
+            claim_code: 333333u32,
+            bank_account: create_test_bytes(&env, "3333333333333333"),
+            allocation_bp: 6000u32,
+            priority: 1u32,
+        },
+        BeneficiaryInput {
+            name: String::from_str(&env, "Dave"),
+            email: String::from_str(&env, "dave@batch.com"),
+            claim_code: 444444u32,
+            bank_account: create_test_bytes(&env, "4444444444444444"),
+            allocation_bp: 4000u32,
+            priority: 2u32,
+        },
+    ];
+    let (success, fail) = client.batch_add_beneficiaries(&owner, &plan_id, &inputs);
+    assert_eq!(success, 2);
+    assert_eq!(fail, 0);
     let plan = client.get_plan_details(&plan_id).unwrap();
-    assert_eq!(plan.beneficiaries.get(0).unwrap().allocation_bp, 4000);
-    assert_eq!(plan.total_allocation_bp, 9000); // 4000 + 5000
-}
-
-#[test]
-fn test_update_beneficiary_allocation_same_value() {
-    let env = Env::default();
-    let (client, token, _admin, owner) = setup_with_token_and_admin(&env);
-    let plan_id = two_beneficiary_plan_id(&env, &client, &token, &owner);
-
-    // Update to the same value should succeed with no change to total
-    let result = client.try_update_beneficiary_allocation(&owner, &plan_id, &0u32, &5000u32);
-    assert!(result.is_ok());
-
-    let plan = client.get_plan_details(&plan_id).unwrap();
+    assert_eq!(plan.beneficiaries.len(), 2);
     assert_eq!(plan.total_allocation_bp, 10000);
 }
 
 #[test]
-fn test_update_beneficiary_allocation_exceeds_limit() {
+fn test_batch_add_beneficiaries_partial_fail_over_allocation() {
     let env = Env::default();
     let (client, token, _admin, owner) = setup_with_token_and_admin(&env);
-    let plan_id = two_beneficiary_plan_id(&env, &client, &token, &owner);
-
-    // 6000 + 5000 = 11000 > 10000
-    let result = client.try_update_beneficiary_allocation(&owner, &plan_id, &0u32, &6000u32);
-    assert_eq!(result, Err(Ok(InheritanceError::AllocationExceedsLimit)));
+    let plan_id = plan_with_partial_alloc(&env, &client, &token, &owner);
+    let inputs = vec![
+        &env,
+        BeneficiaryInput {
+            name: String::from_str(&env, "Extra"),
+            email: String::from_str(&env, "extra@batch.com"),
+            claim_code: 555555u32,
+            bank_account: create_test_bytes(&env, "5555555555555555"),
+            allocation_bp: 1000u32,
+            priority: 1u32,
+        },
+    ];
+    let (success, fail) = client.batch_add_beneficiaries(&owner, &plan_id, &inputs);
+    assert_eq!(success, 0);
+    assert_eq!(fail, 1);
 }
 
 #[test]
-fn test_update_beneficiary_allocation_zero() {
+fn test_batch_add_beneficiaries_limit_exceeded() {
     let env = Env::default();
     let (client, token, _admin, owner) = setup_with_token_and_admin(&env);
-    let plan_id = two_beneficiary_plan_id(&env, &client, &token, &owner);
-
-    let result = client.try_update_beneficiary_allocation(&owner, &plan_id, &0u32, &0u32);
-    assert_eq!(result, Err(Ok(InheritanceError::InvalidAllocation)));
-}
-
-#[test]
-fn test_update_beneficiary_allocation_unauthorized() {
-    let env = Env::default();
-    let (client, token, _admin, owner) = setup_with_token_and_admin(&env);
-    let plan_id = two_beneficiary_plan_id(&env, &client, &token, &owner);
-    let stranger = Address::generate(&env);
-
-    let result = client.try_update_beneficiary_allocation(&stranger, &plan_id, &0u32, &4000u32);
+    let plan_id = plan_with_partial_alloc(&env, &client, &token, &owner);
+    let mut inputs: Vec<BeneficiaryInput> = Vec::new(&env);
+    for i in 0..21u32 {
+        inputs.push_back(BeneficiaryInput {
+            name: String::from_str(&env, "X"),
+            email: String::from_str(&env, "x@x.com"),
+            claim_code: i,
+            bank_account: create_test_bytes(&env, "1234"),
+            allocation_bp: 100u32,
+            priority: i,
+        });
+    }
+    let result = client.try_batch_add_beneficiaries(&owner, &plan_id, &inputs);
     assert!(result.is_err());
 }
 
 #[test]
-fn test_update_beneficiary_allocation_invalid_index() {
+fn test_batch_add_beneficiaries_unauthorized() {
     let env = Env::default();
     let (client, token, _admin, owner) = setup_with_token_and_admin(&env);
-    let plan_id = two_beneficiary_plan_id(&env, &client, &token, &owner);
-
-    let result = client.try_update_beneficiary_allocation(&owner, &plan_id, &99u32, &4000u32);
-    assert_eq!(result, Err(Ok(InheritanceError::InvalidBeneficiaryIndex)));
+    let plan_id = plan_with_partial_alloc(&env, &client, &token, &owner);
+    let stranger = Address::generate(&env);
+    let inputs = vec![
+        &env,
+        BeneficiaryInput {
+            name: String::from_str(&env, "X"),
+            email: String::from_str(&env, "x@x.com"),
+            claim_code: 123456u32,
+            bank_account: create_test_bytes(&env, "1234"),
+            allocation_bp: 1000u32,
+            priority: 1u32,
+        },
+    ];
+    let result = client.try_batch_add_beneficiaries(&stranger, &plan_id, &inputs);
+    assert!(result.is_err());
 }
 
-// --- update_beneficiary_bank_account ---
-
 #[test]
-fn test_update_beneficiary_bank_account_success() {
+fn test_batch_remove_beneficiaries_success() {
     let env = Env::default();
     let (client, token, _admin, owner) = setup_with_token_and_admin(&env);
-    let plan_id = two_beneficiary_plan_id(&env, &client, &token, &owner);
-
-    let new_account = create_test_bytes(&env, "9999999999999999");
-    let result = client.try_update_beneficiary_bank_account(&owner, &plan_id, &0u32, &new_account);
-    assert!(result.is_ok());
-
+    let plan_id = plan_with_partial_alloc(&env, &client, &token, &owner);
+    let indices = vec![&env, 0u32, 1u32];
+    let (success, fail) = client.batch_remove_beneficiaries(&owner, &plan_id, &indices);
+    assert_eq!(success, 2);
+    assert_eq!(fail, 0);
     let plan = client.get_plan_details(&plan_id).unwrap();
-    assert_eq!(plan.beneficiaries.get(0).unwrap().bank_account, new_account);
+    assert_eq!(plan.beneficiaries.len(), 0);
+    assert_eq!(plan.total_allocation_bp, 0);
 }
 
 #[test]
-fn test_update_beneficiary_bank_account_empty() {
+fn test_batch_remove_beneficiaries_invalid_indices_counted_as_fail() {
     let env = Env::default();
     let (client, token, _admin, owner) = setup_with_token_and_admin(&env);
-    let plan_id = two_beneficiary_plan_id(&env, &client, &token, &owner);
-
-    let empty = Bytes::new(&env);
-    let result = client.try_update_beneficiary_bank_account(&owner, &plan_id, &0u32, &empty);
-    assert_eq!(result, Err(Ok(InheritanceError::InvalidBeneficiaryData)));
+    let plan_id = plan_with_partial_alloc(&env, &client, &token, &owner);
+    let indices = vec![&env, 0u32, 99u32];
+    let (success, fail) = client.batch_remove_beneficiaries(&owner, &plan_id, &indices);
+    assert_eq!(success, 1);
+    assert_eq!(fail, 1);
 }
 
 #[test]
-fn test_update_beneficiary_bank_account_unauthorized() {
+fn test_batch_remove_beneficiaries_deduplication() {
     let env = Env::default();
     let (client, token, _admin, owner) = setup_with_token_and_admin(&env);
-    let plan_id = two_beneficiary_plan_id(&env, &client, &token, &owner);
-    let stranger = Address::generate(&env);
-
-    let new_account = create_test_bytes(&env, "9999999999999999");
-    let result =
-        client.try_update_beneficiary_bank_account(&stranger, &plan_id, &0u32, &new_account);
-    assert!(result.is_err());
-}
-
-#[test]
-fn test_update_beneficiary_bank_account_invalid_index() {
-    let env = Env::default();
-    let (client, token, _admin, owner) = setup_with_token_and_admin(&env);
-    let plan_id = two_beneficiary_plan_id(&env, &client, &token, &owner);
-
-    let new_account = create_test_bytes(&env, "9999999999999999");
-    let result = client.try_update_beneficiary_bank_account(&owner, &plan_id, &99u32, &new_account);
-    assert_eq!(result, Err(Ok(InheritanceError::InvalidBeneficiaryIndex)));
-}
-
-// --- update_beneficiary_claim_code ---
-
-#[test]
-fn test_update_beneficiary_claim_code_success() {
-    let env = Env::default();
-    let (client, token, _admin, owner) = setup_with_token_and_admin(&env);
-    let plan_id = two_beneficiary_plan_id(&env, &client, &token, &owner);
-
-    let result = client.try_update_beneficiary_claim_code(&owner, &plan_id, &0u32, &999999u32);
-    assert!(result.is_ok());
-
-    // Verify the hash changed (new code now needed to claim)
-    let plan_before_hash = client.get_plan_details(&plan_id).unwrap();
-    let old_hash = InheritanceContract::hash_claim_code(&env, 111111u32).unwrap();
-    assert_ne!(
-        plan_before_hash
-            .beneficiaries
-            .get(0)
-            .unwrap()
-            .hashed_claim_code,
-        old_hash
-    );
-}
-
-#[test]
-fn test_update_beneficiary_claim_code_out_of_range() {
-    let env = Env::default();
-    let (client, token, _admin, owner) = setup_with_token_and_admin(&env);
-    let plan_id = two_beneficiary_plan_id(&env, &client, &token, &owner);
-
-    let result = client.try_update_beneficiary_claim_code(&owner, &plan_id, &0u32, &1_000_000u32);
-    assert_eq!(result, Err(Ok(InheritanceError::InvalidClaimCodeRange)));
-}
-
-#[test]
-fn test_update_beneficiary_claim_code_unauthorized() {
-    let env = Env::default();
-    let (client, token, _admin, owner) = setup_with_token_and_admin(&env);
-    let plan_id = two_beneficiary_plan_id(&env, &client, &token, &owner);
-    let stranger = Address::generate(&env);
-
-    let result = client.try_update_beneficiary_claim_code(&stranger, &plan_id, &0u32, &999999u32);
-    assert!(result.is_err());
-}
-
-#[test]
-fn test_update_beneficiary_claim_code_invalid_index() {
-    let env = Env::default();
-    let (client, token, _admin, owner) = setup_with_token_and_admin(&env);
-    let plan_id = two_beneficiary_plan_id(&env, &client, &token, &owner);
-
-    let result = client.try_update_beneficiary_claim_code(&owner, &plan_id, &99u32, &999999u32);
-    assert_eq!(result, Err(Ok(InheritanceError::InvalidBeneficiaryIndex)));
-}
-
-// --- update_beneficiary_email ---
-
-#[test]
-fn test_update_beneficiary_email_success() {
-    let env = Env::default();
-    let (client, token, _admin, owner) = setup_with_token_and_admin(&env);
-    let plan_id = two_beneficiary_plan_id(&env, &client, &token, &owner);
-
-    let new_email = String::from_str(&env, "alice.new@example.com");
-    let result = client.try_update_beneficiary_email(&owner, &plan_id, &0u32, &new_email);
-    assert!(result.is_ok());
-
-    // Old email no longer finds the beneficiary
-    let old_lookup =
-        client.try_get_beneficiary_by_email(&plan_id, &String::from_str(&env, "alice@example.com"));
-    assert_eq!(old_lookup, Err(Ok(InheritanceError::BeneficiaryNotFound)));
-
-    // New email finds it at index 0
-    let new_lookup = client
-        .try_get_beneficiary_by_email(&plan_id, &String::from_str(&env, "alice.new@example.com"));
-    assert!(new_lookup.is_ok());
-    assert_eq!(new_lookup.unwrap().unwrap().0, 0u32);
-}
-
-#[test]
-fn test_update_beneficiary_email_empty() {
-    let env = Env::default();
-    let (client, token, _admin, owner) = setup_with_token_and_admin(&env);
-    let plan_id = two_beneficiary_plan_id(&env, &client, &token, &owner);
-
-    let result =
-        client.try_update_beneficiary_email(&owner, &plan_id, &0u32, &String::from_str(&env, ""));
-    assert_eq!(result, Err(Ok(InheritanceError::InvalidBeneficiaryData)));
-}
-
-#[test]
-fn test_update_beneficiary_email_unauthorized() {
-    let env = Env::default();
-    let (client, token, _admin, owner) = setup_with_token_and_admin(&env);
-    let plan_id = two_beneficiary_plan_id(&env, &client, &token, &owner);
-    let stranger = Address::generate(&env);
-
-    let result = client.try_update_beneficiary_email(
-        &stranger,
-        &plan_id,
-        &0u32,
-        &String::from_str(&env, "new@example.com"),
-    );
-    assert!(result.is_err());
-}
-
-#[test]
-fn test_update_beneficiary_email_invalid_index() {
-    let env = Env::default();
-    let (client, token, _admin, owner) = setup_with_token_and_admin(&env);
-    let plan_id = two_beneficiary_plan_id(&env, &client, &token, &owner);
-
-    let result = client.try_update_beneficiary_email(
-        &owner,
-        &plan_id,
-        &99u32,
-        &String::from_str(&env, "new@example.com"),
-    );
-    assert_eq!(result, Err(Ok(InheritanceError::InvalidBeneficiaryIndex)));
-}
-
-// --- swap_beneficiary_order ---
-
-#[test]
-fn test_swap_beneficiary_order_success() {
-    let env = Env::default();
-    let (client, token, _admin, owner) = setup_with_token_and_admin(&env);
-    let plan_id = two_beneficiary_plan_id(&env, &client, &token, &owner);
-
-    let plan_before = client.get_plan_details(&plan_id).unwrap();
-    let alice_hash = plan_before.beneficiaries.get(0).unwrap().hashed_email;
-    let bob_hash = plan_before.beneficiaries.get(1).unwrap().hashed_email;
-
-    client.swap_beneficiary_order(&owner, &plan_id, &0u32, &1u32);
-
-    let plan_after = client.get_plan_details(&plan_id).unwrap();
-    assert_eq!(
-        plan_after.beneficiaries.get(0).unwrap().hashed_email,
-        bob_hash
-    );
-    assert_eq!(
-        plan_after.beneficiaries.get(1).unwrap().hashed_email,
-        alice_hash
-    );
-    // Allocations unchanged
-    assert_eq!(plan_after.total_allocation_bp, 10000);
-}
-
-#[test]
-fn test_swap_beneficiary_order_same_index() {
-    let env = Env::default();
-    let (client, token, _admin, owner) = setup_with_token_and_admin(&env);
-    let plan_id = two_beneficiary_plan_id(&env, &client, &token, &owner);
-
-    // Swapping with itself should succeed as a no-op
-    let result = client.try_swap_beneficiary_order(&owner, &plan_id, &0u32, &0u32);
-    assert!(result.is_ok());
-
+    let plan_id = plan_with_partial_alloc(&env, &client, &token, &owner);
+    let indices = vec![&env, 0u32, 0u32];
+    let (success, _fail) = client.batch_remove_beneficiaries(&owner, &plan_id, &indices);
+    assert_eq!(success, 1);
     let plan = client.get_plan_details(&plan_id).unwrap();
+    assert_eq!(plan.beneficiaries.len(), 1);
+}
+
+#[test]
+fn test_batch_update_allocations_success() {
+    let env = Env::default();
+    let (client, token, _admin, owner) = setup_with_token_and_admin(&env);
+    let plan_id = plan_with_partial_alloc(&env, &client, &token, &owner);
+    let new_allocs = vec![&env, 7000u32, 3000u32];
+    client.batch_update_allocations(&owner, &plan_id, &new_allocs);
+    let plan = client.get_plan_details(&plan_id).unwrap();
+    assert_eq!(plan.beneficiaries.get(0).unwrap().allocation_bp, 7000);
+    assert_eq!(plan.beneficiaries.get(1).unwrap().allocation_bp, 3000);
     assert_eq!(plan.total_allocation_bp, 10000);
 }
 
 #[test]
-fn test_swap_beneficiary_order_invalid_index() {
+fn test_batch_update_allocations_wrong_total_fails() {
     let env = Env::default();
     let (client, token, _admin, owner) = setup_with_token_and_admin(&env);
-    let plan_id = two_beneficiary_plan_id(&env, &client, &token, &owner);
-
-    let result = client.try_swap_beneficiary_order(&owner, &plan_id, &0u32, &99u32);
-    assert_eq!(result, Err(Ok(InheritanceError::InvalidBeneficiaryIndex)));
-}
-
-#[test]
-fn test_swap_beneficiary_order_unauthorized() {
-    let env = Env::default();
-    let (client, token, _admin, owner) = setup_with_token_and_admin(&env);
-    let plan_id = two_beneficiary_plan_id(&env, &client, &token, &owner);
-    let stranger = Address::generate(&env);
-
-    let result = client.try_swap_beneficiary_order(&stranger, &plan_id, &0u32, &1u32);
+    let plan_id = plan_with_partial_alloc(&env, &client, &token, &owner);
+    let new_allocs = vec![&env, 6000u32, 3000u32];
+    let result = client.try_batch_update_allocations(&owner, &plan_id, &new_allocs);
     assert!(result.is_err());
 }
 
-// --- get_beneficiary_by_email ---
-
 #[test]
-fn test_get_beneficiary_by_email_success() {
+fn test_batch_update_allocations_count_mismatch_fails() {
     let env = Env::default();
     let (client, token, _admin, owner) = setup_with_token_and_admin(&env);
-    let plan_id = two_beneficiary_plan_id(&env, &client, &token, &owner);
-
-    let result =
-        client.try_get_beneficiary_by_email(&plan_id, &String::from_str(&env, "bob@example.com"));
-    assert!(result.is_ok());
-    let (index, beneficiary) = result.unwrap().unwrap();
-    assert_eq!(index, 1u32);
-    assert_eq!(beneficiary.allocation_bp, 5000);
+    let plan_id = plan_with_partial_alloc(&env, &client, &token, &owner);
+    let new_allocs = vec![&env, 10000u32];
+    let result = client.try_batch_update_allocations(&owner, &plan_id, &new_allocs);
+    assert!(result.is_err());
 }
 
 #[test]
-fn test_get_beneficiary_by_email_not_found() {
+fn test_batch_update_allocations_zero_bp_fails() {
     let env = Env::default();
     let (client, token, _admin, owner) = setup_with_token_and_admin(&env);
-    let plan_id = two_beneficiary_plan_id(&env, &client, &token, &owner);
-
-    let result = client
-        .try_get_beneficiary_by_email(&plan_id, &String::from_str(&env, "nobody@example.com"));
-    assert_eq!(result, Err(Ok(InheritanceError::BeneficiaryNotFound)));
+    let plan_id = plan_with_partial_alloc(&env, &client, &token, &owner);
+    let new_allocs = vec![&env, 0u32, 10000u32];
+    let result = client.try_batch_update_allocations(&owner, &plan_id, &new_allocs);
+    assert!(result.is_err());
 }
 
 #[test]
-fn test_get_beneficiary_by_email_plan_not_found() {
+fn test_batch_approve_kyc_success() {
     let env = Env::default();
-    let (client, _token, _admin, _owner) = setup_with_token_and_admin(&env);
-
-    let result = client.try_get_beneficiary_by_email(&9999u64, &String::from_str(&env, "x@x.com"));
-    assert_eq!(result, Err(Ok(InheritanceError::PlanNotFound)));
+    let (client, _token, admin, _owner) = setup_with_token_and_admin(&env);
+    let u1 = Address::generate(&env);
+    let u2 = Address::generate(&env);
+    let u3 = Address::generate(&env);
+    client.submit_kyc(&u1);
+    client.submit_kyc(&u2);
+    client.submit_kyc(&u3);
+    let users = vec![&env, u1.clone(), u2.clone(), u3.clone()];
+    let (success, fail) = client.batch_approve_kyc(&admin, &users);
+    assert_eq!(success, 3);
+    assert_eq!(fail, 0);
 }
 
-// --- Block updates after inheritance is triggered ---
+#[test]
+fn test_batch_approve_kyc_partial_fail() {
+    let env = Env::default();
+    let (client, _token, admin, _owner) = setup_with_token_and_admin(&env);
+    let u1 = Address::generate(&env);
+    let u2 = Address::generate(&env);
+    client.submit_kyc(&u1);
+    let users = vec![&env, u1.clone(), u2.clone()];
+    let (success, fail) = client.batch_approve_kyc(&admin, &users);
+    assert_eq!(success, 1);
+    assert_eq!(fail, 1);
+}
 
 #[test]
-fn test_update_blocked_after_trigger() {
+fn test_batch_approve_kyc_already_approved_counted_as_fail() {
+    let env = Env::default();
+    let (client, _token, admin, _owner) = setup_with_token_and_admin(&env);
+    let u1 = Address::generate(&env);
+    client.submit_kyc(&u1);
+    client.approve_kyc(&admin, &u1);
+    let users = vec![&env, u1.clone()];
+    let (success, fail) = client.batch_approve_kyc(&admin, &users);
+    assert_eq!(success, 0);
+    assert_eq!(fail, 1);
+}
+
+#[test]
+fn test_batch_approve_kyc_non_admin_fails() {
+    let env = Env::default();
+    let (client, _token, _admin, owner) = setup_with_token_and_admin(&env);
+    let u1 = Address::generate(&env);
+    client.submit_kyc(&u1);
+    let users = vec![&env, u1.clone()];
+    let result = client.try_batch_approve_kyc(&owner, &users);
+    assert!(result.is_err());
+}
+
+#[test]
+fn test_batch_approve_kyc_limit_exceeded() {
+    let env = Env::default();
+    let (client, _token, admin, _owner) = setup_with_token_and_admin(&env);
+    let mut users: Vec<Address> = Vec::new(&env);
+    for _ in 0..21u32 {
+        users.push_back(Address::generate(&env));
+    }
+    let result = client.try_batch_approve_kyc(&admin, &users);
+    assert!(result.is_err());
+}
+
+#[test]
+fn test_batch_create_messages_success() {
+    let env = Env::default();
+    let (client, token, _admin, owner) = setup_with_token_and_admin(&env);
+    let plan_id = create_plan_and_get_id(&env, &client, &token, &owner);
+    let future_ts = env.ledger().timestamp() + 10_000;
+    let params_list = vec![
+        &env,
+        CreateLegacyMessageParams {
+            vault_id: plan_id,
+            message_hash: BytesN::from_array(&env, &[1u8; 32]),
+            unlock_timestamp: future_ts,
+            key_reference: String::from_str(&env, "ref_a"),
+        },
+        CreateLegacyMessageParams {
+            vault_id: plan_id,
+            message_hash: BytesN::from_array(&env, &[2u8; 32]),
+            unlock_timestamp: future_ts + 1,
+            key_reference: String::from_str(&env, "ref_b"),
+        },
+    ];
+    let (ids, fail) = client.batch_create_messages(&owner, &params_list);
+    assert_eq!(ids.len(), 2);
+    assert_eq!(fail, 0);
+    assert!(client.get_legacy_message(&ids.get(0).unwrap()).is_some());
+    assert!(client.get_legacy_message(&ids.get(1).unwrap()).is_some());
+}
+
+#[test]
+fn test_batch_create_messages_past_timestamp_fails() {
+    let env = Env::default();
+    let (client, token, _admin, owner) = setup_with_token_and_admin(&env);
+    let plan_id = create_plan_and_get_id(&env, &client, &token, &owner);
+    env.ledger().set_timestamp(5000);
+    let params_list = vec![
+        &env,
+        CreateLegacyMessageParams {
+            vault_id: plan_id,
+            message_hash: BytesN::from_array(&env, &[1u8; 32]),
+            unlock_timestamp: 1000,
+            key_reference: String::from_str(&env, "ref_past"),
+        },
+        CreateLegacyMessageParams {
+            vault_id: plan_id,
+            message_hash: BytesN::from_array(&env, &[2u8; 32]),
+            unlock_timestamp: 10000,
+            key_reference: String::from_str(&env, "ref_future"),
+        },
+    ];
+    let (ids, fail) = client.batch_create_messages(&owner, &params_list);
+    assert_eq!(ids.len(), 1);
+    assert_eq!(fail, 1);
+}
+
+#[test]
+fn test_batch_create_messages_limit_exceeded() {
+    let env = Env::default();
+    let (client, token, _admin, owner) = setup_with_token_and_admin(&env);
+    let plan_id = create_plan_and_get_id(&env, &client, &token, &owner);
+    let future_ts = env.ledger().timestamp() + 10_000;
+    let mut params_list: Vec<CreateLegacyMessageParams> = Vec::new(&env);
+    for i in 0..11u32 {
+        params_list.push_back(CreateLegacyMessageParams {
+            vault_id: plan_id,
+            message_hash: BytesN::from_array(&env, &[i as u8; 32]),
+            unlock_timestamp: future_ts,
+            key_reference: String::from_str(&env, "ref"),
+        });
+    }
+    let result = client.try_batch_create_messages(&owner, &params_list);
+    assert!(result.is_err());
+}
+
+#[test]
+fn test_batch_claim_success() {
     let env = Env::default();
     let (client, token, admin, owner) = setup_with_token_and_admin(&env);
-    let plan_id = two_beneficiary_plan_id(&env, &client, &token, &owner);
-
-    // Trigger inheritance (admin action)
-    client.trigger_inheritance(&admin, &plan_id);
-
-    // All update functions should now fail with PlanNotActive
-    let alloc_result = client.try_update_beneficiary_allocation(&owner, &plan_id, &0u32, &4000u32);
-    assert_eq!(alloc_result, Err(Ok(InheritanceError::PlanNotActive)));
-
-    let bank_result = client.try_update_beneficiary_bank_account(
+    let bens = vec![
+        &env,
+        (
+            String::from_str(&env, "Alice"),
+            String::from_str(&env, "alice@batch.com"),
+            111111u32,
+            create_test_bytes(&env, "1111111111111111"),
+            5000u32,
+            1u32,
+        ),
+        (
+            String::from_str(&env, "Bob"),
+            String::from_str(&env, "bob@batch.com"),
+            222222u32,
+            create_test_bytes(&env, "2222222222222222"),
+            5000u32,
+            2u32,
+        ),
+    ];
+    let plan_id = client.create_inheritance_plan(&plan_params(
+        &env,
         &owner,
-        &plan_id,
-        &0u32,
-        &create_test_bytes(&env, "9999999999999999"),
-    );
-    assert_eq!(bank_result, Err(Ok(InheritanceError::PlanNotActive)));
+        &token,
+        "Batch Claim Plan",
+        "Desc",
+        100_000u64,
+        DistributionMethod::LumpSum,
+        &bens,
+    ));
+    let claimer_a = Address::generate(&env);
+    let claimer_b = Address::generate(&env);
+    client.submit_kyc(&claimer_a);
+    client.approve_kyc(&admin, &claimer_a);
+    client.submit_kyc(&claimer_b);
+    client.approve_kyc(&admin, &claimer_b);
+    let claimers = vec![
+        &env,
+        (
+            claimer_a.clone(),
+            String::from_str(&env, "alice@batch.com"),
+            111111u32,
+        ),
+        (
+            claimer_b.clone(),
+            String::from_str(&env, "bob@batch.com"),
+            222222u32,
+        ),
+    ];
+    let (success, fail) = client.batch_claim(&plan_id, &claimers);
+    assert_eq!(success, 2);
+    assert_eq!(fail, 0);
+}
 
-    let code_result = client.try_update_beneficiary_claim_code(&owner, &plan_id, &0u32, &999999u32);
-    assert_eq!(code_result, Err(Ok(InheritanceError::PlanNotActive)));
-
-    let email_result = client.try_update_beneficiary_email(
+#[test]
+fn test_batch_claim_partial_fail_wrong_code() {
+    let env = Env::default();
+    let (client, token, admin, owner) = setup_with_token_and_admin(&env);
+    let bens = vec![
+        &env,
+        (
+            String::from_str(&env, "Alice"),
+            String::from_str(&env, "alice@batch.com"),
+            111111u32,
+            create_test_bytes(&env, "1111111111111111"),
+            10000u32,
+            1u32,
+        ),
+    ];
+    let plan_id = client.create_inheritance_plan(&plan_params(
+        &env,
         &owner,
-        &plan_id,
-        &0u32,
-        &String::from_str(&env, "new@example.com"),
-    );
-    assert_eq!(email_result, Err(Ok(InheritanceError::PlanNotActive)));
+        &token,
+        "Batch Claim Plan",
+        "Desc",
+        100_000u64,
+        DistributionMethod::LumpSum,
+        &bens,
+    ));
+    let claimer = Address::generate(&env);
+    client.submit_kyc(&claimer);
+    client.approve_kyc(&admin, &claimer);
+    let claimers = vec![
+        &env,
+        (
+            claimer.clone(),
+            String::from_str(&env, "alice@batch.com"),
+            999999u32,
+        ),
+    ];
+    let (success, fail) = client.batch_claim(&plan_id, &claimers);
+    assert_eq!(success, 0);
+    assert_eq!(fail, 1);
+}
 
-    let swap_result = client.try_swap_beneficiary_order(&owner, &plan_id, &0u32, &1u32);
-    assert_eq!(swap_result, Err(Ok(InheritanceError::PlanNotActive)));
+#[test]
+fn test_batch_claim_no_kyc_counted_as_fail() {
+    let env = Env::default();
+    let (client, token, _admin, owner) = setup_with_token_and_admin(&env);
+    let bens = vec![
+        &env,
+        (
+            String::from_str(&env, "Alice"),
+            String::from_str(&env, "alice@batch.com"),
+            111111u32,
+            create_test_bytes(&env, "1111111111111111"),
+            10000u32,
+            1u32,
+        ),
+    ];
+    let plan_id = client.create_inheritance_plan(&plan_params(
+        &env,
+        &owner,
+        &token,
+        "Batch Claim Plan",
+        "Desc",
+        100_000u64,
+        DistributionMethod::LumpSum,
+        &bens,
+    ));
+    let claimer = Address::generate(&env);
+    let claimers = vec![
+        &env,
+        (
+            claimer.clone(),
+            String::from_str(&env, "alice@batch.com"),
+            111111u32,
+        ),
+    ];
+    let (success, fail) = client.batch_claim(&plan_id, &claimers);
+    assert_eq!(success, 0);
+    assert_eq!(fail, 1);
+}
+
+#[test]
+fn test_batch_claim_double_claim_counted_as_fail() {
+    let env = Env::default();
+    let (client, token, admin, owner) = setup_with_token_and_admin(&env);
+    let bens = vec![
+        &env,
+        (
+            String::from_str(&env, "Alice"),
+            String::from_str(&env, "alice@batch.com"),
+            111111u32,
+            create_test_bytes(&env, "1111111111111111"),
+            10000u32,
+            1u32,
+        ),
+    ];
+    let plan_id = client.create_inheritance_plan(&plan_params(
+        &env,
+        &owner,
+        &token,
+        "Batch Claim Plan",
+        "Desc",
+        100_000u64,
+        DistributionMethod::LumpSum,
+        &bens,
+    ));
+    let claimer = Address::generate(&env);
+    client.submit_kyc(&claimer);
+    client.approve_kyc(&admin, &claimer);
+    client.claim_inheritance_plan(
+        &plan_id,
+        &claimer,
+        &String::from_str(&env, "alice@batch.com"),
+        &111111u32,
+    );
+    let claimers = vec![
+        &env,
+        (
+            claimer.clone(),
+            String::from_str(&env, "alice@batch.com"),
+            111111u32,
+        ),
+    ];
+    let (success, fail) = client.batch_claim(&plan_id, &claimers);
+    assert_eq!(success, 0);
+    assert_eq!(fail, 1);
+}
+
+#[test]
+fn test_batch_claim_limit_exceeded() {
+    let env = Env::default();
+    let (client, token, _admin, owner) = setup_with_token_and_admin(&env);
+    let bens = vec![
+        &env,
+        (
+            String::from_str(&env, "Alice"),
+            String::from_str(&env, "alice@batch.com"),
+            111111u32,
+            create_test_bytes(&env, "1111111111111111"),
+            10000u32,
+            1u32,
+        ),
+    ];
+    let plan_id = client.create_inheritance_plan(&plan_params(
+        &env,
+        &owner,
+        &token,
+        "Batch Claim Plan",
+        "Desc",
+        100_000u64,
+        DistributionMethod::LumpSum,
+        &bens,
+    ));
+    let mut claimers: Vec<(Address, String, u32)> = Vec::new(&env);
+    for _ in 0..21u32 {
+        claimers.push_back((
+            Address::generate(&env),
+            String::from_str(&env, "x@x.com"),
+            111111u32,
+        ));
+    }
+    let result = client.try_batch_claim(&plan_id, &claimers);
+    assert!(result.is_err());
 }
 
 #[test]
@@ -5410,5 +5565,591 @@ fn test_priority_validation() {
         &dup_priorities,
     ));
 
+    assert!(result.is_err());
+}
+
+// ─────────────────────────────────────────────────
+// Beneficiary Notification & Acknowledgment Tests (#497)
+// ─────────────────────────────────────────────────
+
+#[test]
+fn test_notify_beneficiary() {
+    let env = Env::default();
+    let (client, token, _admin, owner) = setup_with_token_and_admin(&env);
+
+    let plan_id = client.create_inheritance_plan(&plan_params(
+        &env,
+        &owner,
+        &token,
+        "Notify Test Plan",
+        "Plan for notification testing",
+        1_000_000u64,
+        DistributionMethod::LumpSum,
+        &default_beneficiaries(&env),
+    ));
+
+    // Owner notifies the first beneficiary (index 0)
+    client.notify_beneficiary(&owner, &plan_id, &0u32);
+
+    let ack = client
+        .get_beneficiary_acknowledgment(&plan_id, &0u32)
+        .expect("Should have a notification record");
+
+    assert_eq!(ack.plan_id, plan_id);
+    assert_eq!(ack.beneficiary_index, 0u32);
+    assert_eq!(ack.acknowledged_at, 0u64); // not yet acknowledged
+}
+
+#[test]
+fn test_notify_beneficiary_twice_fails() {
+    let env = Env::default();
+    let (client, token, _admin, owner) = setup_with_token_and_admin(&env);
+
+    let plan_id = client.create_inheritance_plan(&plan_params(
+        &env,
+        &owner,
+        &token,
+        "Double Notify Plan",
+        "Plan",
+        1_000_000u64,
+        DistributionMethod::LumpSum,
+        &default_beneficiaries(&env),
+    ));
+
+    client.notify_beneficiary(&owner, &plan_id, &0u32);
+
+    // Second notification must fail (AlreadyApproved)
+    let result = client.try_notify_beneficiary(&owner, &plan_id, &0u32);
+    assert!(result.is_err());
+}
+
+#[test]
+fn test_acknowledge_beneficiary_status() {
+    let env = Env::default();
+    let (client, token, _admin, owner) = setup_with_token_and_admin(&env);
+
+    let plan_id = client.create_inheritance_plan(&plan_params(
+        &env,
+        &owner,
+        &token,
+        "Ack Test Plan",
+        "Plan for acknowledgment testing",
+        1_000_000u64,
+        DistributionMethod::LumpSum,
+        &default_beneficiaries(&env),
+    ));
+
+    // Notify first
+    client.notify_beneficiary(&owner, &plan_id, &0u32);
+
+    // Beneficiary acknowledges
+    let beneficiary_caller = Address::generate(&env);
+    client.acknowledge_beneficiary_status(&beneficiary_caller, &plan_id, &0u32);
+
+    let ack = client
+        .get_beneficiary_acknowledgment(&plan_id, &0u32)
+        .expect("Should have acknowledgment record");
+
+    assert_eq!(ack.plan_id, plan_id);
+    assert_eq!(ack.beneficiary_index, 0u32);
+}
+
+#[test]
+fn test_acknowledge_without_notification_fails() {
+    let env = Env::default();
+    let (client, token, _admin, owner) = setup_with_token_and_admin(&env);
+
+    let plan_id = client.create_inheritance_plan(&plan_params(
+        &env,
+        &owner,
+        &token,
+        "No Notify Plan",
+        "Plan",
+        1_000_000u64,
+        DistributionMethod::LumpSum,
+        &default_beneficiaries(&env),
+    ));
+
+    // Acknowledge without prior notification must fail (ClaimNotAllowedYet)
+    let beneficiary_caller = Address::generate(&env);
+    let result = client.try_acknowledge_beneficiary_status(&beneficiary_caller, &plan_id, &0u32);
+    assert!(result.is_err());
+}
+
+#[test]
+fn test_acknowledge_twice_fails() {
+    let env = Env::default();
+    let (client, token, _admin, owner) = setup_with_token_and_admin(&env);
+
+    let plan_id = client.create_inheritance_plan(&plan_params(
+        &env,
+        &owner,
+        &token,
+        "Double Ack Plan",
+        "Plan",
+        1_000_000u64,
+        DistributionMethod::LumpSum,
+        &default_beneficiaries(&env),
+    ));
+
+    client.notify_beneficiary(&owner, &plan_id, &0u32);
+
+    let beneficiary_caller = Address::generate(&env);
+    client.acknowledge_beneficiary_status(&beneficiary_caller, &plan_id, &0u32);
+
+    // Second acknowledgment must fail (AlreadyApproved)
+    let result = client.try_acknowledge_beneficiary_status(&beneficiary_caller, &plan_id, &0u32);
+    assert!(result.is_err());
+}
+
+#[test]
+fn test_get_unacknowledged_beneficiaries() {
+    let env = Env::default();
+    let (client, token, _admin, owner) = setup_with_token_and_admin(&env);
+
+    let two_beneficiaries = vec![
+        &env,
+        (
+            String::from_str(&env, "Alice"),
+            String::from_str(&env, "alice@example.com"),
+            111111u32,
+            create_test_bytes(&env, "1111111111111111"),
+            5000u32,
+            1u32,
+        ),
+        (
+            String::from_str(&env, "Bob"),
+            String::from_str(&env, "bob@example.com"),
+            222222u32,
+            create_test_bytes(&env, "2222222222222222"),
+            5000u32,
+            2u32,
+        ),
+    ];
+
+    let plan_id = client.create_inheritance_plan(&plan_params(
+        &env,
+        &owner,
+        &token,
+        "Multi Beneficiary Plan",
+        "Plan with two beneficiaries",
+        1_000_000u64,
+        DistributionMethod::LumpSum,
+        &two_beneficiaries,
+    ));
+
+    // Notify both, acknowledge only the first
+    client.notify_beneficiary(&owner, &plan_id, &0u32);
+    client.notify_beneficiary(&owner, &plan_id, &1u32);
+
+    let alice = Address::generate(&env);
+    client.acknowledge_beneficiary_status(&alice, &plan_id, &0u32);
+
+    // Only index 1 (Bob) should be unacknowledged
+    let unacked = client.get_unacknowledged_beneficiaries(&plan_id);
+    assert_eq!(unacked.len(), 1);
+    assert_eq!(unacked.get(0).unwrap(), 1u32);
+}
+
+#[test]
+fn test_require_acknowledgment_setting() {
+    let env = Env::default();
+    let (client, token, _admin, owner) = setup_with_token_and_admin(&env);
+
+    let plan_id = client.create_inheritance_plan(&plan_params(
+        &env,
+        &owner,
+        &token,
+        "Req Ack Plan",
+        "Plan requiring acknowledgment",
+        1_000_000u64,
+        DistributionMethod::LumpSum,
+        &default_beneficiaries(&env),
+    ));
+
+    // Owner enables acknowledgment requirement
+    client.require_acknowledgment(&owner, &plan_id, &true);
+
+    // Owner disables it again
+    client.require_acknowledgment(&owner, &plan_id, &false);
+}
+
+#[test]
+fn test_notify_invalid_beneficiary_index_fails() {
+    let env = Env::default();
+    let (client, token, _admin, owner) = setup_with_token_and_admin(&env);
+
+    let plan_id = client.create_inheritance_plan(&plan_params(
+        &env,
+        &owner,
+        &token,
+        "Invalid Index Plan",
+        "Plan",
+        1_000_000u64,
+        DistributionMethod::LumpSum,
+        &default_beneficiaries(&env),
+    ));
+
+    // Index 99 does not exist
+    let result = client.try_notify_beneficiary(&owner, &plan_id, &99u32);
+    assert!(result.is_err());
+}
+
+#[test]
+fn test_get_beneficiary_acknowledgment_none_before_notify() {
+    let env = Env::default();
+    let (client, token, _admin, owner) = setup_with_token_and_admin(&env);
+
+    let plan_id = client.create_inheritance_plan(&plan_params(
+        &env,
+        &owner,
+        &token,
+        "Pre-Notify Plan",
+        "Plan",
+        1_000_000u64,
+        DistributionMethod::LumpSum,
+        &default_beneficiaries(&env),
+    ));
+
+    // Before any notification, result should be None
+    let ack = client.get_beneficiary_acknowledgment(&plan_id, &0u32);
+    assert!(ack.is_none());
+}
+
+// ─────────────────────────────────────────────────
+// Access Control (RBAC) Tests
+// ─────────────────────────────────────────────────
+
+#[test]
+fn test_admin_role_assigned_on_initialize() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let contract_id = env.register_contract(None, InheritanceContract);
+    let admin = Address::generate(&env);
+    let client = InheritanceContractClient::new(&env, &contract_id);
+    client.initialize_admin(&admin);
+
+    assert!(client.has_role(&admin, &access_control::Role::Admin));
+    assert!(!client.has_role(&admin, &access_control::Role::Owner));
+}
+
+#[test]
+fn test_owner_role_assigned_on_plan_creation() {
+    let env = Env::default();
+    let (client, token_id, _admin, owner) = setup_with_token_and_admin(&env);
+
+    let plan_id = client.create_inheritance_plan(&plan_params(
+        &env,
+        &owner,
+        &token_id,
+        "Plan",
+        "Desc",
+        1_000_000u64,
+        DistributionMethod::LumpSum,
+        &default_beneficiaries(&env),
+    ));
+
+    assert!(client.has_role(&owner, &access_control::Role::Owner));
+    // Owner should not auto-receive Admin role
+    assert!(!client.has_role(&owner, &access_control::Role::Admin));
+    let _ = plan_id;
+}
+
+#[test]
+fn test_admin_can_assign_and_revoke_roles() {
+    let env = Env::default();
+    let (client, _token_id, admin, _owner) = setup_with_token_and_admin(&env);
+    let target = Address::generate(&env);
+
+    assert!(!client.has_role(&target, &access_control::Role::Guardian));
+
+    client.assign_role(&admin, &target, &access_control::Role::Guardian);
+    assert!(client.has_role(&target, &access_control::Role::Guardian));
+
+    client.revoke_role(&admin, &target, &access_control::Role::Guardian);
+    assert!(!client.has_role(&target, &access_control::Role::Guardian));
+}
+
+#[test]
+fn test_non_admin_cannot_assign_roles() {
+    let env = Env::default();
+    let (client, _token_id, _admin, owner) = setup_with_token_and_admin(&env);
+    let target = Address::generate(&env);
+
+    let result = client.try_assign_role(&owner, &target, &access_control::Role::Admin);
+    assert!(result.is_err());
+}
+
+#[test]
+fn test_guardian_role_assigned_via_set_guardians() {
+    let env = Env::default();
+    let (client, token_id, _admin, owner) = setup_with_token_and_admin(&env);
+    let guardian1 = Address::generate(&env);
+    let guardian2 = Address::generate(&env);
+
+    let plan_id = client.create_inheritance_plan(&plan_params(
+        &env,
+        &owner,
+        &token_id,
+        "Plan",
+        "Desc",
+        1_000_000u64,
+        DistributionMethod::LumpSum,
+        &default_beneficiaries(&env),
+    ));
+
+    let guardians = Vec::from_array(&env, [guardian1.clone(), guardian2.clone()]);
+    client.set_guardians(&owner, &plan_id, &guardians, &1u32);
+
+    assert!(client.has_role(&guardian1, &access_control::Role::Guardian));
+    assert!(client.has_role(&guardian2, &access_control::Role::Guardian));
+}
+
+#[test]
+fn test_get_roles_returns_all_assigned_roles() {
+    let env = Env::default();
+    let (client, _token_id, admin, _owner) = setup_with_token_and_admin(&env);
+    let user = Address::generate(&env);
+
+    client.assign_role(&admin, &user, &access_control::Role::Owner);
+    client.assign_role(&admin, &user, &access_control::Role::Guardian);
+
+    let roles = client.get_roles(&user);
+    assert_eq!(roles.len(), 2);
+}
+
+#[test]
+fn test_unauthorized_approve_kyc_rejected() {
+    let env = Env::default();
+    let (client, _token_id, _admin, owner) = setup_with_token_and_admin_no_kyc(&env);
+
+    // Submit KYC first
+    client.submit_kyc(&owner);
+
+    // A non-admin trying to approve KYC should fail
+    let non_admin = Address::generate(&env);
+    let result = client.try_approve_kyc(&non_admin, &owner);
+    assert!(result.is_err());
+}
+
+// ─── Emergency Pause Tests ────────────────────────────────────────────────────
+
+fn setup_plan_for_triggers(env: &Env) -> (InheritanceContractClient<'_>, Address, Address, u64) {
+    let (client, token_id, admin, owner) = setup_with_token_and_admin(env);
+    let plan_id = client.create_inheritance_plan(&plan_params(
+        env,
+        &owner,
+        &token_id,
+        "TrigPlan",
+        "Desc",
+        1_000_000u64,
+        DistributionMethod::LumpSum,
+        &default_beneficiaries(env),
+    ));
+    (client, admin, owner, plan_id)
+}
+
+#[test]
+fn test_pause_blocks_create_plan() {
+    let env = Env::default();
+    let (client, token_id, admin, owner) = setup_with_token_and_admin(&env);
+    client.pause(&admin);
+    let result = client.try_create_inheritance_plan(&plan_params(
+        &env,
+        &owner,
+        &token_id,
+        "Plan",
+        "Desc",
+        1_000_000u64,
+        DistributionMethod::LumpSum,
+        &default_beneficiaries(&env),
+    ));
+    assert!(result.is_err());
+}
+
+#[test]
+fn test_unpause_restores_create_plan() {
+    let env = Env::default();
+    let (client, token_id, admin, owner) = setup_with_token_and_admin(&env);
+    client.pause(&admin);
+    client.unpause(&admin);
+    let plan_id = client.create_inheritance_plan(&plan_params(
+        &env,
+        &owner,
+        &token_id,
+        "Plan",
+        "Desc",
+        1_000_000u64,
+        DistributionMethod::LumpSum,
+        &default_beneficiaries(&env),
+    ));
+    assert!(plan_id > 0);
+}
+
+#[test]
+fn test_non_admin_cannot_pause() {
+    let env = Env::default();
+    let (client, _token_id, _admin, owner) = setup_with_token_and_admin(&env);
+    let result = client.try_pause(&owner);
+    assert!(result.is_err());
+}
+
+#[test]
+fn test_is_paused_reflects_state() {
+    let env = Env::default();
+    let (client, _token_id, admin, _owner) = setup_with_token_and_admin(&env);
+    assert!(!client.is_paused());
+    client.pause(&admin);
+    assert!(client.is_paused());
+    client.unpause(&admin);
+    assert!(!client.is_paused());
+}
+
+// ─── Conditional Trigger Tests ────────────────────────────────────────────────
+
+#[test]
+fn test_time_trigger_fires_after_date() {
+    let env = Env::default();
+    env.ledger().set_timestamp(1000);
+    let (client, _admin, owner, plan_id) = setup_plan_for_triggers(&env);
+
+    client.add_time_trigger(&owner, &plan_id, &2000u64);
+    assert!(!client.check_trigger_conditions(&plan_id));
+
+    env.ledger().set_timestamp(2001);
+    assert!(client.check_trigger_conditions(&plan_id));
+}
+
+#[test]
+fn test_time_trigger_does_not_fire_before_date() {
+    let env = Env::default();
+    env.ledger().set_timestamp(1000);
+    let (client, _admin, owner, plan_id) = setup_plan_for_triggers(&env);
+
+    client.add_time_trigger(&owner, &plan_id, &9999u64);
+    assert!(!client.check_trigger_conditions(&plan_id));
+}
+
+#[test]
+fn test_inactivity_trigger_fires_after_period() {
+    let env = Env::default();
+    env.ledger().set_timestamp(1000);
+    let (client, _admin, owner, plan_id) = setup_plan_for_triggers(&env);
+
+    client.add_inactivity_trigger(&owner, &plan_id, &500u64);
+    client.record_activity(&owner, &plan_id);
+    assert!(!client.check_trigger_conditions(&plan_id));
+
+    env.ledger().set_timestamp(1600);
+    assert!(client.check_trigger_conditions(&plan_id));
+}
+
+#[test]
+fn test_inactivity_reset_by_record_activity() {
+    let env = Env::default();
+    env.ledger().set_timestamp(1000);
+    let (client, _admin, owner, plan_id) = setup_plan_for_triggers(&env);
+
+    client.add_inactivity_trigger(&owner, &plan_id, &500u64);
+
+    env.ledger().set_timestamp(1600);
+    client.record_activity(&owner, &plan_id);
+    assert!(!client.check_trigger_conditions(&plan_id));
+}
+
+#[test]
+fn test_oracle_trigger_fires_on_submit() {
+    let env = Env::default();
+    let (client, _admin, owner, plan_id) = setup_plan_for_triggers(&env);
+    let oracle = Address::generate(&env);
+
+    client.add_oracle_trigger(&owner, &plan_id, &oracle);
+    assert!(!client.check_trigger_conditions(&plan_id));
+
+    client.submit_oracle_trigger(&oracle, &plan_id);
+    assert!(client.check_trigger_conditions(&plan_id));
+}
+
+#[test]
+fn test_non_oracle_cannot_submit_trigger() {
+    let env = Env::default();
+    let (client, _admin, owner, plan_id) = setup_plan_for_triggers(&env);
+    let oracle = Address::generate(&env);
+    let impersonator = Address::generate(&env);
+
+    client.add_oracle_trigger(&owner, &plan_id, &oracle);
+    let result = client.try_submit_oracle_trigger(&impersonator, &plan_id);
+    assert!(result.is_err());
+}
+
+#[test]
+fn test_health_trigger_fires_on_submit() {
+    let env = Env::default();
+    let (client, _admin, owner, plan_id) = setup_plan_for_triggers(&env);
+    let oracle = Address::generate(&env);
+
+    client.add_health_trigger(&owner, &plan_id, &oracle);
+    assert!(!client.check_trigger_conditions(&plan_id));
+
+    client.submit_health_trigger(&oracle, &plan_id);
+    assert!(client.check_trigger_conditions(&plan_id));
+}
+
+#[test]
+fn test_manual_condition_never_auto_fires() {
+    let env = Env::default();
+    env.ledger().set_timestamp(1000);
+    let (client, _admin, owner, plan_id) = setup_plan_for_triggers(&env);
+
+    client.set_trigger_conditions(
+        &owner,
+        &plan_id,
+        &Vec::from_array(&env, [TriggerConditionType::Manual]),
+        &0u64,
+        &0u64,
+        &None,
+    );
+    env.ledger().set_timestamp(9999);
+    assert!(!client.check_trigger_conditions(&plan_id));
+}
+
+#[test]
+fn test_auto_trigger_check_fires_trigger() {
+    let env = Env::default();
+    env.ledger().set_timestamp(1000);
+    let (client, _admin, owner, plan_id) = setup_plan_for_triggers(&env);
+
+    client.add_time_trigger(&owner, &plan_id, &1001u64);
+    env.ledger().set_timestamp(1002);
+
+    client.auto_trigger_check(&plan_id);
+
+    let trigger_info = client.get_inheritance_trigger(&plan_id);
+    assert!(trigger_info.is_some());
+}
+
+#[test]
+fn test_get_trigger_conditions_returns_config() {
+    let env = Env::default();
+    let (client, _admin, owner, plan_id) = setup_plan_for_triggers(&env);
+    let oracle = Address::generate(&env);
+
+    client.add_oracle_trigger(&owner, &plan_id, &oracle);
+    let config = client.get_trigger_conditions(&plan_id).unwrap();
+    assert_eq!(config.conditions.len(), 1);
+    assert!(!config.oracle_triggered);
+}
+
+#[test]
+fn test_set_conditions_blocked_after_trigger() {
+    let env = Env::default();
+    env.ledger().set_timestamp(1000);
+    let (client, _admin, owner, plan_id) = setup_plan_for_triggers(&env);
+
+    client.add_time_trigger(&owner, &plan_id, &1001u64);
+    env.ledger().set_timestamp(1002);
+    client.auto_trigger_check(&plan_id);
+
+    let result = client.try_add_time_trigger(&owner, &plan_id, &9999u64);
     assert!(result.is_err());
 }

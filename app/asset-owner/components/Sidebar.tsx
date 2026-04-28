@@ -12,6 +12,10 @@ import PlansIcon from "@/app/svg/PlansIcon";
 import PortfolioIcon from "@/app/svg/PortfolioIcon";
 import SecurityIcon from "@/app/svg/SecurityIcon";
 import SwapIcon from "@/app/svg/SwapIcon";
+import BorrowingIcon from "@/app/svg/BorrowingIcon";
+
+import EmergencyIcon from "@/app/svg/EmergencyIcon";
+import { MessageSquare, TrendingUp } from "lucide-react";
 
 const normalizePath = (path: string) => {
   if (path !== "/" && path.endsWith("/")) {
@@ -23,6 +27,8 @@ const normalizePath = (path: string) => {
 const SIDEBAR_ITEMS = [
   { label: "Home", href: "/asset-owner/", icon: HomeIcon, exact: true },
   { label: "Plans", href: "/asset-owner/plans", icon: PlansIcon },
+  { label: "Borrowing", href: "/asset-owner/borrowing", icon: BorrowingIcon },
+  { label: "Messages", href: "/asset-owner/messages", icon: MessageSquare },
   { label: "Claim", href: "/asset-owner/claim", icon: ClaimIcon },
   { label: "Swap", href: "/asset-owner/swap", icon: SwapIcon },
   { label: "Portfolio", href: "/asset-owner/portfolio", icon: PortfolioIcon },
@@ -32,6 +38,8 @@ const SIDEBAR_ITEMS = [
     icon: InactivityIcon,
   },
   { label: "Security", href: "/asset-owner/security", icon: SecurityIcon },
+  { label: "Emergency", href: "/asset-owner/emergency", icon: EmergencyIcon },
+  { label: "Lending", href: "/asset-owner/lending", icon: TrendingUp },
 ];
 
 export default function Sidebar() {

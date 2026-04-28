@@ -11,9 +11,9 @@ use uuid::Uuid;
 
 pub struct ComplianceEngine {
     db: PgPool,
-    velocity_threshold: usize, // e.g., 3 events
-    velocity_window_mins: i64, // e.g., 10 minutes
-    volume_threshold: Decimal, // e.g., $100k
+    pub velocity_threshold: usize, // e.g., 3 events
+    velocity_window_mins: i64,     // e.g., 10 minutes
+    pub volume_threshold: Decimal, // e.g., $100k
 }
 
 impl ComplianceEngine {
@@ -244,6 +244,7 @@ impl ComplianceEngine {
 mod tests {
     use super::*;
     use rust_decimal_macros::dec;
+    use sqlx::PgPool;
 
     #[tokio::test]
     async fn test_compliance_engine_new() {
@@ -253,4 +254,11 @@ mod tests {
         assert_eq!(engine.velocity_window_mins, 15);
         assert_eq!(engine.volume_threshold, dec!(50000));
     }
+
+    // Additional integration tests would go here
+    // Test velocity detection logic
+    // Test volume threshold detection
+    // Test sanctions screening integration
+    // Test risk scoring algorithms
+    // Add compliance violation scenarios
 }
