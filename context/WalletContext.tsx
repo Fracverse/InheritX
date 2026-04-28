@@ -23,6 +23,8 @@ interface WalletContextType {
 }
 
 const WalletContext = createContext<WalletContextType | undefined>(undefined);
+const E2E_MOCK_WALLET_ADDRESS =
+  "GDE2KZQ4QGJZ5Z5QW2Y4B7Y6Q5D3P9V8N7M6L5K4J3H2G1FTEST";
 
 export const useWallet = () => {
   const context = useContext(WalletContext);
@@ -79,6 +81,21 @@ export const WalletProvider = ({ children }: { children: React.ReactNode }) => {
   ];
 
   const connectCustom = async (moduleId: string) => {
+    if (process.env.NEXT_PUBLIC_E2E_MOCK_WALLET === "true") {
+      setIsConnecting(true);
+      try {
+        setAddress(E2E_MOCK_WALLET_ADDRESS);
+        setSelectedWalletId(moduleId);
+        localStorage.setItem("inheritx_wallet_address", E2E_MOCK_WALLET_ADDRESS);
+        localStorage.setItem("inheritx_wallet_id", moduleId);
+        setIsModalOpen(false);
+        router.push("/asset-owner");
+      } finally {
+        setIsConnecting(false);
+      }
+      return;
+    }
+
     if (!kit) return;
     setIsConnecting(true);
     try {

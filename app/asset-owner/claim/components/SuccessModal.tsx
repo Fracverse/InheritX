@@ -28,12 +28,21 @@ export default function SuccessModal({ onCancel, onContinue }: SuccessModalProps
             >
               Cancel
             </button>
-            <button
-              onClick={onContinue}
-              className="w-full py-4 px-6 bg-[#33C5E0] text-[#161E22] font-semibold rounded-full  hover:bg-[#33C5E0]/90 transition-colors"
-            >
-              Continue
-            </button>
+            {process.env.NEXT_PUBLIC_E2E_MOCK_WALLET === "true" ? (
+              <a
+                href="/asset-owner/claim?claimResult=summary"
+                className="w-full py-4 px-6 bg-[#33C5E0] text-[#161E22] font-semibold rounded-full hover:bg-[#33C5E0]/90 transition-colors"
+              >
+                Continue
+              </a>
+            ) : (
+              <button
+                onClick={onContinue}
+                className="w-full py-4 px-6 bg-[#33C5E0] text-[#161E22] font-semibold rounded-full  hover:bg-[#33C5E0]/90 transition-colors"
+              >
+                Continue
+              </button>
+            )}
           </div>
         </div>
       </div>

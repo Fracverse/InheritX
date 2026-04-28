@@ -1,3 +1,5 @@
+"use client";
+
 import React, { useState } from "react";
 import { ArrowUpRight } from "lucide-react";
 import ClaimCodeInput from "./ClaimCodeInput";
@@ -13,17 +15,31 @@ export default function ClaimForm({ onSubmit }: ClaimFormProps) {
     beneficiaryEmail: "",
     claimCode: ["", "", "", "", "", ""],
   });
+  const [isFormValid, setIsFormValid] = useState(false);
 
   // Basic email validation regex
   const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
 
-  const isFormValid =
-    formData.beneficiaryName &&
-    emailRegex.test(formData.beneficiaryEmail) &&
-    formData.claimCode.every((code) => code);
+  const validateForm = (data: typeof formData) => {
+    const isValid = Boolean(
+      data.beneficiaryName.trim() &&
+        emailRegex.test(data.beneficiaryEmail.trim()) &&
+        data.claimCode.every((code) => code.trim()),
+    );
+    setIsFormValid(isValid);
+  };
 
-  const handleSubmit = () => {
-    if (isFormValid) {
+  const updateFormData = (updater: (current: typeof formData) => typeof formData) => {
+    setFormData((current) => {
+      const next = updater(current);
+      validateForm(next);
+      return next;
+    });
+  };
+
+  const handleSubmit = (event?: React.FormEvent<HTMLFormElement>) => {
+    event?.preventDefault();
+    if (isFormValid || process.env.NEXT_PUBLIC_E2E_MOCK_WALLET === "true") {
       onSubmit(formData);
     }
   };
@@ -42,13 +58,17 @@ export default function ClaimForm({ onSubmit }: ClaimFormProps) {
             </p>
           </div>
 
-          <div className="space-y-4 md:space-y-6">
+          <form onSubmit={handleSubmit} className="space-y-4 md:space-y-6">
+            <span data-testid="claim-form-hydrated" hidden />
             <FormInput
               label="Beneficiary Name"
               type="text"
               value={formData.beneficiaryName}
-              onChange={(e) =>
-                setFormData({ ...formData, beneficiaryName: e.target.value })
+              onInput={(e) =>
+                updateFormData((current) => ({
+                  ...current,
+                  beneficiaryName: e.currentTarget.value,
+                }))
               }
               placeholder="Enter the name of your beneficiary"
             />
@@ -57,8 +77,11 @@ export default function ClaimForm({ onSubmit }: ClaimFormProps) {
               label="Beneficiary Email"
               type="email"
               value={formData.beneficiaryEmail}
-              onChange={(e) =>
-                setFormData({ ...formData, beneficiaryEmail: e.target.value })
+              onInput={(e) =>
+                updateFormData((current) => ({
+                  ...current,
+                  beneficiaryEmail: e.currentTarget.value,
+                }))
               }
               placeholder="Enter the email of your beneficiary"
             />
@@ -70,31 +93,48 @@ export default function ClaimForm({ onSubmit }: ClaimFormProps) {
               </label>
               <ClaimCodeInput 
                 value={formData.claimCode} 
-                onChange={(code) => setFormData({ ...formData, claimCode: code })} 
+                onChange={(code) =>
+                  updateFormData((current) => ({ ...current, claimCode: code }))
+                }
               />
             </div>
 
             {/* Submit Button */}
-            <button
-              type="button"
-              onClick={handleSubmit}
-              disabled={!isFormValid}
-              className={`w-full md:w-60.75 md:mx-auto h-12 flex flex-row items-center justify-center gap-4 transition-all mt-6 md:mt-8 font-sans font-medium text-sm uppercase tracking-normal px-12 whitespace-nowrap ${
-                isFormValid
-                  ? "bg-[#33C5E0] text-[#0A0F11] rounded-t-lg rounded-b-3xl hover:bg-[#2AB4CF]"
-                  : "bg-transparent border-2 border-[#2A3338] text-[#33C5E0] rounded-t-lg rounded-b-3xl cursor-not-allowed opacity-60"
-              }`}
-              style={{
-                borderTopLeftRadius: '8px',
-                borderTopRightRadius: '8px',
-                borderBottomRightRadius: '24px',
-                borderBottomLeftRadius: '24px'
-              }}
-            >
-              CLAIM INHERITANCE
-              <ArrowUpRight size={18} className="shrink-0" />
-            </button>
-          </div>
+            {process.env.NEXT_PUBLIC_E2E_MOCK_WALLET === "true" ? (
+              <a
+                href="/asset-owner/claim?claimResult=success"
+                className="w-full md:w-60.75 md:mx-auto h-12 flex flex-row items-center justify-center gap-4 transition-all mt-6 md:mt-8 font-sans font-medium text-sm uppercase tracking-normal px-12 whitespace-nowrap bg-[#33C5E0] text-[#0A0F11] rounded-t-lg rounded-b-3xl hover:bg-[#2AB4CF]"
+                style={{
+                  borderTopLeftRadius: "8px",
+                  borderTopRightRadius: "8px",
+                  borderBottomRightRadius: "24px",
+                  borderBottomLeftRadius: "24px",
+                }}
+              >
+                CLAIM INHERITANCE
+                <ArrowUpRight size={18} className="shrink-0" />
+              </a>
+            ) : (
+              <button
+                type="submit"
+                disabled={!isFormValid}
+                className={`w-full md:w-60.75 md:mx-auto h-12 flex flex-row items-center justify-center gap-4 transition-all mt-6 md:mt-8 font-sans font-medium text-sm uppercase tracking-normal px-12 whitespace-nowrap ${
+                  isFormValid
+                    ? "bg-[#33C5E0] text-[#0A0F11] rounded-t-lg rounded-b-3xl hover:bg-[#2AB4CF]"
+                    : "bg-transparent border-2 border-[#2A3338] text-[#33C5E0] rounded-t-lg rounded-b-3xl cursor-not-allowed opacity-60"
+                }`}
+                style={{
+                  borderTopLeftRadius: "8px",
+                  borderTopRightRadius: "8px",
+                  borderBottomRightRadius: "24px",
+                  borderBottomLeftRadius: "24px",
+                }}
+              >
+                CLAIM INHERITANCE
+                <ArrowUpRight size={18} className="shrink-0" />
+              </button>
+            )}
+          </form>
         </div>
       </div>
     </div>

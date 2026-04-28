@@ -67,12 +67,21 @@ export default function ClaimsTable({ claims, onClaimClick }: ClaimsTableProps) 
 
               {/* Actions */}
               <div>
-                <button
-                  onClick={() => onClaimClick(claim.id)}
-                  className="bg-[#33C5E0] text-[#161E22] px-8 py-2 rounded-3xl text-sm font-medium hover:bg-[#2AB8D3] transition-colors"
+                <a
+                  href={`/asset-owner/claim?claimId=${claim.id}`}
+                  onClick={(event) => {
+                    event.preventDefault();
+                    window.history.pushState(
+                      null,
+                      "",
+                      `/asset-owner/claim?claimId=${claim.id}`,
+                    );
+                    onClaimClick(claim.id);
+                  }}
+                  className="inline-block bg-[#33C5E0] text-[#161E22] px-8 py-2 rounded-3xl text-sm font-medium hover:bg-[#2AB8D3] transition-colors"
                 >
                   CLAIM PLAN
-                </button>
+                </a>
               </div>
             </div>
           ))}
@@ -109,12 +118,21 @@ export default function ClaimsTable({ claims, onClaimClick }: ClaimsTableProps) 
               <StatusBadge status={claim.trigger} type="trigger" />
             </div>
 
-            <button
-              onClick={() => onClaimClick(claim.id)}
+            <a
+              href={`/asset-owner/claim?claimId=${claim.id}`}
+              onClick={(event) => {
+                event.preventDefault();
+                window.history.pushState(
+                  null,
+                  "",
+                  `/asset-owner/claim?claimId=${claim.id}`,
+                );
+                onClaimClick(claim.id);
+              }}
               className="w-full bg-[#33C5E0] text-[#161E22] py-3 rounded-lg text-sm font-medium hover:bg-[#2AB8D3] transition-colors"
             >
               CLAIM PLAN
-            </button>
+            </a>
           </div>
         ))}
       </div>

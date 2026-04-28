@@ -1,6 +1,7 @@
 "use client";
 
-import React, { useState } from "react";
+import React, { Suspense, useState } from "react";
+import { useSearchParams } from "next/navigation";
 import { ViewState, ClaimFormData } from "./types";
 import { MOCK_CLAIMS, MOCK_ACTIVITIES, MOCK_PLAN_SUMMARY } from "./data/mockData";
 import SuccessModal from "./components/SuccessModal";
@@ -12,14 +13,26 @@ import Tabs from "./components/Tabs";
 import ClaimsTable from "./components/ClaimsTable";
 import ActivitiesList from "./components/ActivitiesList";
 
-export default function ClaimPage() {
+function ClaimPageContent() {
+  const searchParams = useSearchParams();
   const [activeTab, setActiveTab] = useState<"claims" | "activities">("claims");
   const [viewState, setViewState] = useState<ViewState>("list");
   const [selectedClaim, setSelectedClaim] = useState<string | null>(null);
+  const claimResult = searchParams.get("claimResult");
+  const claimId = searchParams.get("claimId");
+  const effectiveViewState: ViewState =
+    claimResult === "success"
+      ? "success"
+      : claimResult === "summary"
+        ? "summary"
+        : selectedClaim || claimId
+          ? "form"
+          : viewState;
 
   const handleSubmitClaim = (formData: ClaimFormData) => {
     // Simulate API call
-    const isSuccess = Math.random() > 0.3; // 70% success rate for demo
+    const isSuccess =
+      process.env.NEXT_PUBLIC_E2E_MOCK_WALLET === "true" || Math.random() > 0.3; // 70% success rate for demo
     setTimeout(() => {
       setViewState(isSuccess ? "success" : "error");
     }, 1000);
@@ -51,26 +64,26 @@ export default function ClaimPage() {
   };
 
   // Success Modal
-  if (viewState === "success") {
+  if (effectiveViewState === "success") {
     return (
       <SuccessModal onCancel={handleSuccessCancel} onContinue={handleSuccessContinue} />
     );
   }
 
   // Error Modal
-  if (viewState === "error") {
+  if (effectiveViewState === "error") {
     return (
       <ErrorModal onCancel={handleErrorContinue} onContinue={handleErrorContinue} />
     );
   }
 
   // Claim Form View
-  if (viewState === "form") {
+  if (effectiveViewState === "form") {
     return <ClaimForm onSubmit={handleSubmitClaim} />;
   }
 
   // Plan Summary View
-  if (viewState === "summary") {
+  if (effectiveViewState === "summary") {
     return (
       <PlanSummary
         data={MOCK_PLAN_SUMMARY}
@@ -115,5 +128,13 @@ export default function ClaimPage() {
       {/* Activities Tab Content */}
       {activeTab === "activities" && <ActivitiesList activities={MOCK_ACTIVITIES} />}
     </div>
+  );
+}
+
+export default function ClaimPage() {
+  return (
+    <Suspense fallback={null}>
+      <ClaimPageContent />
+    </Suspense>
   );
 }
