@@ -9,6 +9,7 @@ import HomeIcon from "@/app/svg/HomeIcon";
 import PlansIcon from "@/app/svg/PlansIcon";
 import SecurityIcon from "@/app/svg/SecurityIcon";
 import SwapIcon from "@/app/svg/SwapIcon";
+import BorrowingIcon from "@/app/svg/BorrowingIcon";
 
 const normalizePath = (path: string) => {
   if (path !== "/" && path.endsWith("/")) {
@@ -20,6 +21,7 @@ const normalizePath = (path: string) => {
 const MOBILE_NAV_ITEMS = [
   { label: "HOME", href: "/asset-owner/", icon: HomeIcon, exact: true },
   { label: "PLANS", href: "/asset-owner/plans", icon: PlansIcon },
+  { label: "BORROW", href: "/asset-owner/borrowing", icon: BorrowingIcon },
   { label: "SWAP", href: "/asset-owner/swap", icon: SwapIcon },
   { label: "SECURITY", href: "/asset-owner/security", icon: SecurityIcon },
 ];

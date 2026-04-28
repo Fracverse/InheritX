@@ -23,6 +23,7 @@ use uuid::Uuid;
 
 use crate::analytics::analytics_router;
 use crate::api_error::ApiError;
+use crate::api_versioning::{list_api_versions, versioning_middleware};
 use crate::auth::{AuthenticatedAdmin, AuthenticatedUser};
 use crate::beneficiary_sync::{BeneficiarySyncService, DocumentBeneficiary};
 use crate::collateral_management::{
@@ -34,6 +35,7 @@ use crate::contingent_beneficiary::{
     AddContingentBeneficiaryRequest, ContingentBeneficiaryService, PromoteContingentRequest,
     RemoveContingentBeneficiaryRequest, SetContingencyConditionsRequest,
 };
+use crate::csrf::{csrf_protection_middleware, get_csrf_token};
 use crate::document_storage::DocumentStorageService;
 use crate::governance::{
     CreateProposalRequest, GovernanceService, ParameterUpdateRequest, Proposal, VoteRequest,
@@ -54,6 +56,7 @@ use crate::service::{
     RevokeEmergencyAccessGrantRequest, RiskOverrideRequest, StartSessionRequest,
     UnpausePlanRequest, UpdateEmergencyContactRequest,
 };
+use crate::session::{list_sessions, logout, logout_all, revoke_session, session_guard_middleware};
 use crate::stress_testing::StressTestingEngine;
 use crate::webhook::{delete_webhook, get_webhooks, register_webhook, WebhookService};
 use crate::will_compliance::{ValidationResult, WillComplianceService};
@@ -192,6 +195,15 @@ pub async fn create_app(
         .route("/health/db", get(db_health_check))
         // Admin login gets its own, tighter rate limit (brute-force protection).
         .route("/health/db/metrics", get(db_metrics))
+        // ── API version discovery (Issue #439) ────────────────────────────────
+        .route("/api/versions", get(list_api_versions))
+        // ── CSRF token issuance (Issue #434) ──────────────────────────────────
+        .route("/api/v1/csrf-token", get(get_csrf_token))
+        // ── Session management (Issue #436) ───────────────────────────────────
+        .route("/api/v1/auth/logout", post(logout))
+        .route("/api/v1/auth/logout-all", post(logout_all))
+        .route("/api/v1/auth/sessions", get(list_sessions))
+        .route("/api/v1/auth/sessions/:session_id", delete(revoke_session))
         // Prometheus metrics scrape endpoint (Issue #423).
         // Restrict access at the network/ingress layer in production.
         .route("/metrics", get(crate::metrics::metrics_handler))
@@ -607,13 +619,25 @@ pub async fn create_app(
         .route("/api/content/:content_id/download", get(download_content))
         .route("/api/content/stats", get(get_storage_stats))
         .layer(axum::Extension(config.clone()))
-        // ── Middleware stack (Issues #408, #409, #423, #424) ─────────────────
+        // ── Middleware stack (Issues #408, #409, #423, #424, #434, #436, #439)
         // track_metrics must be outermost so it captures the full request
         // duration including all inner middleware.
         .layer(middleware::from_fn(crate::metrics::track_metrics))
         .layer(middleware::from_fn(security_headers_middleware))
         .layer(middleware::from_fn(request_logging_middleware))
         .layer(middleware::from_fn(request_id_middleware))
+        // API versioning: inject X-API-Version header (Issue #439)
+        .layer(middleware::from_fn(versioning_middleware))
+        // Session revocation guard: reject revoked JWTs (Issue #436)
+        .layer(middleware::from_fn_with_state(
+            state.clone(),
+            session_guard_middleware,
+        ))
+        // CSRF protection for state-changing requests (Issue #434)
+        .layer(middleware::from_fn_with_state(
+            state.clone(),
+            csrf_protection_middleware,
+        ))
         // Enrich Sentry scope with request_id and user_id after they are set.
         .layer(middleware::from_fn(
             crate::error_tracking::enrich_sentry_context,

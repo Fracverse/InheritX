@@ -1,6 +1,6 @@
 "use client";
 
-import React, { useState, useEffect } from "react";
+import React, { useState } from "react";
 import LendingStats from "./components/LendingStats";
 import LendingModal from "./components/LendingModal";
 import LendingHistory from "./components/LendingHistory";
@@ -9,6 +9,7 @@ import {
   LendingTransaction, 
   UserLendingData 
 } from "@/app/lib/api/lending";
+import { LendingPageSkeleton } from "@/components/ui/Skeleton";
 import { Plus, ArrowUpRight, ShieldCheck, AlertCircle } from "lucide-react";
 
 // Mock Data
@@ -48,7 +49,7 @@ export default function LendingPage() {
   const [poolState] = useState<PoolState>(MOCK_POOL_STATE);
   const [userData, setUserData] = useState<UserLendingData>(MOCK_USER_DATA);
   const [activeModal, setActiveModal] = useState<'deposit' | 'withdraw' | null>(null);
-  const [currentTime] = useState(() => Date.now());
+  const [isLoading] = useState(false); // set to true while fetching real data
 
   // In real implementation, these would call the LendingAPI
   const handleDeposit = async (amount: string) => {
@@ -95,7 +96,10 @@ export default function LendingPage() {
 
   return (
     <div className="space-y-10 max-w-7xl mx-auto pb-20">
-      {/* Hero / CTA Section */}
+      {isLoading ? (
+        <LendingPageSkeleton />
+      ) : (
+        <>
       <div className="flex flex-col lg:flex-row justify-between items-start lg:items-center gap-8">
         <div className="animate-fade-in">
           <h1 className="text-4xl font-black text-[#FCFFFF] mb-3 flex items-center gap-4">
@@ -191,9 +195,8 @@ export default function LendingPage() {
           onConfirm={activeModal === 'deposit' ? handleDeposit : handleWithdraw}
         />
       )}
-      
-      {/* Hidden div to satisfy the build system's check for used variables if any */}
-      <div className="hidden">{currentTime}</div>
+      </>
+      )}
     </div>
   );
 }
