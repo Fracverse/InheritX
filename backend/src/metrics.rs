@@ -47,6 +47,7 @@ use axum::{
     response::{IntoResponse, Response},
 };
 use metrics_exporter_prometheus::{PrometheusBuilder, PrometheusHandle};
+use std::sync::OnceLock;
 use std::time::Instant;
 
 // ── Registry initialisation ───────────────────────────────────────────────────
@@ -161,6 +162,25 @@ pub async fn track_metrics(req: Request, next: Next) -> Response {
     metrics::counter!("http_requests_total", &labels).increment(1);
     metrics::histogram!("http_request_duration_seconds", &labels).record(elapsed);
 
+    // APM latency alerting (configurable threshold).
+    let endpoint_threshold_secs = slow_endpoint_threshold_secs();
+    if elapsed >= endpoint_threshold_secs {
+        tracing::warn!(
+            method = %labels[0].1,
+            path = %labels[1].1,
+            status = %labels[2].1,
+            elapsed_secs = elapsed,
+            threshold_secs = endpoint_threshold_secs,
+            "APM slow endpoint detected"
+        );
+        metrics::counter!(
+            "apm_alerts_total",
+            "type" => "endpoint_latency",
+            "path" => labels[1].1.to_string()
+        )
+        .increment(1);
+    }
+
     response
 }
 
@@ -183,6 +203,44 @@ pub fn record_pool_metrics(m: &crate::db::PoolMetrics) {
 /// `"select_plan"`, `"insert_loan"`, `"ping"`, etc.
 pub fn record_db_query(operation: &'static str, elapsed_secs: f64) {
     metrics::histogram!("db_query_duration_seconds", "operation" => operation).record(elapsed_secs);
+
+    let db_threshold_secs = slow_db_threshold_secs();
+    if elapsed_secs >= db_threshold_secs {
+        tracing::warn!(
+            operation,
+            elapsed_secs,
+            threshold_secs = db_threshold_secs,
+            "APM slow database query detected"
+        );
+        metrics::counter!(
+            "apm_alerts_total",
+            "type" => "db_query_latency",
+            "operation" => operation.to_string()
+        )
+        .increment(1);
+    }
+}
+
+fn slow_endpoint_threshold_secs() -> f64 {
+    static THRESHOLD: OnceLock<f64> = OnceLock::new();
+    *THRESHOLD.get_or_init(|| {
+        std::env::var("APM_SLOW_ENDPOINT_MS")
+            .ok()
+            .and_then(|v| v.parse::<f64>().ok())
+            .map(|ms| ms / 1000.0)
+            .unwrap_or(1.5)
+    })
+}
+
+fn slow_db_threshold_secs() -> f64 {
+    static THRESHOLD: OnceLock<f64> = OnceLock::new();
+    *THRESHOLD.get_or_init(|| {
+        std::env::var("APM_SLOW_DB_QUERY_MS")
+            .ok()
+            .and_then(|v| v.parse::<f64>().ok())
+            .map(|ms| ms / 1000.0)
+            .unwrap_or(0.2)
+    })
 }
 
 // ── Business metric helpers ───────────────────────────────────────────────────

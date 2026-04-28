@@ -47,6 +47,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .unwrap_or(15);
     metrics::spawn_pool_metrics_task(db_pool.clone(), pool_metrics_interval);
 
+    // Start automated data archival worker for retention policies (Issue #453).
+    inheritx_backend::DataRetentionService::start_archive_worker(db_pool.clone());
+
     // Ensure there is always one active message encryption key.
     MessageKeyService::ensure_active_key(&db_pool).await?;
 

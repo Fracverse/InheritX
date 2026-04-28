@@ -47,6 +47,7 @@ soroban-sdk = "21.0"
 
 # HTTP client
 reqwest = { version = "0.11", default-features = false, features = ["json", "rustls-tls"] }
+redis = { version = "0.27", features = ["tokio-comp", "connection-manager"] }
 
 # Logging
 tracing = "0.1"

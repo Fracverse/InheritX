@@ -73,6 +73,7 @@ use base64::Engine as _;
 pub struct AppState {
     pub db: PgPool,
     pub config: Config,
+    pub cache: Arc<crate::cache::CacheService>,
     pub yield_service: Arc<dyn OnChainYieldService>,
     pub stress_testing_engine: Arc<StressTestingEngine>,
     pub insurance_fund_service: Arc<crate::insurance_fund::InsuranceFundService>,
@@ -112,10 +113,12 @@ pub async fn create_app(
     insurance_fund_service.clone().start();
 
     let webhook_service = Arc::new(WebhookService::new(db.clone()));
+    let cache = Arc::new(crate::cache::CacheService::from_env().await);
 
     let state = Arc::new(AppState {
         db: db.clone(),
         config: config.clone(),
+        cache,
         yield_service,
         stress_testing_engine,
         insurance_fund_service,
@@ -649,7 +652,7 @@ pub async fn create_app(
         .layer(cors_layer)
         // Inject the Prometheus handle so the /metrics handler can render output.
         .layer(axum::Extension(prometheus_handle))
-        .with_state(state);
+        .with_state(state.clone());
 
     // Add price feed routes with separate state
     let price_feed_state = (
@@ -692,6 +695,7 @@ pub async fn create_app(
         .with_state(price_feed_state);
 
     Ok(app
+        .merge(crate::data_retention::retention_router().with_state(state))
         .merge(price_routes)
         .layer(axum::middleware::from_fn(
             crate::middleware::attach_correlation_id,
@@ -779,6 +783,8 @@ async fn create_plan(
     Json(req): Json<CreatePlanRequest>,
 ) -> Result<Json<Value>, ApiError> {
     let plan = PlanService::create_plan(&state.db, user.user_id, &req).await?;
+    let _ = state.cache.invalidate_prefix("analytics:plan").await;
+    let _ = state.cache.invalidate("analytics:dashboard").await;
     Ok(Json(json!({
         "status": "success",
         "data": plan
@@ -807,6 +813,8 @@ async fn claim_plan(
     Json(req): Json<ClaimPlanRequest>,
 ) -> Result<Json<Value>, ApiError> {
     let plan = PlanService::claim_plan(&state.db, plan_id, user.user_id, &req).await?;
+    let _ = state.cache.invalidate_prefix("analytics:plan").await;
+    let _ = state.cache.invalidate("analytics:dashboard").await;
     Ok(Json(json!({
         "status": "success",
         "message": "Claim recorded",
@@ -1443,6 +1451,8 @@ async fn pause_plan(
     Json(req): Json<PausePlanRequest>,
 ) -> Result<Json<Value>, ApiError> {
     let result = EmergencyAdminService::pause_plan(&state.db, admin.admin_id, &req).await?;
+    let _ = state.cache.invalidate_prefix("analytics:plan").await;
+    let _ = state.cache.invalidate("analytics:dashboard").await;
     Ok(Json(json!({ "status": "success", "data": result })))
 }
 
@@ -1452,6 +1462,8 @@ async fn unpause_plan(
     Json(req): Json<UnpausePlanRequest>,
 ) -> Result<Json<Value>, ApiError> {
     let result = EmergencyAdminService::unpause_plan(&state.db, admin.admin_id, &req).await?;
+    let _ = state.cache.invalidate_prefix("analytics:plan").await;
+    let _ = state.cache.invalidate("analytics:dashboard").await;
     Ok(Json(json!({ "status": "success", "data": result })))
 }
 

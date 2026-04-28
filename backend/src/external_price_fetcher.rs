@@ -52,7 +52,7 @@ impl CoinGeckoProvider {
         Self {
             client: Client::new(),
             base_url: "https://api.coingecko.com/api/v3".to_string(),
-            circuit_breaker: CircuitBreaker::new("coingecko", 5, Duration::from_secs(30)),
+            circuit_breaker: CircuitBreaker::from_env("coingecko", 5, 30),
         }
     }
 
@@ -181,7 +181,7 @@ impl BinanceProvider {
         Self {
             client: Client::new(),
             base_url: "https://api.binance.com/api/v3".to_string(),
-            circuit_breaker: CircuitBreaker::new("binance", 5, Duration::from_secs(30)),
+            circuit_breaker: CircuitBreaker::from_env("binance", 5, 30),
         }
     }
 

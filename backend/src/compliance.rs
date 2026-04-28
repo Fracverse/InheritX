@@ -1,4 +1,5 @@
 use crate::api_error::ApiError;
+use crate::external_integrations::{AnchorIntegrationClient, ComplianceApiClient};
 use crate::notifications::{
     audit_action, entity_type, notif_type, AuditLogService, NotificationService,
 };
@@ -14,6 +15,8 @@ pub struct ComplianceEngine {
     pub velocity_threshold: usize, // e.g., 3 events
     velocity_window_mins: i64,     // e.g., 10 minutes
     pub volume_threshold: Decimal, // e.g., $100k
+    compliance_api_client: Option<ComplianceApiClient>,
+    anchor_client: Option<AnchorIntegrationClient>,
 }
 
 impl ComplianceEngine {
@@ -28,6 +31,8 @@ impl ComplianceEngine {
             velocity_threshold,
             velocity_window_mins,
             volume_threshold,
+            compliance_api_client: ComplianceApiClient::from_env(),
+            anchor_client: AnchorIntegrationClient::from_env(),
         }
     }
 
@@ -235,6 +240,32 @@ impl ComplianceEngine {
         ).await?;
 
         tx.commit().await?;
+
+        // External compliance integrations should not block core processing.
+        if let Some(client) = &self.compliance_api_client {
+            if let Err(e) = client
+                .report_suspicious_activity(plan_id, user_id, &reason)
+                .await
+            {
+                warn!(
+                    plan_id = %plan_id,
+                    user_id = %user_id,
+                    error = %e,
+                    "Compliance API notification failed"
+                );
+            }
+        }
+
+        if let Some(client) = &self.anchor_client {
+            if let Err(e) = client.submit_compliance_flag(plan_id, user_id, &reason).await {
+                warn!(
+                    plan_id = %plan_id,
+                    user_id = %user_id,
+                    error = %e,
+                    "Anchor integration notification failed"
+                );
+            }
+        }
 
         Ok(())
     }

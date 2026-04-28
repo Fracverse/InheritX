@@ -213,7 +213,9 @@ pub async fn ping(pool: &PgPool) -> Result<u128, ApiError> {
         .execute(pool)
         .await
         .map_err(|e| ApiError::Internal(anyhow::anyhow!("Database ping failed: {}", e)))?;
-    Ok(start.elapsed().as_millis())
+    let elapsed = start.elapsed();
+    crate::metrics::record_db_query("ping", elapsed.as_secs_f64());
+    Ok(elapsed.as_millis())
 }
 
 // ── Tests ─────────────────────────────────────────────────────────────────────

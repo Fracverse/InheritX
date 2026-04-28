@@ -96,7 +96,18 @@ async fn get_user_metrics(
     State(state): State<Arc<AppState>>,
     AuthenticatedAdmin(_admin): AuthenticatedAdmin,
 ) -> Result<Json<Value>, ApiError> {
-    let metrics = UserMetricsService::get_user_growth_metrics(&state.db).await?;
+    const CACHE_KEY: &str = "analytics:user_metrics";
+    let metrics = if let Some(cached) = state.cache.get_json(CACHE_KEY).await? {
+        cached
+    } else {
+        let computed = UserMetricsService::get_user_growth_metrics(&state.db).await?;
+        state
+            .cache
+            .set_json(CACHE_KEY, &computed, state.cache.user_profile_ttl_secs)
+            .await?;
+        computed
+    };
+
     Ok(Json(json!({
         "status": "success",
         "data": metrics
@@ -109,7 +120,18 @@ async fn get_plan_metrics(
     State(state): State<Arc<AppState>>,
     AuthenticatedAdmin(_admin): AuthenticatedAdmin,
 ) -> Result<Json<Value>, ApiError> {
-    let stats = PlanStatisticsService::get_plan_statistics(&state.db).await?;
+    const CACHE_KEY: &str = "analytics:plan_metrics";
+    let stats = if let Some(cached) = state.cache.get_json(CACHE_KEY).await? {
+        cached
+    } else {
+        let computed = PlanStatisticsService::get_plan_statistics(&state.db).await?;
+        state
+            .cache
+            .set_json(CACHE_KEY, &computed, state.cache.plans_ttl_secs)
+            .await?;
+        computed
+    };
+
     Ok(Json(json!({
         "status": "success",
         "data": stats
@@ -212,6 +234,11 @@ async fn get_dashboard(
     State(state): State<Arc<AppState>>,
     AuthenticatedAdmin(_admin): AuthenticatedAdmin,
 ) -> Result<Json<Value>, ApiError> {
+    const CACHE_KEY: &str = "analytics:dashboard";
+    if let Some(cached) = state.cache.get_json::<Value>(CACHE_KEY).await? {
+        return Ok(Json(cached));
+    }
+
     let (overview, users, plans, claims, lending) = tokio::try_join!(
         AdminService::get_metrics_overview(&state.db),
         UserMetricsService::get_user_growth_metrics(&state.db),
@@ -220,7 +247,7 @@ async fn get_dashboard(
         LendingMonitoringService::get_lending_metrics(&state.db),
     )?;
 
-    Ok(Json(json!({
+    let response = json!({
         "status": "success",
         "data": {
             "overview": {
@@ -235,7 +262,14 @@ async fn get_dashboard(
             "claims": claims,
             "lending": lending,
         }
-    })))
+    });
+
+    state
+        .cache
+        .set_json(CACHE_KEY, &response, state.cache.default_ttl_secs)
+        .await?;
+
+    Ok(Json(response))
 }
 
 /// GET /api/admin/analytics/lending/history?range=hourly|daily|weekly|monthly

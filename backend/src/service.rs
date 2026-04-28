@@ -1322,7 +1322,7 @@ impl ClaimMetricsService {
 
 // ── User Growth Metrics ──────────────────────────────────────────────────────
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct UserGrowthMetrics {
     pub total_users: i64,

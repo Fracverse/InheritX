@@ -52,13 +52,46 @@ impl CircuitBreaker {
     /// * `failure_threshold` – consecutive failures before the circuit opens.
     /// * `recovery_timeout`  – how long the circuit stays open before trying again.
     pub fn new(service_name: &str, failure_threshold: u32, recovery_timeout: Duration) -> Self {
-        Self(Arc::new(Inner {
+        let breaker = Self(Arc::new(Inner {
             service_name: service_name.to_string(),
             failure_threshold,
             recovery_timeout_secs: recovery_timeout.as_secs(),
             failure_count: AtomicU32::new(0),
             opened_at: AtomicU64::new(0),
-        }))
+        }));
+
+        breaker.record_state(CircuitState::Closed);
+        breaker
+    }
+
+    /// Creates a circuit breaker with optional env overrides:
+    /// - `CB_<SERVICE>_FAILURE_THRESHOLD`
+    /// - `CB_<SERVICE>_RECOVERY_TIMEOUT_SECS`
+    ///
+    /// Service is upper-cased and non-alphanumeric characters become `_`.
+    pub fn from_env(
+        service_name: &str,
+        default_failure_threshold: u32,
+        default_recovery_timeout_secs: u64,
+    ) -> Self {
+        let service_env = service_name
+            .chars()
+            .map(|c| if c.is_ascii_alphanumeric() { c.to_ascii_uppercase() } else { '_' })
+            .collect::<String>();
+
+        let threshold_var = format!("CB_{}_FAILURE_THRESHOLD", service_env);
+        let timeout_var = format!("CB_{}_RECOVERY_TIMEOUT_SECS", service_env);
+
+        let threshold = std::env::var(threshold_var)
+            .ok()
+            .and_then(|v| v.parse::<u32>().ok())
+            .unwrap_or(default_failure_threshold);
+        let timeout_secs = std::env::var(timeout_var)
+            .ok()
+            .and_then(|v| v.parse::<u64>().ok())
+            .unwrap_or(default_recovery_timeout_secs);
+
+        Self::new(service_name, threshold, Duration::from_secs(timeout_secs))
     }
 
     fn now_secs() -> u64 {
@@ -84,23 +117,42 @@ impl CircuitBreaker {
 
     fn on_success(&self) {
         let prev = self.0.failure_count.swap(0, Ordering::Release);
+        metrics::counter!("circuit_breaker_success_total", "service" => self.0.service_name.clone())
+            .increment(1);
         if prev >= self.0.failure_threshold {
             info!(service = %self.0.service_name, "Circuit breaker closed after successful probe");
         }
         self.0.opened_at.store(0, Ordering::Release);
+        self.record_state(CircuitState::Closed);
     }
 
     fn on_failure(&self) {
         let failures = self.0.failure_count.fetch_add(1, Ordering::AcqRel) + 1;
+        metrics::counter!("circuit_breaker_failures_total", "service" => self.0.service_name.clone())
+            .increment(1);
         if failures == self.0.failure_threshold {
             let now = Self::now_secs();
             self.0.opened_at.store(now, Ordering::Release);
+            metrics::counter!("circuit_breaker_open_total", "service" => self.0.service_name.clone())
+                .increment(1);
+            self.record_state(CircuitState::Open);
             warn!(
                 service = %self.0.service_name,
                 failure_threshold = self.0.failure_threshold,
                 "Circuit breaker opened after consecutive failures"
             );
         }
+    }
+
+    fn record_state(&self, state: CircuitState) {
+        let numeric_state = match state {
+            CircuitState::Closed => 0.0,
+            CircuitState::Open => 1.0,
+            CircuitState::HalfOpen => 2.0,
+        };
+
+        metrics::gauge!("circuit_breaker_state", "service" => self.0.service_name.clone())
+            .set(numeric_state);
     }
 
     /// Executes `operation` if the circuit is not open.
@@ -115,10 +167,13 @@ impl CircuitBreaker {
     {
         match self.state() {
             CircuitState::Open => {
+                metrics::counter!("circuit_breaker_rejected_total", "service" => self.0.service_name.clone())
+                    .increment(1);
                 warn!(service = %self.0.service_name, "Circuit breaker is open, rejecting request");
                 Err(ApiError::CircuitOpen(self.0.service_name.clone()))
             }
             CircuitState::HalfOpen => {
+                self.record_state(CircuitState::HalfOpen);
                 info!(service = %self.0.service_name, "Circuit breaker half-open, sending probe");
                 match operation().await {
                     Ok(v) => {
