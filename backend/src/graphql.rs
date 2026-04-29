@@ -2,7 +2,6 @@ use async_graphql::{Context, EmptyMutation, EmptySubscription, Object, Schema, S
 use async_graphql_axum::{GraphQLRequest, GraphQLResponse};
 use axum::extract::State;
 use sqlx::{PgPool, Row};
-use std::sync::Arc;
 use uuid::Uuid;
 
 #[derive(SimpleObject)]

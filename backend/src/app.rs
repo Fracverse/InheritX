@@ -140,7 +140,6 @@ pub async fn create_app(
     let mut governor_builder = governor_builder.key_extractor(
         crate::middleware::RateLimitKeyExtractor::new(rl.bypass_tokens.clone()),
     );
-    governor_builder.error_handler(crate::middleware::rate_limit_error_response);
     let governor_conf = Arc::new(governor_builder.use_headers().finish().unwrap());
 
     let emergency_governor_conf = Arc::new(
@@ -216,9 +215,7 @@ pub async fn create_app(
         .route("/metrics", get(crate::metrics::metrics_handler))
         .route(
             "/admin/login",
-            post(crate::auth::login_admin).layer(GovernorLayer {
-                config: admin_login_governor_conf,
-            }),
+            post(crate::auth::login_admin).layer(GovernorLayer::new(admin_login_governor_conf)),
         )
         .route(
             "/api/plans/due-for-claim",
@@ -272,15 +269,13 @@ pub async fn create_app(
         )
         .route(
             "/api/emergency/access/grants",
-            post(create_emergency_access_grant).layer(GovernorLayer {
-                config: emergency_governor_conf.clone(),
-            }),
+            post(create_emergency_access_grant)
+                .layer(GovernorLayer::new(emergency_governor_conf.clone())),
         )
         .route(
             "/api/emergency/access/grants/:grant_id/revoke",
-            post(revoke_emergency_access_grant).layer(GovernorLayer {
-                config: emergency_governor_conf,
-            }),
+            post(revoke_emergency_access_grant)
+                .layer(GovernorLayer::new(emergency_governor_conf)),
         )
         .route(
             "/api/emergency/access/audit-logs",
@@ -716,9 +711,10 @@ pub async fn create_app(
             crate::middleware::log_rate_limit_violations,
         ))
         .layer(TraceLayer::new_for_http())
-        .layer(GovernorLayer {
-            config: governor_conf,
-        }))
+        .layer(
+            GovernorLayer::new(governor_conf)
+                .error_handler(crate::middleware::rate_limit_error_response),
+        ))
 }
 
 async fn health_check() -> Json<Value> {

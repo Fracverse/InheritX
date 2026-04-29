@@ -488,102 +488,112 @@ pub struct AuthenticatedUser(pub UserClaims);
 
 pub struct AuthenticatedAdmin(pub AdminClaims);
 
-#[async_trait::async_trait]
 impl<S> FromRequestParts<S> for AuthenticatedUser
 where
     S: Send + Sync,
 {
     type Rejection = ApiError;
 
-    async fn from_request_parts(parts: &mut Parts, _state: &S) -> Result<Self, Self::Rejection> {
-        let config = parts
-            .extensions
-            .get::<Config>()
-            .ok_or_else(|| ApiError::Internal(anyhow::anyhow!("Config not found in extensions")))?;
+    #[allow(clippy::manual_async_fn)]
+    fn from_request_parts(
+        parts: &mut Parts,
+        _state: &S,
+    ) -> impl std::future::Future<Output = Result<Self, Self::Rejection>> + Send {
+        async move {
+            let config = parts
+                .extensions
+                .get::<Config>()
+                .ok_or_else(|| ApiError::Internal(anyhow::anyhow!("Config not found in extensions")))?;
 
-        let auth_header = parts
-            .headers
-            .get("Authorization")
-            .and_then(|h| h.to_str().ok());
+            let auth_header = parts
+                .headers
+                .get("Authorization")
+                .and_then(|h| h.to_str().ok());
 
-        if let Some(auth_header) = auth_header {
-            if !auth_header.starts_with("Bearer ") {
-                return Err(ApiError::Unauthorized);
+            if let Some(auth_header) = auth_header {
+                if !auth_header.starts_with("Bearer ") {
+                    return Err(ApiError::Unauthorized);
+                }
+                let token = auth_header.strip_prefix("Bearer ").unwrap();
+                let claims: UserClaims = jsonwebtoken::decode(
+                    token,
+                    &jsonwebtoken::DecodingKey::from_secret(config.jwt_secret.as_bytes()),
+                    &jsonwebtoken::Validation::default(),
+                )
+                .map_err(|_| ApiError::Unauthorized)?
+                .claims;
+                return Ok(AuthenticatedUser(claims));
             }
-            let token = auth_header.strip_prefix("Bearer ").unwrap();
-            let claims: UserClaims = jsonwebtoken::decode(
-                token,
-                &jsonwebtoken::DecodingKey::from_secret(config.jwt_secret.as_bytes()),
-                &jsonwebtoken::Validation::default(),
-            )
-            .map_err(|_| ApiError::Unauthorized)?
-            .claims;
-            return Ok(AuthenticatedUser(claims));
-        }
 
-        if let Some(user_id_str) = parts.headers.get("X-User-Id").and_then(|h| h.to_str().ok()) {
-            if let Ok(user_id) = uuid::Uuid::parse_str(user_id_str) {
-                return Ok(AuthenticatedUser(UserClaims {
-                    user_id,
-                    email: "legacy-test@example.com".to_string(),
-                    exp: 0,
-                }));
+            if let Some(user_id_str) = parts.headers.get("X-User-Id").and_then(|h| h.to_str().ok()) {
+                if let Ok(user_id) = uuid::Uuid::parse_str(user_id_str) {
+                    return Ok(AuthenticatedUser(UserClaims {
+                        user_id,
+                        email: "legacy-test@example.com".to_string(),
+                        exp: 0,
+                    }));
+                }
             }
-        }
 
-        Err(ApiError::Unauthorized)
+            Err(ApiError::Unauthorized)
+        }
     }
 }
 
-#[async_trait::async_trait]
 impl<S> FromRequestParts<S> for AuthenticatedAdmin
 where
     S: Send + Sync,
 {
     type Rejection = ApiError;
 
-    async fn from_request_parts(parts: &mut Parts, _state: &S) -> Result<Self, Self::Rejection> {
-        let config = parts
-            .extensions
-            .get::<Config>()
-            .ok_or_else(|| ApiError::Internal(anyhow::anyhow!("Config not found in extensions")))?;
+    #[allow(clippy::manual_async_fn)]
+    fn from_request_parts(
+        parts: &mut Parts,
+        _state: &S,
+    ) -> impl std::future::Future<Output = Result<Self, Self::Rejection>> + Send {
+        async move {
+            let config = parts
+                .extensions
+                .get::<Config>()
+                .ok_or_else(|| ApiError::Internal(anyhow::anyhow!("Config not found in extensions")))?;
 
-        let auth_header = parts
-            .headers
-            .get("Authorization")
-            .and_then(|h| h.to_str().ok());
+            let auth_header = parts
+                .headers
+                .get("Authorization")
+                .and_then(|h| h.to_str().ok());
 
-        if let Some(auth_header) = auth_header {
-            if !auth_header.starts_with("Bearer ") {
-                return Err(ApiError::Unauthorized);
+            if let Some(auth_header) = auth_header {
+                if !auth_header.starts_with("Bearer ") {
+                    return Err(ApiError::Unauthorized);
+                }
+                let token = auth_header.strip_prefix("Bearer ").unwrap();
+                let claims: AdminClaims = jsonwebtoken::decode(
+                    token,
+                    &jsonwebtoken::DecodingKey::from_secret(config.jwt_secret.as_bytes()),
+                    &jsonwebtoken::Validation::default(),
+                )
+                .map_err(|_| ApiError::Unauthorized)?
+                .claims;
+                return Ok(AuthenticatedAdmin(claims));
             }
-            let token = auth_header.strip_prefix("Bearer ").unwrap();
-            let claims: AdminClaims = jsonwebtoken::decode(
-                token,
-                &jsonwebtoken::DecodingKey::from_secret(config.jwt_secret.as_bytes()),
-                &jsonwebtoken::Validation::default(),
-            )
-            .map_err(|_| ApiError::Unauthorized)?
-            .claims;
-            return Ok(AuthenticatedAdmin(claims));
-        }
 
-        if let Some(admin_id_str) = parts
-            .headers
-            .get("X-Admin-Id")
-            .and_then(|h| h.to_str().ok())
-        {
-            if let Ok(admin_id) = uuid::Uuid::parse_str(admin_id_str) {
-                return Ok(AuthenticatedAdmin(AdminClaims {
-                    admin_id,
-                    email: "legacy-admin@example.com".to_string(),
-                    role: "super_admin".to_string(),
-                    exp: 0,
-                }));
+            if let Some(admin_id_str) = parts
+                .headers
+                .get("X-Admin-Id")
+                .and_then(|h| h.to_str().ok())
+            {
+                if let Ok(admin_id) = uuid::Uuid::parse_str(admin_id_str) {
+                    return Ok(AuthenticatedAdmin(AdminClaims {
+                        admin_id,
+                        email: "legacy-admin@example.com".to_string(),
+                        role: "super_admin".to_string(),
+                        exp: 0,
+                    }));
+                }
             }
-        }
 
-        Err(ApiError::Unauthorized)
+            Err(ApiError::Unauthorized)
+        }
     }
 }
 

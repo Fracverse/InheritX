@@ -1,5 +1,5 @@
 use crate::api_error::ApiError;
-use axum::async_trait;
+use async_trait::async_trait;
 use rust_decimal::Decimal;
 
 #[async_trait]
