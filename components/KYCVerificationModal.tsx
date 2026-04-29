@@ -1,6 +1,6 @@
 "use client";
 
-import React, { useRef, useState } from "react";
+import React, { useRef, useState, useEffect } from "react";
 import { motion, AnimatePresence } from "framer-motion";
 import {
   X,
@@ -163,6 +163,24 @@ export function KYCVerificationModal() {
     setErrors(newErrors);
     return Object.keys(newErrors).length === 0;
   };
+
+  useEffect(() => {
+    setErrors((prev) => {
+      const next = { ...prev };
+
+      Object.keys(prev).forEach((key) => {
+        const value = formData[key as keyof typeof formData];
+        if (
+          (typeof value === "string" && value.trim()) ||
+          value instanceof File
+        ) {
+          delete (next as Record<string, string>)[key];
+        }
+      });
+
+      return next;
+    });
+  }, [formData]);
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -627,7 +645,7 @@ export function KYCVerificationModal() {
               {/* Footer with Submit Button */}
               <div className="p-6 pt-4 border-t border-[#1C252A]">
                 <button
-                  onClick={handleSubmit}
+                  type="submit"
                   disabled={isSubmitting}
                   className="ml-auto flex items-center gap-2 bg-[#33C5E0] text-[#0D1417] px-6 py-3 rounded-lg font-semibold hover:bg-[#2AB8D3] transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
                 >

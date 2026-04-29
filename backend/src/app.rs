@@ -1,6 +1,8 @@
 use axum::{
     extract::{Path, Query, State},
+    http::HeaderMap,
     middleware,
+    response::IntoResponse,
     routing::{delete, get, post, put},
     Json, Router,
 };
@@ -15,9 +17,10 @@ use tower_http::{
     trace::TraceLayer,
 };
 
+use crate::cache;
 use crate::middleware::{
-    request_id_middleware, request_logging_middleware, request_timeout_middleware,
-    security_headers_middleware,
+    cache_headers_middleware, request_id_middleware, request_logging_middleware,
+    request_timeout_middleware, security_headers_middleware,
 };
 use uuid::Uuid;
 
@@ -626,6 +629,8 @@ pub async fn create_app(
         // duration including all inner middleware.
         .layer(middleware::from_fn(crate::metrics::track_metrics))
         .layer(middleware::from_fn(security_headers_middleware))
+        // Cache safety net: stamps no-store on all write-method responses.
+        .layer(middleware::from_fn(cache_headers_middleware))
         .layer(middleware::from_fn(request_logging_middleware))
         .layer(middleware::from_fn(request_id_middleware))
         // API versioning: inject X-API-Version header (Issue #439)
@@ -834,13 +839,23 @@ async fn get_plan(
     State(state): State<Arc<AppState>>,
     Path(plan_id): Path<Uuid>,
     AuthenticatedUser(user): AuthenticatedUser,
-) -> Result<Json<Value>, ApiError> {
+    headers: HeaderMap,
+) -> Result<impl IntoResponse, ApiError> {
     let plan = PlanService::get_plan_by_id(&state.db, plan_id, user.user_id).await?;
     match plan {
-        Some(p) => Ok(Json(json!({
-            "status": "success",
-            "data": p
-        }))),
+        Some(p) => {
+            let body = json!({ "status": "success", "data": p });
+            let etag = cache::compute_etag(&body);
+            if cache::is_not_modified(&headers, &etag) {
+                return Ok(cache::not_modified_response_with_cc(
+                    &etag,
+                    cache::cache_control_private(60),
+                ));
+            }
+            let mut response = Json(body).into_response();
+            cache::apply_cache_headers(&mut response, &etag, cache::cache_control_private(60));
+            Ok(response)
+        }
         None => Err(ApiError::NotFound(format!("Plan {plan_id} not found"))),
     }
 }
@@ -1239,15 +1254,26 @@ async fn simulate_loan(
 async fn get_user_simulations(
     State(state): State<Arc<AppState>>,
     AuthenticatedUser(user): AuthenticatedUser,
-) -> Result<Json<Value>, ApiError> {
+    headers: HeaderMap,
+) -> Result<impl IntoResponse, ApiError> {
     let limit = 50; // Default limit
     let simulations =
         LoanSimulationService::get_user_simulations(&state.db, user.user_id, limit).await?;
-    Ok(Json(json!({
+    let body = json!({
         "status": "success",
         "data": simulations,
         "count": simulations.len()
-    })))
+    });
+    let etag = cache::compute_etag(&body);
+    if cache::is_not_modified(&headers, &etag) {
+        return Ok(cache::not_modified_response_with_cc(
+            &etag,
+            cache::cache_control_private(120),
+        ));
+    }
+    let mut response = Json(body).into_response();
+    cache::apply_cache_headers(&mut response, &etag, cache::cache_control_private(120));
+    Ok(response)
 }
 
 /// Get a specific loan simulation by ID
@@ -1255,14 +1281,24 @@ async fn get_simulation(
     State(state): State<Arc<AppState>>,
     Path(simulation_id): Path<Uuid>,
     AuthenticatedUser(user): AuthenticatedUser,
-) -> Result<Json<Value>, ApiError> {
+    headers: HeaderMap,
+) -> Result<impl IntoResponse, ApiError> {
     let simulation =
         LoanSimulationService::get_simulation_by_id(&state.db, simulation_id, user.user_id).await?;
     match simulation {
-        Some(sim) => Ok(Json(json!({
-            "status": "success",
-            "data": sim
-        }))),
+        Some(sim) => {
+            let body = json!({ "status": "success", "data": sim });
+            let etag = cache::compute_etag(&body);
+            if cache::is_not_modified(&headers, &etag) {
+                return Ok(cache::not_modified_response_with_cc(
+                    &etag,
+                    cache::cache_control_private(300),
+                ));
+            }
+            let mut response = Json(body).into_response();
+            cache::apply_cache_headers(&mut response, &etag, cache::cache_control_private(300));
+            Ok(response)
+        }
         None => Err(ApiError::NotFound(format!(
             "Simulation {simulation_id} not found"
         ))),
@@ -1275,13 +1311,21 @@ async fn get_simulation(
 async fn get_user_reputation(
     State(state): State<Arc<AppState>>,
     AuthenticatedUser(user): AuthenticatedUser,
-) -> Result<Json<Value>, ApiError> {
+    headers: HeaderMap,
+) -> Result<impl IntoResponse, ApiError> {
     let reputation =
         crate::reputation::ReputationService::get_reputation(&state.db, user.user_id).await?;
-    Ok(Json(json!({
-        "status": "success",
-        "data": reputation
-    })))
+    let body = json!({ "status": "success", "data": reputation });
+    let etag = cache::compute_etag(&body);
+    if cache::is_not_modified(&headers, &etag) {
+        return Ok(cache::not_modified_response_with_cc(
+            &etag,
+            cache::cache_control_private(120),
+        ));
+    }
+    let mut response = Json(body).into_response();
+    cache::apply_cache_headers(&mut response, &etag, cache::cache_control_private(120));
+    Ok(response)
 }
 
 // Loan Lifecycle Endpoints
@@ -1331,10 +1375,21 @@ async fn list_lifecycle_loans(
 async fn get_lifecycle_summary(
     State(state): State<Arc<AppState>>,
     AuthenticatedUser(user): AuthenticatedUser,
-) -> Result<Json<Value>, ApiError> {
+    headers: HeaderMap,
+) -> Result<impl IntoResponse, ApiError> {
     let summary =
         LoanLifecycleService::get_lifecycle_summary(&state.db, Some(user.user_id)).await?;
-    Ok(Json(json!({ "status": "success", "data": summary })))
+    let body = json!({ "status": "success", "data": summary });
+    let etag = cache::compute_etag(&body);
+    if cache::is_not_modified(&headers, &etag) {
+        return Ok(cache::not_modified_response_with_cc(
+            &etag,
+            cache::cache_control_private(60),
+        ));
+    }
+    let mut response = Json(body).into_response();
+    cache::apply_cache_headers(&mut response, &etag, cache::cache_control_private(60));
+    Ok(response)
 }
 
 /// Fetch a single loan by its UUID.
@@ -1344,9 +1399,20 @@ async fn get_lifecycle_loan(
     State(state): State<Arc<AppState>>,
     Path(id): Path<Uuid>,
     AuthenticatedUser(_user): AuthenticatedUser,
-) -> Result<Json<Value>, ApiError> {
+    headers: HeaderMap,
+) -> Result<impl IntoResponse, ApiError> {
     let record = LoanLifecycleService::get_loan(&state.db, id).await?;
-    Ok(Json(json!({ "status": "success", "data": record })))
+    let body = json!({ "status": "success", "data": record });
+    let etag = cache::compute_etag(&body);
+    if cache::is_not_modified(&headers, &etag) {
+        return Ok(cache::not_modified_response_with_cc(
+            &etag,
+            cache::cache_control_private(60),
+        ));
+    }
+    let mut response = Json(body).into_response();
+    cache::apply_cache_headers(&mut response, &etag, cache::cache_control_private(60));
+    Ok(response)
 }
 
 /// Apply a repayment to a loan.  When cumulative repayments reach or exceed
@@ -1599,9 +1665,19 @@ async fn create_governance_proposal(
 
 async fn list_governance_proposals(
     State(state): State<Arc<AppState>>,
-) -> Result<Json<Vec<Proposal>>, ApiError> {
+    headers: HeaderMap,
+) -> Result<impl IntoResponse, ApiError> {
     let proposals = GovernanceService::list_proposals(&state.db).await?;
-    Ok(Json(proposals))
+    let etag = cache::compute_etag(&proposals);
+    if cache::is_not_modified(&headers, &etag) {
+        return Ok(cache::not_modified_response_with_cc(
+            &etag,
+            cache::cache_control_public(120),
+        ));
+    }
+    let mut response = Json(proposals).into_response();
+    cache::apply_cache_headers(&mut response, &etag, cache::cache_control_public(120));
+    Ok(response)
 }
 
 async fn vote_on_governance_proposal(

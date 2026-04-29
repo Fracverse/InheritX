@@ -1,7 +1,7 @@
 use axum::{
     body::Body,
     extract::Request,
-    http::{HeaderMap, HeaderName, HeaderValue, Request as HttpRequest, StatusCode},
+    http::{HeaderMap, HeaderName, HeaderValue, Method, Request as HttpRequest, StatusCode},
     middleware::Next,
     response::{IntoResponse, Response},
 };
@@ -263,4 +263,34 @@ pub async fn request_timeout_middleware(
         )
             .into_response(),
     }
+}
+
+/// Ensures write-method responses are never accidentally cached.
+///
+/// - **GET / HEAD**: passes through untouched — individual handlers set their
+///   own `ETag` and `Cache-Control` headers via [`crate::cache`].
+/// - **POST / PUT / PATCH / DELETE / OPTIONS**: injects `Cache-Control: no-store`
+///   on the response so the client (and any intermediary proxy) cannot cache
+///   the result of a mutating operation.
+///
+/// This middleware sits **after** `security_headers_middleware` in the stack so
+/// that it can safely overwrite any generic cache header set upstream without
+/// being overwritten itself.
+pub async fn cache_headers_middleware(req: Request, next: Next) -> Response {
+    let method = req.method().clone();
+    let mut response = next.run(req).await;
+
+    let is_write = matches!(
+        method,
+        Method::POST | Method::PUT | Method::PATCH | Method::DELETE | Method::OPTIONS
+    );
+
+    if is_write {
+        response.headers_mut().insert(
+            axum::http::header::CACHE_CONTROL,
+            HeaderValue::from_static("no-store"),
+        );
+    }
+
+    response
 }

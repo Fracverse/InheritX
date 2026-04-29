@@ -1,7 +1,19 @@
 import type { NextConfig } from "next";
 import createNextIntlPlugin from "next-intl/plugin";
+import withBundleAnalyzer from "@next/bundle-analyzer";
+import withPWAInit from "@ducanh2912/next-pwa";
 
 const withNextIntl = createNextIntlPlugin("./i18n/request.ts");
+
+const withBundleAnalyzerConfig = withBundleAnalyzer({
+  enabled: process.env.ANALYZE === "true",
+});
+
+const withPWA = withPWAInit({
+  dest: "public",
+  disable: process.env.NODE_ENV === "development",
+  register: true,
+});
 
 /**
  * Security headers are primarily applied by middleware.ts on every request.
@@ -45,6 +57,10 @@ const nextConfig: NextConfig = {
     ],
   },
 
+  compiler: {
+    removeConsole: process.env.NODE_ENV === "production",
+  },
+
   async headers() {
     return [
       {
@@ -56,4 +72,4 @@ const nextConfig: NextConfig = {
   },
 };
 
-export default withNextIntl(nextConfig);
+export default withBundleAnalyzerConfig(withPWA(withNextIntl(nextConfig)));

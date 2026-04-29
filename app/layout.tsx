@@ -73,6 +73,8 @@ export const viewport: Viewport = {
   themeColor: "#161E22",
 };
 
+import { Vitals } from "@/app/components/Vitals";
+
 export default function RootLayout({
   children,
 }: Readonly<{
@@ -95,12 +97,13 @@ export default function RootLayout({
         />
         <link rel="icon" href="/favicon.ico" />
         <link rel="apple-touch-icon" href="/apple-touch-icon.png" />
-        <link rel="manifest" href="/site.webmanifest" />
+        <link rel="manifest" href="/manifest.json" />
       </head>
       <body
         className={`${outfit.variable} ${geistMono.variable} antialiased`}
         suppressHydrationWarning
       >
+        <Vitals />
         <AdminAuthProvider>
           <WalletProvider>
             <KYCProvider>
