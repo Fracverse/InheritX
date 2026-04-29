@@ -15,31 +15,69 @@ export default function ClaimForm({ onSubmit }: ClaimFormProps) {
     beneficiaryEmail: "",
     claimCode: ["", "", "", "", "", ""],
   });
-  const [isFormValid, setIsFormValid] = useState(false);
+  const [errors, setErrors] = useState<{
+    beneficiaryName?: string;
+    beneficiaryEmail?: string;
+    claimCode?: string;
+  }>({});
 
-  // Basic email validation regex
   const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
 
   const validateForm = (data: typeof formData) => {
-    const isValid = Boolean(
-      data.beneficiaryName.trim() &&
-        emailRegex.test(data.beneficiaryEmail.trim()) &&
-        data.claimCode.every((code) => code.trim()),
-    );
-    setIsFormValid(isValid);
+    const nextErrors: typeof errors = {};
+
+    if (!data.beneficiaryName.trim()) {
+      nextErrors.beneficiaryName = "Beneficiary name is required";
+    }
+
+    if (!data.beneficiaryEmail.trim()) {
+      nextErrors.beneficiaryEmail = "Beneficiary email is required";
+    } else if (!emailRegex.test(data.beneficiaryEmail.trim())) {
+      nextErrors.beneficiaryEmail = "Please provide a valid email address";
+    }
+
+    if (!data.claimCode.every((code) => code.trim())) {
+      nextErrors.claimCode = "All claim code fields are required";
+    }
+
+    setErrors(nextErrors);
+    return Object.keys(nextErrors).length === 0;
   };
 
   const updateFormData = (updater: (current: typeof formData) => typeof formData) => {
     setFormData((current) => {
       const next = updater(current);
-      validateForm(next);
+      setErrors((prev) => {
+        const nextErrors = { ...prev };
+
+        if (next.beneficiaryName.trim()) {
+          delete nextErrors.beneficiaryName;
+        }
+        if (next.beneficiaryEmail.trim() && emailRegex.test(next.beneficiaryEmail.trim())) {
+          delete nextErrors.beneficiaryEmail;
+        }
+        if (next.claimCode.every((code) => code.trim())) {
+          delete nextErrors.claimCode;
+        }
+
+        return nextErrors;
+      });
+
       return next;
     });
   };
 
+  const isFormValid = Boolean(
+    formData.beneficiaryName.trim() &&
+      emailRegex.test(formData.beneficiaryEmail.trim()) &&
+      formData.claimCode.every((code) => code.trim()),
+  );
+
   const handleSubmit = (event?: React.FormEvent<HTMLFormElement>) => {
     event?.preventDefault();
-    if (isFormValid || process.env.NEXT_PUBLIC_E2E_MOCK_WALLET === "true") {
+    const isValid = validateForm(formData);
+
+    if (isValid || process.env.NEXT_PUBLIC_E2E_MOCK_WALLET === "true") {
       onSubmit(formData);
     }
   };
@@ -72,6 +110,9 @@ export default function ClaimForm({ onSubmit }: ClaimFormProps) {
               }
               placeholder="Enter the name of your beneficiary"
             />
+            {errors.beneficiaryName && (
+              <p className="text-red-500 text-xs mt-2">{errors.beneficiaryName}</p>
+            )}
 
             <FormInput
               label="Beneficiary Email"
@@ -85,6 +126,9 @@ export default function ClaimForm({ onSubmit }: ClaimFormProps) {
               }
               placeholder="Enter the email of your beneficiary"
             />
+            {errors.beneficiaryEmail && (
+              <p className="text-red-500 text-xs mt-2">{errors.beneficiaryEmail}</p>
+            )}
 
             {/* Claim Code */}
             <div>
@@ -97,6 +141,9 @@ export default function ClaimForm({ onSubmit }: ClaimFormProps) {
                   updateFormData((current) => ({ ...current, claimCode: code }))
                 }
               />
+              {errors.claimCode && (
+                <p className="text-red-500 text-xs mt-2">{errors.claimCode}</p>
+              )}
             </div>
 
             {/* Submit Button */}

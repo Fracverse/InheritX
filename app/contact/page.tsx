@@ -1,6 +1,6 @@
 "use client";
 
-import { useState } from "react";
+import { FormEvent, useState } from "react";
 import {
   ArrowUpRight,
   Headphones,
@@ -11,13 +11,63 @@ import Footer from "../components/Footer";
 
 export default function ContactPage() {
   const [fullName, setFullName] = useState("");
-   const[email, setEmail] = useState("");
+  const [email, setEmail] = useState("");
   const [subject, setSubject] = useState("");
   const [message, setMessage] = useState("");
+  const [errors, setErrors] = useState<{
+    fullName?: string;
+    email?: string;
+    subject?: string;
+    message?: string;
+  }>({});
 
-  const handleSubmit = (e: React.FormEvent) => {
+  const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+
+  const validateForm = () => {
+    const nextErrors: typeof errors = {};
+
+    if (!fullName.trim()) {
+      nextErrors.fullName = "Full name is required";
+    }
+
+    if (!email.trim()) {
+      nextErrors.email = "Email is required";
+    } else if (!emailRegex.test(email.trim())) {
+      nextErrors.email = "Please enter a valid email address";
+    }
+
+    if (!subject) {
+      nextErrors.subject = "Subject is required";
+    }
+
+    if (!message.trim()) {
+      nextErrors.message = "Message is required";
+    }
+
+    setErrors(nextErrors);
+    return Object.keys(nextErrors).length === 0;
+  };
+
+  const isFormValid =
+    fullName.trim().length > 0 &&
+    emailRegex.test(email.trim()) &&
+    subject.length > 0 &&
+    message.trim().length > 0;
+
+  const handleSubmit = (e: FormEvent<HTMLFormElement>) => {
     e.preventDefault();
-    // Handle form submission
+
+    if (!validateForm()) {
+      return;
+    }
+
+    setFullName("");
+    setEmail("");
+    setSubject("");
+    setMessage("");
+    setErrors({});
+
+    alert("Your message has been sent successfully.");
   };
 
   return (
@@ -51,7 +101,7 @@ export default function ContactPage() {
         <div>
           <label
             htmlFor="fullName"
-            className="block text-white/ text-sm font-light mb-3"
+            className="block text-white text-sm font-light mb-3"
           >
             Full Name
           </label>
@@ -63,13 +113,16 @@ export default function ContactPage() {
             placeholder="John Doe"
             className="w-full px-4 py-3.5 bg-white/5 border border-white/10 rounded-lg text-white placeholder:text-white/30 focus:outline-none focus:border-cyan-400/50 focus:bg-white/[0.07] transition-all text-sm font-light"
           />
+          {errors.fullName && (
+            <p className="text-red-500 text-xs mt-2">{errors.fullName}</p>
+          )}
         </div>
 
           {/* Email Field */}
         <div>
           <label
-            htmlFor="fullName"
-            className="block text-white/ text-sm font-light mb-3"
+            htmlFor="email"
+            className="block text-white text-sm font-light mb-3"
           >
             Email
           </label>
@@ -81,6 +134,9 @@ export default function ContactPage() {
             placeholder="Enter Email"
             className="w-full px-4 py-3.5 bg-white/5 border border-white/10 rounded-lg text-white placeholder:text-white/30 focus:outline-none focus:border-cyan-400/50 focus:bg-white/[0.07] transition-all text-sm font-light"
           />
+          {errors.email && (
+            <p className="text-red-500 text-xs mt-2">{errors.email}</p>
+          )}
         </div>
 
         {/* Subject Field */}
@@ -108,6 +164,9 @@ export default function ContactPage() {
             </select>
             <ChevronDown className="absolute right-4 top-1/2 -translate-y-1/2 w-5 h-5 text-white/30 pointer-events-none" />
           </div>
+          {errors.subject && (
+            <p className="text-red-500 text-xs mt-2">{errors.subject}</p>
+          )}
         </div>
 
         {/* Message Field */}
@@ -126,14 +185,21 @@ export default function ContactPage() {
             rows={8}
             className="w-full px-4 py-3.5 bg-white/5 border border-white/10 rounded-lg text-white placeholder:text-white/30 focus:outline-none focus:border-cyan-400/50 focus:bg-white/[0.07] transition-all resize-none text-sm font-light"
           />
+          {errors.message && (
+            <p className="text-red-500 text-xs mt-2">{errors.message}</p>
+          )}
         </div>
 
         {/* Submit Button */}
         <div className="pt-4 flex justify-center">
           <button
             type="submit"
-            disabled
-            className="flex items-center justify-center gap-2 px-8 py-3 rounded-t-lg rounded-b-[18px] bg-[#425558] text-white font-semibold cursor-not-allowed transition-all duration-300 focus-visible:outline-offset-2 focus-visible:outline-2 focus-visible:outline-cyan-400 opacity-60"
+            disabled={!isFormValid}
+            className={`flex items-center justify-center gap-2 px-8 py-3 rounded-t-lg rounded-b-[18px] transition-all duration-300 focus-visible:outline-offset-2 focus-visible:outline-2 focus-visible:outline-cyan-400 ${
+              isFormValid
+                ? "bg-[#33C5E0] text-[#0A0F11] hover:bg-[#2AB4CF]"
+                : "bg-[#425558] text-white cursor-not-allowed opacity-60"
+            }`}
           >
             SEND MESSAGE
             <ArrowUpRight size={16} aria-hidden={true} />
