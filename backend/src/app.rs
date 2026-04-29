@@ -125,6 +125,8 @@ pub async fn create_app(
         webhook_service,
     });
 
+    let graphql_schema = crate::graphql::create_schema(db.clone());
+
     // ── Rate limiting (config-driven) ────────────────────────────────────────
     // Limits are read from environment variables via Config::load() so every
     // deployment can tune them without a code change.  Hardcoded fallbacks
@@ -196,6 +198,7 @@ pub async fn create_app(
 
     let app = Router::new()
         .route("/health", get(health_check))
+        .route("/ready", get(ready_check))
         .route("/health/db", get(db_health_check))
         // Admin login gets its own, tighter rate limit (brute-force protection).
         .route("/health/db/metrics", get(db_metrics))
@@ -694,7 +697,13 @@ pub async fn create_app(
         )
         .with_state(price_feed_state);
 
+    let graphql_router = Router::new()
+        .route("/api/graphql", post(crate::graphql::graphql_handler))
+        .route("/api/graphql/playground", get(crate::graphql::graphql_playground))
+        .with_state(graphql_schema);
+
     Ok(app
+        .merge(graphql_router)
         .merge(crate::data_retention::retention_router().with_state(state))
         .merge(price_routes)
         .layer(axum::middleware::from_fn(
@@ -710,7 +719,38 @@ pub async fn create_app(
 }
 
 async fn health_check() -> Json<Value> {
-    Json(json!({ "status": "ok", "message": "App is healthy" }))
+    Json(json!({
+        "status": "ok",
+        "message": "App is running",
+        "service": "inheritx-backend"
+    }))
+}
+
+/// Readiness probe (Issue #478).
+///
+/// Checks database and external service connectivity.
+async fn ready_check(
+    axum::extract::State(state): axum::extract::State<Arc<AppState>>,
+) -> Result<Json<Value>, ApiError> {
+    let db_status = match crate::db::ping(&state.db).await {
+        Ok(latency_ms) => json!({ "status": "ok", "latency_ms": latency_ms }),
+        Err(_) => json!({ "status": "error" }),
+    };
+
+    let overall_status = if db_status["status"] == "ok" {
+        "ok"
+    } else {
+        "error"
+    };
+
+    if overall_status == "error" {
+        return Err(ApiError::Internal(anyhow::anyhow!("Service not ready")));
+    }
+
+    Ok(Json(json!({
+        "status": overall_status,
+        "database": db_status
+    })))
 }
 
 /// Liveness + readiness probe for the database (Issue #420).
