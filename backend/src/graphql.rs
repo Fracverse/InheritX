@@ -1,11 +1,9 @@
 use async_graphql::{Context, EmptyMutation, EmptySubscription, Object, Schema, SimpleObject};
 use async_graphql_axum::{GraphQLRequest, GraphQLResponse};
 use axum::extract::State;
-use sqlx::PgPool;
+use sqlx::{PgPool, Row};
 use std::sync::Arc;
 use uuid::Uuid;
-
-use crate::app::AppState;
 
 #[derive(SimpleObject)]
 pub struct Plan {
@@ -33,17 +31,15 @@ impl QueryRoot {
         let parsed_id =
             Uuid::parse_str(&id).map_err(|_| async_graphql::Error::new("Invalid ID"))?;
 
-        let record = sqlx::query!(
-            "SELECT id, user_id, status FROM plans WHERE id = $1",
-            parsed_id
-        )
-        .fetch_optional(db)
-        .await?;
+        let record = sqlx::query("SELECT id, user_id, status FROM plans WHERE id = $1")
+            .bind(parsed_id)
+            .fetch_optional(db)
+            .await?;
 
         Ok(record.map(|r| Plan {
-            id: r.id.to_string(),
-            user_id: r.user_id.to_string(),
-            status: r.status,
+            id: r.get::<Uuid, _>("id").to_string(),
+            user_id: r.get::<Uuid, _>("user_id").to_string(),
+            status: r.get::<String, _>("status"),
         }))
     }
 
@@ -58,18 +54,18 @@ impl QueryRoot {
         let parsed_id =
             Uuid::parse_str(&user_id).map_err(|_| async_graphql::Error::new("Invalid ID"))?;
 
-        let record = sqlx::query!(
-            "SELECT user_id, score, total_loans_taken, total_loans_repaid FROM user_reputation WHERE user_id = $1",
-            parsed_id
+        let record = sqlx::query(
+            "SELECT user_id, score, total_loans_taken, total_loans_repaid FROM user_reputation WHERE user_id = $1"
         )
+        .bind(parsed_id)
         .fetch_optional(db)
         .await?;
 
         Ok(record.map(|r| UserReputation {
-            user_id: r.user_id.to_string(),
-            score: r.score,
-            total_loans_taken: r.total_loans_taken,
-            total_loans_repaid: r.total_loans_repaid,
+            user_id: r.get::<Uuid, _>("user_id").to_string(),
+            score: r.get::<i32, _>("score"),
+            total_loans_taken: r.get::<i32, _>("total_loans_taken"),
+            total_loans_repaid: r.get::<i32, _>("total_loans_repaid"),
         }))
     }
 }
