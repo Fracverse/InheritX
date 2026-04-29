@@ -24,6 +24,7 @@ pub mod events;
 pub mod external_integrations;
 pub mod external_price_fetcher;
 pub mod governance;
+pub mod graphql;
 pub mod insurance_fund;
 pub mod interest_reconciliation;
 pub mod legacy_content;

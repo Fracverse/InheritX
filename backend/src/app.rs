@@ -128,6 +128,8 @@ pub async fn create_app(
         webhook_service,
     });
 
+    let graphql_schema = crate::graphql::create_schema(db.clone());
+
     // ── Rate limiting (config-driven) ────────────────────────────────────────
     // Limits are read from environment variables via Config::load() so every
     // deployment can tune them without a code change.  Hardcoded fallbacks
@@ -141,7 +143,6 @@ pub async fn create_app(
     let mut governor_builder = governor_builder.key_extractor(
         crate::middleware::RateLimitKeyExtractor::new(rl.bypass_tokens.clone()),
     );
-    governor_builder.error_handler(crate::middleware::rate_limit_error_response);
     let governor_conf = Arc::new(governor_builder.use_headers().finish().unwrap());
 
     let emergency_governor_conf = Arc::new(
@@ -199,6 +200,7 @@ pub async fn create_app(
 
     let app = Router::new()
         .route("/health", get(health_check))
+        .route("/ready", get(ready_check))
         .route("/health/db", get(db_health_check))
         // Admin login gets its own, tighter rate limit (brute-force protection).
         .route("/health/db/metrics", get(db_metrics))
@@ -216,9 +218,7 @@ pub async fn create_app(
         .route("/metrics", get(crate::metrics::metrics_handler))
         .route(
             "/admin/login",
-            post(crate::auth::login_admin).layer(GovernorLayer {
-                config: admin_login_governor_conf,
-            }),
+            post(crate::auth::login_admin).layer(GovernorLayer::new(admin_login_governor_conf)),
         )
         .route(
             "/api/plans/due-for-claim",
@@ -272,15 +272,13 @@ pub async fn create_app(
         )
         .route(
             "/api/emergency/access/grants",
-            post(create_emergency_access_grant).layer(GovernorLayer {
-                config: emergency_governor_conf.clone(),
-            }),
+            post(create_emergency_access_grant)
+                .layer(GovernorLayer::new(emergency_governor_conf.clone())),
         )
         .route(
             "/api/emergency/access/grants/:grant_id/revoke",
-            post(revoke_emergency_access_grant).layer(GovernorLayer {
-                config: emergency_governor_conf,
-            }),
+            post(revoke_emergency_access_grant)
+                .layer(GovernorLayer::new(emergency_governor_conf)),
         )
         .route(
             "/api/emergency/access/audit-logs",
@@ -699,7 +697,16 @@ pub async fn create_app(
         )
         .with_state(price_feed_state);
 
+    let graphql_router = Router::new()
+        .route("/api/graphql", post(crate::graphql::graphql_handler))
+        .route(
+            "/api/graphql/playground",
+            get(crate::graphql::graphql_playground),
+        )
+        .with_state(graphql_schema);
+
     Ok(app
+        .merge(graphql_router)
         .merge(crate::data_retention::retention_router().with_state(state))
         .merge(price_routes)
         .layer(axum::middleware::from_fn(
@@ -709,20 +716,45 @@ pub async fn create_app(
             crate::middleware::log_rate_limit_violations,
         ))
         .layer(TraceLayer::new_for_http())
-        .layer(GovernorLayer {
-            config: governor_conf,
-        }))
+        .layer(
+            GovernorLayer::new(governor_conf)
+                .error_handler(crate::middleware::rate_limit_error_response),
+        ))
 }
 
-async fn health_check(headers: HeaderMap) -> impl IntoResponse {
-    let data = json!({ "status": "ok", "message": "App is healthy" });
-    let etag = cache::compute_etag(&data);
-    if cache::is_not_modified(&headers, &etag) {
-        return cache::not_modified_response_with_cc(&etag, cache::cache_control_public(10));
+async fn health_check() -> Json<Value> {
+    Json(json!({
+        "status": "ok",
+        "message": "App is running",
+        "service": "inheritx-backend"
+    }))
+}
+
+/// Readiness probe (Issue #478).
+///
+/// Checks database and external service connectivity.
+async fn ready_check(
+    axum::extract::State(state): axum::extract::State<Arc<AppState>>,
+) -> Result<Json<Value>, ApiError> {
+    let db_status = match crate::db::ping(&state.db).await {
+        Ok(latency_ms) => json!({ "status": "ok", "latency_ms": latency_ms }),
+        Err(_) => json!({ "status": "error" }),
+    };
+
+    let overall_status = if db_status["status"] == "ok" {
+        "ok"
+    } else {
+        "error"
+    };
+
+    if overall_status == "error" {
+        return Err(ApiError::Internal(anyhow::anyhow!("Service not ready")));
     }
-    let mut response = Json(data).into_response();
-    cache::apply_cache_headers(&mut response, &etag, cache::cache_control_public(10));
-    response
+
+    Ok(Json(json!({
+        "status": overall_status,
+        "database": db_status
+    })))
 }
 
 /// Liveness + readiness probe for the database (Issue #420).

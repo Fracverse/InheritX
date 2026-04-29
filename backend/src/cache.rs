@@ -129,7 +129,7 @@ struct InMemoryCacheEntry {
 
 #[derive(Clone)]
 enum CacheBackend {
-    Redis(redis::aio::ConnectionManager),
+    Redis(Box<redis::aio::ConnectionManager>),
     InMemory(Arc<RwLock<HashMap<String, InMemoryCacheEntry>>>),
 }
 
@@ -152,7 +152,7 @@ impl CacheService {
                 match client.get_connection_manager().await {
                     Ok(conn) => {
                         tracing::info!("Cache backend initialised with Redis");
-                        CacheBackend::Redis(conn)
+                        CacheBackend::Redis(Box::new(conn))
                     }
                     Err(e) => {
                         warn!(error = %e, "Failed to initialise Redis cache backend, falling back to in-memory cache");
