@@ -46,6 +46,7 @@ pub mod secrets;
 pub mod secure_messages;
 pub mod service;
 pub mod session;
+pub mod stellar;
 pub mod stress_testing;
 pub mod telemetry;
 pub mod webhook;
@@ -76,6 +77,10 @@ pub use risk_engine::RiskEngine;
 pub use safe_math::SafeMath;
 pub use secure_messages::{
     LegacyMessageDeliveryService, MessageEncryptionService, MessageKeyService,
+};
+pub use stellar::{
+    HorizonClient, SorobanRpcClient, StellarClient, StellarConfig, StellarHealthStatus,
+    TransactionMonitor, TransactionStatus,
 };
 pub use stress_testing::StressTestingEngine;
 pub use webhook::{event_types, WebhookService};

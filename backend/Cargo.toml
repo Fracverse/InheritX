@@ -39,11 +39,10 @@ ring = "0.17"
 sha2 = "0.10"
 postgres-types = { version = "0.2", features = ["with-chrono-0_4", "with-uuid-1", "with-serde_json-1"] }
 
-# Stellar SDK - TODO: Use correct Stellar Rust SDK
-# Check: https://crates.io/crates/stellar-rust-sdk or similar
-# For now, we'll comment this out until we find the right crate
-# stellar-sdk = "0.1"
-soroban-sdk = "21.0"
+# Stellar SDK integration (Issue #470)
+# stellar-xdr: XDR types for transaction building/encoding (maintained by SDF)
+stellar-xdr = { version = "21.0", features = ["curr", "alloc"] }
+# stellar-strkey is already listed below; used for address encode/decode
 
 # HTTP client
 reqwest = { version = "0.11", default-features = false, features = ["json", "rustls-tls"] }
