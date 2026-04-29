@@ -1,7 +1,3 @@
-use axum::{body::Body, http::Request};
-use axum_test_helper::TestClient;
-use serde_json::json;
-
 // Note: A full integration test requires setting up the PgPool and AppState.
 // We are adding a placeholder test file as requested to test GraphQL queries.
 // These tests would typically use `axum_test` or `tower::ServiceExt` along with an in-memory db.
