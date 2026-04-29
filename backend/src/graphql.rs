@@ -27,12 +27,18 @@ pub struct QueryRoot;
 #[Object]
 impl QueryRoot {
     async fn plan(&self, ctx: &Context<'_>, id: String) -> async_graphql::Result<Option<Plan>> {
-        let db = ctx.data::<PgPool>().map_err(|_| async_graphql::Error::new("DB not found"))?;
-        let parsed_id = Uuid::parse_str(&id).map_err(|_| async_graphql::Error::new("Invalid ID"))?;
+        let db = ctx
+            .data::<PgPool>()
+            .map_err(|_| async_graphql::Error::new("DB not found"))?;
+        let parsed_id =
+            Uuid::parse_str(&id).map_err(|_| async_graphql::Error::new("Invalid ID"))?;
 
-        let record = sqlx::query!("SELECT id, user_id, status FROM plans WHERE id = $1", parsed_id)
-            .fetch_optional(db)
-            .await?;
+        let record = sqlx::query!(
+            "SELECT id, user_id, status FROM plans WHERE id = $1",
+            parsed_id
+        )
+        .fetch_optional(db)
+        .await?;
 
         Ok(record.map(|r| Plan {
             id: r.id.to_string(),
@@ -41,9 +47,16 @@ impl QueryRoot {
         }))
     }
 
-    async fn reputation(&self, ctx: &Context<'_>, user_id: String) -> async_graphql::Result<Option<UserReputation>> {
-        let db = ctx.data::<PgPool>().map_err(|_| async_graphql::Error::new("DB not found"))?;
-        let parsed_id = Uuid::parse_str(&user_id).map_err(|_| async_graphql::Error::new("Invalid ID"))?;
+    async fn reputation(
+        &self,
+        ctx: &Context<'_>,
+        user_id: String,
+    ) -> async_graphql::Result<Option<UserReputation>> {
+        let db = ctx
+            .data::<PgPool>()
+            .map_err(|_| async_graphql::Error::new("DB not found"))?;
+        let parsed_id =
+            Uuid::parse_str(&user_id).map_err(|_| async_graphql::Error::new("Invalid ID"))?;
 
         let record = sqlx::query!(
             "SELECT user_id, score, total_loans_taken, total_loans_repaid FROM user_reputation WHERE user_id = $1",

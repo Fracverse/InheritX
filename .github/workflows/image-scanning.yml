@@ -25,7 +25,7 @@ jobs:
 
       - name: Build an image from Dockerfile
         run: |
-          docker build -t inheritx/backend:${{ github.sha }} backend/
+          docker build -f backend/Dockerfile -t inheritx/backend:${{ github.sha }} .
 
       - name: Run Trivy vulnerability scanner
         uses: aquasecurity/trivy-action@master

@@ -148,7 +148,10 @@ impl DataRetentionService {
         });
     }
 
-    pub async fn export_user_data(pool: &PgPool, user_id: uuid::Uuid) -> Result<UserExportPayload, ApiError> {
+    pub async fn export_user_data(
+        pool: &PgPool,
+        user_id: uuid::Uuid,
+    ) -> Result<UserExportPayload, ApiError> {
         let user = sqlx::query_as::<_, (serde_json::Value,)>(
             r#"
             SELECT to_jsonb(u.*) FROM users u WHERE u.id = $1
@@ -314,7 +317,10 @@ async fn delete_my_data(
 pub fn retention_router() -> Router<Arc<AppState>> {
     Router::new()
         .route("/api/admin/data-retention/policies", get(get_policies))
-        .route("/api/admin/data-retention/archive/run", post(run_archive_now))
+        .route(
+            "/api/admin/data-retention/archive/run",
+            post(run_archive_now),
+        )
         .route("/api/user/data-export", get(export_my_data))
         .route("/api/user/data", delete(delete_my_data))
 }

@@ -257,7 +257,10 @@ impl ComplianceEngine {
         }
 
         if let Some(client) = &self.anchor_client {
-            if let Err(e) = client.submit_compliance_flag(plan_id, user_id, &reason).await {
+            if let Err(e) = client
+                .submit_compliance_flag(plan_id, user_id, &reason)
+                .await
+            {
                 warn!(
                     plan_id = %plan_id,
                     user_id = %user_id,

@@ -699,7 +699,10 @@ pub async fn create_app(
 
     let graphql_router = Router::new()
         .route("/api/graphql", post(crate::graphql::graphql_handler))
-        .route("/api/graphql/playground", get(crate::graphql::graphql_playground))
+        .route(
+            "/api/graphql/playground",
+            get(crate::graphql::graphql_playground),
+        )
         .with_state(graphql_schema);
 
     Ok(app

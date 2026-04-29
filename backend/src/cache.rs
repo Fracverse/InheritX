@@ -139,7 +139,9 @@ impl CacheService {
                 conn.set_ex::<_, _, ()>(key, payload, ttl_secs)
                     .await
                     .map_err(|e| {
-                        ApiError::ExternalService(format!("Redis set_ex failed for key '{key}': {e}"))
+                        ApiError::ExternalService(format!(
+                            "Redis set_ex failed for key '{key}': {e}"
+                        ))
                     })?;
             }
             CacheBackend::InMemory(store) => {
@@ -180,7 +182,9 @@ impl CacheService {
                 let mut conn = manager.clone();
                 let pattern = format!("{prefix}*");
                 let keys: Vec<String> = conn.keys(pattern).await.map_err(|e| {
-                    ApiError::ExternalService(format!("Redis key lookup failed for prefix '{prefix}': {e}"))
+                    ApiError::ExternalService(format!(
+                        "Redis key lookup failed for prefix '{prefix}': {e}"
+                    ))
                 })?;
                 let deleted = if keys.is_empty() {
                     0

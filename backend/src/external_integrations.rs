@@ -48,7 +48,10 @@ impl AnchorIntegrationClient {
         user_id: uuid::Uuid,
         reason: &str,
     ) -> Result<(), ApiError> {
-        let url = format!("{}/v1/compliance/flags", self.base_url.trim_end_matches('/'));
+        let url = format!(
+            "{}/v1/compliance/flags",
+            self.base_url.trim_end_matches('/')
+        );
         let payload = ComplianceFlagPayload {
             plan_id,
             user_id,
@@ -68,7 +71,9 @@ impl AnchorIntegrationClient {
                         if e.is_timeout() {
                             ApiError::Timeout
                         } else {
-                            ApiError::ExternalService(format!("Anchor integration request failed: {e}"))
+                            ApiError::ExternalService(format!(
+                                "Anchor integration request failed: {e}"
+                            ))
                         }
                     })?;
 
@@ -108,7 +113,10 @@ impl ComplianceApiClient {
         user_id: uuid::Uuid,
         reason: &str,
     ) -> Result<(), ApiError> {
-        let url = format!("{}/v1/suspicious-activity", self.base_url.trim_end_matches('/'));
+        let url = format!(
+            "{}/v1/suspicious-activity",
+            self.base_url.trim_end_matches('/')
+        );
         let payload = ComplianceFlagPayload {
             plan_id,
             user_id,

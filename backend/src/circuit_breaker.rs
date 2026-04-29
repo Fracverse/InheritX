@@ -76,7 +76,13 @@ impl CircuitBreaker {
     ) -> Self {
         let service_env = service_name
             .chars()
-            .map(|c| if c.is_ascii_alphanumeric() { c.to_ascii_uppercase() } else { '_' })
+            .map(|c| {
+                if c.is_ascii_alphanumeric() {
+                    c.to_ascii_uppercase()
+                } else {
+                    '_'
+                }
+            })
             .collect::<String>();
 
         let threshold_var = format!("CB_{}_FAILURE_THRESHOLD", service_env);
