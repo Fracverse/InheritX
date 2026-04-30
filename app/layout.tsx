@@ -6,6 +6,10 @@ import { AdminAuthProvider } from "@/context/AdminAuthContext";
 import { KYCProvider } from "@/context/KYCContext";
 import { WalletModal } from "@/components/WalletModal";
 import { KYCVerificationModal } from "@/components/KYCVerificationModal";
+import {
+  OrganizationStructuredData,
+  WebsiteStructuredData,
+} from "@/components/StructuredData";
 
 const outfit = Outfit({
   variable: "--font-outfit",
@@ -97,7 +101,9 @@ export default function RootLayout({
         />
         <link rel="icon" href="/favicon.ico" />
         <link rel="apple-touch-icon" href="/apple-touch-icon.png" />
-        <link rel="manifest" href="/manifest.json" />
+        <link rel="manifest" href="/site.webmanifest" />
+        <OrganizationStructuredData />
+        <WebsiteStructuredData />
       </head>
       <body
         className={`${outfit.variable} ${geistMono.variable} antialiased`}

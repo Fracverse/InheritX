@@ -1,0 +1,353 @@
+/**
+ * Notification Templates
+ */
+import { NotificationCategory, NotificationTemplate } from "./types";
+
+export const notificationTemplates: Record<NotificationCategory, NotificationTemplate> = {
+  plan_created: {
+    id: "plan_created",
+    category: "plan_created",
+    type: "email",
+    subject: "Your Inheritance Plan Has Been Created",
+    title: "Plan Created Successfully",
+    body: [
+      "Hello [[user_name]],",
+      "",
+      "Your inheritance plan \"[[plan_name]]\" has been successfully created.",
+      "",
+      "Plan Details:",
+      "- Plan ID: [[plan_id]]",
+      "- Total Assets: $[[total_assets]]",
+      "- Beneficiaries: [[beneficiaries_count]]",
+      "",
+      "You can view and manage your plan at any time through your dashboard.",
+      "",
+      "Best regards,",
+      "InheritX Team",
+    ].join("\n"),
+    variables: ["user_name", "plan_name", "plan_id", "total_assets", "beneficiaries_count"],
+    created_at: new Date().toISOString(),
+    updated_at: new Date().toISOString(),
+  },
+
+  plan_updated: {
+    id: "plan_updated",
+    category: "plan_updated",
+    type: "email",
+    subject: "Your Inheritance Plan Has Been Updated",
+    title: "Plan Updated",
+    body: [
+      "Hello [[user_name]],",
+      "",
+      "Your inheritance plan \"[[plan_name]]\" has been updated.",
+      "",
+      "Changes made:",
+      "[[changes_summary]]",
+      "",
+      "Updated at: [[updated_at]]",
+      "",
+      "Best regards,",
+      "InheritX Team",
+    ].join("\n"),
+    variables: ["user_name", "plan_name", "changes_summary", "updated_at"],
+    created_at: new Date().toISOString(),
+    updated_at: new Date().toISOString(),
+  },
+
+  claim_submitted: {
+    id: "claim_submitted",
+    category: "claim_submitted",
+    type: "email",
+    subject: "New Claim Submitted",
+    title: "Claim Submitted",
+    body: [
+      "Hello [[user_name]],",
+      "",
+      "A new claim has been submitted for your plan \"[[plan_name]]\".",
+      "",
+      "Claim Details:",
+      "- Claim ID: [[claim_id]]",
+      "- Beneficiary: [[beneficiary_name]]",
+      "- Amount: $[[claim_amount]]",
+      "- Submitted: [[submitted_at]]",
+      "",
+      "The claim is now under review. You will be notified of any updates.",
+      "",
+      "Best regards,",
+      "InheritX Team",
+    ].join("\n"),
+    variables: ["user_name", "plan_name", "claim_id", "beneficiary_name", "claim_amount", "submitted_at"],
+    created_at: new Date().toISOString(),
+    updated_at: new Date().toISOString(),
+  },
+
+  claim_approved: {
+    id: "claim_approved",
+    category: "claim_approved",
+    type: "email",
+    subject: "Your Claim Has Been Approved",
+    title: "Claim Approved",
+    body: [
+      "Hello [[user_name]],",
+      "",
+      "Great news! Your claim has been approved.",
+      "",
+      "Claim Details:",
+      "- Claim ID: [[claim_id]]",
+      "- Amount: $[[claim_amount]]",
+      "- Approved at: [[approved_at]]",
+      "",
+      "The funds will be transferred to your wallet within 24-48 hours.",
+      "",
+      "Best regards,",
+      "InheritX Team",
+    ].join("\n"),
+    variables: ["user_name", "claim_id", "claim_amount", "approved_at"],
+    created_at: new Date().toISOString(),
+    updated_at: new Date().toISOString(),
+  },
+
+  claim_rejected: {
+    id: "claim_rejected",
+    category: "claim_rejected",
+    type: "email",
+    subject: "Claim Status Update",
+    title: "Claim Rejected",
+    body: [
+      "Hello [[user_name]],",
+      "",
+      "We regret to inform you that your claim has been rejected.",
+      "",
+      "Claim Details:",
+      "- Claim ID: [[claim_id]]",
+      "- Reason: [[rejection_reason]]",
+      "",
+      "If you believe this is an error, please contact our support team.",
+      "",
+      "Best regards,",
+      "InheritX Team",
+    ].join("\n"),
+    variables: ["user_name", "claim_id", "rejection_reason"],
+    created_at: new Date().toISOString(),
+    updated_at: new Date().toISOString(),
+  },
+
+  message_unlocked: {
+    id: "message_unlocked",
+    category: "message_unlocked",
+    type: "email",
+    subject: "A Message Has Been Unlocked for You",
+    title: "New Message Available",
+    body: [
+      "Hello [[user_name]],",
+      "",
+      "A message titled \"[[message_title]]\" has been unlocked and is now available for you to read.",
+      "",
+      "From: [[sender_name]]",
+      "Unlocked at: [[unlocked_at]]",
+      "",
+      "Please log in to your account to view the message.",
+      "",
+      "Best regards,",
+      "InheritX Team",
+    ].join("\n"),
+    variables: ["user_name", "message_title", "sender_name", "unlocked_at"],
+    created_at: new Date().toISOString(),
+    updated_at: new Date().toISOString(),
+  },
+
+  emergency_activated: {
+    id: "emergency_activated",
+    category: "emergency_activated",
+    type: "email",
+    subject: "URGENT: Emergency Protocol Activated",
+    title: "Emergency Activated",
+    body: [
+      "Hello [[user_name]],",
+      "",
+      "URGENT: An emergency protocol has been activated for plan \"[[plan_name]]\".",
+      "",
+      "Activated by: [[activated_by]]",
+      "Activated at: [[activated_at]]",
+      "Reason: [[reason]]",
+      "",
+      "If this was not authorized by you, please contact support immediately.",
+      "",
+      "Best regards,",
+      "InheritX Team",
+    ].join("\n"),
+    variables: ["user_name", "plan_name", "activated_by", "activated_at", "reason"],
+    created_at: new Date().toISOString(),
+    updated_at: new Date().toISOString(),
+  },
+
+  will_generated: {
+    id: "will_generated",
+    category: "will_generated",
+    type: "email",
+    subject: "Your Will Document Has Been Generated",
+    title: "Will Generated",
+    body: [
+      "Hello [[user_name]],",
+      "",
+      "Your will document has been successfully generated.",
+      "",
+      "Document Details:",
+      "- Document ID: [[document_id]]",
+      "- Version: [[version]]",
+      "- Generated at: [[generated_at]]",
+      "",
+      "You can download your will document from your dashboard.",
+      "",
+      "Best regards,",
+      "InheritX Team",
+    ].join("\n"),
+    variables: ["user_name", "document_id", "version", "generated_at"],
+    created_at: new Date().toISOString(),
+    updated_at: new Date().toISOString(),
+  },
+
+  beneficiary_added: {
+    id: "beneficiary_added",
+    category: "beneficiary_added",
+    type: "email",
+    subject: "New Beneficiary Added to Your Plan",
+    title: "Beneficiary Added",
+    body: [
+      "Hello [[user_name]],",
+      "",
+      "A new beneficiary has been added to your plan \"[[plan_name]]\".",
+      "",
+      "Beneficiary: [[beneficiary_name]]",
+      "Allocation: [[allocation_percentage]]%",
+      "Added at: [[added_at]]",
+      "",
+      "Best regards,",
+      "InheritX Team",
+    ].join("\n"),
+    variables: ["user_name", "plan_name", "beneficiary_name", "allocation_percentage", "added_at"],
+    created_at: new Date().toISOString(),
+    updated_at: new Date().toISOString(),
+  },
+
+  security_alert: {
+    id: "security_alert",
+    category: "security_alert",
+    type: "email",
+    subject: "Security Alert: Unusual Activity Detected",
+    title: "Security Alert",
+    body: [
+      "Hello [[user_name]],",
+      "",
+      "We detected unusual activity on your account.",
+      "",
+      "Activity: [[activity_description]]",
+      "Time: [[detected_at]]",
+      "Location: [[location]]",
+      "",
+      "If this was you, no action is needed. Otherwise, please secure your account immediately.",
+      "",
+      "Best regards,",
+      "InheritX Team",
+    ].join("\n"),
+    variables: ["user_name", "activity_description", "detected_at", "location"],
+    created_at: new Date().toISOString(),
+    updated_at: new Date().toISOString(),
+  },
+
+  payment_received: {
+    id: "payment_received",
+    category: "payment_received",
+    type: "email",
+    subject: "Payment Received",
+    title: "Payment Confirmed",
+    body: [
+      "Hello [[user_name]],",
+      "",
+      "We have received your payment.",
+      "",
+      "Amount: $[[amount]]",
+      "Transaction ID: [[transaction_id]]",
+      "Received at: [[received_at]]",
+      "",
+      "Thank you for your payment.",
+      "",
+      "Best regards,",
+      "InheritX Team",
+    ].join("\n"),
+    variables: ["user_name", "amount", "transaction_id", "received_at"],
+    created_at: new Date().toISOString(),
+    updated_at: new Date().toISOString(),
+  },
+
+  kyc_verified: {
+    id: "kyc_verified",
+    category: "kyc_verified",
+    type: "email",
+    subject: "Your Identity Has Been Verified",
+    title: "KYC Verified",
+    body: [
+      "Hello [[user_name]],",
+      "",
+      "Your identity verification has been completed successfully.",
+      "",
+      "Verified at: [[verified_at]]",
+      "",
+      "You now have full access to all InheritX features.",
+      "",
+      "Best regards,",
+      "InheritX Team",
+    ].join("\n"),
+    variables: ["user_name", "verified_at"],
+    created_at: new Date().toISOString(),
+    updated_at: new Date().toISOString(),
+  },
+
+  system_update: {
+    id: "system_update",
+    category: "system_update",
+    type: "email",
+    subject: "InheritX System Update",
+    title: "System Update",
+    body: [
+      "Hello [[user_name]],",
+      "",
+      "We have an important system update to share with you.",
+      "",
+      "[[update_message]]",
+      "",
+      "For more information, please visit our website.",
+      "",
+      "Best regards,",
+      "InheritX Team",
+    ].join("\n"),
+    variables: ["user_name", "update_message"],
+    created_at: new Date().toISOString(),
+    updated_at: new Date().toISOString(),
+  },
+};
+
+/**
+ * Render template with variables — uses [[variable]] syntax to avoid
+ * conflicts with JS template literals.
+ */
+export function renderTemplate(
+  template: NotificationTemplate,
+  variables: Record<string, any>
+): { subject?: string; title: string; body: string } {
+  let subject = template.subject;
+  let title = template.title;
+  let body = template.body;
+
+  Object.entries(variables).forEach(([key, value]) => {
+    const placeholder = "[[" + key + "]]";
+    const replacement = String(value);
+    const re = new RegExp(placeholder.replace(/[[\]]/g, "\\$&"), "g");
+
+    if (subject) subject = subject.replace(re, replacement);
+    title = title.replace(re, replacement);
+    body = body.replace(re, replacement);
+  });
+
+  return { subject, title, body };
+}

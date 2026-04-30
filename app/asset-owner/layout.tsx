@@ -2,6 +2,22 @@ import React from "react";
 import DashboardNavbar from "../components/layout.tsx/DashboardNavbar";
 import Sidebar from "./components/Sidebar";
 import MobileBottomNav from "./components/MobileBottomNav";
+import { generateSEO } from "@/lib/seo";
+
+export const metadata = generateSEO({
+  title: "Dashboard",
+  description:
+    "Manage your digital assets, create inheritance plans, and secure your legacy with InheritX dashboard.",
+  url: "/asset-owner",
+  keywords: [
+    "asset dashboard",
+    "inheritance management",
+    "digital asset portfolio",
+    "beneficiary management",
+    "crypto portfolio",
+  ],
+  noindex: true,
+});
 
 function layout({
   children,
