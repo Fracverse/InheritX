@@ -6,6 +6,7 @@
 use crate::api_error::ApiError;
 use regex::Regex;
 use std::collections::HashMap;
+use serde_json::Value as JsonValue;
 
 /// Collects field-level validation errors.
 #[derive(Debug, Default)]
@@ -105,6 +106,49 @@ pub fn validate_no_injection(errors: &mut ValidationErrors, field: &str, value: 
     let sanitized = sanitize_string(value);
     if sanitized != value.trim() {
         errors.add(field, "contains invalid characters or patterns");
+    }
+}
+
+// ── Length constants and JSON validators ───────────────────────────────────
+
+/// Default maximum length for individual string fields (characters).
+pub const DEFAULT_MAX_FIELD_LENGTH: usize = 1024;
+
+/// Maximum allowed request body size (bytes) — used by middleware checks.
+pub const DEFAULT_MAX_BODY_BYTES: usize = 16 * 1024; // 16 KiB
+
+/// Recursively validate that no string in the provided JSON value exceeds `max`.
+///
+/// `path` is the JSON path used for error messages (e.g. `$.user.name`).
+pub fn validate_json_string_lengths(
+    errors: &mut ValidationErrors,
+    value: &JsonValue,
+    path: &str,
+    max: usize,
+) {
+    match value {
+        JsonValue::String(s) => {
+            if s.len() > max {
+                errors.add(path, &format!("must not exceed {max} characters"));
+            }
+        }
+        JsonValue::Array(arr) => {
+            for (i, v) in arr.iter().enumerate() {
+                let child_path = format!("{}[{}]", path, i);
+                validate_json_string_lengths(errors, v, &child_path, max);
+            }
+        }
+        JsonValue::Object(map) => {
+            for (k, v) in map.iter() {
+                let child_path = if path == "$" {
+                    format!("$.{}", k)
+                } else {
+                    format!("{}.{}", path, k)
+                };
+                validate_json_string_lengths(errors, v, &child_path, max);
+            }
+        }
+        _ => {}
     }
 }
 

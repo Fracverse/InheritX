@@ -12,6 +12,80 @@ use std::time::Duration;
 use tokio::time::timeout;
 use tower_governor::{errors::GovernorError, key_extractor::KeyExtractor};
 use uuid::Uuid;
+use hyper::body::to_bytes;
+use serde_json::Value as JsonValue;
+
+/// Middleware that enforces a maximum request body size (bytes) and validates
+/// JSON string lengths using the validation helpers.
+pub async fn enforce_max_request_size(mut req: Request<Body>, next: Next) -> Response {
+    // Respect a client-provided Content-Length header when present.
+    if let Some(clv) = req.headers().get(axum::http::header::CONTENT_LENGTH) {
+        if let Ok(s) = clv.to_str() {
+            if let Ok(n) = s.parse::<usize>() {
+                if n > crate::validation::DEFAULT_MAX_BODY_BYTES {
+                    return (
+                        StatusCode::PAYLOAD_TOO_LARGE,
+                        axum::Json(serde_json::json!({
+                            "error": "Request body too large",
+                            "error_code": "PAYLOAD_TOO_LARGE",
+                        })),
+                    )
+                        .into_response();
+                }
+            }
+        }
+    }
+
+    // Read the body up to the configured cap so we can inspect JSON payloads.
+    let (parts, body) = req.into_parts();
+    let bytes = match to_bytes(body).await {
+        Ok(b) => b,
+        Err(_) => {
+            // If body couldn't be read, let the inner handler observe the failure.
+            let req = Request::from_parts(parts, Body::empty());
+            return next.run(req).await;
+        }
+    };
+
+    if bytes.len() > crate::validation::DEFAULT_MAX_BODY_BYTES {
+        return (
+            StatusCode::PAYLOAD_TOO_LARGE,
+            axum::Json(serde_json::json!({
+                "error": "Request body too large",
+                "error_code": "PAYLOAD_TOO_LARGE",
+            })),
+        )
+            .into_response();
+    }
+
+    // If JSON, parse and validate string field lengths.
+    if let Some(ct) = parts.headers.get(axum::http::header::CONTENT_TYPE) {
+        if let Ok(ctv) = ct.to_str() {
+            if ctv.starts_with("application/json") {
+                if let Ok(json_val) = serde_json::from_slice::<JsonValue>(&bytes) {
+                    let mut errors = crate::validation::ValidationErrors::new();
+                    crate::validation::validate_json_string_lengths(
+                        &mut errors,
+                        &json_val,
+                        "$",
+                        crate::validation::DEFAULT_MAX_FIELD_LENGTH,
+                    );
+                    if !errors.is_empty() {
+                        return (StatusCode::BAD_REQUEST, axum::Json(serde_json::json!({
+                            "error": "Validation failed",
+                            "fields": errors.fields
+                        }))).into_response();
+                    }
+                }
+            }
+        }
+    }
+
+    // Reconstruct the request with the original body bytes and call the next
+    // handler in the chain.
+    let req = Request::from_parts(parts, Body::from(bytes));
+    next.run(req).await
+}
 
 /// Request ID header name.
 pub static X_REQUEST_ID: HeaderName = HeaderName::from_static("x-request-id");

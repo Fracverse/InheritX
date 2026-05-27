@@ -21,6 +21,7 @@ use crate::cache;
 use crate::middleware::{
     cache_headers_middleware, request_id_middleware, request_logging_middleware,
     request_timeout_middleware, security_headers_middleware,
+    enforce_max_request_size,
 };
 use uuid::Uuid;
 
@@ -633,6 +634,7 @@ pub async fn create_app(
         .layer(middleware::from_fn(cache_headers_middleware))
         .layer(middleware::from_fn(request_logging_middleware))
         .layer(middleware::from_fn(request_id_middleware))
+        .layer(middleware::from_fn(enforce_max_request_size))
         // API versioning: inject X-API-Version header (Issue #439)
         .layer(middleware::from_fn(versioning_middleware))
         // Session revocation guard: reject revoked JWTs (Issue #436)
