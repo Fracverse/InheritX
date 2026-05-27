@@ -1,7 +1,8 @@
 use crate::api_error::ApiError;
 use crate::circuit_breaker::CircuitBreaker;
 use reqwest::Client;
-use serde::Serialize;
+use reqwest::header::AUTHORIZATION;
+use serde::{Deserialize, Serialize};
 use std::time::Duration;
 
 #[derive(Clone)]
@@ -18,11 +19,32 @@ pub struct ComplianceApiClient {
     circuit_breaker: CircuitBreaker,
 }
 
+#[derive(Clone)]
+pub struct SanctionsApiClient {
+    client: Client,
+    base_url: String,
+    api_key: String,
+    circuit_breaker: CircuitBreaker,
+}
+
 #[derive(Debug, Serialize)]
 struct ComplianceFlagPayload {
     plan_id: uuid::Uuid,
     user_id: uuid::Uuid,
     reason: String,
+}
+
+#[derive(Debug, Serialize)]
+struct SanctionsScreenPayload<'a> {
+    user_id: uuid::Uuid,
+    email: &'a str,
+    wallet_address: Option<&'a str>,
+}
+
+#[derive(Debug, Deserialize)]
+struct SanctionsScreenResponse {
+    flagged: bool,
+    reason: Option<String>,
 }
 
 impl AnchorIntegrationClient {
@@ -148,6 +170,82 @@ impl ComplianceApiClient {
                 }
 
                 Ok(())
+            })
+            .await
+    }
+}
+
+impl SanctionsApiClient {
+    pub fn from_env() -> Option<Self> {
+        let base_url = std::env::var("SANCTIONS_API_URL").ok()?;
+        let api_key = std::env::var("SANCTIONS_API_KEY").ok()?;
+        let failure_threshold = read_u32("CB_SANCTIONS_FAILURE_THRESHOLD", 5);
+        let recovery_timeout = read_u64("CB_SANCTIONS_RECOVERY_TIMEOUT_SECS", 30);
+
+        Some(Self {
+            client: Client::new(),
+            base_url,
+            api_key,
+            circuit_breaker: CircuitBreaker::new(
+                "sanctions_api",
+                failure_threshold,
+                Duration::from_secs(recovery_timeout),
+            ),
+        })
+    }
+
+    pub async fn screen_user(
+        &self,
+        user_id: uuid::Uuid,
+        email: &str,
+        wallet_address: Option<&str>,
+    ) -> Result<Option<String>, ApiError> {
+        let url = format!(
+            "{}/v1/sanctions/screen",
+            self.base_url.trim_end_matches('/')
+        );
+        let payload = SanctionsScreenPayload {
+            user_id,
+            email,
+            wallet_address,
+        };
+
+        self.circuit_breaker
+            .call(|| async {
+                let response = self
+                    .client
+                    .post(&url)
+                    .timeout(Duration::from_secs(10))
+                    .header(AUTHORIZATION, format!("Bearer {}", self.api_key))
+                    .json(&payload)
+                    .send()
+                    .await
+                    .map_err(|e| {
+                        if e.is_timeout() {
+                            ApiError::Timeout
+                        } else {
+                            ApiError::ExternalService(format!("Sanctions API request failed: {e}"))
+                        }
+                    })?;
+
+                if !response.status().is_success() {
+                    return Err(ApiError::ExternalService(format!(
+                        "Sanctions API returned status {}",
+                        response.status()
+                    )));
+                }
+
+                let screen_result: SanctionsScreenResponse = response.json().await.map_err(|e| {
+                    ApiError::ExternalService(format!("Sanctions API response parse failed: {e}"))
+                })?;
+
+                if screen_result.flagged {
+                    Ok(Some(screen_result.reason.unwrap_or_else(|| {
+                        "Sanctions list match detected".to_string()
+                    })))
+                } else {
+                    Ok(None)
+                }
             })
             .await
     }

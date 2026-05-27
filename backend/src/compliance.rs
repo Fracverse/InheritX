@@ -1,5 +1,7 @@
 use crate::api_error::ApiError;
-use crate::external_integrations::{AnchorIntegrationClient, ComplianceApiClient};
+use crate::external_integrations::{
+    AnchorIntegrationClient, ComplianceApiClient, SanctionsApiClient,
+};
 use crate::notifications::{
     audit_action, entity_type, notif_type, AuditLogService, NotificationService,
 };
@@ -16,6 +18,7 @@ pub struct ComplianceEngine {
     velocity_window_mins: i64,     // e.g., 10 minutes
     pub volume_threshold: Decimal, // e.g., $100k
     compliance_api_client: Option<ComplianceApiClient>,
+    sanctions_client: Option<SanctionsApiClient>,
     anchor_client: Option<AnchorIntegrationClient>,
 }
 
@@ -32,6 +35,7 @@ impl ComplianceEngine {
             velocity_window_mins,
             volume_threshold,
             compliance_api_client: ComplianceApiClient::from_env(),
+            sanctions_client: SanctionsApiClient::from_env(),
             anchor_client: AnchorIntegrationClient::from_env(),
         }
     }
@@ -49,7 +53,11 @@ impl ComplianceEngine {
     }
 
     pub async fn scan_suspicious_activity(&self) -> Result<(), ApiError> {
-        info!("Compliance Engine: Scanning for suspicious borrowing patterns...");
+        info!("Compliance Engine: Scanning for suspicious borrowing patterns and sanctions screening...");
+
+        if let Err(e) = self.run_sanctions_screening().await {
+            warn!(error = %e, "Sanctions screening failed; continuing with internal compliance checks");
+        }
 
         // 1. Detect High Velocity Borrowing
         self.detect_high_velocity().await?;
@@ -172,6 +180,56 @@ impl ComplianceEngine {
                 "Sudden activity spike: Borrowing after 30+ days of dormancy".to_string(),
             )
             .await?;
+        }
+
+        Ok(())
+    }
+
+    async fn run_sanctions_screening(&self) -> Result<(), ApiError> {
+        let client = match &self.sanctions_client {
+            Some(client) => client,
+            None => return Ok(()),
+        };
+
+        #[derive(sqlx::FromRow)]
+        struct SanctionsCandidate {
+            plan_id: Uuid,
+            user_id: Uuid,
+            email: String,
+            wallet_address: Option<String>,
+        }
+
+        let candidates = sqlx::query_as::<_, SanctionsCandidate>(
+            r#"
+            SELECT p.id as plan_id, u.id as user_id, u.email, u.wallet_address
+            FROM plans p
+            JOIN users u ON u.id = p.user_id
+            WHERE NOT p.is_flagged
+            "#,
+        )
+        .fetch_all(&self.db)
+        .await?;
+
+        for candidate in candidates {
+            if candidate.email.is_empty() && candidate.wallet_address.is_none() {
+                continue;
+            }
+
+            if let Ok(Some(match_reason)) = client
+                .screen_user(
+                    candidate.user_id,
+                    &candidate.email,
+                    candidate.wallet_address.as_deref(),
+                )
+                .await
+            {
+                self.flag_plan(
+                    candidate.plan_id,
+                    candidate.user_id,
+                    format!("Sanctions screening hit: {}", match_reason),
+                )
+                .await?;
+            }
         }
 
         Ok(())
