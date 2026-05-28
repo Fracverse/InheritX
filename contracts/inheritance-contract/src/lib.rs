@@ -99,6 +99,27 @@ pub enum InheritanceError {
     FeeTransferFailed = 30,
     InsufficientLiquidity = 31,
     InheritanceAlreadyTriggered = 32,
+    EmergencyCooldownActive = 33,
+    VestingScheduleActive = 34,
+    NothingToClaim = 35,
+    EmergencyAccessAlreadyActive = 36,
+    InvalidGuardianThreshold = 37,
+    EmergencyContactAlreadyExists = 38,
+    TooManyEmergencyContacts = 39,
+    EmergencyContactNotFound = 40,
+    GuardianNotFound = 41,
+    AlreadyApproved = 42,
+    InheritanceNotTriggered = 43,
+    NoOutstandingLoans = 44,
+    LoanRecallFailed = 45,
+    WillHashAlreadyStored = 46,
+    VaultNotFound = 47,
+    WillAlreadyLinked = 48,
+    WillAlreadyFinalized = 49,
+    WillVersionNotFound = 50,
+    WillNotVerified = 51,
+    InvalidSignatureFormat = 52,
+    SignatureExpired = 53,
 }
 
 #[contracttype]
@@ -3736,6 +3757,8 @@ impl InheritanceContract {
         owner: Address,
         vault_id: u64,
         will_hash: BytesN<32>,
+        signature: BytesN<64>,
+        expires_at: u64,
     ) -> Result<(), InheritanceError> {
         owner.require_auth();
 
@@ -3745,17 +3768,13 @@ impl InheritanceContract {
             return Err(InheritanceError::Unauthorized);
         }
 
-        // Derive a deterministic sig_hash from (vault_id, will_hash) for replay protection
-        let mut sig_input = Bytes::new(&env);
-        for b in vault_id.to_be_bytes() {
-            sig_input.push_back(b);
+        // Validate signature expiration
+        if env.ledger().timestamp() > expires_at {
+            return Err(InheritanceError::SignatureExpired);
         }
-        for b in will_hash.to_array() {
-            sig_input.push_back(b);
-        }
-        let sig_hash: BytesN<32> = env.crypto().sha256(&sig_input).into();
 
-        // Replay protection: reject if this (vault_id, will_hash) pair was already signed
+        // Replay protection: check signature hash in SignatureUsed map
+        let sig_hash = env.crypto().sha256(&signature.clone().into());
         let used_key = DataKey::SignatureUsed(sig_hash.clone());
         if env
             .storage()
@@ -4372,6 +4391,8 @@ impl InheritanceContract {
         env: Env,
         witness: Address,
         vault_id: u64,
+        signature: BytesN<64>,
+        expires_at: u64,
     ) -> Result<(), InheritanceError> {
         witness.require_auth();
 
@@ -4397,6 +4418,23 @@ impl InheritanceContract {
             return Err(InheritanceError::EmergencyContactNotFound);
         }
 
+        // Validate signature expiration
+        if env.ledger().timestamp() > expires_at {
+            return Err(InheritanceError::SignatureExpired);
+        }
+
+        // Replay protection: check signature hash in SignatureUsed map
+        let sig_hash = env.crypto().sha256(&signature.clone().into());
+        let used_key = DataKey::SignatureUsed(sig_hash.clone());
+        if env
+            .storage()
+            .persistent()
+            .get::<_, bool>(&used_key)
+            .unwrap_or(false)
+        {
+            return Err(InheritanceError::AlreadyApproved);
+        }
+
         // Prevent double-signing
         let wsig_key = DataKey::WitnessSignature(vault_id, witness.clone());
         if env
@@ -4407,6 +4445,9 @@ impl InheritanceContract {
         {
             return Err(InheritanceError::AlreadyApproved);
         }
+
+        // Mark signature as used
+        env.storage().persistent().set(&used_key, &true);
 
         let signed_at = env.ledger().timestamp();
         env.storage().persistent().set(&wsig_key, &signed_at);

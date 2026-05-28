@@ -3602,6 +3602,12 @@ fn test_will_hash_2(env: &Env) -> BytesN<32> {
     BytesN::from_array(env, &[2u8; 32])
 }
 
+fn dummy_sig(env: &Env, val: u8) -> BytesN<64> {
+    let mut arr = [0u8; 64];
+    arr[0] = val;
+    BytesN::from_array(env, &arr)
+}
+
 // --- Issue #314: Legal Will Hash Storage ---
 
 #[test]
@@ -3925,7 +3931,7 @@ fn test_sign_will_success() {
     let plan_id = create_plan_and_get_id(&env, &client, &token_id, &owner);
     let will_hash = test_will_hash(&env);
 
-    client.sign_will(&owner, &plan_id, &will_hash);
+    client.sign_will(&owner, &plan_id, &will_hash, &dummy_sig(&env, 1), &(env.ledger().timestamp() + 1000));
 
     let proof = client.get_will_signature(&plan_id).unwrap();
     assert_eq!(proof.vault_id, plan_id);
@@ -3940,7 +3946,7 @@ fn test_sign_will_emits_event() {
     let plan_id = create_plan_and_get_id(&env, &client, &token_id, &owner);
     let will_hash = test_will_hash(&env);
 
-    client.sign_will(&owner, &plan_id, &will_hash);
+    client.sign_will(&owner, &plan_id, &will_hash, &dummy_sig(&env, 1), &(env.ledger().timestamp() + 1000));
 
     let events = env.events().all();
     // Find the WillSigned event
@@ -3959,10 +3965,10 @@ fn test_sign_will_replay_protection() {
     let will_hash = test_will_hash(&env);
 
     // First sign succeeds
-    client.sign_will(&owner, &plan_id, &will_hash);
+    client.sign_will(&owner, &plan_id, &will_hash, &dummy_sig(&env, 1), &(env.ledger().timestamp() + 1000));
 
     // Same (vault_id, will_hash) pair must be rejected
-    let result = client.try_sign_will(&owner, &plan_id, &will_hash);
+    let result = client.try_sign_will(&owner, &plan_id, &will_hash, &dummy_sig(&env, 1), &(env.ledger().timestamp() + 1000));
     assert!(result.is_err());
 }
 
@@ -3973,10 +3979,10 @@ fn test_sign_will_different_will_hash_allowed() {
     let plan_id = create_plan_and_get_id(&env, &client, &token_id, &owner);
 
     // Sign with first will hash
-    client.sign_will(&owner, &plan_id, &test_will_hash(&env));
+    client.sign_will(&owner, &plan_id, &test_will_hash(&env), &dummy_sig(&env, 1), &(env.ledger().timestamp() + 1000));
 
     // Sign with a different will hash (new version) should succeed
-    client.sign_will(&owner, &plan_id, &test_will_hash_2(&env));
+    client.sign_will(&owner, &plan_id, &test_will_hash_2(&env), &dummy_sig(&env, 2), &(env.ledger().timestamp() + 1000));
 
     let proof = client.get_will_signature(&plan_id).unwrap();
     assert_eq!(proof.will_hash, test_will_hash_2(&env));
@@ -3990,7 +3996,7 @@ fn test_sign_will_unauthorized() {
     let will_hash = test_will_hash(&env);
 
     let attacker = Address::generate(&env);
-    let result = client.try_sign_will(&attacker, &plan_id, &will_hash);
+    let result = client.try_sign_will(&attacker, &plan_id, &will_hash, &dummy_sig(&env, 1), &(env.ledger().timestamp() + 1000));
     assert!(result.is_err());
 }
 
@@ -4000,7 +4006,7 @@ fn test_sign_will_plan_not_found() {
     let (client, _token_id, _admin, owner) = setup_with_token_and_admin(&env);
     let will_hash = test_will_hash(&env);
 
-    let result = client.try_sign_will(&owner, &999u64, &will_hash);
+    let result = client.try_sign_will(&owner, &999u64, &will_hash, &dummy_sig(&env, 1), &(env.ledger().timestamp() + 1000));
     assert!(result.is_err());
 }
 
@@ -4024,7 +4030,7 @@ fn test_finalize_will_success() {
     let will_hash = test_will_hash(&env);
 
     let version = client.create_will_version(&owner, &plan_id, &will_hash);
-    client.sign_will(&owner, &plan_id, &will_hash);
+    client.sign_will(&owner, &plan_id, &will_hash, &dummy_sig(&env, 1), &(env.ledger().timestamp() + 1000));
 
     client.finalize_will(&owner, &plan_id, &version);
 
@@ -4040,7 +4046,7 @@ fn test_finalize_will_emits_event() {
     let will_hash = test_will_hash(&env);
 
     let version = client.create_will_version(&owner, &plan_id, &will_hash);
-    client.sign_will(&owner, &plan_id, &will_hash);
+    client.sign_will(&owner, &plan_id, &will_hash, &dummy_sig(&env, 1), &(env.ledger().timestamp() + 1000));
     client.finalize_will(&owner, &plan_id, &version);
 
     let events = env.events().all();
@@ -4072,7 +4078,7 @@ fn test_finalize_will_already_finalized_fails() {
     let will_hash = test_will_hash(&env);
 
     let version = client.create_will_version(&owner, &plan_id, &will_hash);
-    client.sign_will(&owner, &plan_id, &will_hash);
+    client.sign_will(&owner, &plan_id, &will_hash, &dummy_sig(&env, 1), &(env.ledger().timestamp() + 1000));
     client.finalize_will(&owner, &plan_id, &version);
 
     let result = client.try_finalize_will(&owner, &plan_id, &version);
@@ -4087,7 +4093,7 @@ fn test_finalize_will_unauthorized() {
     let will_hash = test_will_hash(&env);
 
     let version = client.create_will_version(&owner, &plan_id, &will_hash);
-    client.sign_will(&owner, &plan_id, &will_hash);
+    client.sign_will(&owner, &plan_id, &will_hash, &dummy_sig(&env, 1), &(env.ledger().timestamp() + 1000));
 
     let attacker = Address::generate(&env);
     let result = client.try_finalize_will(&attacker, &plan_id, &version);
@@ -4101,7 +4107,7 @@ fn test_finalize_will_version_not_found() {
     let plan_id = create_plan_and_get_id(&env, &client, &token_id, &owner);
     let will_hash = test_will_hash(&env);
 
-    client.sign_will(&owner, &plan_id, &will_hash);
+    client.sign_will(&owner, &plan_id, &will_hash, &dummy_sig(&env, 1), &(env.ledger().timestamp() + 1000));
 
     let result = client.try_finalize_will(&owner, &plan_id, &99u32);
     assert!(result.is_err());
@@ -4124,7 +4130,7 @@ fn test_finalized_will_blocks_new_version() {
     let will_hash = test_will_hash(&env);
 
     let version = client.create_will_version(&owner, &plan_id, &will_hash);
-    client.sign_will(&owner, &plan_id, &will_hash);
+    client.sign_will(&owner, &plan_id, &will_hash, &dummy_sig(&env, 1), &(env.ledger().timestamp() + 1000));
     client.finalize_will(&owner, &plan_id, &version);
 
     let result = client.try_create_will_version(&owner, &plan_id, &test_will_hash_2(&env));
@@ -4212,7 +4218,7 @@ fn test_sign_as_witness_success() {
     let witness = Address::generate(&env);
 
     client.add_witness(&owner, &plan_id, &witness);
-    client.sign_as_witness(&witness, &plan_id);
+    client.sign_as_witness(&witness, &plan_id, &dummy_sig(&env, 1), &(env.ledger().timestamp() + 1000));
 
     let signed_at = client.get_witness_signature(&plan_id, &witness);
     assert!(signed_at.is_some());
@@ -4226,7 +4232,7 @@ fn test_sign_as_witness_emits_event() {
     let witness = Address::generate(&env);
 
     client.add_witness(&owner, &plan_id, &witness);
-    client.sign_as_witness(&witness, &plan_id);
+    client.sign_as_witness(&witness, &plan_id, &dummy_sig(&env, 1), &(env.ledger().timestamp() + 1000));
 
     let events = env.events().all();
     let found = events.iter().any(|e| {
@@ -4243,7 +4249,7 @@ fn test_sign_as_witness_not_registered_fails() {
     let plan_id = create_plan_and_get_id(&env, &client, &token_id, &owner);
     let stranger = Address::generate(&env);
 
-    let result = client.try_sign_as_witness(&stranger, &plan_id);
+    let result = client.try_sign_as_witness(&stranger, &plan_id, &dummy_sig(&env, 1), &(env.ledger().timestamp() + 1000));
     assert!(result.is_err());
 }
 
@@ -4255,9 +4261,9 @@ fn test_sign_as_witness_double_sign_fails() {
     let witness = Address::generate(&env);
 
     client.add_witness(&owner, &plan_id, &witness);
-    client.sign_as_witness(&witness, &plan_id);
+    client.sign_as_witness(&witness, &plan_id, &dummy_sig(&env, 1), &(env.ledger().timestamp() + 1000));
 
-    let result = client.try_sign_as_witness(&witness, &plan_id);
+    let result = client.try_sign_as_witness(&witness, &plan_id, &dummy_sig(&env, 2), &(env.ledger().timestamp() + 1000));
     assert!(result.is_err());
 }
 
@@ -4270,7 +4276,7 @@ fn test_finalize_fails_when_witness_not_signed() {
     let witness = Address::generate(&env);
 
     let version = client.create_will_version(&owner, &plan_id, &will_hash);
-    client.sign_will(&owner, &plan_id, &will_hash);
+    client.sign_will(&owner, &plan_id, &will_hash, &dummy_sig(&env, 1), &(env.ledger().timestamp() + 1000));
     client.add_witness(&owner, &plan_id, &witness);
 
     let result = client.try_finalize_will(&owner, &plan_id, &version);
@@ -4286,9 +4292,9 @@ fn test_finalize_succeeds_after_all_witnesses_sign() {
     let witness = Address::generate(&env);
 
     let version = client.create_will_version(&owner, &plan_id, &will_hash);
-    client.sign_will(&owner, &plan_id, &will_hash);
+    client.sign_will(&owner, &plan_id, &will_hash, &dummy_sig(&env, 1), &(env.ledger().timestamp() + 1000));
     client.add_witness(&owner, &plan_id, &witness);
-    client.sign_as_witness(&witness, &plan_id);
+    client.sign_as_witness(&witness, &plan_id, &dummy_sig(&env, 1), &(env.ledger().timestamp() + 1000));
 
     client.finalize_will(&owner, &plan_id, &version);
     assert!(client.is_will_finalized(&plan_id, &version));
@@ -4315,6 +4321,70 @@ fn test_get_witness_signature_none() {
     assert_eq!(result, None);
 }
 
+#[test]
+fn test_sign_as_witness_expired_fails() {
+    let env = Env::default();
+    let (client, token_id, _admin, owner) = setup_with_token_and_admin(&env);
+    let plan_id = create_plan_and_get_id(&env, &client, &token_id, &owner);
+    let witness = Address::generate(&env);
+
+    client.add_witness(&owner, &plan_id, &witness);
+    
+    // Set current ledger time
+    env.ledger().set_timestamp(100);
+    
+    // Expiration timestamp is in the past (e.g. 50)
+    let result = client.try_sign_as_witness(
+        &witness, 
+        &plan_id, 
+        &dummy_sig(&env, 1), 
+        &50u64
+    );
+    
+    assert!(result.is_err());
+}
+
+#[test]
+fn test_sign_as_witness_replay_fails() {
+    let env = Env::default();
+    let (client, token_id, _admin, owner) = setup_with_token_and_admin(&env);
+    let plan_id = create_plan_and_get_id(&env, &client, &token_id, &owner);
+    let witness1 = Address::generate(&env);
+    let witness2 = Address::generate(&env);
+
+    client.add_witness(&owner, &plan_id, &witness1);
+    client.add_witness(&owner, &plan_id, &witness2);
+
+    let sig = dummy_sig(&env, 1);
+    let expires = env.ledger().timestamp() + 1000;
+
+    // Witness 1 signs succeeds
+    client.sign_as_witness(&witness1, &plan_id, &sig, &expires);
+
+    // Witness 2 attempts to use same signature (replay attack) -> fails
+    let result = client.try_sign_as_witness(&witness2, &plan_id, &sig, &expires);
+    assert!(result.is_err());
+}
+
+#[test]
+fn test_sign_will_expired_fails() {
+    let env = Env::default();
+    let (client, token_id, _admin, owner) = setup_with_token_and_admin(&env);
+    let plan_id = create_plan_and_get_id(&env, &client, &token_id, &owner);
+    let will_hash = test_will_hash(&env);
+
+    env.ledger().set_timestamp(100);
+    
+    let result = client.try_sign_will(
+        &owner, 
+        &plan_id, 
+        &will_hash, 
+        &dummy_sig(&env, 1), 
+        &50u64
+    );
+    assert!(result.is_err());
+}
+
 // --- Issue #321: Will Update Restrictions ---
 
 #[test]
@@ -4325,7 +4395,7 @@ fn test_finalized_will_cannot_be_modified() {
     let will_hash = test_will_hash(&env);
 
     let version = client.create_will_version(&owner, &plan_id, &will_hash);
-    client.sign_will(&owner, &plan_id, &will_hash);
+    client.sign_will(&owner, &plan_id, &will_hash, &dummy_sig(&env, 1), &(env.ledger().timestamp() + 1000));
     client.finalize_will(&owner, &plan_id, &version);
 
     let result = client.try_create_will_version(&owner, &plan_id, &test_will_hash_2(&env));
@@ -4353,7 +4423,7 @@ fn test_finalized_version_is_immutable() {
     let will_hash = test_will_hash(&env);
 
     let version = client.create_will_version(&owner, &plan_id, &will_hash);
-    client.sign_will(&owner, &plan_id, &will_hash);
+    client.sign_will(&owner, &plan_id, &will_hash, &dummy_sig(&env, 1), &(env.ledger().timestamp() + 1000));
     client.finalize_will(&owner, &plan_id, &version);
 
     let ver_info = client.get_will_version(&plan_id, &version).unwrap();
