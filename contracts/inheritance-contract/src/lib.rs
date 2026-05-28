@@ -754,14 +754,10 @@ impl InheritanceContract {
 
     // Hash utility functions
     pub fn hash_string(env: &Env, input: String) -> BytesN<32> {
-        // Convert string to bytes for hashing
         let mut data = Bytes::new(env);
-
-        // Simple conversion - in production, use proper string-to-bytes conversion
         for i in 0..input.len() {
-            data.push_back((i % 256) as u8);
+            data.push_back(input.get(i).unwrap_or(0));
         }
-
         env.crypto().sha256(&data).into()
     }
 
@@ -965,7 +961,9 @@ impl InheritanceContract {
         let mut priorities = Vec::new(env);
 
         for (_, _, _, _, bp, priority) in beneficiaries_data.iter() {
-            total_allocation += bp;
+            total_allocation = total_allocation
+                .checked_add(bp)
+                .ok_or(InheritanceError::AllocationPercentageMismatch)?;
 
             if priority == 0 {
                 return Err(InheritanceError::PriorityOutOfRange);
@@ -2207,6 +2205,9 @@ impl InheritanceContract {
         owner: Address,
         plan_id: u64,
     ) -> Result<(), InheritanceError> {
+        Self::check_not_paused(&env);
+        Self::enter_guard(&env);
+
         // Require owner authorization
         owner.require_auth();
 
@@ -2243,6 +2244,7 @@ impl InheritanceContract {
 
         log!(&env, "Inheritance plan {} deactivated by owner", plan_id);
 
+        Self::exit_guard(&env);
         Ok(())
     }
 
@@ -2254,6 +2256,9 @@ impl InheritanceContract {
         plan_id: u64,
         trusted_contact: Address,
     ) -> Result<(), InheritanceError> {
+        // Expire any stale 7-day emergency access before checking active state
+        Self::check_and_expire_emergency_access(&env, plan_id);
+
         // Require owner authorization
         owner.require_auth();
 
@@ -2453,6 +2458,9 @@ impl InheritanceContract {
         plan_id: u64,
         trusted_contact: Address,
     ) -> Result<(), InheritanceError> {
+        // Expire any stale 7-day emergency access before checking active state
+        Self::check_and_expire_emergency_access(&env, plan_id);
+
         guardian.require_auth();
         access_control::require_role(
             &env,
@@ -2571,6 +2579,9 @@ impl InheritanceContract {
     /// # Returns
     /// True if emergency access was activated within the last 24 hours
     pub fn is_emergency_active(env: &Env, plan_id: u64) -> bool {
+        if !Self::check_and_expire_emergency_access(env, plan_id) {
+            return false;
+        }
         if let Some(record) = env
             .storage()
             .persistent()
