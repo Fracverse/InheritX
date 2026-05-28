@@ -1920,6 +1920,18 @@ impl InheritanceContract {
             return Err(InheritanceError::PlanNotActive);
         }
 
+        // Freeze/legal hold check
+        if env
+            .storage()
+            .persistent()
+            .has(&DataKey::FreezePlan(plan_id))
+        {
+            return Err(InheritanceError::PlanNotActive);
+        }
+        if env.storage().persistent().has(&DataKey::LegalHold(plan_id)) {
+            return Err(InheritanceError::PlanNotActive);
+        }
+
         let token_client = token::Client::new(&env, &token);
         let balance = token_client.balance(&caller);
         let required = amount as i128;
@@ -3530,6 +3542,18 @@ impl InheritanceContract {
         let mut plan = Self::get_plan(&env, plan_id).ok_or(InheritanceError::PlanNotFound)?;
 
         if !plan.is_active {
+            return Err(InheritanceError::PlanNotActive);
+        }
+
+        // Freeze/legal hold check
+        if env
+            .storage()
+            .persistent()
+            .has(&DataKey::FreezePlan(plan_id))
+        {
+            return Err(InheritanceError::PlanNotActive);
+        }
+        if env.storage().persistent().has(&DataKey::LegalHold(plan_id)) {
             return Err(InheritanceError::PlanNotActive);
         }
 
@@ -5250,6 +5274,19 @@ impl InheritanceContract {
         if !plan.is_active {
             return Err(InheritanceError::PlanNotActive);
         }
+
+        // Freeze/legal hold check
+        if env
+            .storage()
+            .persistent()
+            .has(&DataKey::FreezePlan(plan_id))
+        {
+            return Err(InheritanceError::PlanNotActive);
+        }
+        if env.storage().persistent().has(&DataKey::LegalHold(plan_id)) {
+            return Err(InheritanceError::PlanNotActive);
+        }
+
         if !triggered && !Self::is_claim_time_valid(&env, &plan) {
             return Err(InheritanceError::ClaimNotAllowedYet);
         }
@@ -5628,6 +5665,18 @@ impl InheritanceContract {
 
         // Cannot transfer if inheritance triggered
         if Self::get_trigger_info(&env, plan_id).is_some() {
+            return Err(InheritanceError::PlanNotActive);
+        }
+
+        // Freeze/legal hold check
+        if env
+            .storage()
+            .persistent()
+            .has(&DataKey::FreezePlan(plan_id))
+        {
+            return Err(InheritanceError::PlanNotActive);
+        }
+        if env.storage().persistent().has(&DataKey::LegalHold(plan_id)) {
             return Err(InheritanceError::PlanNotActive);
         }
 
