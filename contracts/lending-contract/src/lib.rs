@@ -1845,6 +1845,13 @@ impl LendingContract {
             return Err(LendingError::InsufficientLiquidity);
         }
 
+        // Check utilization cap
+        let new_borrowed = pool.total_borrowed + amount;
+        let new_utilization_bps = Self::get_utilization_bps(new_borrowed, pool.total_deposits);
+        if new_utilization_bps > pool.utilization_cap_bps {
+            return Err(LendingError::UtilizationCapExceeded);
+        }
+
         let fee_bps = Self::get_flash_loan_fee(env.clone());
         let fee = (amount as u128)
             .checked_mul(fee_bps as u128)
@@ -2448,6 +2455,20 @@ impl LendingContract {
         // Add refinancing fee to retained yield
         let mut pool = Self::get_pool(&env, &old_loan.asset)?;
         pool.retained_yield += terms.refinancing_fee;
+
+        // Update pool borrowed amount and check utilization cap
+        if terms.new_principal > old_loan.principal {
+            let additional_principal = terms.new_principal - old_loan.principal;
+            let new_borrowed = pool.total_borrowed + additional_principal;
+            let new_utilization_bps = Self::get_utilization_bps(new_borrowed, pool.total_deposits);
+            if new_utilization_bps > pool.utilization_cap_bps {
+                return Err(LendingError::UtilizationCapExceeded);
+            }
+            pool.total_borrowed = new_borrowed;
+        } else if terms.new_principal < old_loan.principal {
+            pool.total_borrowed -= old_loan.principal - terms.new_principal;
+        }
+
         Self::set_pool(&env, &old_loan.asset, &pool);
 
         // Emit refinancing event
