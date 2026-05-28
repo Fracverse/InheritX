@@ -506,6 +506,41 @@ fn test_interest_precision_short_time() {
 }
 
 #[test]
+fn test_calculate_interest_rounds_nearest_unit() {
+    // 1,000,000 principal at 100% APY for 16 seconds should round to 1 unit of interest.
+    let interest = LendingContract::calculate_interest(1_000_000u64, 10_000u32, 16u64);
+    assert_eq!(interest, 1u64);
+}
+
+#[test]
+fn test_small_duration_interest_rounds_up_for_contract_repayment() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let (client, token_addr, collateral_addr, _admin) = setup(&env);
+
+    let depositor = Address::generate(&env);
+    let borrower = Address::generate(&env);
+    mint_to(&env, &collateral_addr, &borrower, 2_000_000);
+    mint_to(&env, &token_addr, &depositor, 2_000_000);
+    mint_to(&env, &token_addr, &borrower, 2_000_000);
+
+    client.deposit(&depositor, &token_addr, &2_000_000u64).unwrap();
+    client.borrow(
+        &borrower,
+        &token_addr,
+        &1_000_000u64,
+        &collateral_addr,
+        &1_500_000u64,
+        &(30 * 24 * 60 * 60),
+    ).unwrap();
+
+    env.ledger().set_timestamp(env.ledger().timestamp() + 120);
+
+    let repayment_amount = client.get_repayment_amount(&borrower).unwrap();
+    assert_eq!(repayment_amount, 1_000_001u64);
+}
+
+#[test]
 fn test_dynamic_interest_rate_increases_with_utilization() {
     let env = Env::default();
     env.mock_all_auths();

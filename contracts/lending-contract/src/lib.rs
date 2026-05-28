@@ -1028,6 +1028,7 @@ impl LendingContract {
         }
         // Interest = (Principal * Rate * Time) / (10000 * SecondsPerYear)
         // Use u128 for intermediate calculation to avoid overflow.
+        // Round to the nearest token unit to reduce precision loss for small loans.
         let numerator = (principal as u128)
             .checked_mul(rate_bps as u128)
             .and_then(|v| v.checked_mul(elapsed_seconds as u128))
@@ -1035,7 +1036,10 @@ impl LendingContract {
 
         let denominator = (10000u128).checked_mul(SECONDS_IN_YEAR as u128).unwrap();
 
-        (numerator.checked_div(denominator).unwrap_or(0)) as u64
+        numerator
+            .checked_add(denominator / 2)
+            .and_then(|v| v.checked_div(denominator))
+            .unwrap_or(0) as u64
     }
 
     /// Calculate the pool utilization ratio in basis points (0 to 10000)
