@@ -5,6 +5,9 @@ use soroban_sdk::{
     Bytes, BytesN, Env, FromVal, IntoVal, InvokeError, String, Symbol, Val, Vec,
 };
 
+mod disputes;
+use disputes::{DisputeRecord, DisputeStatus};
+
 /// Current contract version - bump this on each upgrade
 const CONTRACT_VERSION: u32 = 1;
 
@@ -120,6 +123,10 @@ pub enum InheritanceError {
     WillNotVerified = 51,
     InvalidSignatureFormat = 52,
     SignatureExpired = 53,
+    RateLimitExceeded = 54,
+    DisputeNotFound = 55,
+    DisputeAlreadyResolved = 56,
+    NotArbitrator = 57,
 }
 
 #[contracttype]
@@ -128,6 +135,8 @@ pub enum DataKey {
     NextPlanId,
     Plan(u64),
     Claim(BytesN<32>),         // keyed by hashed_email
+    ClaimSalt(u64, u32),       // (plan_id, beneficiary_index) -> BytesN<32>
+    ClaimAttempts(u64, Address), // (plan_id, claimer) -> ClaimAttemptWindow
     UserPlans(Address),        // keyed by owner Address, value is Vec<u64>
     UserClaimedPlans(Address), // keyed by owner Address, value is Vec<u64>
     DeactivatedPlans,          // value is Vec<u64> of all deactivated plan IDs
@@ -168,6 +177,15 @@ pub enum DataKey {
     FrozenBeneficiary(u64, u32),     // (plan_id, index) -> bool
     TriggerConditions(u64),          // plan_id -> TriggerConfig
     VestingExitSettlement(u64, u32), // (plan_id, beneficiary_index) -> exit settlement data
+    // Disputes
+    NextDisputeId,                 // u64
+    Dispute(u64),                  // dispute_id -> DisputeRecord
+    PlanDisputes(u64),             // plan_id -> Vec<u64> (dispute ids)
+    Arbitrators,                   // Vec<Address>
+    // Message key rotation
+    VaultKeyVersion(u64),          // vault_id -> u32
+    VaultKeyRef(u64, u32),         // (vault_id, version) -> String
+    VaultCurrentKey(u64),          // vault_id -> u32 (current version)
 }
 
 #[contracttype]
@@ -183,6 +201,13 @@ pub struct ClaimRecord {
     pub plan_id: u64,
     pub beneficiary_index: u32,
     pub claimed_at: u64,
+}
+
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct ClaimAttemptWindow {
+    pub window_start: u64,
+    pub attempts: u32,
 }
 
 #[contracttype]
@@ -747,6 +772,8 @@ pub struct InheritanceContract;
 #[contractimpl]
 impl InheritanceContract {
     const EMERGENCY_EXPIRATION_PERIOD: u64 = 604800; // 7 days in seconds
+    const CLAIM_ATTEMPT_WINDOW_SECONDS: u64 = 3600; // 1 hour
+    const CLAIM_MAX_ATTEMPTS_PER_WINDOW: u32 = 10;
 
     pub fn hello(env: Env, to: Symbol) -> Vec<Symbol> {
         vec![&env, symbol_short!("Hello"), to]
@@ -766,21 +793,64 @@ impl InheritanceContract {
     }
 
     pub fn hash_claim_code(env: &Env, claim_code: u32) -> Result<BytesN<32>, InheritanceError> {
+        let zero_salt = BytesN::<32>::from_array(env, &[0u8; 32]);
+        Self::hash_claim_code_with_salt(env, claim_code, &zero_salt)
+    }
+
+    fn hash_claim_code_with_salt(
+        env: &Env,
+        claim_code: u32,
+        salt: &BytesN<32>,
+    ) -> Result<BytesN<32>, InheritanceError> {
         // Validate claim code is in range 0-999999 (6 digits)
         if claim_code > 999999 {
             return Err(InheritanceError::InvalidClaimCodeRange);
         }
 
-        // Convert claim code to bytes for hashing (6 digits, padded with zeros)
+        // salt || 6-digit-ASCII(claim_code)
         let mut data = Bytes::new(env);
-
-        // Extract each digit and convert to ASCII byte
+        for b in salt.to_array().iter() {
+            data.push_back(*b);
+        }
         for i in 0..6 {
             let digit = ((claim_code / 10u32.pow(5 - i)) % 10) as u8;
             data.push_back(digit + b'0');
         }
-
         Ok(env.crypto().sha256(&data).into())
+    }
+
+    fn generate_claim_salt(env: &Env) -> BytesN<32> {
+        let arr: [u8; 32] = env.prng().gen();
+        BytesN::<32>::from_array(env, &arr)
+    }
+
+    fn check_and_record_claim_attempt(
+        env: &Env,
+        plan_id: u64,
+        claimer: &Address,
+    ) -> Result<(), InheritanceError> {
+        let now = env.ledger().timestamp();
+        let key = DataKey::ClaimAttempts(plan_id, claimer.clone());
+        let mut w: ClaimAttemptWindow = env
+            .storage()
+            .persistent()
+            .get(&key)
+            .unwrap_or(ClaimAttemptWindow {
+                window_start: now,
+                attempts: 0,
+            });
+
+        if now.saturating_sub(w.window_start) >= Self::CLAIM_ATTEMPT_WINDOW_SECONDS {
+            w.window_start = now;
+            w.attempts = 0;
+        }
+        if w.attempts >= Self::CLAIM_MAX_ATTEMPTS_PER_WINDOW {
+            return Err(InheritanceError::RateLimitExceeded);
+        }
+
+        w.attempts = w.attempts.saturating_add(1);
+        env.storage().persistent().set(&key, &w);
+        Ok(())
     }
 
     fn get_admin(env: &Env) -> Option<Address> {
@@ -879,8 +949,235 @@ impl InheritanceContract {
             .unwrap_or(Vec::new(&env))
     }
 
+    fn is_arbitrator(env: &Env, who: &Address) -> bool {
+        let list: Vec<Address> = env
+            .storage()
+            .persistent()
+            .get(&DataKey::Arbitrators)
+            .unwrap_or(Vec::new(env));
+        for a in list.iter() {
+            if a == *who {
+                return true;
+            }
+        }
+        false
+    }
+
+    pub fn add_arbitrator(env: Env, admin: Address, arbitrator: Address) -> Result<(), InheritanceError> {
+        Self::require_admin(&env, &admin)?;
+        let mut list: Vec<Address> = env
+            .storage()
+            .persistent()
+            .get(&DataKey::Arbitrators)
+            .unwrap_or(Vec::new(&env));
+        for a in list.iter() {
+            if a == arbitrator {
+                return Ok(());
+            }
+        }
+        list.push_back(arbitrator);
+        env.storage().persistent().set(&DataKey::Arbitrators, &list);
+        Ok(())
+    }
+
+    pub fn remove_arbitrator(
+        env: Env,
+        admin: Address,
+        arbitrator: Address,
+    ) -> Result<(), InheritanceError> {
+        Self::require_admin(&env, &admin)?;
+        let list: Vec<Address> = env
+            .storage()
+            .persistent()
+            .get(&DataKey::Arbitrators)
+            .unwrap_or(Vec::new(&env));
+        let mut updated: Vec<Address> = Vec::new(&env);
+        for a in list.iter() {
+            if a != arbitrator {
+                updated.push_back(a);
+            }
+        }
+        env.storage().persistent().set(&DataKey::Arbitrators, &updated);
+        Ok(())
+    }
+
+    pub fn get_arbitrators(env: Env) -> Vec<Address> {
+        env.storage()
+            .persistent()
+            .get(&DataKey::Arbitrators)
+            .unwrap_or(Vec::new(&env))
+    }
+
+    pub fn file_dispute(
+        env: Env,
+        disputer: Address,
+        plan_id: u64,
+        reason: String,
+    ) -> Result<u64, InheritanceError> {
+        disputer.require_auth();
+        Self::check_not_paused(&env);
+
+        // Ensure plan exists.
+        let _ = Self::get_plan(&env, plan_id).ok_or(InheritanceError::PlanNotFound)?;
+
+        let dispute_id = env
+            .storage()
+            .persistent()
+            .get(&DataKey::NextDisputeId)
+            .unwrap_or(0u64);
+
+        let mut arbitrator = Self::get_admin(&env).ok_or(InheritanceError::AdminNotSet)?;
+        let list: Vec<Address> = env
+            .storage()
+            .persistent()
+            .get(&DataKey::Arbitrators)
+            .unwrap_or(Vec::new(&env));
+        if list.len() > 0 {
+            arbitrator = list.get(0).unwrap();
+        }
+
+        let record = DisputeRecord {
+            dispute_id,
+            plan_id,
+            disputer: disputer.clone(),
+            reason: reason.clone(),
+            status: DisputeStatus::Filed,
+            filed_at: env.ledger().timestamp(),
+            resolved_at: 0,
+            resolution_notes: String::new(&env),
+            arbitrator,
+        };
+
+        env.storage().persistent().set(&DataKey::Dispute(dispute_id), &record);
+
+        let mut plan_disputes: Vec<u64> = env
+            .storage()
+            .persistent()
+            .get(&DataKey::PlanDisputes(plan_id))
+            .unwrap_or(Vec::new(&env));
+        plan_disputes.push_back(dispute_id);
+        env.storage()
+            .persistent()
+            .set(&DataKey::PlanDisputes(plan_id), &plan_disputes);
+
+        env.storage()
+            .persistent()
+            .set(&DataKey::NextDisputeId, &(dispute_id + 1));
+
+        env.events().publish(
+            (symbol_short!("DSPT"), symbol_short!("FILED")),
+            disputes::DisputeFiledEvent {
+                dispute_id,
+                plan_id,
+                disputer,
+                reason,
+                filed_at: env.ledger().timestamp(),
+            },
+        );
+
+        Ok(dispute_id)
+    }
+
+    pub fn get_dispute(env: Env, dispute_id: u64) -> Option<DisputeRecord> {
+        env.storage().persistent().get(&DataKey::Dispute(dispute_id))
+    }
+
+    pub fn get_plan_disputes(env: Env, plan_id: u64) -> Vec<u64> {
+        env.storage()
+            .persistent()
+            .get(&DataKey::PlanDisputes(plan_id))
+            .unwrap_or(Vec::new(&env))
+    }
+
+    pub fn review_dispute(
+        env: Env,
+        arbitrator: Address,
+        dispute_id: u64,
+        new_status: DisputeStatus,
+        resolution_notes: String,
+        freeze_plan: bool,
+    ) -> Result<(), InheritanceError> {
+        arbitrator.require_auth();
+        Self::check_not_paused(&env);
+
+        let mut record: DisputeRecord = env
+            .storage()
+            .persistent()
+            .get(&DataKey::Dispute(dispute_id))
+            .ok_or(InheritanceError::DisputeNotFound)?;
+
+        let is_admin = Self::get_admin(&env).map(|a| a == arbitrator).unwrap_or(false);
+        if !is_admin && !Self::is_arbitrator(&env, &arbitrator) {
+            return Err(InheritanceError::NotArbitrator);
+        }
+
+        if record.status == DisputeStatus::Resolved || record.status == DisputeStatus::Rejected {
+            return Err(InheritanceError::DisputeAlreadyResolved);
+        }
+
+        record.status = new_status.clone();
+        record.resolution_notes = resolution_notes;
+        if new_status == DisputeStatus::Resolved || new_status == DisputeStatus::Rejected {
+            record.resolved_at = env.ledger().timestamp();
+        }
+
+        env.storage().persistent().set(&DataKey::Dispute(dispute_id), &record);
+
+        if freeze_plan {
+            let fr = FreezeRecord {
+                plan_id: record.plan_id,
+                frozen_at: env.ledger().timestamp(),
+                reason: String::from_str(&env, "dispute"),
+                frozen_by: arbitrator.clone(),
+            };
+            env.storage()
+                .persistent()
+                .set(&DataKey::FreezePlan(record.plan_id), &fr);
+            env.events().publish(
+                (symbol_short!("PLAN"), symbol_short!("FROZE")),
+                PlanFrozenEvent {
+                    plan_id: record.plan_id,
+                    frozen_by: arbitrator.clone(),
+                    frozen_at: fr.frozen_at,
+                    reason: fr.reason.clone(),
+                },
+            );
+        }
+
+        if record.status == DisputeStatus::Resolved || record.status == DisputeStatus::Rejected {
+            env.events().publish(
+                (symbol_short!("DSPT"), symbol_short!("RESOLV")),
+                disputes::DisputeResolvedEvent {
+                    dispute_id,
+                    plan_id: record.plan_id,
+                    status: record.status.clone(),
+                    arbitrator: arbitrator.clone(),
+                    resolved_at: record.resolved_at,
+                },
+            );
+        }
+
+        Ok(())
+    }
+
+    pub fn unfreeze_plan(env: Env, admin: Address, plan_id: u64) -> Result<(), InheritanceError> {
+        Self::require_admin(&env, &admin)?;
+        env.storage().persistent().remove(&DataKey::FreezePlan(plan_id));
+        env.events().publish(
+            (symbol_short!("PLAN"), symbol_short!("UNFRO")),
+            PlanUnfrozenEvent {
+                plan_id,
+                unfrozen_by: admin,
+                unfrozen_at: env.ledger().timestamp(),
+            },
+        );
+        Ok(())
+    }
+
     fn create_beneficiary(
         env: &Env,
+        plan_id: u64,
+        beneficiary_index: u32,
         full_name: String,
         email: String,
         claim_code: u32,
@@ -898,8 +1195,14 @@ impl InheritanceContract {
             return Err(InheritanceError::InvalidAllocation);
         }
 
-        // Validate claim code and get hash
-        let hashed_claim_code = Self::hash_claim_code(env, claim_code)?;
+        // Non-deterministic claim-code hashing: generate & persist a per-beneficiary salt.
+        let salt = Self::generate_claim_salt(env);
+        env.storage()
+            .persistent()
+            .set(&DataKey::ClaimSalt(plan_id, beneficiary_index), &salt);
+
+        // Validate claim code and get salted hash
+        let hashed_claim_code = Self::hash_claim_code_with_salt(env, claim_code, &salt)?;
 
         Ok(Beneficiary {
             hashed_full_name: Self::hash_string(env, full_name),
@@ -1510,13 +1813,18 @@ impl InheritanceContract {
         // Validate beneficiaries
         Self::validate_beneficiaries(&env, beneficiaries_data.clone())?;
 
+        // Reserve a plan id early so we can persist beneficiary salts keyed by (plan_id, index).
+        let plan_id = Self::increment_plan_id(&env);
+
         // Create beneficiary objects with hashed data
         let mut beneficiaries = Vec::new(&env);
         let mut total_allocation_bp = 0u32;
-
+        let mut idx: u32 = 0;
         for beneficiary_data in beneficiaries_data.iter() {
             let beneficiary = Self::create_beneficiary(
                 &env,
+                plan_id,
+                idx,
                 beneficiary_data.0.clone(),
                 beneficiary_data.1.clone(),
                 beneficiary_data.2,
@@ -1526,6 +1834,7 @@ impl InheritanceContract {
             )?;
             total_allocation_bp += beneficiary_data.4;
             beneficiaries.push_back(beneficiary);
+            idx = idx.saturating_add(1);
         }
 
         // Create the inheritance plan with net amount (user input minus 2% fee)
@@ -1545,8 +1854,7 @@ impl InheritanceContract {
             waterfall_enabled: false,
         };
 
-        // Store the plan and get the plan ID
-        let plan_id = Self::increment_plan_id(&env);
+        // Store the plan
         Self::store_plan(&env, plan_id, &plan);
 
         // Add to user's plan list
@@ -1923,6 +2231,12 @@ impl InheritanceContract {
             return Err(InheritanceError::PlanNotActive);
         }
 
+        // Track claim attempts to reduce brute-force claim-code guessing.
+        Self::check_and_record_claim_attempt(&env, plan_id, &claimer)?;
+
+        // Bring trigger state up to date before checking claimability.
+        let _ = Self::auto_trigger_check(env.clone(), plan_id);
+
         // When inheritance is triggered, bypass the time-based check so
         // that inheritance execution cannot be blocked.
         let triggered = Self::get_trigger_info(&env, plan_id).is_some();
@@ -1930,9 +2244,8 @@ impl InheritanceContract {
             return Err(InheritanceError::ClaimNotAllowedYet);
         }
 
-        // Hash email and claim code
+        // Hash email
         let hashed_email = Self::hash_string(&env, email.clone());
-        let hashed_claim_code = Self::hash_claim_code(&env, claim_code)?;
 
         // Build claim key including plan ID
         let claim_key = {
@@ -1947,11 +2260,21 @@ impl InheritanceContract {
             return Err(InheritanceError::AlreadyClaimed);
         }
 
-        // Find beneficiary
+        // Find beneficiary by email, then validate claim_code against salted hash.
         let mut beneficiary_index: Option<u32> = None;
         for i in 0..plan.beneficiaries.len() {
             let b = plan.beneficiaries.get(i).unwrap();
-            if b.hashed_email == hashed_email && b.hashed_claim_code == hashed_claim_code {
+            if b.hashed_email != hashed_email {
+                continue;
+            }
+
+            let salt: BytesN<32> = env
+                .storage()
+                .persistent()
+                .get(&DataKey::ClaimSalt(plan_id, i))
+                .unwrap_or(BytesN::<32>::from_array(&env, &[0u8; 32]));
+            let hashed_claim_code = Self::hash_claim_code_with_salt(&env, claim_code, &salt)?;
+            if b.hashed_claim_code == hashed_claim_code {
                 beneficiary_index = Some(i);
                 break;
             }
@@ -3830,6 +4153,68 @@ impl InheritanceContract {
             .get(&DataKey::WillSignature(vault_id))
     }
 
+    /// Rotate the key reference used for message encryption for a vault/plan.
+    ///
+    /// Stores a versioned key reference on-chain; new messages can reference
+    /// the current key by passing an empty `key_reference`.
+    pub fn rotate_vault_message_key(
+        env: Env,
+        owner: Address,
+        vault_id: u64,
+        new_key_reference: String,
+    ) -> Result<u32, InheritanceError> {
+        owner.require_auth();
+        let plan = Self::get_plan(&env, vault_id).ok_or(InheritanceError::PlanNotFound)?;
+        if plan.owner != owner {
+            return Err(InheritanceError::Unauthorized);
+        }
+        if new_key_reference.is_empty() {
+            return Err(InheritanceError::MissingRequiredField);
+        }
+
+        let current: u32 = env
+            .storage()
+            .persistent()
+            .get(&DataKey::VaultKeyVersion(vault_id))
+            .unwrap_or(0u32);
+        let next = current.saturating_add(1);
+
+        env.storage()
+            .persistent()
+            .set(&DataKey::VaultKeyRef(vault_id, next), &new_key_reference);
+        env.storage()
+            .persistent()
+            .set(&DataKey::VaultKeyVersion(vault_id), &next);
+        env.storage()
+            .persistent()
+            .set(&DataKey::VaultCurrentKey(vault_id), &next);
+
+        env.events().publish(
+            (symbol_short!("KEY"), symbol_short!("ROTATE")),
+            (vault_id, next),
+        );
+
+        Ok(next)
+    }
+
+    pub fn get_vault_message_key(env: Env, vault_id: u64) -> Option<String> {
+        let ver: u32 = env
+            .storage()
+            .persistent()
+            .get(&DataKey::VaultCurrentKey(vault_id))
+            .unwrap_or(0u32);
+        env.storage()
+            .persistent()
+            .get(&DataKey::VaultKeyRef(vault_id, ver))
+    }
+
+    pub fn get_vault_message_key_version(env: Env, vault_id: u64) -> u32 {
+        env.storage()
+            .persistent()
+            .get(&DataKey::VaultCurrentKey(vault_id))
+            .unwrap_or(0u32)
+    }
+
     /// Create a new legacy message with metadata stored on-chain
     ///
     /// # Arguments
@@ -3865,13 +4250,29 @@ impl InheritanceContract {
             .get(&DataKey::NextMessageId)
             .unwrap_or(0u64);
 
+        // Resolve the key reference. If the caller passed an empty reference,
+        // use the current vault key (supports on-chain rotation).
+        let mut key_ref = params.key_reference;
+        if key_ref.is_empty() {
+            let ver: u32 = env
+                .storage()
+                .persistent()
+                .get(&DataKey::VaultCurrentKey(params.vault_id))
+                .unwrap_or(0u32);
+            key_ref = env
+                .storage()
+                .persistent()
+                .get(&DataKey::VaultKeyRef(params.vault_id, ver))
+                .unwrap_or(String::new(&env));
+        }
+
         // Create message metadata
         let message = LegacyMessageMetadata {
             vault_id: params.vault_id,
             message_id,
             message_hash: params.message_hash,
             creator: creator.clone(),
-            key_reference: params.key_reference,
+            key_reference: key_ref,
             unlock_timestamp: params.unlock_timestamp,
             is_unlocked: false,
             is_finalized: false,
@@ -4844,6 +5245,7 @@ impl InheritanceContract {
             return Err(InheritanceError::TooManyBeneficiaries);
         }
         let plan = Self::get_plan(&env, plan_id).ok_or(InheritanceError::PlanNotFound)?;
+        let _ = Self::auto_trigger_check(env.clone(), plan_id);
         let triggered = Self::get_trigger_info(&env, plan_id).is_some();
         if !plan.is_active {
             return Err(InheritanceError::PlanNotActive);
@@ -4856,18 +5258,15 @@ impl InheritanceContract {
         for entry in claimers.iter() {
             let (claimer, email, claim_code) = entry;
             claimer.require_auth();
+            if Self::check_and_record_claim_attempt(&env, plan_id, &claimer).is_err() {
+                fail += 1;
+                continue;
+            }
             if Self::check_kyc_approved(&env, &claimer).is_err() {
                 fail += 1;
                 continue;
             }
             let hashed_email = Self::hash_string(&env, email.clone());
-            let hashed_claim_code = match Self::hash_claim_code(&env, claim_code) {
-                Ok(h) => h,
-                Err(_) => {
-                    fail += 1;
-                    continue;
-                }
-            };
             let claim_key = {
                 let mut data = Bytes::new(&env);
                 data.extend_from_slice(&plan_id.to_be_bytes());
@@ -4888,7 +5287,23 @@ impl InheritanceContract {
             let mut beneficiary_index: Option<u32> = None;
             for i in 0..current_plan.beneficiaries.len() {
                 let b = current_plan.beneficiaries.get(i).unwrap();
-                if b.hashed_email == hashed_email && b.hashed_claim_code == hashed_claim_code {
+                if b.hashed_email != hashed_email {
+                    continue;
+                }
+                let salt: BytesN<32> = env
+                    .storage()
+                    .persistent()
+                    .get(&DataKey::ClaimSalt(plan_id, i))
+                    .unwrap_or(BytesN::<32>::from_array(&env, &[0u8; 32]));
+                let hashed_claim_code = match Self::hash_claim_code_with_salt(&env, claim_code, &salt) {
+                    Ok(h) => h,
+                    Err(_) => {
+                        fail += 1;
+                        beneficiary_index = None;
+                        break;
+                    }
+                };
+                if b.hashed_claim_code == hashed_claim_code {
                     beneficiary_index = Some(i);
                     break;
                 }
