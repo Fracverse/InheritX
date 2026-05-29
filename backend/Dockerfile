@@ -1,5 +1,5 @@
 # Multi-stage build for InheritX Backend
-FROM rust:1.75-slim as builder
+FROM rust:1.81 as builder
 
 WORKDIR /app
 
