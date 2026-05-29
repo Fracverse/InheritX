@@ -1430,6 +1430,38 @@ fn test_get_refinance_terms() {
 }
 
 #[test]
+fn test_get_refinance_terms_overflow_rejected() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let (client, token_addr, collateral_addr, _admin) = setup(&env);
+
+    let borrower = Address::generate(&env);
+
+    // Inject a loan with an extremely large principal to force overflow when adding the refinancing fee
+    let big_principal: u64 = u64::MAX - 100; // large value near u64 max
+    let loan = LoanRecord {
+        loan_id: 9999u64,
+        borrower: borrower.clone(),
+        asset: token_addr.clone(),
+        principal: big_principal,
+        collateral_amount: 0u64,
+        collateral_token: collateral_addr.clone(),
+        borrow_time: env.ledger().timestamp(),
+        due_date: env.ledger().timestamp() + 1000,
+        interest_rate_bps: 0u32,
+    };
+
+    // Write loan record directly into contract storage for the test
+    env.storage()
+        .persistent()
+        .set(&DataKey::Loan(borrower.clone()), &loan);
+
+    // Call get_refinance_terms and expect InvalidRefinanceTerms due to overflow checks
+    let result = client.try_get_refinance_terms(&borrower, &(60 * 24 * 60 * 60));
+    assert_eq!(result.err(), Some(Ok(LendingError::InvalidRefinanceTerms)));
+}
+
+#[test]
 fn test_refinance_loan() {
     let env = Env::default();
     env.mock_all_auths();

@@ -2334,12 +2334,26 @@ impl LendingContract {
             .ok_or(LendingError::NoOpenLoan)?;
 
         let outstanding_balance = Self::calculate_outstanding_balance(&env, &loan);
-        let refinancing_fee = ((outstanding_balance as u128)
+        // Compute refinancing fee with checked arithmetic to prevent overflow
+        let refinancing_fee_u128 = (outstanding_balance as u128)
             .checked_mul(REFINANCING_FEE_BPS as u128)
             .and_then(|v| v.checked_div(10000))
-            .unwrap_or(0)) as u64;
+            .ok_or(LendingError::InvalidRefinanceTerms)?;
 
-        let new_principal = outstanding_balance + refinancing_fee;
+        // Ensure fee fits into u64
+        if refinancing_fee_u128 > (u64::MAX as u128) {
+            return Err(LendingError::InvalidRefinanceTerms);
+        }
+        let refinancing_fee = refinancing_fee_u128 as u64;
+
+        // Compute new principal = outstanding + fee with checked add
+        let new_principal_u128 = (outstanding_balance as u128)
+            .checked_add(refinancing_fee_u128)
+            .ok_or(LendingError::InvalidRefinanceTerms)?;
+        if new_principal_u128 > (u64::MAX as u128) {
+            return Err(LendingError::InvalidRefinanceTerms);
+        }
+        let new_principal = new_principal_u128 as u64;
         let total_required = new_principal;
 
         let current_time = env.ledger().timestamp();
@@ -2452,21 +2466,37 @@ impl LendingContract {
             );
         }
 
-        // Add refinancing fee to retained yield
+        // Add refinancing fee to retained yield (checked)
         let mut pool = Self::get_pool(&env, &old_loan.asset)?;
-        pool.retained_yield += terms.refinancing_fee;
+        pool.retained_yield = pool
+            .retained_yield
+            .checked_add(terms.refinancing_fee)
+            .ok_or(LendingError::InvalidRefinanceTerms)?;
 
-        // Update pool borrowed amount and check utilization cap
+        // Update pool borrowed amount and check utilization cap using checked arithmetic
         if terms.new_principal > old_loan.principal {
-            let additional_principal = terms.new_principal - old_loan.principal;
-            let new_borrowed = pool.total_borrowed + additional_principal;
+            let additional_principal = terms
+                .new_principal
+                .checked_sub(old_loan.principal)
+                .ok_or(LendingError::InvalidRefinanceTerms)?;
+            let new_borrowed = pool
+                .total_borrowed
+                .checked_add(additional_principal)
+                .ok_or(LendingError::InvalidRefinanceTerms)?;
             let new_utilization_bps = Self::get_utilization_bps(new_borrowed, pool.total_deposits);
             if new_utilization_bps > pool.utilization_cap_bps {
                 return Err(LendingError::UtilizationCapExceeded);
             }
             pool.total_borrowed = new_borrowed;
         } else if terms.new_principal < old_loan.principal {
-            pool.total_borrowed -= old_loan.principal - terms.new_principal;
+            let decrease = old_loan
+                .principal
+                .checked_sub(terms.new_principal)
+                .ok_or(LendingError::InvalidRefinanceTerms)?;
+            pool.total_borrowed = pool
+                .total_borrowed
+                .checked_sub(decrease)
+                .ok_or(LendingError::InvalidRefinanceTerms)?;
         }
 
         Self::set_pool(&env, &old_loan.asset, &pool);
