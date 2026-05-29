@@ -1129,6 +1129,16 @@ impl BorrowingContract {
             return Err(BorrowingError::LoanNotActive);
         }
 
+        // Validate collateral token is still whitelisted
+        let is_whitelisted: bool = env
+            .storage()
+            .persistent()
+            .get(&DataKey::WhitelistedCollateral(loan.collateral_token.clone()))
+            .unwrap_or(false);
+        if !is_whitelisted {
+            return Err(BorrowingError::CollateralNotWhitelisted);
+        }
+
         // Cache both instance values in one pass to avoid two separate reads
         let max_extensions: u32 = env
             .storage()
@@ -1206,6 +1216,16 @@ impl BorrowingContract {
 
         if additional_amount <= 0 {
             return Err(BorrowingError::InvalidAmount);
+        }
+
+        // Validate collateral token is still whitelisted
+        let is_whitelisted: bool = env
+            .storage()
+            .persistent()
+            .get(&DataKey::WhitelistedCollateral(loan.collateral_token.clone()))
+            .unwrap_or(false);
+        if !is_whitelisted {
+            return Err(BorrowingError::CollateralNotWhitelisted);
         }
 
         // Compute max additional inline – avoids a second persistent storage read
