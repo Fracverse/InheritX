@@ -177,6 +177,32 @@ pub struct ProposalCancelledEvent {
     pub proposer: Address,
 }
 
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct VotesDelegatedEvent {
+    pub delegator: Address,
+    pub delegate: Address,
+    pub delegator_balance: i128,
+    pub new_delegate_power: i128,
+}
+
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct VotesUndelegatedEvent {
+    pub delegator: Address,
+    pub previous_delegate: Address,
+    pub delegator_balance: i128,
+}
+
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct VotesRedelegatedEvent {
+    pub delegator: Address,
+    pub old_delegate: Address,
+    pub new_delegate: Address,
+    pub delegator_balance: i128,
+}
+
 // ─────────────────────────────────────────────────
 // Errors
 // ─────────────────────────────────────────────────
@@ -650,6 +676,7 @@ impl GovernanceContract {
         delegate: Address,
     ) -> Result<(), GovernanceError> {
         delegator.require_auth();
+        Self::require_not_paused(&env)?;
 
         if delegator == delegate {
             return Err(GovernanceError::SelfDelegation);
@@ -659,6 +686,7 @@ impl GovernanceContract {
             return Err(GovernanceError::CircularDelegation);
         }
 
+        let delegator_balance = Self::get_token_balance(env.clone(), delegator.clone());
         let existing_delegate = Self::get_delegate(env.clone(), delegator.clone());
 
         let history_key = DataKey::DelegationHistory;
@@ -670,7 +698,7 @@ impl GovernanceContract {
 
         let timestamp = env.ledger().timestamp();
 
-        if let Some(prev_delegate) = existing_delegate {
+        if let Some(prev_delegate) = existing_delegate.clone() {
             Self::remove_from_delegators(&env, &prev_delegate, &delegator);
             history.push_back(DelegationRecord {
                 delegator: delegator.clone(),
@@ -678,6 +706,17 @@ impl GovernanceContract {
                 timestamp,
                 action: DelegationAction::Redelegated,
             });
+
+            // Emit redelegation event
+            env.events().publish(
+                (Symbol::new(&env, "VotesRedelegated"), delegator.clone()),
+                VotesRedelegatedEvent {
+                    delegator: delegator.clone(),
+                    old_delegate: prev_delegate,
+                    new_delegate: delegate.clone(),
+                    delegator_balance,
+                },
+            );
         } else {
             history.push_back(DelegationRecord {
                 delegator: delegator.clone(),
@@ -685,6 +724,19 @@ impl GovernanceContract {
                 timestamp,
                 action: DelegationAction::Delegated,
             });
+
+            // Emit delegation event
+            let new_delegate_power =
+                Self::get_voting_power(env.clone(), delegate.clone()) + delegator_balance;
+            env.events().publish(
+                (Symbol::new(&env, "VotesDelegated"), delegator.clone()),
+                VotesDelegatedEvent {
+                    delegator: delegator.clone(),
+                    delegate: delegate.clone(),
+                    delegator_balance,
+                    new_delegate_power,
+                },
+            );
         }
 
         env.storage().instance().set(&history_key, &history);
@@ -695,14 +747,12 @@ impl GovernanceContract {
 
         Self::add_to_delegators(&env, &delegate, &delegator);
 
-        env.events()
-            .publish(("VotesDelegated", delegator.clone(), delegate.clone()), ());
-
         Ok(())
     }
 
     pub fn undelegate_votes(env: Env, delegator: Address) -> Result<(), GovernanceError> {
         delegator.require_auth();
+        Self::require_not_paused(&env)?;
 
         let current_delegate = Self::get_delegate(env.clone(), delegator.clone());
 
@@ -711,6 +761,7 @@ impl GovernanceContract {
         }
 
         let delegate = current_delegate.unwrap();
+        let delegator_balance = Self::get_token_balance(env.clone(), delegator.clone());
 
         Self::remove_from_delegators(&env, &delegate, &delegator);
 
@@ -735,7 +786,15 @@ impl GovernanceContract {
 
         env.storage().instance().set(&history_key, &history);
 
-        env.events().publish(("VotesUndelegated", delegator), ());
+        // Emit undelegation event
+        env.events().publish(
+            (Symbol::new(&env, "VotesUndelegated"), delegator.clone()),
+            VotesUndelegatedEvent {
+                delegator: delegator.clone(),
+                previous_delegate: delegate,
+                delegator_balance,
+            },
+        );
 
         Ok(())
     }
@@ -793,6 +852,61 @@ impl GovernanceContract {
             .instance()
             .get(&DataKey::DelegationHistory)
             .unwrap_or_else(|| Vec::new(&env))
+    }
+
+    /// Get delegation history for a specific delegator
+    pub fn get_delegator_history(env: Env, delegator: Address) -> Vec<DelegationRecord> {
+        let all_history = Self::get_delegation_history(env.clone());
+        let mut delegator_history = Vec::new(&env);
+
+        for record in all_history.iter() {
+            if record.delegator == delegator {
+                delegator_history.push_back(record);
+            }
+        }
+
+        delegator_history
+    }
+
+    /// Get all delegators who have delegated to a specific delegate
+    pub fn get_delegate_info(env: Env, delegate: Address) -> (i128, Vec<Address>) {
+        let delegators = Self::get_delegators(env.clone(), delegate.clone());
+        let voting_power = Self::get_voting_power(env, delegate);
+        (voting_power, delegators)
+    }
+
+    /// Check if an address has delegated their votes
+    pub fn has_delegated(env: Env, address: Address) -> bool {
+        env.storage().instance().has(&DataKey::Delegation(address))
+    }
+
+    /// Get the total number of unique delegators in the system
+    pub fn get_total_delegators_count(env: Env) -> u32 {
+        let history = Self::get_delegation_history(env.clone());
+        let mut unique_delegators = Vec::new(&env);
+
+        for record in history.iter() {
+            if record.action == DelegationAction::Delegated
+                || record.action == DelegationAction::Redelegated
+            {
+                if !unique_delegators.contains(&record.delegator) {
+                    unique_delegators.push_back(record.delegator);
+                }
+            }
+        }
+
+        unique_delegators.len()
+    }
+
+    /// Get the effective voting power that would be used if this address voted now
+    pub fn get_effective_voting_power(env: Env, address: Address) -> i128 {
+        // If the address has delegated, they have no voting power
+        if Self::has_delegated(env.clone(), address.clone()) {
+            return 0;
+        }
+
+        // Otherwise return their full voting power (own + delegated)
+        Self::get_voting_power(env, address)
     }
 
     // ─── Proposal Governance ─────────────────────────
