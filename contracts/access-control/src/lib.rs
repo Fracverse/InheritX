@@ -38,6 +38,7 @@ pub fn assign_role(env: &Env, address: &Address, role: Role) {
 
 /// Revoke `role` from `address`.  Idempotent — does nothing if not assigned.
 pub fn revoke_role(env: &Env, address: &Address, role: Role) {
+    reentrancy_enter_or_panic(env);
     let key = AccessControlKey::Roles(address.clone());
     let roles: Vec<Role> = env
         .storage()
@@ -51,6 +52,7 @@ pub fn revoke_role(env: &Env, address: &Address, role: Role) {
         }
     }
     env.storage().persistent().set(&key, &updated);
+    reentrancy_exit(env);
 }
 
 /// Return `true` if `address` currently holds `role`.
