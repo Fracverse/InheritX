@@ -20,6 +20,7 @@ const REFINANCING_FEE_BPS: u32 = 50; // 0.5% refinancing fee
 const DEFAULT_REWARD_RATE: u64 = 1_000_000_000; // Default reward rate per second (1 reward per second with 9 decimals)
 const REWARD_PRECISION: u64 = 1_000_000_000; // 9 decimals for reward calculations
 
+const LIQUIDATION_THRESHOLD_BPS: u32 = 15000; // 150% liquidation threshold in basis points
 // Insurance constants
 const DEFAULT_INSURANCE_PREMIUM_RATE_BPS: u32 = 200; // 2% premium of loan principal
 const INSURANCE_CLAIM_PAYBACK_BPS: u32 = 10000; // 100% coverage
@@ -2249,7 +2250,7 @@ impl LendingContract {
             .unwrap_or(0) as u32;
 
         // Allow liquidation if health factor is below 150% (15000 basis points)
-        let liquidation_threshold_bps = 15000u32;
+        let liquidation_threshold_bps = LIQUIDATION_THRESHOLD_BPS;
         if health_factor >= liquidation_threshold_bps {
             return Err(LendingError::InvalidAmount);
         }
