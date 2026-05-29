@@ -625,6 +625,24 @@ fn test_cancel_proposal() {
 }
 
 #[test]
+fn test_cancel_proposal_by_admin() {
+    let env = Env::default();
+    let (client, admin) = setup_contract(&env);
+
+    let proposer = Address::generate(&env);
+    client.set_token_balance(&proposer, &1000);
+
+    env.mock_all_auths();
+    let proposal_id = make_proposal(&env, &client, &proposer);
+
+    // Proposer is `proposer`, but admin cancels it for emergency control
+    client.cancel_proposal(&admin, &proposal_id);
+
+    let proposal = client.get_proposal(&proposal_id).unwrap();
+    assert_eq!(proposal.status, ProposalStatus::Cancelled);
+}
+
+#[test]
 fn test_cancel_proposal_non_proposer_fails() {
     let env = Env::default();
     let (client, admin) = setup_contract(&env);
@@ -851,7 +869,9 @@ fn test_pending_tx_has_correct_expires_at() {
 
     let tx_id = propose_tx(&env, &client, &admin);
 
-    let tx = client.get_pending_transaction(&tx_id).expect("tx must exist");
+    let tx = client
+        .get_pending_transaction(&tx_id)
+        .expect("tx must exist");
     // expires_at should be exactly created_at + 604_800
     assert_eq!(tx.expires_at, 1_000_000 + 604_800);
     assert_eq!(tx.created_at, 1_000_000);

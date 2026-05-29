@@ -1161,7 +1161,9 @@ impl BorrowingContract {
         let is_whitelisted: bool = env
             .storage()
             .persistent()
-            .get(&DataKey::WhitelistedCollateral(loan.collateral_token.clone()))
+            .get(&DataKey::WhitelistedCollateral(
+                loan.collateral_token.clone(),
+            ))
             .unwrap_or(false);
         if !is_whitelisted {
             return Err(BorrowingError::CollateralNotWhitelisted);
@@ -1250,7 +1252,9 @@ impl BorrowingContract {
         let is_whitelisted: bool = env
             .storage()
             .persistent()
-            .get(&DataKey::WhitelistedCollateral(loan.collateral_token.clone()))
+            .get(&DataKey::WhitelistedCollateral(
+                loan.collateral_token.clone(),
+            ))
             .unwrap_or(false);
         if !is_whitelisted {
             return Err(BorrowingError::CollateralNotWhitelisted);

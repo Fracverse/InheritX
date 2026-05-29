@@ -24,8 +24,8 @@ pub enum DataKey {
     TotalSupply,                // -> u64
     TokenUri(u64),              // Loan ID -> String
     ReentrancyGuard,
-    Transferable(u64),     // Loan ID -> bool
-    MetadataLocked(u64),   // Loan ID -> bool; set true after mint to enforce immutability
+    Transferable(u64),   // Loan ID -> bool
+    MetadataLocked(u64), // Loan ID -> bool; set true after mint to enforce immutability
 }
 
 #[contract]

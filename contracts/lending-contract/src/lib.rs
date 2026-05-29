@@ -21,7 +21,7 @@ const DEFAULT_REWARD_RATE: u64 = 1_000_000_000; // Default reward rate per secon
 const REWARD_PRECISION: u64 = 1_000_000_000; // 9 decimals for reward calculations
 
 const LIQUIDATION_THRESHOLD_BPS: u32 = 15000; // 150% liquidation threshold in basis points
-// Insurance constants
+                                              // Insurance constants
 const DEFAULT_INSURANCE_PREMIUM_RATE_BPS: u32 = 200; // 2% premium of loan principal
 const INSURANCE_CLAIM_PAYBACK_BPS: u32 = 10000; // 100% coverage
 
@@ -3698,7 +3698,9 @@ impl LendingContract {
         }
         // Fallback: slope2 is 10× slope1 when not configured
         let token: Address = env.storage().instance().get(&DataKey::Token).unwrap();
-        Ok(Self::get_pool(&env, &token)?.multiplier_bps.saturating_mul(10))
+        Ok(Self::get_pool(&env, &token)?
+            .multiplier_bps
+            .saturating_mul(10))
     }
 
     /// Get the current borrow rate using the two-slope model if configured,

@@ -574,10 +574,7 @@ impl GovernanceContract {
     /// Remove an expired pending transaction from storage.
     /// Panics with `TransactionNotExpired` if the transaction has not yet expired.
     /// Panics with `ProposalNotFound` if no transaction exists for `tx_id`.
-    pub fn cleanup_expired_transaction(
-        env: Env,
-        tx_id: u32,
-    ) -> Result<(), GovernanceError> {
+    pub fn cleanup_expired_transaction(env: Env, tx_id: u32) -> Result<(), GovernanceError> {
         let pending_tx: PendingTransaction = env
             .storage()
             .instance()
@@ -592,10 +589,8 @@ impl GovernanceContract {
             .instance()
             .remove(&DataKey::PendingTransaction(tx_id));
 
-        env.events().publish(
-            (Symbol::new(&env, "cleanup"), tx_id),
-            (),
-        );
+        env.events()
+            .publish((Symbol::new(&env, "cleanup"), tx_id), ());
 
         Ok(())
     }
@@ -1000,7 +995,7 @@ impl GovernanceContract {
             .get(&DataKey::UserVoteChoice(voter, proposal_id))
     }
 
-    /// Cancel an active proposal. Only the original proposer can cancel.
+    /// Cancel an active proposal. Only the original proposer or the admin can cancel.
     pub fn cancel_proposal(
         env: Env,
         caller: Address,
@@ -1014,7 +1009,14 @@ impl GovernanceContract {
             .get(&DataKey::Proposal(proposal_id))
             .ok_or(GovernanceError::ProposalNotFound)?;
 
-        if proposal.proposer != caller {
+        let is_admin =
+            if let Some(admin_addr) = env.storage().instance().get::<_, Address>(&DataKey::Admin) {
+                caller == admin_addr && access_control::has_role(&env, &caller, Role::Admin)
+            } else {
+                false
+            };
+
+        if proposal.proposer != caller && !is_admin {
             return Err(GovernanceError::NotProposer);
         }
 
