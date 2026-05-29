@@ -131,16 +131,37 @@ pub fn reentrancy_exit(env: &Env) {
 #[derive(Clone)]
 pub enum PauseKey {
     Paused,
+    /// Temporary lock set while a pause/unpause operation is in progress.
+    PauseLock,
+    /// Count of active operations that have entered; used to prevent pausing
+    /// while operations are running.
+    ActiveOps,
 }
 
 /// Mark the contract as paused.
 pub fn pause_contract(env: &Env) {
+    // Prevent new operations from starting while we attempt to pause.
+    env.storage().instance().set(&PauseKey::PauseLock, &true);
+    // If there are active operations, abort and release the lock.
+    let active: i128 = env
+        .storage()
+        .instance()
+        .get::<PauseKey, i128>(&PauseKey::ActiveOps)
+        .unwrap_or(0);
+    if active != 0 {
+        env.storage().instance().remove(&PauseKey::PauseLock);
+        panic!("cannot pause: active operations present");
+    }
     env.storage().instance().set(&PauseKey::Paused, &true);
+    env.storage().instance().remove(&PauseKey::PauseLock);
 }
 
 /// Mark the contract as unpaused.
 pub fn unpause_contract(env: &Env) {
+    // Prevent new operations from starting while we change pause state.
+    env.storage().instance().set(&PauseKey::PauseLock, &true);
     env.storage().instance().set(&PauseKey::Paused, &false);
+    env.storage().instance().remove(&PauseKey::PauseLock);
 }
 
 /// Returns true if the contract is currently paused.
@@ -156,7 +177,14 @@ pub fn require_not_paused<E: Into<soroban_sdk::Error> + Copy>(
     env: &Env,
     error: E,
 ) -> Result<(), E> {
-    if is_contract_paused(env) {
+    // Treat an in-progress pause/unpause (PauseLock) as paused for operation
+    // validation so operation start is atomic with pause state changes.
+    let pause_lock: bool = env
+        .storage()
+        .instance()
+        .get::<PauseKey, bool>(&PauseKey::PauseLock)
+        .unwrap_or(false);
+    if is_contract_paused(env) || pause_lock {
         return Err(error);
     }
     Ok(())
@@ -165,7 +193,53 @@ pub fn require_not_paused<E: Into<soroban_sdk::Error> + Copy>(
 /// Panic if the contract is paused.
 /// Use this for contracts whose error enum is full.
 pub fn require_not_paused_or_panic(env: &Env) {
+    let pause_lock: bool = env
+        .storage()
+        .instance()
+        .get::<PauseKey, bool>(&PauseKey::PauseLock)
+        .unwrap_or(false);
+    if is_contract_paused(env) || pause_lock {
+        panic!("contract paused");
+    }
+}
+
+/// Operation enter/exit helpers to make pause/unpause atomic with operation
+/// validation. Call `operation_enter_or_panic` at the start of an operation and
+/// `operation_exit` at the end (use `reentrancy_enter`/`reentrancy_exit` as
+/// needed for reentrancy protection). These ensure pause operations cannot
+/// start while a pause/unpause is in progress and that pausing will fail if
+/// active operations exist.
+pub fn operation_enter_or_panic(env: &Env) {
+    // Do not allow starting an operation while a pause/unpause is in progress.
+    let pause_lock: bool = env
+        .storage()
+        .instance()
+        .get::<PauseKey, bool>(&PauseKey::PauseLock)
+        .unwrap_or(false);
+    if pause_lock {
+        panic!("pause in progress");
+    }
     if is_contract_paused(env) {
         panic!("contract paused");
+    }
+    let cnt: i128 = env
+        .storage()
+        .instance()
+        .get::<PauseKey, i128>(&PauseKey::ActiveOps)
+        .unwrap_or(0);
+    env.storage().instance().set(&PauseKey::ActiveOps, &(cnt + 1));
+}
+
+/// Decrement active operation count. Safe to call even if count is missing.
+pub fn operation_exit(env: &Env) {
+    let cnt: i128 = env
+        .storage()
+        .instance()
+        .get::<PauseKey, i128>(&PauseKey::ActiveOps)
+        .unwrap_or(0);
+    if cnt <= 1 {
+        env.storage().instance().remove(&PauseKey::ActiveOps);
+    } else {
+        env.storage().instance().set(&PauseKey::ActiveOps, &(cnt - 1));
     }
 }
