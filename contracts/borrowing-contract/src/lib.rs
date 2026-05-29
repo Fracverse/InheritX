@@ -750,6 +750,13 @@ impl BorrowingContract {
         initial_discount_bps: u32,
         max_discount_bps: u32,
     ) -> Result<(), BorrowingError> {
+        if initial_discount_bps > 10000
+            || max_discount_bps > 10000
+            || initial_discount_bps > max_discount_bps
+        {
+            return Err(BorrowingError::InvalidAmount);
+        }
+
         // Single storage read for the loan – reuse it instead of calling get_loan + get_health_factor
         let loan: Loan = env
             .storage()
