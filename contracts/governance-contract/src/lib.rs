@@ -432,10 +432,7 @@ impl GovernanceContract {
             .unwrap_or(DEFAULT_QUORUM_THRESHOLD)
     }
 
-    pub fn set_quorum_threshold(
-        env: Env,
-        new_threshold: i128,
-    ) -> Result<(), GovernanceError> {
+    pub fn set_quorum_threshold(env: Env, new_threshold: i128) -> Result<(), GovernanceError> {
         Self::check_admin(&env)?;
         if new_threshold < 0 {
             return Err(GovernanceError::ZeroAmount);
@@ -599,10 +596,7 @@ impl GovernanceContract {
     /// Remove an expired pending transaction from storage.
     /// Panics with `TransactionNotExpired` if the transaction has not yet expired.
     /// Panics with `ProposalNotFound` if no transaction exists for `tx_id`.
-    pub fn cleanup_expired_transaction(
-        env: Env,
-        tx_id: u32,
-    ) -> Result<(), GovernanceError> {
+    pub fn cleanup_expired_transaction(env: Env, tx_id: u32) -> Result<(), GovernanceError> {
         let pending_tx: PendingTransaction = env
             .storage()
             .instance()
@@ -617,10 +611,8 @@ impl GovernanceContract {
             .instance()
             .remove(&DataKey::PendingTransaction(tx_id));
 
-        env.events().publish(
-            (Symbol::new(&env, "cleanup"), tx_id),
-            (),
-        );
+        env.events()
+            .publish((Symbol::new(&env, "cleanup"), tx_id), ());
 
         Ok(())
     }

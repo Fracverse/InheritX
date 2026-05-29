@@ -851,7 +851,9 @@ fn test_pending_tx_has_correct_expires_at() {
 
     let tx_id = propose_tx(&env, &client, &admin);
 
-    let tx = client.get_pending_transaction(&tx_id).expect("tx must exist");
+    let tx = client
+        .get_pending_transaction(&tx_id)
+        .expect("tx must exist");
     // expires_at should be exactly created_at + 604_800
     assert_eq!(tx.expires_at, 1_000_000 + 604_800);
     assert_eq!(tx.created_at, 1_000_000);
