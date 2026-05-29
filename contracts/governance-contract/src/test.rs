@@ -1,7 +1,7 @@
 #![cfg(test)]
 use super::*;
 use soroban_sdk::testutils::{Address as _, Ledger};
-use soroban_sdk::{Env, String};
+use soroban_sdk::{Env, String, Symbol};
 
 // ─────────────────────────────────────────────────
 // Helpers
@@ -820,4 +820,92 @@ fn test_is_paused_reflects_state_governance() {
     assert!(client.is_paused());
     client.unpause(&admin);
     assert!(!client.is_paused());
+}
+
+// ─────────────────────────────────────────────────
+// PendingTransaction Timeout / Expiry Tests
+// ─────────────────────────────────────────────────
+
+/// Helper: propose a multi-sig transaction and return its tx_id.
+fn propose_tx(env: &Env, client: &GovernanceContractClient, proposer: &Address) -> u32 {
+    // Use a dummy target address — the tx won't be executed in these tests
+    let dummy_target = Address::generate(env);
+    client.propose_transaction(
+        proposer,
+        &dummy_target,
+        &Symbol::new(env, "noop"),
+        &soroban_sdk::Vec::new(env),
+    )
+}
+
+#[test]
+fn test_pending_tx_has_correct_expires_at() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let (client, admin) = setup_contract(&env);
+
+    // Set a known ledger timestamp before proposing
+    env.ledger().with_mut(|li| {
+        li.timestamp = 1_000_000;
+    });
+
+    let tx_id = propose_tx(&env, &client, &admin);
+
+    let tx = client.get_pending_transaction(&tx_id).expect("tx must exist");
+    // expires_at should be exactly created_at + 604_800
+    assert_eq!(tx.expires_at, 1_000_000 + 604_800);
+    assert_eq!(tx.created_at, 1_000_000);
+}
+
+#[test]
+fn test_execute_expired_transaction_returns_error() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let (client, admin) = setup_contract(&env);
+
+    let tx_id = propose_tx(&env, &client, &admin);
+    // Sign so threshold is met
+    client.sign_transaction(&admin, &tx_id);
+
+    // Advance time past expiry (7 days + 1 second)
+    env.ledger().with_mut(|li| {
+        li.timestamp += 604_801;
+    });
+
+    let result = client.try_execute_transaction(&admin, &tx_id);
+    assert!(result.is_err());
+}
+
+#[test]
+fn test_cleanup_non_expired_transaction_returns_error() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let (client, admin) = setup_contract(&env);
+
+    let tx_id = propose_tx(&env, &client, &admin);
+
+    // Do NOT advance time — tx is still valid
+    let result = client.try_cleanup_expired_transaction(&tx_id);
+    assert!(result.is_err());
+    // Transaction must still be in storage
+    assert!(client.get_pending_transaction(&tx_id).is_some());
+}
+
+#[test]
+fn test_cleanup_expired_transaction_removes_from_storage() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let (client, admin) = setup_contract(&env);
+
+    let tx_id = propose_tx(&env, &client, &admin);
+
+    // Advance time past expiry
+    env.ledger().with_mut(|li| {
+        li.timestamp += 604_801;
+    });
+
+    let result = client.try_cleanup_expired_transaction(&tx_id);
+    assert!(result.is_ok());
+    // Transaction must be gone from storage
+    assert!(client.get_pending_transaction(&tx_id).is_none());
 }

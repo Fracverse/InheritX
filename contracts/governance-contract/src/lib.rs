@@ -12,6 +12,7 @@ mod test;
 
 const PROPOSAL_DURATION: u64 = 604_800; // 7 days in seconds
 const QUORUM_THRESHOLD: i128 = 1; // Minimum total votes required to consider a proposal valid
+const PENDING_TX_TIMEOUT_SECONDS: u64 = 604_800; // 7 days — pending multi-sig tx expiry
 
 // ─────────────────────────────────────────────────
 // Storage Keys
@@ -120,6 +121,7 @@ pub struct PendingTransaction {
     pub signatures: Vec<Address>,
     pub created_at: u64,
     pub executed: bool,
+    pub expires_at: u64, // ledger timestamp after which this tx is considered expired
 }
 
 #[contracttype]
@@ -200,11 +202,18 @@ pub enum GovernanceError {
     NotProposer = 17,
     ReentrantCall = 18,
     ContractPaused = 19,
+    TransactionExpired = 20,
+    TransactionNotExpired = 21,
 }
 
 // ─────────────────────────────────────────────────
 // Contract
 // ─────────────────────────────────────────────────
+
+/// Returns true if the pending transaction's expiry timestamp has passed.
+fn is_expired(env: &Env, tx: &PendingTransaction) -> bool {
+    env.ledger().timestamp() > tx.expires_at
+}
 
 #[contract]
 pub struct GovernanceContract;
@@ -464,6 +473,7 @@ impl GovernanceContract {
             signatures: Vec::new(&env),
             created_at: env.ledger().timestamp(),
             executed: false,
+            expires_at: env.ledger().timestamp() + PENDING_TX_TIMEOUT_SECONDS,
         };
 
         env.storage()
@@ -495,6 +505,13 @@ impl GovernanceContract {
             return Err(GovernanceError::ProposalAlreadyExecuted);
         }
 
+        if is_expired(&env, &pending_tx) {
+            env.storage()
+                .instance()
+                .remove(&DataKey::PendingTransaction(tx_id));
+            return Err(GovernanceError::TransactionExpired);
+        }
+
         if !pending_tx.signatures.contains(&signer) {
             pending_tx.signatures.push_back(signer);
             env.storage()
@@ -524,6 +541,14 @@ impl GovernanceContract {
             return Err(GovernanceError::ProposalAlreadyExecuted);
         }
 
+        if is_expired(&env, &pending_tx) {
+            env.storage()
+                .instance()
+                .remove(&DataKey::PendingTransaction(tx_id));
+            access_control::reentrancy_exit(&env);
+            return Err(GovernanceError::TransactionExpired);
+        }
+
         let multi_sig = Self::get_multi_sig_config(env.clone());
         if pending_tx.signatures.len() < multi_sig.threshold {
             return Err(GovernanceError::QuorumNotMet);
@@ -544,6 +569,35 @@ impl GovernanceContract {
         env.storage()
             .instance()
             .get(&DataKey::PendingTransaction(tx_id))
+    }
+
+    /// Remove an expired pending transaction from storage.
+    /// Panics with `TransactionNotExpired` if the transaction has not yet expired.
+    /// Panics with `ProposalNotFound` if no transaction exists for `tx_id`.
+    pub fn cleanup_expired_transaction(
+        env: Env,
+        tx_id: u32,
+    ) -> Result<(), GovernanceError> {
+        let pending_tx: PendingTransaction = env
+            .storage()
+            .instance()
+            .get(&DataKey::PendingTransaction(tx_id))
+            .ok_or(GovernanceError::ProposalNotFound)?;
+
+        if !is_expired(&env, &pending_tx) {
+            return Err(GovernanceError::TransactionNotExpired);
+        }
+
+        env.storage()
+            .instance()
+            .remove(&DataKey::PendingTransaction(tx_id));
+
+        env.events().publish(
+            (Symbol::new(&env, "cleanup"), tx_id),
+            (),
+        );
+
+        Ok(())
     }
 
     fn check_admin(env: &Env) -> Result<(), GovernanceError> {
