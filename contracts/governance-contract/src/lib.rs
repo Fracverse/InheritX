@@ -11,7 +11,7 @@ mod test;
 // ─────────────────────────────────────────────────
 
 const PROPOSAL_DURATION: u64 = 604_800; // 7 days in seconds
-const QUORUM_THRESHOLD: i128 = 1; // Minimum total votes required to consider a proposal valid
+const DEFAULT_QUORUM_THRESHOLD: i128 = 1; // Default minimum total votes required to consider a proposal valid
 const PENDING_TX_TIMEOUT_SECONDS: u64 = 604_800; // 7 days — pending multi-sig tx expiry
 
 // ─────────────────────────────────────────────────
@@ -24,6 +24,7 @@ pub enum DataKey {
     InterestRate,
     CollateralRatio,
     LiquidationBonus,
+    QuorumThreshold,
     Delegation(Address),
     Delegators(Address),
     DelegationHistory,
@@ -242,6 +243,9 @@ impl GovernanceContract {
         env.storage()
             .instance()
             .set(&DataKey::LiquidationBonus, &liquidation_bonus);
+        env.storage()
+            .instance()
+            .set(&DataKey::QuorumThreshold, &DEFAULT_QUORUM_THRESHOLD);
         access_control::assign_role(&env, &admin, Role::Admin);
 
         // Initialize multi-sig with single admin initially
@@ -419,6 +423,27 @@ impl GovernanceContract {
             .instance()
             .get(&DataKey::LiquidationBonus)
             .unwrap_or(0)
+    }
+
+    pub fn get_quorum_threshold(env: Env) -> i128 {
+        env.storage()
+            .instance()
+            .get(&DataKey::QuorumThreshold)
+            .unwrap_or(DEFAULT_QUORUM_THRESHOLD)
+    }
+
+    pub fn set_quorum_threshold(
+        env: Env,
+        new_threshold: i128,
+    ) -> Result<(), GovernanceError> {
+        Self::check_admin(&env)?;
+        if new_threshold < 0 {
+            return Err(GovernanceError::ZeroAmount);
+        }
+        env.storage()
+            .instance()
+            .set(&DataKey::QuorumThreshold, &new_threshold);
+        Ok(())
     }
 
     pub fn get_multi_sig_config(env: Env) -> MultiSig {
@@ -1077,7 +1102,8 @@ impl GovernanceContract {
 
         // Voting period ended — evaluate result against quorum and majority
         let total_votes = proposal.yes_votes + proposal.no_votes + proposal.abstain_votes;
-        if total_votes >= QUORUM_THRESHOLD && proposal.yes_votes > proposal.no_votes {
+        let quorum_threshold = Self::get_quorum_threshold(env.clone());
+        if total_votes >= quorum_threshold && proposal.yes_votes > proposal.no_votes {
             Ok(ProposalStatus::Passed)
         } else {
             Ok(ProposalStatus::Rejected)
