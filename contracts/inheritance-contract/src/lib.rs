@@ -2804,6 +2804,14 @@ impl InheritanceContract {
         if Self::get_trigger_info(&env, plan_id).is_some() {
             return Err(InheritanceError::InheritanceAlreadyTriggered);
         }
+        // Oracle condition requires a valid oracle address
+        let has_oracle_condition = conditions
+            .iter()
+            .any(|c| c == TriggerConditionType::Oracle);
+        if has_oracle_condition && oracle_address.is_none() {
+            return Err(InheritanceError::MissingRequiredField);
+        }
+
         let config = TriggerConfig {
             conditions: conditions.clone(),
             trigger_date,

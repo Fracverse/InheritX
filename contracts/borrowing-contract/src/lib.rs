@@ -953,6 +953,27 @@ impl BorrowingContract {
         Ok(())
     }
 
+    /// Sets the maximum number of extensions allowed per loan. Admin-only.
+    pub fn set_max_extensions(
+        env: Env,
+        admin: Address,
+        max_extensions: u32,
+    ) -> Result<(), BorrowingError> {
+        Self::require_admin(&env, &admin)?;
+        env.storage()
+            .instance()
+            .set(&DataKey::MaxExtensions, &max_extensions);
+        Ok(())
+    }
+
+    /// Returns the configured maximum extensions per loan (defaults to 2).
+    pub fn get_max_extensions(env: Env) -> u32 {
+        env.storage()
+            .instance()
+            .get(&DataKey::MaxExtensions)
+            .unwrap_or(2)
+    }
+
     /// Returns the extension fee for a loan (1% of remaining principal by default).
     pub fn get_extension_fee(env: Env, loan_id: u64) -> Result<i128, BorrowingError> {
         let loan: Loan = env

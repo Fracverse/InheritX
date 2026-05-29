@@ -24,7 +24,8 @@ pub enum DataKey {
     TotalSupply,                // -> u64
     TokenUri(u64),              // Loan ID -> String
     ReentrancyGuard,
-    Transferable(u64), // Loan ID -> bool
+    Transferable(u64),     // Loan ID -> bool
+    MetadataLocked(u64),   // Loan ID -> bool; set true after mint to enforce immutability
 }
 
 #[contract]
@@ -57,9 +58,15 @@ impl LoanNFT {
         env.storage()
             .persistent()
             .set(&DataKey::Owner(loan_id), &to);
+        // Active loan NFTs are non-transferable by default; admin must explicitly unlock after settlement
         env.storage()
             .persistent()
-            .set(&DataKey::Transferable(loan_id), &true);
+            .set(&DataKey::Transferable(loan_id), &false);
+
+        // Lock metadata to enforce immutability after minting
+        env.storage()
+            .persistent()
+            .set(&DataKey::MetadataLocked(loan_id), &true);
 
         // Update total supply (instance storage – single read+write)
         let total_supply: u64 = env
@@ -106,6 +113,9 @@ impl LoanNFT {
         env.storage()
             .persistent()
             .remove(&DataKey::Transferable(loan_id));
+        env.storage()
+            .persistent()
+            .remove(&DataKey::MetadataLocked(loan_id));
 
         // Update total supply (single read+write)
         let total_supply: u64 = env
@@ -260,6 +270,13 @@ impl LoanNFT {
 
     pub fn get_metadata(env: Env, loan_id: u64) -> Option<LoanMetadata> {
         env.storage().persistent().get(&DataKey::Metadata(loan_id))
+    }
+
+    pub fn is_metadata_locked(env: Env, loan_id: u64) -> bool {
+        env.storage()
+            .persistent()
+            .get(&DataKey::MetadataLocked(loan_id))
+            .unwrap_or(false)
     }
 
     pub fn owner_of(env: Env, loan_id: u64) -> Option<Address> {
