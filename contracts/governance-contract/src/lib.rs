@@ -42,7 +42,7 @@ pub enum DataKey {
     UserVoteChoice(Address, u32),
 }
 
-// ─────────────────────────────────────────────────
+// ────────────────────────────────────���────────────
 // Proposal Types
 // ─────────────────────────────────────────────────
 
@@ -89,7 +89,7 @@ pub struct VoteCount {
 
 // ─────────────────────────────────────────────────
 // Delegation Types
-// ─────────────────────────────────────────────────
+// ──────────────────────────────────────────��──────
 
 #[contracttype]
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -544,6 +544,37 @@ impl GovernanceContract {
         Ok(())
     }
 
+    /// Validate that all signatures are from authorized signers with no duplicates.
+    /// Returns true if the signatures meet the threshold with valid signers.
+    fn validate_signatures(
+        env: &Env,
+        signatures: &Vec<Address>,
+        multi_sig: &MultiSig,
+    ) -> Result<(), GovernanceError> {
+        // Check threshold is met
+        if (signatures.len() as u32) < multi_sig.threshold {
+            return Err(GovernanceError::QuorumNotMet);
+        }
+
+        // Validate each signature is from an authorized signer and no duplicates
+        let mut seen: Vec<Address> = Vec::new(env);
+        for sig in signatures.iter() {
+            // Check signer is authorized
+            if !multi_sig.signers.contains(&sig) {
+                return Err(GovernanceError::Unauthorized);
+            }
+
+            // Check for duplicate signatures
+            if seen.contains(&sig) {
+                return Err(GovernanceError::Unauthorized);
+            }
+
+            seen.push_back(sig);
+        }
+
+        Ok(())
+    }
+
     pub fn execute_transaction(
         env: Env,
         executor: Address,
@@ -572,9 +603,10 @@ impl GovernanceContract {
         }
 
         let multi_sig = Self::get_multi_sig_config(env.clone());
-        if pending_tx.signatures.len() < multi_sig.threshold {
-            return Err(GovernanceError::QuorumNotMet);
-        }
+        
+        // Validate all signatures are from authorized signers with no duplicates
+        // and that the threshold is met
+        Self::validate_signatures(&env, &pending_tx.signatures, &multi_sig)?;
 
         pending_tx.executed = true;
         env.storage()
@@ -1078,7 +1110,7 @@ impl GovernanceContract {
             .has(&DataKey::UserVoteChoice(voter, proposal_id))
     }
 
-    // ─── Internal Helpers ────────────────────────────
+    // ─── Internal Helpers ────────────────────��───────
 
     fn evaluate_proposal_status(
         env: &Env,
