@@ -5,15 +5,15 @@ use axum::{
     middleware::Next,
     response::{IntoResponse, Response},
 };
+use hyper::body::to_bytes;
 use serde_json::json;
+use serde_json::Value as JsonValue;
 use std::collections::HashSet;
 use std::sync::Arc;
 use std::time::Duration;
 use tokio::time::timeout;
 use tower_governor::{errors::GovernorError, key_extractor::KeyExtractor};
 use uuid::Uuid;
-use hyper::body::to_bytes;
-use serde_json::Value as JsonValue;
 
 /// Middleware that enforces a maximum request body size (bytes) and validates
 /// JSON string lengths using the validation helpers.
@@ -71,10 +71,14 @@ pub async fn enforce_max_request_size(mut req: Request<Body>, next: Next) -> Res
                         crate::validation::DEFAULT_MAX_FIELD_LENGTH,
                     );
                     if !errors.is_empty() {
-                        return (StatusCode::BAD_REQUEST, axum::Json(serde_json::json!({
-                            "error": "Validation failed",
-                            "fields": errors.fields
-                        }))).into_response();
+                        return (
+                            StatusCode::BAD_REQUEST,
+                            axum::Json(serde_json::json!({
+                                "error": "Validation failed",
+                                "fields": errors.fields
+                            })),
+                        )
+                            .into_response();
                     }
                 }
             }

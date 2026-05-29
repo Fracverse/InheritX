@@ -19,9 +19,8 @@ use tower_http::{
 
 use crate::cache;
 use crate::middleware::{
-    cache_headers_middleware, request_id_middleware, request_logging_middleware,
-    request_timeout_middleware, security_headers_middleware,
-    enforce_max_request_size,
+    cache_headers_middleware, enforce_max_request_size, request_id_middleware,
+    request_logging_middleware, request_timeout_middleware, security_headers_middleware,
 };
 use uuid::Uuid;
 
@@ -278,8 +277,7 @@ pub async fn create_app(
         )
         .route(
             "/api/emergency/access/grants/:grant_id/revoke",
-            post(revoke_emergency_access_grant)
-                .layer(GovernorLayer::new(emergency_governor_conf)),
+            post(revoke_emergency_access_grant).layer(GovernorLayer::new(emergency_governor_conf)),
         )
         .route(
             "/api/emergency/access/audit-logs",

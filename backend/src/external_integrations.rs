@@ -1,7 +1,7 @@
 use crate::api_error::ApiError;
 use crate::circuit_breaker::CircuitBreaker;
-use reqwest::Client;
 use reqwest::header::AUTHORIZATION;
+use reqwest::Client;
 use serde::{Deserialize, Serialize};
 use std::time::Duration;
 
@@ -235,9 +235,12 @@ impl SanctionsApiClient {
                     )));
                 }
 
-                let screen_result: SanctionsScreenResponse = response.json().await.map_err(|e| {
-                    ApiError::ExternalService(format!("Sanctions API response parse failed: {e}"))
-                })?;
+                let screen_result: SanctionsScreenResponse =
+                    response.json().await.map_err(|e| {
+                        ApiError::ExternalService(format!(
+                            "Sanctions API response parse failed: {e}"
+                        ))
+                    })?;
 
                 if screen_result.flagged {
                     Ok(Some(screen_result.reason.unwrap_or_else(|| {
