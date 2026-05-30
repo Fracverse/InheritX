@@ -96,7 +96,7 @@ pub struct LoanInsurance {
     pub premium_paid: u64,    // Premium amount paid upfront
     pub premium_rate_bps: u32, // Premium rate in basis points (e.g., 200 = 2%)
     pub purchase_time: u64,   // Timestamp when insurance was purchased
-    pub expires_at: u64,      // Expiration timestamp (typically loan due date)
+    pub expires_at: u64,      // Expiration timestamp (typically loan grace-period end)
     pub claimed: bool,        // Whether insurance has been claimed
 }
 
@@ -756,6 +756,17 @@ impl LendingContract {
             .ok_or(LendingError::AssetNotSupported)
     }
 
+    fn grace_period_end(env: &Env, loan: &LoanRecord) -> Result<u64, LendingError> {
+        let pool = Self::get_pool(env, &loan.asset)?;
+        loan.due_date
+            .checked_add(pool.grace_period_seconds)
+            .ok_or(LendingError::InvalidAmount)
+    }
+
+    fn is_after_grace_period(env: &Env, loan: &LoanRecord) -> Result<bool, LendingError> {
+        Ok(env.ledger().timestamp() > Self::grace_period_end(env, loan)?)
+    }
+
     fn set_pool(env: &Env, asset: &Address, pool: &PoolState) {
         env.storage()
             .instance()
@@ -1375,6 +1386,7 @@ impl LendingContract {
         let interest = Self::calculate_interest(loan.principal, loan.interest_rate_bps, elapsed);
         let late_fee = Self::calculate_late_fee(env.clone(), borrower.clone())?;
         let total_repayment = loan.principal + interest + late_fee;
+        let grace_period_end = Self::grace_period_end(&env, &loan)?;
 
         let contract_id = env.current_contract_address();
         Self::transfer(&env, &loan.asset, &borrower, &contract_id, total_repayment)?;
@@ -1429,8 +1441,9 @@ impl LendingContract {
         // Emit late fee event if any late fees were charged
         if late_fee > 0 {
             let current_time = env.ledger().timestamp();
-            let grace_period_end = loan.due_date + pool.grace_period_seconds;
-            let days_overdue = (current_time - grace_period_end) / (24 * 60 * 60);
+            let days_overdue = current_time
+                .saturating_sub(grace_period_end)
+                / (24 * 60 * 60);
 
             env.events().publish(
                 (symbol_short!("POOL"), symbol_short!("LATEFEE")),
@@ -1643,9 +1656,8 @@ impl LendingContract {
             .get(&DataKey::Loan(borrower))
             .ok_or(LendingError::NoOpenLoan)?;
 
-        let pool = Self::get_pool(&env, &loan.asset)?;
         let current_time = env.ledger().timestamp();
-        let grace_period_end = loan.due_date + pool.grace_period_seconds;
+        let grace_period_end = Self::grace_period_end(&env, &loan)?;
 
         Ok(current_time <= grace_period_end)
     }
@@ -1663,7 +1675,7 @@ impl LendingContract {
 
         let pool = Self::get_pool(&env, &loan.asset)?;
         let current_time = env.ledger().timestamp();
-        let grace_period_end = loan.due_date + pool.grace_period_seconds;
+        let grace_period_end = Self::grace_period_end(&env, &loan)?;
 
         if current_time <= grace_period_end {
             return Ok(0);
@@ -2238,8 +2250,7 @@ impl LendingContract {
         }
 
         // Check if grace period has expired before allowing liquidation
-        let is_in_grace = Self::is_in_grace_period(env.clone(), borrower.clone())?;
-        if is_in_grace {
+        if !Self::is_after_grace_period(&env, &loan)? {
             return Err(LendingError::InvalidAmount);
         }
 
@@ -2567,8 +2578,7 @@ impl LendingContract {
             }
 
             // Check if this specific loan is overdue (cannot consolidate overdue loans)
-            let loan_grace_end =
-                loan.due_date + Self::get_pool(&env, &loan.asset)?.grace_period_seconds;
+            let loan_grace_end = Self::grace_period_end(&env, &loan)?;
             let current_time = env.ledger().timestamp();
             if current_time > loan_grace_end {
                 return Err(LendingError::CannotRefinance);
@@ -3165,6 +3175,7 @@ impl LendingContract {
 
         // Coverage is 100% of principal
         let coverage_amount = loan.principal;
+        let insurance_expires_at = Self::grace_period_end(&env, &loan)?;
 
         // Create insurance record
         let insurance = LoanInsurance {
@@ -3174,7 +3185,7 @@ impl LendingContract {
             premium_paid: premium,
             premium_rate_bps,
             purchase_time: env.ledger().timestamp(),
-            expires_at: loan.due_date,
+            expires_at: insurance_expires_at,
             claimed: false,
         };
 
@@ -3205,7 +3216,7 @@ impl LendingContract {
                 coverage_amount,
                 premium_paid: premium,
                 premium_rate_bps,
-                expires_at: loan.due_date,
+                expires_at: insurance_expires_at,
                 timestamp: env.ledger().timestamp(),
             },
         );
@@ -3268,14 +3279,8 @@ impl LendingContract {
             .get(&insurance_key)
             .ok_or(LendingError::InsuranceNotFound)?;
 
-        // Check if insurance is still valid
         if insurance.claimed {
             return Err(LendingError::InsuranceAlreadyClaimed);
-        }
-
-        let current_time = env.ledger().timestamp();
-        if current_time >= insurance.expires_at {
-            return Err(LendingError::InsuranceExpired);
         }
 
         // Get loan to verify it exists and is in default
@@ -3286,9 +3291,16 @@ impl LendingContract {
             .get::<_, LoanRecord>(&loan_key)
             .ok_or(LendingError::LoanNotFound)?;
 
-        // Verify loan is past due
-        if current_time <= loan.due_date {
+        let current_time = env.ledger().timestamp();
+        let grace_period_end = Self::grace_period_end(&env, &loan)?;
+
+        // Insurance can only be claimed after the grace period expires.
+        if current_time <= grace_period_end {
             return Err(LendingError::InvalidAmount);
+        }
+
+        if current_time <= insurance.expires_at {
+            return Err(LendingError::InsuranceExpired);
         }
 
         // Get insurance fund and verify sufficient balance
@@ -3314,12 +3326,8 @@ impl LendingContract {
         env.storage().instance().set(&DataKey::InsuranceFund, &fund);
 
         // Transfer claim amount to contract (funds holder for protocol)
-        // In a real system, this would be transferred to a claims reserve
-        let token: Address = env.storage().instance().get(&DataKey::Token).unwrap();
-        let token_client = token::Client::new(&env, &token);
-
-        // Transfer from contract to claims reserve (in this case, just update balance tracking)
-        // The actual transfer would happen when liquidation processes the claim
+        // In a real system, this would be transferred to a claims reserve.
+        // Here we only update the fund accounting and emit the claim event.
 
         // Emit event
         env.events().publish(

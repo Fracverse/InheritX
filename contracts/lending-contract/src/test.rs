@@ -404,7 +404,7 @@ fn test_get_loan_returns_record_when_active() {
 fn test_invalid_amounts_rejected() {
     let env = Env::default();
     env.mock_all_auths();
-    let (client, _token_addr, collateral_addr, admin) = setup(&env);
+    let (client, token_addr, collateral_addr, admin) = setup(&env);
 
     let depositor = Address::generate(&env);
     assert!(client.try_deposit(&depositor, &token_addr, &0u64).is_err());
@@ -2529,6 +2529,10 @@ fn test_deposit_to_insurance_fund() {
 
 #[test]
 fn test_claim_insurance_after_default() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let (client, token_addr, collateral_addr, admin) = setup(&env);
+
     // Deposit 2000 (must exceed MINIMUM_LIQUIDITY=1000 for first deposit)
     let depositor = Address::generate(&env);
     mint_to(&env, &token_addr, &depositor, 2000);
@@ -2646,8 +2650,9 @@ fn test_get_supply_rate() {
         .deposit_to_insurance_fund(&admin, &10_000u64)
         .unwrap();
 
-    // Jump past due date
-    env.ledger().set_timestamp(due_date + 1);
+    // Jump past the grace period end
+    env.ledger()
+        .set_timestamp(due_date + (3 * 24 * 60 * 60) + 1);
 
     // Claim insurance
     let claim_amount = client.claim_insurance(&0u64).unwrap();
@@ -2698,8 +2703,9 @@ fn test_cannot_claim_expired_insurance() {
     // Purchase insurance
     client.purchase_loan_insurance(&borrower, &0u64).unwrap();
 
-    // Jump past due date + some extra time
-    env.ledger().set_timestamp(due_date + 100_000);
+    // Jump past the grace period end
+    env.ledger()
+        .set_timestamp(due_date + (3 * 24 * 60 * 60) + 1);
 
     // Try to claim - should fail because insurance expired
     let result = client.try_claim_insurance(&0u64);
@@ -2881,8 +2887,9 @@ fn test_cancel_insurance_no_refund_after_expiry() {
     let fund_after_purchase = client.get_insurance_fund_state();
     let initial_balance = fund_after_purchase.available_balance;
 
-    // Jump past expiry
-    env.ledger().set_timestamp(due_date + 1);
+    // Jump past the grace period end
+    env.ledger()
+        .set_timestamp(due_date + (3 * 24 * 60 * 60) + 1);
 
     // Cancel insurance after expiry
     let refund = client.cancel_insurance(&borrower, &0u64).unwrap();
@@ -3041,9 +3048,9 @@ fn test_insurance_lifecycle_complete() {
     assert_eq!(fund.total_premiums_collected, premium);
     assert_eq!(fund.available_balance, 10_000u64 + premium);
 
-    // Step 6: Loan defaults (jump past due date)
+    // Step 6: Loan defaults (jump past the grace period)
     env.ledger()
-        .set_timestamp(env.ledger().timestamp() + loan_duration + 1);
+        .set_timestamp(env.ledger().timestamp() + loan_duration + (3 * 24 * 60 * 60) + 1);
 
     // Step 7: Claim insurance
     let claim_amount = client.claim_insurance(&0u64).unwrap();
