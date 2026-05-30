@@ -22,7 +22,6 @@ const REWARD_PRECISION: u64 = 1_000_000_000; // 9 decimals for reward calculatio
 
 // Insurance constants
 const DEFAULT_INSURANCE_PREMIUM_RATE_BPS: u32 = 200; // 2% premium of loan principal
-const INSURANCE_CLAIM_PAYBACK_BPS: u32 = 10000; // 100% coverage
 
 // ─────────────────────────────────────────────────
 // Data Types
@@ -2994,7 +2993,7 @@ impl LendingContract {
         Self::set_pool(&env, &asset, &pool);
 
         env.events().publish(
-            (symbol_short!("POOL"), symbol_short!("BADDEBT_REPL")),
+            (symbol_short!("POOL"), symbol_short!("BADDEBR")),
             BadDebtReserveReplenishedEvent {
                 asset: asset.clone(),
                 amount,
@@ -3446,8 +3445,6 @@ impl LendingContract {
 
         // Transfer claim amount to contract (funds holder for protocol)
         // In a real system, this would be transferred to a claims reserve
-        let token: Address = env.storage().instance().get(&DataKey::Token).unwrap();
-        let token_client = token::Client::new(&env, &token);
 
         // Transfer from contract to claims reserve (in this case, just update balance tracking)
         // The actual transfer would happen when liquidation processes the claim
@@ -3829,7 +3826,9 @@ impl LendingContract {
         }
         // Fallback: slope2 is 10× slope1 when not configured
         let token: Address = env.storage().instance().get(&DataKey::Token).unwrap();
-        Ok(Self::get_pool(&env, &token)?.multiplier_bps.saturating_mul(10))
+        Ok(Self::get_pool(&env, &token)?
+            .multiplier_bps
+            .saturating_mul(10))
     }
 
     /// Get the current borrow rate using the two-slope model if configured,

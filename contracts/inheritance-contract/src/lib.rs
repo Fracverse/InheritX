@@ -134,13 +134,13 @@ pub enum InheritanceError {
 pub enum DataKey {
     NextPlanId,
     Plan(u64),
-    Claim(BytesN<32>),         // keyed by hashed_email
-    ClaimSalt(u64, u32),       // (plan_id, beneficiary_index) -> BytesN<32>
+    Claim(BytesN<32>),           // keyed by hashed_email
+    ClaimSalt(u64, u32),         // (plan_id, beneficiary_index) -> BytesN<32>
     ClaimAttempts(u64, Address), // (plan_id, claimer) -> ClaimAttemptWindow
-    UserPlans(Address),        // keyed by owner Address, value is Vec<u64>
-    UserClaimedPlans(Address), // keyed by owner Address, value is Vec<u64>
-    DeactivatedPlans,          // value is Vec<u64> of all deactivated plan IDs
-    AllClaimedPlans,           // value is Vec<u64> of all claimed plan IDs
+    UserPlans(Address),          // keyed by owner Address, value is Vec<u64>
+    UserClaimedPlans(Address),   // keyed by owner Address, value is Vec<u64>
+    DeactivatedPlans,            // value is Vec<u64> of all deactivated plan IDs
+    AllClaimedPlans,             // value is Vec<u64> of all claimed plan IDs
     Admin,
     Kyc(Address),
     Version,
@@ -178,14 +178,14 @@ pub enum DataKey {
     TriggerConditions(u64),          // plan_id -> TriggerConfig
     VestingExitSettlement(u64, u32), // (plan_id, beneficiary_index) -> exit settlement data
     // Disputes
-    NextDisputeId,                 // u64
-    Dispute(u64),                  // dispute_id -> DisputeRecord
-    PlanDisputes(u64),             // plan_id -> Vec<u64> (dispute ids)
-    Arbitrators,                   // Vec<Address>
+    NextDisputeId,     // u64
+    Dispute(u64),      // dispute_id -> DisputeRecord
+    PlanDisputes(u64), // plan_id -> Vec<u64> (dispute ids)
+    Arbitrators,       // Vec<Address>
     // Message key rotation
-    VaultKeyVersion(u64),          // vault_id -> u32
-    VaultKeyRef(u64, u32),         // (vault_id, version) -> String
-    VaultCurrentKey(u64),          // vault_id -> u32 (current version)
+    VaultKeyVersion(u64),  // vault_id -> u32
+    VaultKeyRef(u64, u32), // (vault_id, version) -> String
+    VaultCurrentKey(u64),  // vault_id -> u32 (current version)
 }
 
 #[contracttype]
@@ -831,14 +831,14 @@ impl InheritanceContract {
     ) -> Result<(), InheritanceError> {
         let now = env.ledger().timestamp();
         let key = DataKey::ClaimAttempts(plan_id, claimer.clone());
-        let mut w: ClaimAttemptWindow = env
-            .storage()
-            .persistent()
-            .get(&key)
-            .unwrap_or(ClaimAttemptWindow {
-                window_start: now,
-                attempts: 0,
-            });
+        let mut w: ClaimAttemptWindow =
+            env.storage()
+                .persistent()
+                .get(&key)
+                .unwrap_or(ClaimAttemptWindow {
+                    window_start: now,
+                    attempts: 0,
+                });
 
         if now.saturating_sub(w.window_start) >= Self::CLAIM_ATTEMPT_WINDOW_SECONDS {
             w.window_start = now;
@@ -963,7 +963,11 @@ impl InheritanceContract {
         false
     }
 
-    pub fn add_arbitrator(env: Env, admin: Address, arbitrator: Address) -> Result<(), InheritanceError> {
+    pub fn add_arbitrator(
+        env: Env,
+        admin: Address,
+        arbitrator: Address,
+    ) -> Result<(), InheritanceError> {
         Self::require_admin(&env, &admin)?;
         let mut list: Vec<Address> = env
             .storage()
@@ -997,7 +1001,9 @@ impl InheritanceContract {
                 updated.push_back(a);
             }
         }
-        env.storage().persistent().set(&DataKey::Arbitrators, &updated);
+        env.storage()
+            .persistent()
+            .set(&DataKey::Arbitrators, &updated);
         Ok(())
     }
 
@@ -1048,7 +1054,9 @@ impl InheritanceContract {
             arbitrator,
         };
 
-        env.storage().persistent().set(&DataKey::Dispute(dispute_id), &record);
+        env.storage()
+            .persistent()
+            .set(&DataKey::Dispute(dispute_id), &record);
 
         let mut plan_disputes: Vec<u64> = env
             .storage()
@@ -1079,7 +1087,9 @@ impl InheritanceContract {
     }
 
     pub fn get_dispute(env: Env, dispute_id: u64) -> Option<DisputeRecord> {
-        env.storage().persistent().get(&DataKey::Dispute(dispute_id))
+        env.storage()
+            .persistent()
+            .get(&DataKey::Dispute(dispute_id))
     }
 
     pub fn get_plan_disputes(env: Env, plan_id: u64) -> Vec<u64> {
@@ -1106,7 +1116,9 @@ impl InheritanceContract {
             .get(&DataKey::Dispute(dispute_id))
             .ok_or(InheritanceError::DisputeNotFound)?;
 
-        let is_admin = Self::get_admin(&env).map(|a| a == arbitrator).unwrap_or(false);
+        let is_admin = Self::get_admin(&env)
+            .map(|a| a == arbitrator)
+            .unwrap_or(false);
         if !is_admin && !Self::is_arbitrator(&env, &arbitrator) {
             return Err(InheritanceError::NotArbitrator);
         }
@@ -1121,7 +1133,9 @@ impl InheritanceContract {
             record.resolved_at = env.ledger().timestamp();
         }
 
-        env.storage().persistent().set(&DataKey::Dispute(dispute_id), &record);
+        env.storage()
+            .persistent()
+            .set(&DataKey::Dispute(dispute_id), &record);
 
         if freeze_plan {
             let fr = FreezeRecord {
@@ -1162,7 +1176,9 @@ impl InheritanceContract {
 
     pub fn unfreeze_plan(env: Env, admin: Address, plan_id: u64) -> Result<(), InheritanceError> {
         Self::require_admin(&env, &admin)?;
-        env.storage().persistent().remove(&DataKey::FreezePlan(plan_id));
+        env.storage()
+            .persistent()
+            .remove(&DataKey::FreezePlan(plan_id));
         env.events().publish(
             (symbol_short!("PLAN"), symbol_short!("UNFRO")),
             PlanUnfrozenEvent {
@@ -2174,10 +2190,7 @@ impl InheritanceContract {
     /// Get vesting exit settlement amount for a beneficiary
     fn get_vesting_exit_settlement(env: &Env, plan_id: u64, beneficiary_index: u32) -> u64 {
         let settle_key = DataKey::VestingExitSettlement(plan_id, beneficiary_index);
-        env.storage()
-            .persistent()
-            .get(&settle_key)
-            .unwrap_or(0u64)
+        env.storage().persistent().get(&settle_key).unwrap_or(0u64)
     }
 
     pub fn get_claimable_by_priority(
@@ -5332,14 +5345,15 @@ impl InheritanceContract {
                     .persistent()
                     .get(&DataKey::ClaimSalt(plan_id, i))
                     .unwrap_or(BytesN::<32>::from_array(&env, &[0u8; 32]));
-                let hashed_claim_code = match Self::hash_claim_code_with_salt(&env, claim_code, &salt) {
-                    Ok(h) => h,
-                    Err(_) => {
-                        fail += 1;
-                        beneficiary_index = None;
-                        break;
-                    }
-                };
+                let hashed_claim_code =
+                    match Self::hash_claim_code_with_salt(&env, claim_code, &salt) {
+                        Ok(h) => h,
+                        Err(_) => {
+                            fail += 1;
+                            beneficiary_index = None;
+                            break;
+                        }
+                    };
                 if b.hashed_claim_code == hashed_claim_code {
                     beneficiary_index = Some(i);
                     break;
