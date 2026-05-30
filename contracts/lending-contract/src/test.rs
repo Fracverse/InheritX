@@ -1241,6 +1241,53 @@ fn test_liquidation_blocked_during_grace_period() {
 }
 
 #[test]
+fn test_bad_debt_reserve_replenishment_and_liquidation() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let (client, token_addr, collateral_addr, admin) = setup(&env);
+
+    let depositor = Address::generate(&env);
+    let borrower = Address::generate(&env);
+    mint_to(&env, &token_addr, &depositor, 20_000);
+    mint_to(&env, &token_addr, &admin, 20_000);
+    mint_to(&env, &collateral_addr, &borrower, 100_000);
+
+    client.deposit(&depositor, &token_addr, &10_000u64).unwrap();
+    client.borrow(
+        &borrower,
+        &token_addr,
+        &5_000u64,
+        &collateral_addr,
+        &7_500u64,
+        &(5 * 365 * 24 * 60 * 60),
+    ).unwrap();
+
+    env.ledger().set_timestamp(env.ledger().timestamp() + 5 * 365 * 24 * 60 * 60);
+
+    let outstanding = client.get_repayment_amount(&borrower).unwrap();
+    assert!(outstanding > 7_500u64);
+
+    let initial_reserve = client.get_reserve_balance(&token_addr).unwrap();
+    assert_eq!(initial_reserve, 0);
+
+    let shortfall = outstanding.saturating_sub(7_500u64);
+    assert!(shortfall > 0);
+
+    let reserve_balance = client.replenish_bad_debt_reserve(&admin, &token_addr, &(shortfall + 1_000u64)).unwrap();
+    assert_eq!(reserve_balance, shortfall + 1_000u64);
+
+    let covered = client.liquidate_bad_debt(&admin, &borrower).unwrap();
+    assert_eq!(covered, shortfall);
+
+    let pool = client.get_pool_state(&token_addr).unwrap();
+    assert_eq!(pool.total_borrowed, 0);
+    assert_eq!(pool.bad_debt_reserve, 1_000u64);
+
+    assert!(client.get_loan(&borrower).is_none());
+    assert!(client.get_user_loan_ids(&borrower).is_empty());
+}
+
+#[test]
 fn test_late_fee_collected_on_repay() {
     let env = Env::default();
     env.mock_all_auths();
