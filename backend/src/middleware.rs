@@ -15,6 +15,20 @@ use tokio::time::timeout;
 use tower_governor::{errors::GovernorError, key_extractor::KeyExtractor};
 use uuid::Uuid;
 
+/// Request-scoped identifiers for error tracking and observability.
+///
+/// Middleware and auth extractors populate this automatically from headers and
+/// the URI path. Handlers may insert or replace it in request extensions when
+/// they have more precise context (e.g. a plan_id resolved from a request body
+/// rather than the URL).
+#[derive(Clone, Default, Debug)]
+pub struct RequestContext {
+    /// Authenticated user UUID, when known.
+    pub user_id: Option<String>,
+    /// Plan UUID being acted upon, when determinable from the request.
+    pub plan_id: Option<String>,
+}
+
 /// Middleware that enforces a maximum request body size (bytes) and validates
 /// JSON string lengths using the validation helpers.
 pub async fn enforce_max_request_size(mut req: Request<Body>, next: Next) -> Response {

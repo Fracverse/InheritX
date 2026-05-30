@@ -29,11 +29,15 @@
 //! attaches:
 //! - `request_id` (from the `x-request-id` header set by our middleware)
 //! - `http.method`, `http.url`
-//! - `user.id` (from the `x-user-id` header set by the auth extractor, if present)
+//! - `user.id` — decoded from the JWT Bearer token payload; falls back to the
+//!   `x-user-id` header for legacy call sites
+//! - `plan_id` tag — extracted from URI path patterns `/plans/{uuid}` and
+//!   `/loans/lifecycle/{uuid}`
 //! - `environment` tag (`RUN_ENV` env var, defaults to `"development"`)
 //! - `release` tag (`CARGO_PKG_VERSION` baked in at compile time)
 
 use axum::{extract::Request, middleware::Next, response::Response};
+use base64::Engine as _;
 use sentry::ClientInitGuard;
 use std::borrow::Cow;
 
@@ -136,15 +140,53 @@ pub fn capture_anyhow(err: &anyhow::Error) {
 
 // ── Request context middleware ────────────────────────────────────────────────
 
+/// Decode the JWT Bearer payload (without signature verification) to extract
+/// `user_id`.  This is intentionally unverified — we only need the claim for
+/// observability context, not for any authorization decision.
+fn extract_user_id_from_bearer(headers: &axum::http::HeaderMap) -> Option<String> {
+    let auth = headers.get("Authorization")?.to_str().ok()?;
+    let token = auth.strip_prefix("Bearer ")?;
+    // JWT format: base64url(header).base64url(payload).base64url(signature)
+    let payload_b64 = token.splitn(3, '.').nth(1)?;
+    let bytes = base64::engine::general_purpose::URL_SAFE_NO_PAD
+        .decode(payload_b64)
+        .ok()?;
+    let payload: serde_json::Value = serde_json::from_slice(&bytes).ok()?;
+    payload.get("user_id")?.as_str().map(str::to_owned)
+}
+
+/// Extract a plan/loan UUID from common URI path patterns.
+///
+/// Recognises `/plans/…` and `/loans/lifecycle/…` sub-trees, then returns the
+/// first UUID-shaped path segment that follows the prefix.  Scanning forward
+/// handles routes like `/plans/due-for-claim/:plan_id` where a non-UUID
+/// segment precedes the actual ID.
+fn extract_plan_id_from_path(path: &str) -> Option<String> {
+    for prefix in ["/plans/", "/loans/lifecycle/"] {
+        if let Some(rest) = path.find(prefix).map(|i| &path[i + prefix.len()..]) {
+            for segment in rest.split('/') {
+                if uuid::Uuid::parse_str(segment).is_ok() {
+                    return Some(segment.to_owned());
+                }
+            }
+        }
+    }
+    None
+}
+
 /// Axum middleware that enriches the Sentry scope for every request.
 ///
 /// Attaches:
 /// - `request_id` tag (from `x-request-id` header)
-/// - `user.id` (from `x-user-id` header, set by auth extractors)
+/// - `user.id` — decoded from the JWT Bearer token payload; falls back to the
+///   `x-user-id` header used by legacy call sites
+/// - `plan_id` tag — extracted from URI path patterns `/plans/{uuid}` and
+///   `/loans/lifecycle/{uuid}`
 /// - `http.method` and `http.url` tags
 /// - `environment` and `release` are set globally at init time
 ///
-/// Must run **after** `request_id_middleware` so the header is present.
+/// Must run **after** `request_id_middleware` so the `x-request-id` header is
+/// present.
 pub async fn enrich_sentry_context(req: Request, next: Next) -> Response {
     let request_id = req
         .headers()
@@ -153,11 +195,16 @@ pub async fn enrich_sentry_context(req: Request, next: Next) -> Response {
         .unwrap_or("unknown")
         .to_owned();
 
-    let user_id = req
-        .headers()
-        .get("x-user-id")
-        .and_then(|v| v.to_str().ok())
-        .map(|s| s.to_owned());
+    // Prefer the user_id embedded in the JWT payload; fall back to the
+    // x-user-id header set by legacy / test call sites.
+    let user_id = extract_user_id_from_bearer(req.headers()).or_else(|| {
+        req.headers()
+            .get("x-user-id")
+            .and_then(|v| v.to_str().ok())
+            .map(str::to_owned)
+    });
+
+    let plan_id = extract_plan_id_from_path(req.uri().path());
 
     let method = req.method().to_string();
     let url = req.uri().to_string();
@@ -173,6 +220,10 @@ pub async fn enrich_sentry_context(req: Request, next: Next) -> Response {
                 id: Some(uid.clone()),
                 ..Default::default()
             }));
+        }
+
+        if let Some(pid) = &plan_id {
+            scope.set_tag("plan_id", pid);
         }
     });
 
@@ -218,5 +269,90 @@ mod tests {
             .and_then(|v| v.parse().ok())
             .unwrap_or(0.1);
         assert!((0.0..=1.0).contains(&traces));
+    }
+
+    // ── extract_user_id_from_bearer ───────────────────────────────────────────
+
+    fn make_bearer_token(user_id: &str) -> String {
+        // Build a minimal JWT with a known user_id claim (header.payload.sig).
+        // The payload is base64url({"user_id":"<id>","exp":9999999999}).
+        use base64::Engine as _;
+        let payload = serde_json::json!({ "user_id": user_id, "exp": 9_999_999_999u64 });
+        let payload_b64 = base64::engine::general_purpose::URL_SAFE_NO_PAD
+            .encode(payload.to_string().as_bytes());
+        // header and signature can be arbitrary for this test
+        format!("eyJhbGciOiJIUzI1NiJ9.{payload_b64}.fakesig")
+    }
+
+    #[test]
+    fn bearer_extracts_user_id() {
+        let uid = "550e8400-e29b-41d4-a716-446655440000";
+        let token = make_bearer_token(uid);
+
+        let mut headers = axum::http::HeaderMap::new();
+        headers.insert(
+            axum::http::header::AUTHORIZATION,
+            axum::http::HeaderValue::from_str(&format!("Bearer {token}")).unwrap(),
+        );
+
+        assert_eq!(extract_user_id_from_bearer(&headers).as_deref(), Some(uid));
+    }
+
+    #[test]
+    fn bearer_returns_none_for_missing_header() {
+        let headers = axum::http::HeaderMap::new();
+        assert!(extract_user_id_from_bearer(&headers).is_none());
+    }
+
+    #[test]
+    fn bearer_returns_none_for_malformed_token() {
+        let mut headers = axum::http::HeaderMap::new();
+        headers.insert(
+            axum::http::header::AUTHORIZATION,
+            axum::http::HeaderValue::from_static("Bearer not.a.jwt"),
+        );
+        assert!(extract_user_id_from_bearer(&headers).is_none());
+    }
+
+    // ── extract_plan_id_from_path ─────────────────────────────────────────────
+
+    #[test]
+    fn path_extracts_plan_uuid() {
+        let uuid = "550e8400-e29b-41d4-a716-446655440000";
+        assert_eq!(
+            extract_plan_id_from_path(&format!("/api/plans/{uuid}/will/generate")),
+            Some(uuid.to_owned())
+        );
+    }
+
+    #[test]
+    fn path_extracts_loan_lifecycle_uuid() {
+        let uuid = "550e8400-e29b-41d4-a716-446655440001";
+        assert_eq!(
+            extract_plan_id_from_path(&format!("/api/loans/lifecycle/{uuid}/repay")),
+            Some(uuid.to_owned())
+        );
+    }
+
+    #[test]
+    fn path_returns_none_for_unrelated_routes() {
+        assert!(extract_plan_id_from_path("/api/health").is_none());
+        assert!(extract_plan_id_from_path("/api/notifications").is_none());
+    }
+
+    #[test]
+    fn path_scans_past_non_uuid_prefix_segments() {
+        // /api/plans/due-for-claim/:plan_id — UUID follows a non-UUID segment.
+        let uuid = "550e8400-e29b-41d4-a716-446655440002";
+        assert_eq!(
+            extract_plan_id_from_path(&format!("/api/plans/due-for-claim/{uuid}")),
+            Some(uuid.to_owned())
+        );
+    }
+
+    #[test]
+    fn path_ignores_non_uuid_segments() {
+        // No UUID anywhere after the prefix → None.
+        assert!(extract_plan_id_from_path("/api/plans/not-a-uuid/foo").is_none());
     }
 }
