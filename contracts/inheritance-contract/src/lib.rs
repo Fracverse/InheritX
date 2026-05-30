@@ -130,6 +130,10 @@ pub enum InheritanceError {
     DisputeNotFound = 55,
     DisputeAlreadyResolved = 56,
     NotArbitrator = 57,
+    LendingContractNotSet = 58,
+    GovernanceContractNotSet = 59,
+    LendingContractCallFailed = 60,
+    GovernanceContractCallFailed = 61,
 }
 
 #[contracttype]
@@ -5478,6 +5482,40 @@ impl InheritanceContract {
 
     pub fn get_governance_contract(env: Env) -> Option<Address> {
         env.storage().instance().get(&DataKey::GovernanceContract)
+    }
+
+    fn require_lending_contract(env: &Env) -> Result<Address, InheritanceError> {
+        Self::get_lending_contract(env).ok_or(InheritanceError::LendingContractNotSet)
+    }
+
+    fn require_governance_contract(env: &Env) -> Result<Address, InheritanceError> {
+        Self::get_governance_contract(env).ok_or(InheritanceError::GovernanceContractNotSet)
+    }
+
+    fn invoke_lending_contract<R: FromVal<Env>>(
+        env: &Env,
+        method: Symbol,
+        args: Vec<Val>,
+    ) -> Result<R, InheritanceError> {
+        let contract = Self::require_lending_contract(env)?;
+        env.try_invoke_contract::<R, InvokeError>(&contract, &method, args)
+            .map_err(|err| {
+                log!(&env, "Lending contract call failed: {:?} {:?}", method, err);
+                InheritanceError::LendingContractCallFailed
+            })
+    }
+
+    fn invoke_governance_contract<R: FromVal<Env>>(
+        env: &Env,
+        method: Symbol,
+        args: Vec<Val>,
+    ) -> Result<R, InheritanceError> {
+        let contract = Self::require_governance_contract(env)?;
+        env.try_invoke_contract::<R, InvokeError>(&contract, &method, args)
+            .map_err(|err| {
+                log!(&env, "Governance contract call failed: {:?} {:?}", method, err);
+                InheritanceError::GovernanceContractCallFailed
+            })
     }
 
     pub fn verify_plan_ownership(env: Env, plan_id: u64, user: Address) -> bool {
