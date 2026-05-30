@@ -532,8 +532,9 @@ impl CollateralManagementService {
         pool: &PgPool,
         price_feed: Arc<dyn PriceFeedService>,
         loan_id: Uuid,
+        user_id: Uuid,
     ) -> Result<CollateralInfo, ApiError> {
-        let loan = LoanLifecycleService::get_loan(pool, loan_id).await?;
+        let loan = LoanLifecycleService::get_loan_for_user(pool, loan_id, user_id).await?;
 
         let price = price_feed.get_price(&loan.collateral_asset).await?;
         let collateral_value_usd = loan.collateral_amount * price.price;
@@ -552,8 +553,9 @@ impl CollateralManagementService {
         pool: &PgPool,
         price_feed: Arc<dyn PriceFeedService>,
         loan_id: Uuid,
+        user_id: Uuid,
     ) -> Result<SafeWithdrawalInfo, ApiError> {
-        let loan = LoanLifecycleService::get_loan(pool, loan_id).await?;
+        let loan = LoanLifecycleService::get_loan_for_user(pool, loan_id, user_id).await?;
 
         let borrow_price = price_feed.get_price(&loan.borrow_asset).await?;
         let collateral_price = price_feed.get_price(&loan.collateral_asset).await?;
@@ -613,8 +615,9 @@ impl CollateralManagementService {
         pool: &PgPool,
         price_feed: Arc<dyn PriceFeedService>,
         loan_id: Uuid,
+        user_id: Uuid,
     ) -> Result<CollateralRequirements, ApiError> {
-        let loan = LoanLifecycleService::get_loan(pool, loan_id).await?;
+        let loan = LoanLifecycleService::get_loan_for_user(pool, loan_id, user_id).await?;
 
         let borrow_price = price_feed.get_price(&loan.borrow_asset).await?;
         let collateral_price = price_feed.get_price(&loan.collateral_asset).await?;

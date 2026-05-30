@@ -431,11 +431,14 @@ impl ContingentBeneficiaryService {
         Ok(())
     }
 
-    /// Get all contingent beneficiaries for a plan
+    /// Get all contingent beneficiaries for a plan (plan owner required).
     pub async fn get_contingent_beneficiaries(
         pool: &PgPool,
         plan_id: Uuid,
+        user_id: Uuid,
     ) -> Result<Vec<ContingentBeneficiary>, ApiError> {
+        crate::service::PlanService::assert_plan_owner(pool, plan_id, user_id).await?;
+
         let rows = sqlx::query_as::<_, BeneficiaryRow>(
             r#"
             SELECT id, plan_id, wallet_address, allocation_percent, name, relationship,
@@ -643,11 +646,14 @@ impl ContingentBeneficiaryService {
         Ok(promoted)
     }
 
-    /// Get or create contingency configuration for a plan
+    /// Get or create contingency configuration for a plan (plan owner required).
     pub async fn get_or_create_config(
         pool: &PgPool,
         plan_id: Uuid,
+        user_id: Uuid,
     ) -> Result<ContingencyConfig, ApiError> {
+        crate::service::PlanService::assert_plan_owner(pool, plan_id, user_id).await?;
+
         let row = sqlx::query_as::<_, ContingencyConfigRow>(
             r#"
             INSERT INTO contingency_config (plan_id)

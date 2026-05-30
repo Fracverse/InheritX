@@ -178,12 +178,15 @@ impl DocumentVerificationService {
         })
     }
 
-    /// Verify all versions of a document for a given plan.
+    /// Verify all versions of a document for a given plan (plan owner required).
     /// Returns a list of verification results for each version.
     pub async fn verify_all_versions(
         db: &PgPool,
         plan_id: Uuid,
+        user_id: Uuid,
     ) -> Result<Vec<VerificationResult>, ApiError> {
+        crate::service::PlanService::assert_plan_owner(db, plan_id, user_id).await?;
+
         let versions = Self::fetch_all_versions(db, plan_id).await?;
 
         let mut results = Vec::new();

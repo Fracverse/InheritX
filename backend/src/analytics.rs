@@ -97,16 +97,12 @@ async fn get_user_metrics(
     AuthenticatedAdmin(_admin): AuthenticatedAdmin,
 ) -> Result<Json<Value>, ApiError> {
     const CACHE_KEY: &str = "analytics:user_metrics";
-    let metrics = if let Some(cached) = state.cache.get_json(CACHE_KEY).await? {
-        cached
-    } else {
-        let computed = UserMetricsService::get_user_growth_metrics(&state.db).await?;
-        state
-            .cache
-            .set_json(CACHE_KEY, &computed, state.cache.user_profile_ttl_secs)
-            .await?;
-        computed
-    };
+    let metrics = state
+        .cache
+        .get_or_set_json(CACHE_KEY, state.cache.user_profile_ttl_secs, || async {
+            UserMetricsService::get_user_growth_metrics(&state.db).await
+        })
+        .await?;
 
     Ok(Json(json!({
         "status": "success",
@@ -121,16 +117,12 @@ async fn get_plan_metrics(
     AuthenticatedAdmin(_admin): AuthenticatedAdmin,
 ) -> Result<Json<Value>, ApiError> {
     const CACHE_KEY: &str = "analytics:plan_metrics";
-    let stats = if let Some(cached) = state.cache.get_json(CACHE_KEY).await? {
-        cached
-    } else {
-        let computed = PlanStatisticsService::get_plan_statistics(&state.db).await?;
-        state
-            .cache
-            .set_json(CACHE_KEY, &computed, state.cache.plans_ttl_secs)
-            .await?;
-        computed
-    };
+    let stats = state
+        .cache
+        .get_or_set_json(CACHE_KEY, state.cache.plans_ttl_secs, || async {
+            PlanStatisticsService::get_plan_statistics(&state.db).await
+        })
+        .await?;
 
     Ok(Json(json!({
         "status": "success",
@@ -235,38 +227,34 @@ async fn get_dashboard(
     AuthenticatedAdmin(_admin): AuthenticatedAdmin,
 ) -> Result<Json<Value>, ApiError> {
     const CACHE_KEY: &str = "analytics:dashboard";
-    if let Some(cached) = state.cache.get_json::<Value>(CACHE_KEY).await? {
-        return Ok(Json(cached));
-    }
-
-    let (overview, users, plans, claims, lending) = tokio::try_join!(
-        AdminService::get_metrics_overview(&state.db),
-        UserMetricsService::get_user_growth_metrics(&state.db),
-        PlanStatisticsService::get_plan_statistics(&state.db),
-        ClaimMetricsService::get_claim_statistics(&state.db),
-        LendingMonitoringService::get_lending_metrics(&state.db),
-    )?;
-
-    let response = json!({
-        "status": "success",
-        "data": {
-            "overview": {
-                "totalRevenue": overview.total_revenue,
-                "totalPlans": overview.total_plans,
-                "totalClaims": overview.total_claims,
-                "activePlans": overview.active_plans,
-                "totalUsers": overview.total_users,
-            },
-            "users": users,
-            "plans": plans,
-            "claims": claims,
-            "lending": lending,
-        }
-    });
-
-    state
+    let response = state
         .cache
-        .set_json(CACHE_KEY, &response, state.cache.default_ttl_secs)
+        .get_or_set_json(CACHE_KEY, state.cache.default_ttl_secs, || async {
+            let (overview, users, plans, claims, lending) = tokio::try_join!(
+                AdminService::get_metrics_overview(&state.db),
+                UserMetricsService::get_user_growth_metrics(&state.db),
+                PlanStatisticsService::get_plan_statistics(&state.db),
+                ClaimMetricsService::get_claim_statistics(&state.db),
+                LendingMonitoringService::get_lending_metrics(&state.db),
+            )?;
+
+            Ok(json!({
+                "status": "success",
+                "data": {
+                    "overview": {
+                        "totalRevenue": overview.total_revenue,
+                        "totalPlans": overview.total_plans,
+                        "totalClaims": overview.total_claims,
+                        "activePlans": overview.active_plans,
+                        "totalUsers": overview.total_users,
+                    },
+                    "users": users,
+                    "plans": plans,
+                    "claims": claims,
+                    "lending": lending,
+                }
+            }))
+        })
         .await?;
 
     Ok(Json(response))

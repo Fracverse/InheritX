@@ -135,6 +135,8 @@ pub struct InsuranceClaim {
 pub struct CreateInsuranceClaimRequest {
     pub claim_type: String,
     pub claimed_amount: Decimal,
+    /// User affected by the claim; derived from plan/loan when omitted.
+    pub user_id: Option<Uuid>,
     pub plan_id: Option<Uuid>,
     pub loan_id: Option<Uuid>,
     pub description: Option<String>,
@@ -518,13 +520,57 @@ impl InsuranceFundService {
         Ok(transaction)
     }
 
+    /// Resolve the claimant user from the request or linked plan/loan records.
+    async fn resolve_claim_user_id(
+        &self,
+        req: &CreateInsuranceClaimRequest,
+    ) -> Result<Uuid, ApiError> {
+        if let Some(user_id) = req.user_id {
+            return Ok(user_id);
+        }
+
+        if let Some(plan_id) = req.plan_id {
+            let owner: Option<Uuid> =
+                sqlx::query_scalar("SELECT user_id FROM plans WHERE id = $1")
+                    .bind(plan_id)
+                    .fetch_optional(&self.db)
+                    .await
+                    .map_err(|e| {
+                        ApiError::Internal(anyhow::anyhow!("DB error resolving plan owner: {}", e))
+                    })?;
+            if let Some(user_id) = owner {
+                return Ok(user_id);
+            }
+        }
+
+        if let Some(loan_id) = req.loan_id {
+            let owner: Option<Uuid> =
+                sqlx::query_scalar("SELECT user_id FROM loan_lifecycle WHERE id = $1")
+                    .bind(loan_id)
+                    .fetch_optional(&self.db)
+                    .await
+                    .map_err(|e| {
+                        ApiError::Internal(anyhow::anyhow!("DB error resolving loan owner: {}", e))
+                    })?;
+            if let Some(user_id) = owner {
+                return Ok(user_id);
+            }
+        }
+
+        Err(ApiError::BadRequest(
+            "user_id is required when plan_id and loan_id are not provided".to_string(),
+        ))
+    }
+
     /// Create insurance claim
     pub async fn create_claim(
         &self,
         fund_id: Uuid,
-        user_id: Uuid,
+        _admin_id: Uuid,
         req: &CreateInsuranceClaimRequest,
     ) -> Result<InsuranceClaim, ApiError> {
+        let user_id = self.resolve_claim_user_id(req).await?;
+
         let mut tx = self
             .db
             .begin()
@@ -600,11 +646,31 @@ impl InsuranceFundService {
             ));
         }
 
-        let (new_status, payout_amount) = if req.approved {
+        let (new_status, approved_amount, payout_amount) = if req.approved {
             let amount = req.approved_amount.unwrap_or(claim.claimed_amount);
-            ("approved".to_string(), Some(amount))
+            if amount <= Decimal::ZERO {
+                return Err(ApiError::BadRequest(
+                    "Approved amount must be greater than zero".to_string(),
+                ));
+            }
+            if amount > claim.claimed_amount {
+                return Err(ApiError::BadRequest(
+                    "Approved amount cannot exceed claimed amount".to_string(),
+                ));
+            }
+            ("approved".to_string(), Some(amount), Some(amount))
         } else {
-            ("rejected".to_string(), None)
+            if req
+                .rejection_reason
+                .as_ref()
+                .map(|r| r.trim().is_empty())
+                .unwrap_or(true)
+            {
+                return Err(ApiError::BadRequest(
+                    "Rejection reason is required when rejecting a claim".to_string(),
+                ));
+            }
+            ("rejected".to_string(), None, None)
         };
 
         claim = sqlx::query_as::<_, InsuranceClaim>(
@@ -622,6 +688,7 @@ impl InsuranceFundService {
             "#,
         )
         .bind(&new_status)
+        .bind(approved_amount)
         .bind(payout_amount)
         .bind(admin_id)
         .bind(&req.rejection_reason)
@@ -629,6 +696,27 @@ impl InsuranceFundService {
         .fetch_one(&mut *tx)
         .await
         .map_err(|e| ApiError::Internal(anyhow::anyhow!("DB error updating claim: {}", e)))?;
+
+        let (notif_type, message) = if req.approved {
+            (
+                notif_type::INSURANCE_CLAIM_APPROVED,
+                format!(
+                    "Your insurance claim for {} was approved",
+                    claim.claimed_amount
+                ),
+            )
+        } else {
+            (
+                notif_type::INSURANCE_CLAIM_REJECTED,
+                format!(
+                    "Your insurance claim was rejected: {}",
+                    req.rejection_reason
+                        .as_deref()
+                        .unwrap_or("No reason provided")
+                ),
+            )
+        };
+        NotificationService::create(&mut tx, claim.user_id, notif_type, message).await?;
 
         AuditLogService::log(
             &mut *tx,
@@ -673,29 +761,55 @@ impl InsuranceFundService {
             ));
         }
 
-        if claim.payout_amount.is_none() {
+        let payout_amount = claim.payout_amount.ok_or_else(|| {
+            ApiError::BadRequest("Claim has no payout amount set".to_string())
+        })?;
+
+        let fund = sqlx::query_as::<_, InsuranceFund>(
+            "SELECT * FROM insurance_fund WHERE id = $1 FOR UPDATE",
+        )
+        .bind(claim.fund_id)
+        .fetch_optional(&mut *tx)
+        .await
+        .map_err(|e| ApiError::Internal(anyhow::anyhow!("DB error fetching fund: {}", e)))?
+        .ok_or_else(|| ApiError::NotFound(format!("Insurance fund {} not found", claim.fund_id)))?;
+
+        if fund.available_reserves < payout_amount {
             return Err(ApiError::BadRequest(
-                "Claim has no payout amount set".to_string(),
+                "Insufficient fund reserves for payout".to_string(),
             ));
         }
 
-        let payout_amount = claim.payout_amount.unwrap();
-
-        // Record payout transaction
-        self.record_transaction(
-            claim.fund_id,
-            "payout",
-            payout_amount,
-            "USDC",
-            Some(claim.user_id),
-            claim.plan_id,
-            claim.loan_id,
-            Some(format!("Insurance claim payout for claim {}", claim_id)),
-            Some(serde_json::json!({"claim_id": claim_id.to_string()})),
+        let new_balance = fund.total_reserves - payout_amount;
+        sqlx::query(
+            "UPDATE insurance_fund SET total_reserves = total_reserves - $1, available_reserves = available_reserves - $1, total_payouts = total_payouts + $1 WHERE id = $2",
         )
-        .await?;
+        .bind(payout_amount)
+        .bind(claim.fund_id)
+        .execute(&mut *tx)
+        .await
+        .map_err(|e| ApiError::Internal(anyhow::anyhow!("DB error updating fund reserves: {}", e)))?;
 
-        // Update claim status
+        sqlx::query(
+            r#"
+            INSERT INTO insurance_fund_transactions (
+                fund_id, transaction_type, user_id, plan_id, loan_id,
+                asset_code, amount, balance_after, description, metadata
+            ) VALUES ($1, 'payout', $2, $3, $4, 'USDC', $5, $6, $7, $8)
+            "#,
+        )
+        .bind(claim.fund_id)
+        .bind(claim.user_id)
+        .bind(claim.plan_id)
+        .bind(claim.loan_id)
+        .bind(payout_amount)
+        .bind(new_balance)
+        .bind(format!("Insurance claim payout for claim {claim_id}"))
+        .bind(serde_json::json!({"claim_id": claim_id.to_string()}))
+        .execute(&mut *tx)
+        .await
+        .map_err(|e| ApiError::Internal(anyhow::anyhow!("DB error recording payout: {}", e)))?;
+
         sqlx::query(
             "UPDATE insurance_claims SET status = 'paid', paid_at = CURRENT_TIMESTAMP WHERE id = $1",
         )
@@ -704,9 +818,17 @@ impl InsuranceFundService {
         .await
         .map_err(|e| ApiError::Internal(anyhow::anyhow!("DB error updating claim status: {}", e)))?;
 
+        NotificationService::create(
+            &mut tx,
+            claim.user_id,
+            notif_type::INSURANCE_CLAIM_PAID,
+            format!("Your insurance claim payout of {payout_amount} has been processed"),
+        )
+        .await?;
+
         AuditLogService::log(
             &mut *tx,
-            None,
+            Some(claim.user_id),
             None,
             audit_action::INSURANCE_CLAIM_PAID,
             Some(claim.id),
