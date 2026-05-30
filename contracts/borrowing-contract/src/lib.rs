@@ -150,6 +150,21 @@ pub struct LoanIncreasedEvent {
 
 #[contracttype]
 #[derive(Clone, Debug, Eq, PartialEq)]
+pub struct OracleUpdatedEvent {
+    pub token: Address,
+    pub timestamp: u64,
+}
+
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct VolatilityBufferSetEvent {
+    pub admin: Address,
+    pub token: Address,
+    pub buffer_bps: u32,
+}
+
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
 pub struct ContractInitializedEvent {
     pub admin: Address,
     pub collateral_ratio_bps: u32,
@@ -208,6 +223,9 @@ pub enum DataKey {
     Auction(u64),
     MaxExtensions,
     ExtensionFeeBps,
+    OraclePriceTimestamp(Address),
+    MaxOracleAge,
+    VolatilityBufferBps(Address),
 }
 
 #[contracterror]
@@ -229,6 +247,7 @@ pub enum BorrowingError {
     ExtensionLimitReached = 14,
     ReentrantCall = 15,
     ContractPaused = 16,
+    OraclePriceStale = 17,
 }
 
 #[contract]
@@ -400,14 +419,41 @@ impl BorrowingContract {
             return Err(BorrowingError::Paused);
         }
 
-        // Single read for collateral ratio (avoids a second instance().get() call)
+        // Oracle staleness check – enforced only when max_oracle_age > 0
+        let max_oracle_age: u64 = env
+            .storage()
+            .instance()
+            .get(&DataKey::MaxOracleAge)
+            .unwrap_or(0);
+        if max_oracle_age > 0 {
+            let current_time = env.ledger().timestamp();
+            match env
+                .storage()
+                .persistent()
+                .get::<_, u64>(&DataKey::OraclePriceTimestamp(collateral_token.clone()))
+            {
+                None => return Err(BorrowingError::OraclePriceStale),
+                Some(ts) if current_time.saturating_sub(ts) > max_oracle_age => {
+                    return Err(BorrowingError::OraclePriceStale);
+                }
+                _ => {}
+            }
+        }
+
+        // Volatility-adjusted collateral ratio
         let ratio: u32 = env
             .storage()
             .instance()
             .get(&DataKey::CollateralRatio)
             .unwrap_or(15000);
+        let volatility_buffer: u32 = env
+            .storage()
+            .persistent()
+            .get(&DataKey::VolatilityBufferBps(collateral_token.clone()))
+            .unwrap_or(0);
+        let effective_ratio = ratio.saturating_add(volatility_buffer);
         let required_collateral = (principal as u128)
-            .checked_mul(ratio as u128)
+            .checked_mul(effective_ratio as u128)
             .and_then(|v| v.checked_div(10000))
             .unwrap_or(0) as i128;
 
@@ -1123,10 +1169,16 @@ impl BorrowingContract {
         }
 
         let ratio = Self::get_collateral_ratio(env.clone());
-        // max_borrow = collateral * 10000 / ratio
+        let volatility_buffer: u32 = env
+            .storage()
+            .persistent()
+            .get(&DataKey::VolatilityBufferBps(loan.collateral_token.clone()))
+            .unwrap_or(0);
+        let effective_ratio = ratio.saturating_add(volatility_buffer);
+        // max_borrow = collateral * 10000 / effective_ratio
         let max_borrow = (loan.collateral_amount as u128)
             .checked_mul(10000)
-            .and_then(|v| v.checked_div(ratio as u128))
+            .and_then(|v| v.checked_div(effective_ratio as u128))
             .unwrap_or(0) as i128;
 
         let current_debt = loan.principal - loan.amount_repaid;
@@ -1260,15 +1312,21 @@ impl BorrowingContract {
             return Err(BorrowingError::CollateralNotWhitelisted);
         }
 
-        // Compute max additional inline – avoids a second persistent storage read
+        // Compute max additional with volatility-adjusted ratio
         let ratio: u32 = env
             .storage()
             .instance()
             .get(&DataKey::CollateralRatio)
             .unwrap_or(15000);
+        let volatility_buffer: u32 = env
+            .storage()
+            .persistent()
+            .get(&DataKey::VolatilityBufferBps(loan.collateral_token.clone()))
+            .unwrap_or(0);
+        let effective_ratio = ratio.saturating_add(volatility_buffer);
         let max_borrow = (loan.collateral_amount as u128)
             .checked_mul(10000)
-            .and_then(|v| v.checked_div(ratio as u128))
+            .and_then(|v| v.checked_div(effective_ratio as u128))
             .unwrap_or(0) as i128;
         let current_debt = loan.principal - loan.amount_repaid;
         let max_additional = max_borrow.saturating_sub(current_debt).max(0);
@@ -1298,6 +1356,86 @@ impl BorrowingContract {
 
         access_control::reentrancy_exit(&env);
         Ok(())
+    }
+
+    /// Records the current ledger timestamp as the latest oracle price update for `token`.
+    /// Admin-only. Call this whenever an authoritative price feed is confirmed fresh.
+    pub fn update_oracle_timestamp(
+        env: Env,
+        admin: Address,
+        token: Address,
+    ) -> Result<(), BorrowingError> {
+        Self::require_admin(&env, &admin)?;
+        let timestamp = env.ledger().timestamp();
+        env.storage()
+            .persistent()
+            .set(&DataKey::OraclePriceTimestamp(token.clone()), &timestamp);
+        env.events().publish(
+            (symbol_short!("ORACLE"), symbol_short!("UPDATE")),
+            OracleUpdatedEvent {
+                token,
+                timestamp,
+            },
+        );
+        Ok(())
+    }
+
+    /// Sets the maximum seconds an oracle price update may be aged before new loans are blocked.
+    /// Set to 0 to disable staleness enforcement (default).
+    pub fn set_max_oracle_age(
+        env: Env,
+        admin: Address,
+        max_age_seconds: u64,
+    ) -> Result<(), BorrowingError> {
+        Self::require_admin(&env, &admin)?;
+        env.storage()
+            .instance()
+            .set(&DataKey::MaxOracleAge, &max_age_seconds);
+        Ok(())
+    }
+
+    /// Sets an additional collateral buffer (in bps) for a volatile collateral token.
+    /// Effective collateral ratio = base ratio + volatility buffer.
+    pub fn set_volatility_buffer(
+        env: Env,
+        admin: Address,
+        token: Address,
+        buffer_bps: u32,
+    ) -> Result<(), BorrowingError> {
+        Self::require_admin(&env, &admin)?;
+        env.storage()
+            .persistent()
+            .set(&DataKey::VolatilityBufferBps(token.clone()), &buffer_bps);
+        env.events().publish(
+            (symbol_short!("ADMIN"), symbol_short!("VOLTBUF")),
+            VolatilityBufferSetEvent {
+                admin,
+                token,
+                buffer_bps,
+            },
+        );
+        Ok(())
+    }
+
+    pub fn get_oracle_timestamp(env: Env, token: Address) -> u64 {
+        env.storage()
+            .persistent()
+            .get(&DataKey::OraclePriceTimestamp(token))
+            .unwrap_or(0)
+    }
+
+    pub fn get_max_oracle_age(env: Env) -> u64 {
+        env.storage()
+            .instance()
+            .get(&DataKey::MaxOracleAge)
+            .unwrap_or(0)
+    }
+
+    pub fn get_volatility_buffer(env: Env, token: Address) -> u32 {
+        env.storage()
+            .persistent()
+            .get(&DataKey::VolatilityBufferBps(token))
+            .unwrap_or(0)
     }
 
     fn get_next_loan_id(env: &Env) -> u64 {
