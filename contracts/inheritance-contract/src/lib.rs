@@ -134,6 +134,7 @@ pub enum InheritanceError {
     GovernanceContractNotSet = 59,
     LendingContractCallFailed = 60,
     GovernanceContractCallFailed = 61,
+    BeneficiaryFrozen = 62,
 }
 
 #[contracttype]
@@ -2314,6 +2315,16 @@ impl InheritanceContract {
         }
 
         let index = beneficiary_index.ok_or(InheritanceError::BeneficiaryNotFound)?;
+
+        // Reject claim if the beneficiary is frozen
+        if env
+            .storage()
+            .persistent()
+            .get::<DataKey, bool>(&DataKey::FrozenBeneficiary(plan_id, index))
+            .unwrap_or(false)
+        {
+            return Err(InheritanceError::BeneficiaryFrozen);
+        }
 
         if Self::has_active_vesting_schedule(&env, plan_id, index) {
             return Err(InheritanceError::VestingScheduleActive);
