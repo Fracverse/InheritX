@@ -1,7 +1,7 @@
 #![cfg(test)]
 use super::*;
 use soroban_sdk::testutils::{Address as _, Ledger};
-use soroban_sdk::{Env, String};
+use soroban_sdk::{Env, String, Symbol};
 
 // ─────────────────────────────────────────────────
 // Helpers
@@ -625,6 +625,24 @@ fn test_cancel_proposal() {
 }
 
 #[test]
+fn test_cancel_proposal_by_admin() {
+    let env = Env::default();
+    let (client, admin) = setup_contract(&env);
+
+    let proposer = Address::generate(&env);
+    client.set_token_balance(&proposer, &1000);
+
+    env.mock_all_auths();
+    let proposal_id = make_proposal(&env, &client, &proposer);
+
+    // Proposer is `proposer`, but admin cancels it for emergency control
+    client.cancel_proposal(&admin, &proposal_id);
+
+    let proposal = client.get_proposal(&proposal_id).unwrap();
+    assert_eq!(proposal.status, ProposalStatus::Cancelled);
+}
+
+#[test]
 fn test_cancel_proposal_non_proposer_fails() {
     let env = Env::default();
     let (client, admin) = setup_contract(&env);
@@ -820,4 +838,377 @@ fn test_is_paused_reflects_state_governance() {
     assert!(client.is_paused());
     client.unpause(&admin);
     assert!(!client.is_paused());
+}
+
+// ─────────────────────────────────────────────────
+// PendingTransaction Timeout / Expiry Tests
+// ─────────────────────────────────────────────────
+
+/// Helper: propose a multi-sig transaction and return its tx_id.
+fn propose_tx(env: &Env, client: &GovernanceContractClient, proposer: &Address) -> u32 {
+    // Use a dummy target address — the tx won't be executed in these tests
+    let dummy_target = Address::generate(env);
+    client.propose_transaction(
+        proposer,
+        &dummy_target,
+        &Symbol::new(env, "noop"),
+        &soroban_sdk::Vec::new(env),
+    )
+}
+
+#[test]
+fn test_pending_tx_has_correct_expires_at() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let (client, admin) = setup_contract(&env);
+
+    // Set a known ledger timestamp before proposing
+    env.ledger().with_mut(|li| {
+        li.timestamp = 1_000_000;
+    });
+
+    let tx_id = propose_tx(&env, &client, &admin);
+
+    let tx = client
+        .get_pending_transaction(&tx_id)
+        .expect("tx must exist");
+    // expires_at should be exactly created_at + 604_800
+    assert_eq!(tx.expires_at, 1_000_000 + 604_800);
+    assert_eq!(tx.created_at, 1_000_000);
+}
+
+#[test]
+fn test_execute_expired_transaction_returns_error() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let (client, admin) = setup_contract(&env);
+
+    let tx_id = propose_tx(&env, &client, &admin);
+    // Sign so threshold is met
+    client.sign_transaction(&admin, &tx_id);
+
+    // Advance time past expiry (7 days + 1 second)
+    env.ledger().with_mut(|li| {
+        li.timestamp += 604_801;
+    });
+
+    let result = client.try_execute_transaction(&admin, &tx_id);
+    assert!(result.is_err());
+}
+
+#[test]
+fn test_cleanup_non_expired_transaction_returns_error() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let (client, admin) = setup_contract(&env);
+
+    let tx_id = propose_tx(&env, &client, &admin);
+
+    // Do NOT advance time — tx is still valid
+    let result = client.try_cleanup_expired_transaction(&tx_id);
+    assert!(result.is_err());
+    // Transaction must still be in storage
+    assert!(client.get_pending_transaction(&tx_id).is_some());
+}
+
+#[test]
+fn test_cleanup_expired_transaction_removes_from_storage() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let (client, admin) = setup_contract(&env);
+
+    let tx_id = propose_tx(&env, &client, &admin);
+
+    // Advance time past expiry
+    env.ledger().with_mut(|li| {
+        li.timestamp += 604_801;
+    });
+
+    let result = client.try_cleanup_expired_transaction(&tx_id);
+    assert!(result.is_ok());
+    // Transaction must be gone from storage
+    assert!(client.get_pending_transaction(&tx_id).is_none());
+}
+
+// ─────────────────────────────────────────────────
+// Enhanced Delegation Tests
+// ─────────────────────────────────────────────────
+
+#[test]
+fn test_get_delegator_history() {
+    let env = Env::default();
+    let (client, _admin) = setup_contract(&env);
+
+    let delegator = Address::generate(&env);
+    let delegate1 = Address::generate(&env);
+    let delegate2 = Address::generate(&env);
+
+    client.set_token_balance(&delegator, &1000);
+
+    env.mock_all_auths();
+
+    // First delegation
+    client.delegate_votes(&delegator, &delegate1);
+
+    // Redelegate
+    client.delegate_votes(&delegator, &delegate2);
+
+    // Undelegate
+    client.undelegate_votes(&delegator);
+
+    let delegator_history = client.get_delegator_history(&delegator);
+    assert_eq!(delegator_history.len(), 3);
+
+    // Verify the actions are correct
+    assert_eq!(
+        delegator_history.get(0).unwrap().action,
+        DelegationAction::Delegated
+    );
+    assert_eq!(
+        delegator_history.get(1).unwrap().action,
+        DelegationAction::Redelegated
+    );
+    assert_eq!(
+        delegator_history.get(2).unwrap().action,
+        DelegationAction::Undelegated
+    );
+}
+
+#[test]
+fn test_get_delegate_info() {
+    let env = Env::default();
+    let (client, _admin) = setup_contract(&env);
+
+    let delegator1 = Address::generate(&env);
+    let delegator2 = Address::generate(&env);
+    let delegate = Address::generate(&env);
+
+    client.set_token_balance(&delegator1, &1000);
+    client.set_token_balance(&delegator2, &2000);
+    client.set_token_balance(&delegate, &500);
+
+    env.mock_all_auths();
+    client.delegate_votes(&delegator1, &delegate);
+    client.delegate_votes(&delegator2, &delegate);
+
+    let (voting_power, delegators) = client.get_delegate_info(&delegate);
+
+    assert_eq!(voting_power, 3500); // 500 + 1000 + 2000
+    assert_eq!(delegators.len(), 2);
+    assert!(delegators.contains(&delegator1));
+    assert!(delegators.contains(&delegator2));
+}
+
+#[test]
+fn test_has_delegated() {
+    let env = Env::default();
+    let (client, _admin) = setup_contract(&env);
+
+    let delegator = Address::generate(&env);
+    let delegate = Address::generate(&env);
+
+    client.set_token_balance(&delegator, &1000);
+
+    // Initially not delegated
+    assert!(!client.has_delegated(&delegator));
+
+    env.mock_all_auths();
+    client.delegate_votes(&delegator, &delegate);
+
+    // Now delegated
+    assert!(client.has_delegated(&delegator));
+
+    client.undelegate_votes(&delegator);
+
+    // No longer delegated
+    assert!(!client.has_delegated(&delegator));
+}
+
+#[test]
+fn test_get_total_delegators_count() {
+    let env = Env::default();
+    let (client, _admin) = setup_contract(&env);
+
+    let delegator1 = Address::generate(&env);
+    let delegator2 = Address::generate(&env);
+    let delegator3 = Address::generate(&env);
+    let delegate = Address::generate(&env);
+
+    client.set_token_balance(&delegator1, &1000);
+    client.set_token_balance(&delegator2, &2000);
+    client.set_token_balance(&delegator3, &3000);
+
+    env.mock_all_auths();
+
+    // Initially no delegators
+    assert_eq!(client.get_total_delegators_count(), 0);
+
+    client.delegate_votes(&delegator1, &delegate);
+    assert_eq!(client.get_total_delegators_count(), 1);
+
+    client.delegate_votes(&delegator2, &delegate);
+    assert_eq!(client.get_total_delegators_count(), 2);
+
+    client.delegate_votes(&delegator3, &delegate);
+    assert_eq!(client.get_total_delegators_count(), 3);
+
+    // Undelegating doesn't reduce the count (it's historical)
+    client.undelegate_votes(&delegator1);
+    assert_eq!(client.get_total_delegators_count(), 3);
+}
+
+#[test]
+fn test_get_effective_voting_power() {
+    let env = Env::default();
+    let (client, _admin) = setup_contract(&env);
+
+    let delegator = Address::generate(&env);
+    let delegate = Address::generate(&env);
+
+    client.set_token_balance(&delegator, &1000);
+    client.set_token_balance(&delegate, &500);
+
+    // Before delegation, effective power equals balance
+    assert_eq!(client.get_effective_voting_power(&delegator), 1000);
+    assert_eq!(client.get_effective_voting_power(&delegate), 500);
+
+    env.mock_all_auths();
+    client.delegate_votes(&delegator, &delegate);
+
+    // After delegation, delegator has 0 effective power
+    assert_eq!(client.get_effective_voting_power(&delegator), 0);
+    // Delegate has combined power
+    assert_eq!(client.get_effective_voting_power(&delegate), 1500);
+
+    client.undelegate_votes(&delegator);
+
+    // After undelegation, power is restored
+    assert_eq!(client.get_effective_voting_power(&delegator), 1000);
+    assert_eq!(client.get_effective_voting_power(&delegate), 500);
+}
+
+#[test]
+fn test_delegation_with_multiple_redelegations() {
+    let env = Env::default();
+    let (client, _admin) = setup_contract(&env);
+
+    let delegator = Address::generate(&env);
+    let delegate1 = Address::generate(&env);
+    let delegate2 = Address::generate(&env);
+    let delegate3 = Address::generate(&env);
+
+    client.set_token_balance(&delegator, &1000);
+    client.set_token_balance(&delegate1, &100);
+    client.set_token_balance(&delegate2, &200);
+    client.set_token_balance(&delegate3, &300);
+
+    env.mock_all_auths();
+
+    // First delegation
+    client.delegate_votes(&delegator, &delegate1);
+    assert_eq!(client.get_voting_power(&delegate1), 1100);
+    assert_eq!(client.get_delegators(&delegate1).len(), 1);
+
+    // Redelegate to delegate2
+    client.delegate_votes(&delegator, &delegate2);
+    assert_eq!(client.get_voting_power(&delegate1), 100); // Lost delegated power
+    assert_eq!(client.get_voting_power(&delegate2), 1200); // Gained delegated power
+    assert_eq!(client.get_delegators(&delegate1).len(), 0);
+    assert_eq!(client.get_delegators(&delegate2).len(), 1);
+
+    // Redelegate to delegate3
+    client.delegate_votes(&delegator, &delegate3);
+    assert_eq!(client.get_voting_power(&delegate2), 200); // Lost delegated power
+    assert_eq!(client.get_voting_power(&delegate3), 1300); // Gained delegated power
+    assert_eq!(client.get_delegators(&delegate2).len(), 0);
+    assert_eq!(client.get_delegators(&delegate3).len(), 1);
+
+    // Verify history
+    let history = client.get_delegator_history(&delegator);
+    assert_eq!(history.len(), 3);
+    assert_eq!(history.get(0).unwrap().action, DelegationAction::Delegated);
+    assert_eq!(
+        history.get(1).unwrap().action,
+        DelegationAction::Redelegated
+    );
+    assert_eq!(
+        history.get(2).unwrap().action,
+        DelegationAction::Redelegated
+    );
+}
+
+#[test]
+fn test_delegation_voting_power_consistency() {
+    let env = Env::default();
+    let (client, _admin) = setup_contract(&env);
+
+    let delegator1 = Address::generate(&env);
+    let delegator2 = Address::generate(&env);
+    let delegate = Address::generate(&env);
+
+    client.set_token_balance(&delegator1, &1000);
+    client.set_token_balance(&delegator2, &2000);
+    client.set_token_balance(&delegate, &500);
+
+    env.mock_all_auths();
+
+    // Total tokens in system
+    let total_tokens = 1000 + 2000 + 500;
+
+    // Before delegation
+    let total_power_before = client.get_voting_power(&delegator1)
+        + client.get_voting_power(&delegator2)
+        + client.get_voting_power(&delegate);
+    assert_eq!(total_power_before, total_tokens);
+
+    // After delegation
+    client.delegate_votes(&delegator1, &delegate);
+    client.delegate_votes(&delegator2, &delegate);
+
+    let total_power_after = client.get_voting_power(&delegator1)
+        + client.get_voting_power(&delegator2)
+        + client.get_voting_power(&delegate);
+
+    // Total voting power should remain the same
+    assert_eq!(total_power_after, total_tokens);
+
+    // All power should be with the delegate
+    assert_eq!(client.get_voting_power(&delegate), total_tokens);
+    assert_eq!(client.get_voting_power(&delegator1), 0);
+    assert_eq!(client.get_voting_power(&delegator2), 0);
+}
+
+#[test]
+fn test_complex_delegation_chain_prevention() {
+    let env = Env::default();
+    let (client, _admin) = setup_contract(&env);
+
+    let user_a = Address::generate(&env);
+    let user_b = Address::generate(&env);
+    let user_c = Address::generate(&env);
+    let user_d = Address::generate(&env);
+
+    client.set_token_balance(&user_a, &1000);
+    client.set_token_balance(&user_b, &1000);
+    client.set_token_balance(&user_c, &1000);
+    client.set_token_balance(&user_d, &1000);
+
+    env.mock_all_auths();
+
+    // Create chain: A -> B -> C -> D
+    client.delegate_votes(&user_a, &user_b);
+    client.delegate_votes(&user_b, &user_c);
+    client.delegate_votes(&user_c, &user_d);
+
+    // Try to create circular: D -> A (should fail)
+    let result = client.try_delegate_votes(&user_d, &user_a);
+    assert!(result.is_err());
+
+    // Try to create circular: D -> B (should fail)
+    let result = client.try_delegate_votes(&user_d, &user_b);
+    assert!(result.is_err());
+
+    // Try to create circular: D -> C (should fail)
+    let result = client.try_delegate_votes(&user_d, &user_c);
+    assert!(result.is_err());
 }

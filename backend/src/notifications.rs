@@ -34,6 +34,9 @@ pub mod notif_type {
     // Insurance fund monitoring (Issue #249)
     pub const ADMIN_ALERT: &str = "admin_alert";
     pub const FUND_STATUS_CHANGE: &str = "fund_status_change";
+    pub const INSURANCE_CLAIM_APPROVED: &str = "insurance_claim_approved";
+    pub const INSURANCE_CLAIM_REJECTED: &str = "insurance_claim_rejected";
+    pub const INSURANCE_CLAIM_PAID: &str = "insurance_claim_paid";
 }
 
 // ─── Notification ────────────────────────────────────────────────────────────

@@ -170,8 +170,11 @@ impl BeneficiarySyncService {
     pub async fn sync_and_validate(
         db: &PgPool,
         plan_id: Uuid,
+        user_id: Uuid,
         document_beneficiaries: &[DocumentBeneficiary],
     ) -> Result<BeneficiarySyncResult, ApiError> {
+        crate::service::PlanService::assert_plan_owner(db, plan_id, user_id).await?;
+
         let contract_beneficiaries = Self::fetch_contract_beneficiaries(db, plan_id).await?;
 
         let result = Self::validate(plan_id, &contract_beneficiaries, document_beneficiaries);

@@ -1,9 +1,40 @@
 use crate::api_error::ApiError;
+use crate::notifications::{audit_action, AuditLogService};
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
+use serde_json::Value;
 use sqlx::PgPool;
 use tracing::{info, warn};
 use uuid::Uuid;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ProposalStatus {
+    Active,
+    Passed,
+    Rejected,
+    Executed,
+}
+
+impl ProposalStatus {
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            ProposalStatus::Active => "active",
+            ProposalStatus::Passed => "passed",
+            ProposalStatus::Rejected => "rejected",
+            ProposalStatus::Executed => "executed",
+        }
+    }
+
+    pub fn from_str(s: &str) -> Result<Self, ApiError> {
+        match s {
+            "active" => Ok(ProposalStatus::Active),
+            "passed" => Ok(ProposalStatus::Passed),
+            "rejected" => Ok(ProposalStatus::Rejected),
+            "executed" => Ok(ProposalStatus::Executed),
+            other => Err(ApiError::BadRequest(format!("Unknown proposal status: {other}"))),
+        }
+    }
+}
 
 #[derive(Debug, Serialize, Deserialize, sqlx::FromRow)]
 pub struct Proposal {
@@ -16,6 +47,10 @@ pub struct Proposal {
     pub no_votes: i32,
     pub created_at: DateTime<Utc>,
     pub expires_at: DateTime<Utc>,
+    pub action_type: Option<String>,
+    pub action_payload: Option<Value>,
+    pub executed_at: Option<DateTime<Utc>>,
+    pub executed_by: Option<Uuid>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -23,6 +58,10 @@ pub struct CreateProposalRequest {
     pub title: String,
     pub description: String,
     pub duration_days: i64,
+    /// Optional action to execute when the proposal passes (e.g. "update_parameter").
+    pub action_type: Option<String>,
+    /// JSON payload for the action (e.g. {"parameter_name": "fee", "parameter_value": "100"}).
+    pub action_payload: Option<Value>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -44,12 +83,18 @@ impl GovernanceService {
         proposer_id: Uuid,
         req: &CreateProposalRequest,
     ) -> Result<Proposal, ApiError> {
+        if let Some(action_type) = &req.action_type {
+            Self::validate_action(action_type, req.action_payload.as_ref())?;
+        }
+
         let expires_at = Utc::now() + chrono::Duration::days(req.duration_days);
 
         let proposal = sqlx::query_as::<_, Proposal>(
             r#"
-            INSERT INTO governance_proposals (title, description, proposer_id, status, expires_at)
-            VALUES ($1, $2, $3, 'active', $4)
+            INSERT INTO governance_proposals (
+                title, description, proposer_id, status, expires_at, action_type, action_payload
+            )
+            VALUES ($1, $2, $3, 'active', $4, $5, $6)
             RETURNING *
             "#,
         )
@@ -57,6 +102,8 @@ impl GovernanceService {
         .bind(&req.description)
         .bind(proposer_id)
         .bind(expires_at)
+        .bind(&req.action_type)
+        .bind(&req.action_payload)
         .fetch_one(db)
         .await
         .map_err(|e| ApiError::Internal(anyhow::anyhow!("DB error creating proposal: {}", e)))?;
@@ -75,6 +122,15 @@ impl GovernanceService {
         Ok(proposals)
     }
 
+    pub async fn get_proposal(db: &PgPool, proposal_id: Uuid) -> Result<Proposal, ApiError> {
+        sqlx::query_as::<_, Proposal>("SELECT * FROM governance_proposals WHERE id = $1")
+            .bind(proposal_id)
+            .fetch_optional(db)
+            .await
+            .map_err(|e| ApiError::Internal(anyhow::anyhow!("DB error fetching proposal: {}", e)))?
+            .ok_or_else(|| ApiError::NotFound(format!("Proposal {} not found", proposal_id)))
+    }
+
     pub async fn vote_on_proposal(
         db: &PgPool,
         voter_id: Uuid,
@@ -86,7 +142,6 @@ impl GovernanceService {
             .await
             .map_err(|e| ApiError::Internal(anyhow::anyhow!("Tx start error: {}", e)))?;
 
-        // Check if proposal is still active
         let proposal = sqlx::query_as::<_, Proposal>(
             "SELECT * FROM governance_proposals WHERE id = $1 FOR UPDATE",
         )
@@ -102,9 +157,8 @@ impl GovernanceService {
             ));
         }
 
-        // Record vote
         let vote_inserted = sqlx::query(
-            "INSERT INTO governance_votes (proposal_id, voter_id, supports) VALUES ($1, $2, $3) ON CONFLICT DO NOTHING"
+            "INSERT INTO governance_votes (proposal_id, voter_id, supports) VALUES ($1, $2, $3) ON CONFLICT DO NOTHING",
         )
         .bind(proposal_id)
         .bind(voter_id)
@@ -119,7 +173,6 @@ impl GovernanceService {
             ));
         }
 
-        // Update counts
         let query = if req.supports {
             "UPDATE governance_proposals SET yes_votes = yes_votes + 1 WHERE id = $1"
         } else {
@@ -141,6 +194,158 @@ impl GovernanceService {
         Ok(())
     }
 
+    /// Evaluate whether a proposal has passed or been rejected after its voting period.
+    pub async fn evaluate_proposal_status(
+        db: &PgPool,
+        proposal: &Proposal,
+    ) -> Result<ProposalStatus, ApiError> {
+        let current = ProposalStatus::from_str(&proposal.status)?;
+
+        if current == ProposalStatus::Executed || current == ProposalStatus::Rejected {
+            return Ok(current);
+        }
+
+        if Utc::now() <= proposal.expires_at {
+            return Ok(ProposalStatus::Active);
+        }
+
+        let total_votes = proposal.yes_votes + proposal.no_votes;
+        let quorum = Self::get_quorum_threshold(db).await?;
+
+        if total_votes >= quorum && proposal.yes_votes > proposal.no_votes {
+            Ok(ProposalStatus::Passed)
+        } else {
+            Ok(ProposalStatus::Rejected)
+        }
+    }
+
+    /// Finalize an expired proposal by persisting its passed/rejected status.
+    pub async fn finalize_proposal(db: &PgPool, proposal_id: Uuid) -> Result<Proposal, ApiError> {
+        let mut tx = db
+            .begin()
+            .await
+            .map_err(|e| ApiError::Internal(anyhow::anyhow!("Tx start error: {}", e)))?;
+
+        let proposal = sqlx::query_as::<_, Proposal>(
+            "SELECT * FROM governance_proposals WHERE id = $1 FOR UPDATE",
+        )
+        .bind(proposal_id)
+        .fetch_optional(&mut *tx)
+        .await
+        .map_err(|e| ApiError::Internal(anyhow::anyhow!("DB error fetching proposal: {}", e)))?
+        .ok_or_else(|| ApiError::NotFound(format!("Proposal {} not found", proposal_id)))?;
+
+        let current = ProposalStatus::from_str(&proposal.status)?;
+        if current == ProposalStatus::Executed {
+            return Err(ApiError::BadRequest(
+                "Proposal has already been executed".to_string(),
+            ));
+        }
+
+        if current == ProposalStatus::Passed || current == ProposalStatus::Rejected {
+            tx.commit().await.map_err(|e| {
+                ApiError::Internal(anyhow::anyhow!("Tx commit error: {}", e))
+            })?;
+            return Ok(proposal);
+        }
+
+        let evaluated = Self::evaluate_proposal_status(db, &proposal).await?;
+        if evaluated == ProposalStatus::Active {
+            return Err(ApiError::BadRequest(
+                "Proposal voting period has not ended yet".to_string(),
+            ));
+        }
+
+        let new_status = evaluated.as_str();
+        let updated = sqlx::query_as::<_, Proposal>(
+            "UPDATE governance_proposals SET status = $1 WHERE id = $2 RETURNING *",
+        )
+        .bind(new_status)
+        .bind(proposal_id)
+        .fetch_one(&mut *tx)
+        .await
+        .map_err(|e| ApiError::Internal(anyhow::anyhow!("DB error updating proposal: {}", e)))?;
+
+        tx.commit()
+            .await
+            .map_err(|e| ApiError::Internal(anyhow::anyhow!("Tx commit error: {}", e)))?;
+
+        Ok(updated)
+    }
+
+    /// Execute a passed proposal, applying its configured action.
+    pub async fn execute_proposal(
+        db: &PgPool,
+        executor_id: Uuid,
+        proposal_id: Uuid,
+    ) -> Result<Proposal, ApiError> {
+        let finalized = Self::finalize_proposal(db, proposal_id).await?;
+        let status = ProposalStatus::from_str(&finalized.status)?;
+
+        if status != ProposalStatus::Passed {
+            return Err(ApiError::BadRequest(
+                "Proposal has not passed and cannot be executed".to_string(),
+            ));
+        }
+
+        let mut tx = db
+            .begin()
+            .await
+            .map_err(|e| ApiError::Internal(anyhow::anyhow!("Tx start error: {}", e)))?;
+
+        let proposal = sqlx::query_as::<_, Proposal>(
+            "SELECT * FROM governance_proposals WHERE id = $1 FOR UPDATE",
+        )
+        .bind(proposal_id)
+        .fetch_one(&mut *tx)
+        .await
+        .map_err(|e| ApiError::Internal(anyhow::anyhow!("DB error fetching proposal: {}", e)))?;
+
+        if let (Some(action_type), Some(payload)) = (&proposal.action_type, &proposal.action_payload)
+        {
+            Self::apply_action(&mut tx, action_type, payload).await?;
+        }
+
+        let executed = sqlx::query_as::<_, Proposal>(
+            r#"
+            UPDATE governance_proposals
+            SET status = 'executed', executed_at = NOW(), executed_by = $1
+            WHERE id = $2
+            RETURNING *
+            "#,
+        )
+        .bind(executor_id)
+        .bind(proposal_id)
+        .fetch_one(&mut *tx)
+        .await
+        .map_err(|e| ApiError::Internal(anyhow::anyhow!("DB error executing proposal: {}", e)))?;
+
+        AuditLogService::log(
+            &mut *tx,
+            None,
+            Some(executor_id),
+            audit_action::PARAMETER_UPDATE,
+            Some(proposal_id),
+            Some("governance_proposal".to_string()),
+            None,
+            Some("executed".to_string()),
+            proposal.action_payload.clone(),
+        )
+        .await?;
+
+        tx.commit()
+            .await
+            .map_err(|e| ApiError::Internal(anyhow::anyhow!("Tx commit error: {}", e)))?;
+
+        info!(
+            proposal_id = %proposal_id,
+            executor_id = %executor_id,
+            "Governance proposal executed"
+        );
+
+        Ok(executed)
+    }
+
     pub async fn update_parameter(
         db: &PgPool,
         _admin_id: Uuid,
@@ -151,9 +356,8 @@ impl GovernanceService {
             req.parameter_name, req.parameter_value
         );
 
-        // In a real system, this would update a 'protocol_parameters' table
         let result = sqlx::query(
-            "INSERT INTO protocol_parameters (name, value, updated_at) VALUES ($1, $2, NOW()) ON CONFLICT (name) DO UPDATE SET value = $2, updated_at = NOW()"
+            "INSERT INTO protocol_parameters (name, value, updated_at) VALUES ($1, $2, NOW()) ON CONFLICT (name) DO UPDATE SET value = $2, updated_at = NOW()",
         )
         .bind(&req.parameter_name)
         .bind(&req.parameter_value)
@@ -164,10 +368,98 @@ impl GovernanceService {
             Ok(_) => Ok(()),
             Err(e) => {
                 warn!("Parameter update failed (table might not exist yet): {}", e);
-                // Return success for simulation purposes if table doesn't exist,
-                // but in production we'd want a proper migration.
                 Ok(())
             }
         }
+    }
+
+    fn validate_action(action_type: &str, payload: Option<&Value>) -> Result<(), ApiError> {
+        match action_type {
+            "update_parameter" => {
+                let payload = payload.ok_or_else(|| {
+                    ApiError::BadRequest(
+                        "action_payload required for update_parameter proposals".to_string(),
+                    )
+                })?;
+                let name = payload
+                    .get("parameter_name")
+                    .and_then(|v| v.as_str())
+                    .ok_or_else(|| {
+                        ApiError::BadRequest(
+                            "action_payload.parameter_name is required".to_string(),
+                        )
+                    })?;
+                let value = payload
+                    .get("parameter_value")
+                    .and_then(|v| v.as_str())
+                    .ok_or_else(|| {
+                        ApiError::BadRequest(
+                            "action_payload.parameter_value is required".to_string(),
+                        )
+                    })?;
+                if name.is_empty() || value.is_empty() {
+                    return Err(ApiError::BadRequest(
+                        "parameter_name and parameter_value must not be empty".to_string(),
+                    ));
+                }
+                Ok(())
+            }
+            other => Err(ApiError::BadRequest(format!(
+                "Unsupported proposal action type: {other}"
+            ))),
+        }
+    }
+
+    async fn apply_action(
+        tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
+        action_type: &str,
+        payload: &Value,
+    ) -> Result<(), ApiError> {
+        match action_type {
+            "update_parameter" => {
+                let name = payload
+                    .get("parameter_name")
+                    .and_then(|v| v.as_str())
+                    .ok_or_else(|| {
+                        ApiError::BadRequest("Missing parameter_name in action payload".to_string())
+                    })?;
+                let value = payload
+                    .get("parameter_value")
+                    .and_then(|v| v.as_str())
+                    .ok_or_else(|| {
+                        ApiError::BadRequest("Missing parameter_value in action payload".to_string())
+                    })?;
+
+                sqlx::query(
+                    "INSERT INTO protocol_parameters (name, value, updated_at) VALUES ($1, $2, NOW()) ON CONFLICT (name) DO UPDATE SET value = $2, updated_at = NOW()",
+                )
+                .bind(name)
+                .bind(value)
+                .execute(&mut **tx)
+                .await
+                .map_err(|e| {
+                    ApiError::Internal(anyhow::anyhow!("Failed to apply parameter update: {}", e))
+                })?;
+                Ok(())
+            }
+            other => Err(ApiError::BadRequest(format!(
+                "Unsupported proposal action type: {other}"
+            ))),
+        }
+    }
+
+    async fn get_quorum_threshold(db: &PgPool) -> Result<i32, ApiError> {
+        let value: Option<String> =
+            sqlx::query_scalar("SELECT value FROM protocol_parameters WHERE name = 'governance_quorum'")
+                .fetch_optional(db)
+                .await
+                .map_err(|e| {
+                    ApiError::Internal(anyhow::anyhow!("Failed to read governance quorum: {}", e))
+                })?;
+
+        Ok(value
+            .and_then(|v| v.parse::<i32>().ok())
+            .unwrap_or(1)
+            .max(1))
     }
 }

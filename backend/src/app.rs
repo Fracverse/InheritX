@@ -19,9 +19,8 @@ use tower_http::{
 
 use crate::cache;
 use crate::middleware::{
-    cache_headers_middleware, request_id_middleware, request_logging_middleware,
-    request_timeout_middleware, security_headers_middleware,
-    enforce_max_request_size,
+    cache_headers_middleware, enforce_max_request_size, request_id_middleware,
+    request_logging_middleware, request_timeout_middleware, security_headers_middleware,
 };
 use uuid::Uuid;
 
@@ -129,7 +128,7 @@ pub async fn create_app(
         webhook_service,
     });
 
-    let graphql_schema = crate::graphql::create_schema(db.clone());
+    let graphql_schema = crate::graphql::create_schema(db.clone(), config.clone());
 
     // ── Rate limiting (config-driven) ────────────────────────────────────────
     // Limits are read from environment variables via Config::load() so every
@@ -278,8 +277,7 @@ pub async fn create_app(
         )
         .route(
             "/api/emergency/access/grants/:grant_id/revoke",
-            post(revoke_emergency_access_grant)
-                .layer(GovernorLayer::new(emergency_governor_conf)),
+            post(revoke_emergency_access_grant).layer(GovernorLayer::new(emergency_governor_conf)),
         )
         .route(
             "/api/emergency/access/audit-logs",
@@ -412,6 +410,14 @@ pub async fn create_app(
         .route(
             "/api/governance/proposals/:id/vote",
             post(vote_on_governance_proposal),
+        )
+        .route(
+            "/api/admin/governance/proposals/:id/finalize",
+            post(finalize_governance_proposal),
+        )
+        .route(
+            "/api/admin/governance/proposals/:id/execute",
+            post(execute_governance_proposal),
         )
         .route(
             "/api/admin/governance/parameters/update",
@@ -1000,10 +1006,12 @@ struct SearchAuditParams {
 
 async fn get_message_access_history(
     State(state): State<Arc<AppState>>,
-    AuthenticatedUser(_user): AuthenticatedUser,
+    AuthenticatedUser(user): AuthenticatedUser,
     Path(message_id): Path<Uuid>,
 ) -> Result<Json<Value>, ApiError> {
-    let logs = MessageAccessAuditService::get_message_logs(&state.db, message_id, None).await?;
+    let logs =
+        MessageAccessAuditService::get_message_logs(&state.db, message_id, user.user_id, None)
+            .await?;
     Ok(Json(
         json!({ "status": "success", "data": logs, "count": logs.len() }),
     ))
@@ -1400,10 +1408,10 @@ async fn get_lifecycle_summary(
 async fn get_lifecycle_loan(
     State(state): State<Arc<AppState>>,
     Path(id): Path<Uuid>,
-    AuthenticatedUser(_user): AuthenticatedUser,
+    AuthenticatedUser(user): AuthenticatedUser,
     headers: HeaderMap,
 ) -> Result<impl IntoResponse, ApiError> {
-    let record = LoanLifecycleService::get_loan(&state.db, id).await?;
+    let record = LoanLifecycleService::get_loan_for_user(&state.db, id, user.user_id).await?;
     let body = json!({ "status": "success", "data": record });
     let etag = cache::compute_etag(&body);
     if cache::is_not_modified(&headers, &etag) {
@@ -1694,6 +1702,25 @@ async fn vote_on_governance_proposal(
     ))
 }
 
+async fn finalize_governance_proposal(
+    State(state): State<Arc<AppState>>,
+    AuthenticatedAdmin(_admin): AuthenticatedAdmin,
+    Path(proposal_id): Path<Uuid>,
+) -> Result<Json<Proposal>, ApiError> {
+    let proposal = GovernanceService::finalize_proposal(&state.db, proposal_id).await?;
+    Ok(Json(proposal))
+}
+
+async fn execute_governance_proposal(
+    State(state): State<Arc<AppState>>,
+    AuthenticatedAdmin(admin): AuthenticatedAdmin,
+    Path(proposal_id): Path<Uuid>,
+) -> Result<Json<Proposal>, ApiError> {
+    let proposal =
+        GovernanceService::execute_proposal(&state.db, admin.admin_id, proposal_id).await?;
+    Ok(Json(proposal))
+}
+
 async fn update_protocol_parameter(
     State(state): State<Arc<AppState>>,
     AuthenticatedAdmin(admin): AuthenticatedAdmin,
@@ -1828,12 +1855,16 @@ struct SyncBeneficiariesRequest {
 async fn sync_beneficiaries(
     State(state): State<Arc<AppState>>,
     Path(plan_id): Path<Uuid>,
-    AuthenticatedUser(_user): AuthenticatedUser,
+    AuthenticatedUser(user): AuthenticatedUser,
     Json(req): Json<SyncBeneficiariesRequest>,
 ) -> Result<Json<Value>, ApiError> {
-    let result =
-        BeneficiarySyncService::sync_and_validate(&state.db, plan_id, &req.document_beneficiaries)
-            .await?;
+    let result = BeneficiarySyncService::sync_and_validate(
+        &state.db,
+        plan_id,
+        user.user_id,
+        &req.document_beneficiaries,
+    )
+    .await?;
     Ok(Json(json!({ "status": "success", "data": result })))
 }
 
@@ -2095,10 +2126,12 @@ async fn verify_document_content(
 async fn verify_all_document_versions(
     State(state): State<Arc<AppState>>,
     Path(plan_id): Path<Uuid>,
-    AuthenticatedUser(_user): AuthenticatedUser,
+    AuthenticatedUser(user): AuthenticatedUser,
 ) -> Result<Json<Value>, ApiError> {
     let results = crate::document_verification::DocumentVerificationService::verify_all_versions(
-        &state.db, plan_id,
+        &state.db,
+        plan_id,
+        user.user_id,
     )
     .await?;
     Ok(Json(
@@ -2111,10 +2144,14 @@ async fn verify_all_document_versions(
 async fn get_document_events(
     State(state): State<Arc<AppState>>,
     Path(document_id): Path<Uuid>,
-    AuthenticatedUser(_user): AuthenticatedUser,
+    AuthenticatedUser(user): AuthenticatedUser,
 ) -> Result<Json<Value>, ApiError> {
-    let events =
-        crate::will_events::WillEventService::get_document_events(&state.db, document_id).await?;
+    let events = crate::will_events::WillEventService::get_document_events(
+        &state.db,
+        document_id,
+        user.user_id,
+    )
+    .await?;
     Ok(Json(
         json!({ "status": "success", "data": events, "count": events.len() }),
     ))
@@ -2123,9 +2160,14 @@ async fn get_document_events(
 async fn get_plan_events(
     State(state): State<Arc<AppState>>,
     Path(plan_id): Path<Uuid>,
-    AuthenticatedUser(_user): AuthenticatedUser,
+    AuthenticatedUser(user): AuthenticatedUser,
 ) -> Result<Json<Value>, ApiError> {
-    let events = crate::will_events::WillEventService::get_plan_events(&state.db, plan_id).await?;
+    let events = crate::will_events::WillEventService::get_plan_events(
+        &state.db,
+        plan_id,
+        user.user_id,
+    )
+    .await?;
     Ok(Json(
         json!({ "status": "success", "data": events, "count": events.len() }),
     ))
@@ -2833,13 +2875,19 @@ async fn swap_collateral(
 async fn get_collateral_value(
     State(state): State<Arc<AppState>>,
     Path(id): Path<Uuid>,
-    AuthenticatedUser(_user): AuthenticatedUser,
+    AuthenticatedUser(user): AuthenticatedUser,
 ) -> Result<Json<Value>, ApiError> {
     let price_feed = Arc::new(crate::price_feed::DefaultPriceFeedService::new(
         state.db.clone(),
         3600,
     ));
-    let info = CollateralManagementService::get_collateral_value(&state.db, price_feed, id).await?;
+    let info = CollateralManagementService::get_collateral_value(
+        &state.db,
+        price_feed,
+        id,
+        user.user_id,
+    )
+    .await?;
     Ok(Json(json!({ "status": "success", "data": info })))
 }
 
@@ -2849,15 +2897,19 @@ async fn get_collateral_value(
 async fn get_max_withdrawable_collateral(
     State(state): State<Arc<AppState>>,
     Path(id): Path<Uuid>,
-    AuthenticatedUser(_user): AuthenticatedUser,
+    AuthenticatedUser(user): AuthenticatedUser,
 ) -> Result<Json<Value>, ApiError> {
     let price_feed = Arc::new(crate::price_feed::DefaultPriceFeedService::new(
         state.db.clone(),
         3600,
     ));
-    let info =
-        CollateralManagementService::get_max_withdrawable_collateral(&state.db, price_feed, id)
-            .await?;
+    let info = CollateralManagementService::get_max_withdrawable_collateral(
+        &state.db,
+        price_feed,
+        id,
+        user.user_id,
+    )
+    .await?;
     Ok(Json(json!({ "status": "success", "data": info })))
 }
 
@@ -2867,14 +2919,19 @@ async fn get_max_withdrawable_collateral(
 async fn get_collateral_requirements(
     State(state): State<Arc<AppState>>,
     Path(id): Path<Uuid>,
-    AuthenticatedUser(_user): AuthenticatedUser,
+    AuthenticatedUser(user): AuthenticatedUser,
 ) -> Result<Json<Value>, ApiError> {
     let price_feed = Arc::new(crate::price_feed::DefaultPriceFeedService::new(
         state.db.clone(),
         3600,
     ));
-    let reqs =
-        CollateralManagementService::get_required_collateral(&state.db, price_feed, id).await?;
+    let reqs = CollateralManagementService::get_required_collateral(
+        &state.db,
+        price_feed,
+        id,
+        user.user_id,
+    )
+    .await?;
     Ok(Json(json!({ "status": "success", "data": reqs })))
 }
 
@@ -2920,10 +2977,14 @@ async fn remove_contingent_beneficiary(
 async fn get_contingent_beneficiaries(
     State(state): State<Arc<AppState>>,
     Path(plan_id): Path<Uuid>,
-    AuthenticatedUser(_user): AuthenticatedUser,
+    AuthenticatedUser(user): AuthenticatedUser,
 ) -> Result<Json<Value>, ApiError> {
-    let beneficiaries =
-        ContingentBeneficiaryService::get_contingent_beneficiaries(&state.db, plan_id).await?;
+    let beneficiaries = ContingentBeneficiaryService::get_contingent_beneficiaries(
+        &state.db,
+        plan_id,
+        user.user_id,
+    )
+    .await?;
     Ok(Json(json!({ "status": "success", "data": beneficiaries })))
 }
 
@@ -2966,8 +3027,10 @@ async fn set_contingency_conditions(
 async fn get_contingency_config(
     State(state): State<Arc<AppState>>,
     Path(plan_id): Path<Uuid>,
-    AuthenticatedUser(_user): AuthenticatedUser,
+    AuthenticatedUser(user): AuthenticatedUser,
 ) -> Result<Json<Value>, ApiError> {
-    let config = ContingentBeneficiaryService::get_or_create_config(&state.db, plan_id).await?;
+    let config =
+        ContingentBeneficiaryService::get_or_create_config(&state.db, plan_id, user.user_id)
+            .await?;
     Ok(Json(json!({ "status": "success", "data": config })))
 }

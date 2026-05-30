@@ -389,7 +389,10 @@ impl HorizonClient {
         let path = format!(
             "/accounts/{account_id}/transactions?limit={limit}&order=desc&include_failed=false"
         );
-        info!(account_id, limit, "Fetching account transactions from Horizon");
+        info!(
+            account_id,
+            limit, "Fetching account transactions from Horizon"
+        );
         let page: HorizonPage<HorizonTransaction> = self.get(&path).await?;
         Ok(page.embedded.records)
     }
@@ -421,9 +424,7 @@ impl HorizonClient {
                         if e.is_timeout() {
                             ApiError::Timeout
                         } else {
-                            ApiError::ExternalService(format!(
-                                "Horizon submit failed: {e}"
-                            ))
+                            ApiError::ExternalService(format!("Horizon submit failed: {e}"))
                         }
                     })?;
 
@@ -451,12 +452,10 @@ impl HorizonClient {
     /// Check whether the Horizon server is reachable by fetching the root resource.
     pub async fn health_check(&self) -> Result<bool, ApiError> {
         let url = format!("{}/", self.base_url);
-        let response = self
-            .client
-            .get(&url)
-            .send()
-            .await
-            .map_err(|e| ApiError::ExternalService(format!("Horizon health check failed: {e}")))?;
+        let response =
+            self.client.get(&url).send().await.map_err(|e| {
+                ApiError::ExternalService(format!("Horizon health check failed: {e}"))
+            })?;
         Ok(response.status().is_success())
     }
 
@@ -546,12 +545,8 @@ impl SorobanRpcClient {
                         };
                         async move {
                             debug!(method, "Soroban RPC call");
-                            let response = client
-                                .post(&url)
-                                .json(&body)
-                                .send()
-                                .await
-                                .map_err(|e| {
+                            let response =
+                                client.post(&url).json(&body).send().await.map_err(|e| {
                                     if e.is_timeout() {
                                         ApiError::Timeout
                                     } else {
@@ -612,7 +607,10 @@ impl SorobanRpcClient {
         &self,
         keys: Vec<String>,
     ) -> Result<GetLedgerEntriesResult, ApiError> {
-        debug!(count = keys.len(), "Fetching ledger entries from Soroban RPC");
+        debug!(
+            count = keys.len(),
+            "Fetching ledger entries from Soroban RPC"
+        );
         self.call("getLedgerEntries", json!({ "keys": keys })).await
     }
 
@@ -624,11 +622,8 @@ impl SorobanRpcClient {
         tx_xdr: &str,
     ) -> Result<SimulateTransactionResult, ApiError> {
         info!("Simulating Soroban transaction");
-        self.call(
-            "simulateTransaction",
-            json!({ "transaction": tx_xdr }),
-        )
-        .await
+        self.call("simulateTransaction", json!({ "transaction": tx_xdr }))
+            .await
     }
 
     /// Call `sendTransaction` to broadcast a signed transaction to the network.
@@ -638,18 +633,16 @@ impl SorobanRpcClient {
     /// await the final result.
     pub async fn send_transaction(&self, tx_xdr: &str) -> Result<SendTransactionResult, ApiError> {
         info!("Sending transaction via Soroban RPC");
-        self.call(
-            "sendTransaction",
-            json!({ "transaction": tx_xdr }),
-        )
-        .await
+        self.call("sendTransaction", json!({ "transaction": tx_xdr }))
+            .await
     }
 
     /// Call `getTransaction` to poll for the outcome of a previously submitted
     /// transaction.
     pub async fn get_transaction(&self, tx_hash: &str) -> Result<GetTransactionResult, ApiError> {
         debug!(tx_hash, "Polling Soroban RPC for transaction status");
-        self.call("getTransaction", json!({ "hash": tx_hash })).await
+        self.call("getTransaction", json!({ "hash": tx_hash }))
+            .await
     }
 
     /// Call `getLatestLedger` to get the latest ledger known to the RPC server.
@@ -813,8 +806,9 @@ impl TransactionMonitor {
                         if age_secs > max_age {
                             error!(hash, age_secs, "Transaction monitoring timed out");
                             entry.status = TransactionStatus::Error;
-                            entry.error_message =
-                                Some("Monitoring timed out – transaction not confirmed".to_string());
+                            entry.error_message = Some(
+                                "Monitoring timed out – transaction not confirmed".to_string(),
+                            );
                         }
                     }
                 }
@@ -851,7 +845,11 @@ impl TransactionMonitor {
                 debug!(hash, "Transaction still pending");
             }
             other => {
-                warn!(hash, status = other, "Unknown transaction status from Soroban RPC");
+                warn!(
+                    hash,
+                    status = other,
+                    "Unknown transaction status from Soroban RPC"
+                );
             }
         }
     }

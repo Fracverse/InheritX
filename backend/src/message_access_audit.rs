@@ -200,12 +200,15 @@ impl MessageAccessAuditService {
             .map_err(Into::into)
     }
 
-    /// Get logs for a specific message
+    /// Get logs for a specific message (message owner required).
     pub async fn get_message_logs(
         db: &PgPool,
         message_id: Uuid,
+        user_id: Uuid,
         limit: Option<i64>,
     ) -> Result<Vec<MessageAccessLog>, ApiError> {
+        crate::service::PlanService::assert_message_owner(db, message_id, user_id).await?;
+
         let limit = limit.unwrap_or(100).min(1000);
 
         let rows = sqlx::query(

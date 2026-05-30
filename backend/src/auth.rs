@@ -500,10 +500,9 @@ where
         _state: &S,
     ) -> impl std::future::Future<Output = Result<Self, Self::Rejection>> + Send {
         async move {
-            let config = parts
-                .extensions
-                .get::<Config>()
-                .ok_or_else(|| ApiError::Internal(anyhow::anyhow!("Config not found in extensions")))?;
+            let config = parts.extensions.get::<Config>().ok_or_else(|| {
+                ApiError::Internal(anyhow::anyhow!("Config not found in extensions"))
+            })?;
 
             let auth_header = parts
                 .headers
@@ -525,7 +524,8 @@ where
                 return Ok(AuthenticatedUser(claims));
             }
 
-            if let Some(user_id_str) = parts.headers.get("X-User-Id").and_then(|h| h.to_str().ok()) {
+            if let Some(user_id_str) = parts.headers.get("X-User-Id").and_then(|h| h.to_str().ok())
+            {
                 if let Ok(user_id) = uuid::Uuid::parse_str(user_id_str) {
                     return Ok(AuthenticatedUser(UserClaims {
                         user_id,
@@ -552,10 +552,9 @@ where
         _state: &S,
     ) -> impl std::future::Future<Output = Result<Self, Self::Rejection>> + Send {
         async move {
-            let config = parts
-                .extensions
-                .get::<Config>()
-                .ok_or_else(|| ApiError::Internal(anyhow::anyhow!("Config not found in extensions")))?;
+            let config = parts.extensions.get::<Config>().ok_or_else(|| {
+                ApiError::Internal(anyhow::anyhow!("Config not found in extensions"))
+            })?;
 
             let auth_header = parts
                 .headers

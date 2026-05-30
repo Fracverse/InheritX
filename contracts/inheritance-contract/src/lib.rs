@@ -11,6 +11,9 @@ use disputes::{DisputeRecord, DisputeStatus};
 /// Current contract version - bump this on each upgrade
 const CONTRACT_VERSION: u32 = 1;
 
+/// Hard cap on beneficiaries per plan — bounds all O(n) loops.
+const MAX_BENEFICIARIES: u32 = 10;
+
 /// Emergency transfer limit in basis points (10% = 1000 bp)
 const EMERGENCY_TRANSFER_LIMIT_BP: u32 = 1000;
 
@@ -127,6 +130,11 @@ pub enum InheritanceError {
     DisputeNotFound = 55,
     DisputeAlreadyResolved = 56,
     NotArbitrator = 57,
+    LendingContractNotSet = 58,
+    GovernanceContractNotSet = 59,
+    LendingContractCallFailed = 60,
+    GovernanceContractCallFailed = 61,
+    BeneficiaryFrozen = 62,
 }
 
 #[contracttype]
@@ -2287,7 +2295,8 @@ impl InheritanceContract {
 
         // Find beneficiary by email, then validate claim_code against salted hash.
         let mut beneficiary_index: Option<u32> = None;
-        for i in 0..plan.beneficiaries.len() {
+        let count = plan.beneficiaries.len().min(MAX_BENEFICIARIES);
+        for i in 0..count {
             let b = plan.beneficiaries.get(i).unwrap();
             if b.hashed_email != hashed_email {
                 continue;
@@ -2307,6 +2316,16 @@ impl InheritanceContract {
 
         let index = beneficiary_index.ok_or(InheritanceError::BeneficiaryNotFound)?;
 
+        // Reject claim if the beneficiary is frozen
+        if env
+            .storage()
+            .persistent()
+            .get::<DataKey, bool>(&DataKey::FrozenBeneficiary(plan_id, index))
+            .unwrap_or(false)
+        {
+            return Err(InheritanceError::BeneficiaryFrozen);
+        }
+
         if Self::has_active_vesting_schedule(&env, plan_id, index) {
             return Err(InheritanceError::VestingScheduleActive);
         }
@@ -2315,7 +2334,7 @@ impl InheritanceContract {
         // beneficiary (non-zero priority) must have claimed first.
         if plan.waterfall_enabled {
             let this = plan.beneficiaries.get(index).unwrap();
-            for i in 0..plan.beneficiaries.len() {
+            for i in 0..count {
                 let b = plan.beneficiaries.get(i).unwrap();
                 if b.priority != 0 && b.priority < this.priority && !b.is_claimed {
                     return Err(InheritanceError::ClaimNotAllowedYet);
@@ -3236,6 +3255,12 @@ impl InheritanceContract {
         if Self::get_trigger_info(&env, plan_id).is_some() {
             return Err(InheritanceError::InheritanceAlreadyTriggered);
         }
+        // Oracle condition requires a valid oracle address
+        let has_oracle_condition = conditions.iter().any(|c| c == TriggerConditionType::Oracle);
+        if has_oracle_condition && oracle_address.is_none() {
+            return Err(InheritanceError::MissingRequiredField);
+        }
+
         let config = TriggerConfig {
             conditions: conditions.clone(),
             trigger_date,
@@ -4717,7 +4742,7 @@ impl InheritanceContract {
             .get::<_, WillVersionInfo>(&ver_key)
             .ok_or(InheritanceError::WillVersionNotFound)?;
 
-        // Already finalized?
+        // Atomic finalization guard: set the flag first to prevent concurrent finalization.
         let fin_key = DataKey::WillFinalized(vault_id, version);
         if env
             .storage()
@@ -4727,6 +4752,8 @@ impl InheritanceContract {
         {
             return Err(InheritanceError::WillAlreadyFinalized);
         }
+        // Mark finalized immediately so any concurrent call sees it and returns early.
+        env.storage().persistent().set(&fin_key, &true);
 
         // Owner must have signed the will
         if env
@@ -4735,6 +4762,7 @@ impl InheritanceContract {
             .get::<_, WillSignatureProof>(&DataKey::WillSignature(vault_id))
             .is_none()
         {
+            env.storage().persistent().remove(&fin_key);
             return Err(InheritanceError::WillNotVerified);
         }
 
@@ -4755,12 +4783,12 @@ impl InheritanceContract {
                 .get::<_, u64>(&wsig_key)
                 .is_none()
             {
+                env.storage().persistent().remove(&fin_key);
                 return Err(InheritanceError::MissingRequiredField);
             }
         }
 
         let finalized_at = env.ledger().timestamp();
-        env.storage().persistent().set(&fin_key, &true);
         env.storage()
             .persistent()
             .set(&DataKey::WillFinalizedAt(vault_id, version), &finalized_at);
@@ -5465,6 +5493,40 @@ impl InheritanceContract {
 
     pub fn get_governance_contract(env: Env) -> Option<Address> {
         env.storage().instance().get(&DataKey::GovernanceContract)
+    }
+
+    fn require_lending_contract(env: &Env) -> Result<Address, InheritanceError> {
+        Self::get_lending_contract(env).ok_or(InheritanceError::LendingContractNotSet)
+    }
+
+    fn require_governance_contract(env: &Env) -> Result<Address, InheritanceError> {
+        Self::get_governance_contract(env).ok_or(InheritanceError::GovernanceContractNotSet)
+    }
+
+    fn invoke_lending_contract<R: FromVal<Env>>(
+        env: &Env,
+        method: Symbol,
+        args: Vec<Val>,
+    ) -> Result<R, InheritanceError> {
+        let contract = Self::require_lending_contract(env)?;
+        env.try_invoke_contract::<R, InvokeError>(&contract, &method, args)
+            .map_err(|err| {
+                log!(&env, "Lending contract call failed: {:?} {:?}", method, err);
+                InheritanceError::LendingContractCallFailed
+            })
+    }
+
+    fn invoke_governance_contract<R: FromVal<Env>>(
+        env: &Env,
+        method: Symbol,
+        args: Vec<Val>,
+    ) -> Result<R, InheritanceError> {
+        let contract = Self::require_governance_contract(env)?;
+        env.try_invoke_contract::<R, InvokeError>(&contract, &method, args)
+            .map_err(|err| {
+                log!(&env, "Governance contract call failed: {:?} {:?}", method, err);
+                InheritanceError::GovernanceContractCallFailed
+            })
     }
 
     pub fn verify_plan_ownership(env: Env, plan_id: u64, user: Address) -> bool {

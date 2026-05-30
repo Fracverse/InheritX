@@ -20,7 +20,8 @@ const REFINANCING_FEE_BPS: u32 = 50; // 0.5% refinancing fee
 const DEFAULT_REWARD_RATE: u64 = 1_000_000_000; // Default reward rate per second (1 reward per second with 9 decimals)
 const REWARD_PRECISION: u64 = 1_000_000_000; // 9 decimals for reward calculations
 
-// Insurance constants
+const LIQUIDATION_THRESHOLD_BPS: u32 = 15000; // 150% liquidation threshold in basis points
+                                              // Insurance constants
 const DEFAULT_INSURANCE_PREMIUM_RATE_BPS: u32 = 200; // 2% premium of loan principal
 
 // ─────────────────────────────────────────────────
@@ -94,7 +95,7 @@ pub struct LoanInsurance {
     pub premium_paid: u64,    // Premium amount paid upfront
     pub premium_rate_bps: u32, // Premium rate in basis points (e.g., 200 = 2%)
     pub purchase_time: u64,   // Timestamp when insurance was purchased
-    pub expires_at: u64,      // Expiration timestamp (typically loan due date)
+    pub expires_at: u64,      // Expiration timestamp (typically loan grace-period end)
     pub claimed: bool,        // Whether insurance has been claimed
 }
 
@@ -498,6 +499,7 @@ pub enum DataKey {
     GovernanceContract,
     RateModel,
     Token, // Underlying token address for insurance operations
+    WhitelistedFlashReceiver(Address), // Approved flash loan receiver contracts
 }
 
 // ─────────────────────────────────────────────────
@@ -771,6 +773,17 @@ impl LendingContract {
             .instance()
             .get(&DataKey::PoolState(asset.clone()))
             .ok_or(LendingError::AssetNotSupported)
+    }
+
+    fn grace_period_end(env: &Env, loan: &LoanRecord) -> Result<u64, LendingError> {
+        let pool = Self::get_pool(env, &loan.asset)?;
+        loan.due_date
+            .checked_add(pool.grace_period_seconds)
+            .ok_or(LendingError::InvalidAmount)
+    }
+
+    fn is_after_grace_period(env: &Env, loan: &LoanRecord) -> Result<bool, LendingError> {
+        Ok(env.ledger().timestamp() > Self::grace_period_end(env, loan)?)
     }
 
     fn set_pool(env: &Env, asset: &Address, pool: &PoolState) {
@@ -1392,6 +1405,7 @@ impl LendingContract {
         let interest = Self::calculate_interest(loan.principal, loan.interest_rate_bps, elapsed);
         let late_fee = Self::calculate_late_fee(env.clone(), borrower.clone())?;
         let total_repayment = loan.principal + interest + late_fee;
+        let grace_period_end = Self::grace_period_end(&env, &loan)?;
 
         let contract_id = env.current_contract_address();
         Self::transfer(&env, &loan.asset, &borrower, &contract_id, total_repayment)?;
@@ -1446,8 +1460,9 @@ impl LendingContract {
         // Emit late fee event if any late fees were charged
         if late_fee > 0 {
             let current_time = env.ledger().timestamp();
-            let grace_period_end = loan.due_date + pool.grace_period_seconds;
-            let days_overdue = (current_time - grace_period_end) / (24 * 60 * 60);
+            let days_overdue = current_time
+                .saturating_sub(grace_period_end)
+                / (24 * 60 * 60);
 
             env.events().publish(
                 (symbol_short!("POOL"), symbol_short!("LATEFEE")),
@@ -1660,9 +1675,8 @@ impl LendingContract {
             .get(&DataKey::Loan(borrower))
             .ok_or(LendingError::NoOpenLoan)?;
 
-        let pool = Self::get_pool(&env, &loan.asset)?;
         let current_time = env.ledger().timestamp();
-        let grace_period_end = loan.due_date + pool.grace_period_seconds;
+        let grace_period_end = Self::grace_period_end(&env, &loan)?;
 
         Ok(current_time <= grace_period_end)
     }
@@ -1680,7 +1694,7 @@ impl LendingContract {
 
         let pool = Self::get_pool(&env, &loan.asset)?;
         let current_time = env.ledger().timestamp();
-        let grace_period_end = loan.due_date + pool.grace_period_seconds;
+        let grace_period_end = Self::grace_period_end(&env, &loan)?;
 
         if current_time <= grace_period_end {
             return Ok(0);
@@ -1839,21 +1853,106 @@ impl LendingContract {
         Ok(())
     }
 
+    /// Register a contract address as an approved flash loan receiver (admin only).
+    /// Only whitelisted receivers may be passed to `flash_loan`.
+    pub fn whitelist_flash_loan_receiver(
+        env: Env,
+        admin: Address,
+        receiver: Address,
+    ) -> Result<(), LendingError> {
+        Self::require_admin(&env, &admin)?;
+        env.storage()
+            .persistent()
+            .set(&DataKey::WhitelistedFlashReceiver(receiver), &true);
+        Ok(())
+    }
+
+    /// Remove a contract address from the flash loan receiver whitelist (admin only).
+    pub fn remove_flash_loan_receiver(
+        env: Env,
+        admin: Address,
+        receiver: Address,
+    ) -> Result<(), LendingError> {
+        Self::require_admin(&env, &admin)?;
+        env.storage()
+            .persistent()
+            .remove(&DataKey::WhitelistedFlashReceiver(receiver));
+        Ok(())
+    }
+
+    /// Check whether a receiver contract is whitelisted for flash loans.
+    pub fn is_flash_receiver_whitelisted(env: Env, receiver: Address) -> bool {
+        env.storage()
+            .persistent()
+            .get(&DataKey::WhitelistedFlashReceiver(receiver))
+            .unwrap_or(false)
+    }
+
+    /// Initiate a flash loan.
+    ///
+    /// Security properties:
+    /// - The caller (`initiator`) must authorise the call via `require_auth`.
+    /// - `receiver_id` must be a whitelisted contract address.
+    /// - A reentrancy guard is held for the entire duration of the call,
+    ///   including the external `execute_operation` callback.  Any attempt by
+    ///   the receiver to re-enter this contract is rejected with
+    ///   `LendingError::ReentrantCall` before any state is modified.
+    /// - The contract balance is verified after the callback to ensure the
+    ///   principal plus fee has been returned in full.
     pub fn flash_loan(
         env: Env,
+        initiator: Address,
         receiver_id: Address,
         asset: Address,
         amount: u64,
     ) -> Result<(), LendingError> {
         Self::require_not_paused(&env)?;
         Self::require_initialized(&env)?;
+
+        // The initiator must explicitly authorise this flash loan.
+        initiator.require_auth();
+
+        // Only whitelisted receiver contracts may be used.
+        let is_whitelisted: bool = env
+            .storage()
+            .persistent()
+            .get(&DataKey::WhitelistedFlashReceiver(receiver_id.clone()))
+            .unwrap_or(false);
+        if !is_whitelisted {
+            return Err(LendingError::Unauthorized);
+        }
+
+        // Acquire the reentrancy guard before any external calls.
+        // The guard is released via exit_reentrancy_guard on every exit path
+        // (both success and error) to prevent the contract from being permanently
+        // locked when an error occurs mid-execution.
         Self::enter_reentrancy_guard(&env)?;
 
+        // Delegate to the inner implementation so we can unconditionally release
+        // the guard regardless of whether the inner logic succeeds or fails.
+        let result = Self::flash_loan_inner(&env, initiator, receiver_id, asset, amount);
+
+        // Always release the guard — Soroban reverts storage on panic/trap anyway,
+        // but explicit release keeps the contract usable after a recoverable error.
+        Self::exit_reentrancy_guard(&env);
+
+        result
+    }
+
+    /// Inner flash loan logic, called only while the reentrancy guard is held.
+    /// All early returns here are safe because the caller releases the guard.
+    fn flash_loan_inner(
+        env: &Env,
+        initiator: Address,
+        receiver_id: Address,
+        asset: Address,
+        amount: u64,
+    ) -> Result<(), LendingError> {
         if amount == 0 {
             return Err(LendingError::InvalidAmount);
         }
 
-        let mut pool = Self::get_pool(&env, &asset)?;
+        let mut pool = Self::get_pool(env, &asset)?;
         if pool.is_paused {
             return Err(LendingError::PoolPaused);
         }
@@ -1870,24 +1969,35 @@ impl LendingContract {
             return Err(LendingError::UtilizationCapExceeded);
         }
 
-        let fee_bps = Self::get_flash_loan_fee(env.clone());
+        let fee_bps: u32 = env
+            .storage()
+            .instance()
+            .get(&DataKey::FlashLoanFeeBps)
+            .unwrap_or(9u32);
         let fee = (amount as u128)
             .checked_mul(fee_bps as u128)
             .and_then(|v| v.checked_div(10000))
             .unwrap_or(0) as u64;
 
         let contract_id = env.current_contract_address();
-        let token_client = token::Client::new(&env, &asset);
+        let token_client = token::Client::new(env, &asset);
         let balance_before = token_client.balance(&contract_id);
 
-        // 1. Transfer to receiver
+        // 1. Transfer funds to the receiver.
         token_client.transfer(&contract_id, &receiver_id, &(amount as i128));
 
-        // 2. Call execute_operation on receiver
-        let receiver_client = FlashLoanReceiverClient::new(&env, &receiver_id);
-        receiver_client.execute_operation(&amount, &fee, &receiver_id);
+        // 2. Invoke the receiver callback.
+        //    The reentrancy guard is already locked, so any attempt by the
+        //    receiver to re-enter this contract will be rejected with
+        //    LendingError::ReentrantCall before any state is modified.
+        //    The true `initiator` address is forwarded so the receiver can
+        //    verify who triggered the flash loan.
+        let receiver_client = FlashLoanReceiverClient::new(env, &receiver_id);
+        receiver_client.execute_operation(&amount, &fee, &initiator);
 
-        // 3. Ensure repayment
+        // 3. Verify the loan plus fee has been repaid in full.
+        //    `balance_after` must be at least `balance_before + fee` — i.e. the
+        //    full principal has been returned and the fee has been added on top.
         let balance_after = token_client.balance(&contract_id);
         let required_balance = balance_before + (fee as i128);
 
@@ -1895,8 +2005,9 @@ impl LendingContract {
             return Err(LendingError::FlashLoanNotRepaid);
         }
 
+        // 4. Credit the fee to the pool.
         pool.total_deposits += fee;
-        Self::set_pool(&env, &asset, &pool);
+        Self::set_pool(env, &asset, &pool);
 
         env.events().publish(
             (symbol_short!("POOL"), symbol_short!("FLASHL")),
@@ -1908,7 +2019,6 @@ impl LendingContract {
             },
         );
 
-        Self::exit_reentrancy_guard(&env);
         Ok(())
     }
 
@@ -2255,8 +2365,7 @@ impl LendingContract {
         }
 
         // Check if grace period has expired before allowing liquidation
-        let is_in_grace = Self::is_in_grace_period(env.clone(), borrower.clone())?;
-        if is_in_grace {
+        if !Self::is_after_grace_period(&env, &loan)? {
             return Err(LendingError::InvalidAmount);
         }
 
@@ -2267,7 +2376,7 @@ impl LendingContract {
             .unwrap_or(0) as u32;
 
         // Allow liquidation if health factor is below 150% (15000 basis points)
-        let liquidation_threshold_bps = 15000u32;
+        let liquidation_threshold_bps = LIQUIDATION_THRESHOLD_BPS;
         if health_factor >= liquidation_threshold_bps {
             return Err(LendingError::InvalidAmount);
         }
@@ -2584,8 +2693,7 @@ impl LendingContract {
             }
 
             // Check if this specific loan is overdue (cannot consolidate overdue loans)
-            let loan_grace_end =
-                loan.due_date + Self::get_pool(&env, &loan.asset)?.grace_period_seconds;
+            let loan_grace_end = Self::grace_period_end(&env, &loan)?;
             let current_time = env.ledger().timestamp();
             if current_time > loan_grace_end {
                 return Err(LendingError::CannotRefinance);
@@ -3295,6 +3403,7 @@ impl LendingContract {
 
         // Coverage is 100% of principal
         let coverage_amount = loan.principal;
+        let insurance_expires_at = Self::grace_period_end(&env, &loan)?;
 
         // Create insurance record
         let insurance = LoanInsurance {
@@ -3304,7 +3413,7 @@ impl LendingContract {
             premium_paid: premium,
             premium_rate_bps,
             purchase_time: env.ledger().timestamp(),
-            expires_at: loan.due_date,
+            expires_at: insurance_expires_at,
             claimed: false,
         };
 
@@ -3335,7 +3444,7 @@ impl LendingContract {
                 coverage_amount,
                 premium_paid: premium,
                 premium_rate_bps,
-                expires_at: loan.due_date,
+                expires_at: insurance_expires_at,
                 timestamp: env.ledger().timestamp(),
             },
         );
@@ -3398,14 +3507,8 @@ impl LendingContract {
             .get(&insurance_key)
             .ok_or(LendingError::InsuranceNotFound)?;
 
-        // Check if insurance is still valid
         if insurance.claimed {
             return Err(LendingError::InsuranceAlreadyClaimed);
-        }
-
-        let current_time = env.ledger().timestamp();
-        if current_time >= insurance.expires_at {
-            return Err(LendingError::InsuranceExpired);
         }
 
         // Get loan to verify it exists and is in default
@@ -3416,9 +3519,16 @@ impl LendingContract {
             .get::<_, LoanRecord>(&loan_key)
             .ok_or(LendingError::LoanNotFound)?;
 
-        // Verify loan is past due
-        if current_time <= loan.due_date {
+        let current_time = env.ledger().timestamp();
+        let grace_period_end = Self::grace_period_end(&env, &loan)?;
+
+        // Insurance can only be claimed after the grace period expires.
+        if current_time <= grace_period_end {
             return Err(LendingError::InvalidAmount);
+        }
+
+        if current_time <= insurance.expires_at {
+            return Err(LendingError::InsuranceExpired);
         }
 
         // Get insurance fund and verify sufficient balance

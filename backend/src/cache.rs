@@ -14,9 +14,10 @@ use redis::AsyncCommands;
 use serde::{de::DeserializeOwned, Serialize};
 use sha2::{Digest, Sha256};
 use std::collections::HashMap;
+use std::future::Future;
 use std::sync::Arc;
 use std::time::{SystemTime, UNIX_EPOCH};
-use tokio::sync::RwLock;
+use tokio::sync::{Mutex, RwLock};
 use tracing::warn;
 
 // =============================================================================
@@ -136,6 +137,7 @@ enum CacheBackend {
 #[derive(Clone)]
 pub struct CacheService {
     backend: CacheBackend,
+    key_locks: Arc<Mutex<HashMap<String, Arc<Mutex<()>>>>>,
     pub default_ttl_secs: u64,
     pub plans_ttl_secs: u64,
     pub user_profile_ttl_secs: u64,
@@ -170,10 +172,19 @@ impl CacheService {
 
         Self {
             backend,
+            key_locks: Arc::new(Mutex::new(HashMap::new())),
             default_ttl_secs,
             plans_ttl_secs,
             user_profile_ttl_secs,
         }
+    }
+
+    async fn lock_for_key(&self, key: &str) -> Arc<Mutex<()>> {
+        let mut locks = self.key_locks.lock().await;
+        locks
+            .entry(key.to_string())
+            .or_insert_with(|| Arc::new(Mutex::new(())))
+            .clone()
     }
 
     pub async fn get_json<T: DeserializeOwned>(&self, key: &str) -> Result<Option<T>, ApiError> {
@@ -271,6 +282,34 @@ impl CacheService {
         }
 
         Ok(())
+    }
+
+    /// Get a cached JSON value or compute it once, coalescing concurrent misses.
+    pub async fn get_or_set_json<T, F, Fut>(
+        &self,
+        key: &str,
+        ttl_secs: u64,
+        compute: F,
+    ) -> Result<T, ApiError>
+    where
+        T: Serialize + DeserializeOwned + Clone + Send + 'static,
+        F: FnOnce() -> Fut + Send,
+        Fut: Future<Output = Result<T, ApiError>> + Send,
+    {
+        if let Some(cached) = self.get_json::<T>(key).await? {
+            return Ok(cached);
+        }
+
+        let key_lock = self.lock_for_key(key).await;
+        let _guard = key_lock.lock().await;
+
+        if let Some(cached) = self.get_json::<T>(key).await? {
+            return Ok(cached);
+        }
+
+        let value = compute().await?;
+        self.set_json(key, &value, ttl_secs).await?;
+        Ok(value)
     }
 
     pub async fn invalidate(&self, key: &str) -> Result<(), ApiError> {
@@ -430,5 +469,32 @@ mod tests {
         assert!(hdrs.contains_key(header::ETAG));
         assert!(hdrs.contains_key(header::CACHE_CONTROL));
         assert!(hdrs.contains_key(header::VARY));
+    }
+
+    #[tokio::test]
+    async fn get_or_set_json_coalesces_concurrent_misses() {
+        let cache = Arc::new(CacheService::from_env().await);
+        let counter = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+
+        let mut handles = Vec::new();
+        for _ in 0..5 {
+            let cache = cache.clone();
+            let counter = counter.clone();
+            handles.push(tokio::spawn(async move {
+                cache
+                    .get_or_set_json("test:stampede", 60, || async {
+                        counter.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                        Ok(json!({ "value": 42 }))
+                    })
+                    .await
+            }));
+        }
+
+        for handle in handles {
+            let value: serde_json::Value = handle.await.unwrap().unwrap();
+            assert_eq!(value["value"], 42);
+        }
+
+        assert_eq!(counter.load(std::sync::atomic::Ordering::SeqCst), 1);
     }
 }

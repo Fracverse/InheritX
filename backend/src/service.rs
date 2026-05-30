@@ -448,6 +448,80 @@ impl PlanService {
             None => Ok(None),
         }
     }
+
+    /// Cross-tenant isolation guard for plan-scoped operations.
+    pub async fn assert_plan_owner<'a, E>(
+        executor: E,
+        plan_id: Uuid,
+        user_id: Uuid,
+    ) -> Result<(), ApiError>
+    where
+        E: sqlx::Executor<'a, Database = sqlx::Postgres>,
+    {
+        let exists: bool = sqlx::query_scalar(
+            "SELECT EXISTS(SELECT 1 FROM plans WHERE id = $1 AND user_id = $2)",
+        )
+        .bind(plan_id)
+        .bind(user_id)
+        .fetch_one(executor)
+        .await?;
+
+        if !exists {
+            return Err(ApiError::NotFound(format!("Plan {plan_id} not found")));
+        }
+        Ok(())
+    }
+
+    /// Cross-tenant isolation guard for will document access.
+    pub async fn assert_document_owner<'a, E>(
+        executor: E,
+        document_id: Uuid,
+        user_id: Uuid,
+    ) -> Result<(), ApiError>
+    where
+        E: sqlx::Executor<'a, Database = sqlx::Postgres>,
+    {
+        let exists: bool = sqlx::query_scalar(
+            "SELECT EXISTS(SELECT 1 FROM will_documents WHERE id = $1 AND user_id = $2)",
+        )
+        .bind(document_id)
+        .bind(user_id)
+        .fetch_one(executor)
+        .await?;
+
+        if !exists {
+            return Err(ApiError::NotFound(format!(
+                "Document {document_id} not found"
+            )));
+        }
+        Ok(())
+    }
+
+    /// Cross-tenant isolation guard for secure message access.
+    pub async fn assert_message_owner<'a, E>(
+        executor: E,
+        message_id: Uuid,
+        user_id: Uuid,
+    ) -> Result<(), ApiError>
+    where
+        E: sqlx::Executor<'a, Database = sqlx::Postgres>,
+    {
+        let exists: bool = sqlx::query_scalar(
+            "SELECT EXISTS(SELECT 1 FROM legacy_messages WHERE id = $1 AND owner_user_id = $2)",
+        )
+        .bind(message_id)
+        .bind(user_id)
+        .fetch_one(executor)
+        .await?;
+
+        if !exists {
+            return Err(ApiError::NotFound(format!(
+                "Message {message_id} not found"
+            )));
+        }
+        Ok(())
+    }
+
     pub async fn claim_plan(
         pool: &PgPool,
         plan_id: Uuid,

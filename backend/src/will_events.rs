@@ -236,11 +236,14 @@ impl WillEventService {
         Ok(event_id)
     }
 
-    /// Retrieve all events for a specific document
+    /// Retrieve all events for a specific document (document owner required).
     pub async fn get_document_events(
         db: &PgPool,
         document_id: Uuid,
+        user_id: Uuid,
     ) -> Result<Vec<WillEvent>, crate::api_error::ApiError> {
+        crate::service::PlanService::assert_document_owner(db, document_id, user_id).await?;
+
         let rows: Vec<EventRow> = sqlx::query_as(
             r#"
             SELECT event_data
@@ -265,11 +268,14 @@ impl WillEventService {
             .collect()
     }
 
-    /// Retrieve all events for a specific plan
+    /// Retrieve all events for a specific plan (plan owner required).
     pub async fn get_plan_events(
         db: &PgPool,
         plan_id: Uuid,
+        user_id: Uuid,
     ) -> Result<Vec<WillEvent>, crate::api_error::ApiError> {
+        crate::service::PlanService::assert_plan_owner(db, plan_id, user_id).await?;
+
         let rows: Vec<EventRow> = sqlx::query_as(
             r#"
             SELECT event_data

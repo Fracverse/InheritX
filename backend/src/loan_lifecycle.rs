@@ -202,6 +202,32 @@ pub struct LoanLifecycleService;
 impl LoanLifecycleService {
     // ── Read operations ───────────────────────────────────────────────────────
 
+    /// Fetch a single loan by its `id` for a specific user. Returns `NotFound` when absent
+    /// or not owned by the caller.
+    pub async fn get_loan_for_user(
+        db: &PgPool,
+        id: Uuid,
+        user_id: Uuid,
+    ) -> Result<LoanLifecycleRecord, ApiError> {
+        let row = sqlx::query_as::<_, LoanLifecycleRow>(
+            r#"
+            SELECT id, user_id, plan_id, borrow_asset, collateral_asset,
+                   principal, interest_rate_bps, collateral_amount, amount_repaid,
+                   status, due_date, transaction_hash,
+                   created_at, updated_at, repaid_at, liquidated_at
+            FROM loan_lifecycle
+            WHERE id = $1 AND user_id = $2
+            "#,
+        )
+        .bind(id)
+        .bind(user_id)
+        .fetch_optional(db)
+        .await?
+        .ok_or_else(|| ApiError::NotFound(format!("loan {id} not found")))?;
+
+        Ok(row.into())
+    }
+
     /// Fetch a single loan by its `id`. Returns `NotFound` when absent.
     pub async fn get_loan(db: &PgPool, id: Uuid) -> Result<LoanLifecycleRecord, ApiError> {
         let row = sqlx::query_as::<_, LoanLifecycleRow>(
