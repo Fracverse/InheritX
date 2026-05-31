@@ -1,145 +1,103 @@
-"use client";
+/**
+ * Skeleton Loader Components
+ * Reusable loading state components
+ */
 
-import { cn } from "@/util/cn";
+import React from "react";
 
 interface SkeletonProps {
   className?: string;
 }
 
-/** Base shimmer skeleton block */
-export function Skeleton({ className }: SkeletonProps) {
+export function Skeleton({ className = "" }: SkeletonProps) {
   return (
     <div
-      className={cn(
-        "animate-pulse rounded-md bg-[#1C252A]",
-        className,
-      )}
+      className={`animate-pulse bg-[#1C252A] rounded ${className}`}
+      aria-label="Loading..."
     />
   );
 }
 
-/** Skeleton for a stat card (number + label) */
-export function StatCardSkeleton() {
+export function SkeletonCard() {
   return (
-    <div className="px-[22px] py-8 bg-[#182024] flex flex-col items-center rounded-3xl gap-2">
-      <Skeleton className="h-10 w-16" />
-      <Skeleton className="h-4 w-24" />
-    </div>
-  );
-}
-
-/** Skeleton for a plan row in the plans table */
-export function PlanRowSkeleton() {
-  return (
-    <div className="flex items-center gap-4 p-4 rounded-2xl bg-[#182024]">
-      <Skeleton className="h-10 w-10 rounded-full" />
-      <div className="flex-1 space-y-2">
-        <Skeleton className="h-4 w-32" />
-        <Skeleton className="h-3 w-20" />
-      </div>
-      <Skeleton className="h-6 w-20 rounded-full" />
-    </div>
-  );
-}
-
-/** Skeleton for a lending stats card */
-export function LendingStatSkeleton() {
-  return (
-    <div className="p-6 bg-[#182024] rounded-2xl space-y-3">
-      <Skeleton className="h-4 w-28" />
-      <Skeleton className="h-8 w-36" />
-      <Skeleton className="h-3 w-20" />
-    </div>
-  );
-}
-
-/** Skeleton for a transaction row */
-export function TransactionRowSkeleton() {
-  return (
-    <div className="flex items-center justify-between p-4 border-b border-[#1C252A]">
-      <div className="flex items-center gap-3">
-        <Skeleton className="h-8 w-8 rounded-full" />
-        <div className="space-y-1">
-          <Skeleton className="h-4 w-24" />
-          <Skeleton className="h-3 w-16" />
+    <div className="bg-[#0A0F11] border border-[#161E22] rounded-2xl p-6 space-y-4">
+      <div className="flex items-center gap-4">
+        <Skeleton className="w-12 h-12 rounded-xl" />
+        <div className="flex-1 space-y-2">
+          <Skeleton className="h-8 w-24" />
+          <Skeleton className="h-4 w-32" />
         </div>
       </div>
-      <Skeleton className="h-4 w-16" />
     </div>
   );
 }
 
-/** Skeleton for a message card */
-export function MessageCardSkeleton() {
+export function SkeletonTable({ rows = 5 }: { rows?: number }) {
   return (
-    <div className="p-4 bg-[#182024] rounded-2xl space-y-3">
-      <div className="flex items-center justify-between">
-        <Skeleton className="h-5 w-40" />
-        <Skeleton className="h-5 w-16 rounded-full" />
-      </div>
-      <Skeleton className="h-4 w-full" />
-      <Skeleton className="h-4 w-3/4" />
-      <Skeleton className="h-3 w-24" />
-    </div>
-  );
-}
-
-/** Full-page loading skeleton for the dashboard */
-export function DashboardSkeleton() {
-  return (
-    <div className="space-y-6 animate-pulse">
-      <div className="space-y-2">
-        <Skeleton className="h-8 w-48" />
-        <Skeleton className="h-4 w-64" />
-      </div>
-      <div className="grid grid-cols-2 gap-5">
-        {Array.from({ length: 4 }).map((_, i) => (
-          <StatCardSkeleton key={i} />
-        ))}
-      </div>
-      <div className="space-y-3">
-        <Skeleton className="h-5 w-32" />
-        {Array.from({ length: 3 }).map((_, i) => (
-          <TransactionRowSkeleton key={i} />
-        ))}
-      </div>
-    </div>
-  );
-}
-
-/** Skeleton for the plans page */
-export function PlansPageSkeleton() {
-  return (
-    <div className="space-y-4">
-      <div className="flex justify-between items-center">
-        <Skeleton className="h-8 w-32" />
-        <Skeleton className="h-10 w-32 rounded-full" />
-      </div>
-      {Array.from({ length: 4 }).map((_, i) => (
-        <PlanRowSkeleton key={i} />
+    <div className="space-y-3">
+      {Array.from({ length: rows }).map((_, i) => (
+        <div
+          key={i}
+          className="bg-[#0A0F11] border border-[#161E22] rounded-lg p-4 flex items-center gap-4"
+        >
+          <Skeleton className="w-10 h-10 rounded-full" />
+          <div className="flex-1 space-y-2">
+            <Skeleton className="h-4 w-3/4" />
+            <Skeleton className="h-3 w-1/2" />
+          </div>
+          <Skeleton className="h-8 w-20 rounded-full" />
+        </div>
       ))}
     </div>
   );
 }
 
-/** Skeleton for the lending page */
-export function LendingPageSkeleton() {
+export function SkeletonStats() {
   return (
-    <div className="space-y-8">
+    <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-6">
+      {Array.from({ length: 4 }).map((_, i) => (
+        <SkeletonCard key={i} />
+      ))}
+    </div>
+  );
+}
+
+export function SkeletonText({ lines = 3 }: { lines?: number }) {
+  return (
+    <div className="space-y-2">
+      {Array.from({ length: lines }).map((_, i) => (
+        <Skeleton
+          key={i}
+          className={`h-4 ${
+            i === lines - 1 ? "w-2/3" : "w-full"
+          }`}
+        />
+      ))}
+    </div>
+  );
+}
+
+export function SkeletonDashboard() {
+  return (
+    <div className="space-y-10">
+      {/* Header */}
       <div className="space-y-2">
-        <Skeleton className="h-8 w-40" />
-        <Skeleton className="h-4 w-56" />
+        <Skeleton className="h-8 w-64" />
+        <Skeleton className="h-4 w-96" />
       </div>
-      <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
-        {Array.from({ length: 4 }).map((_, i) => (
-          <LendingStatSkeleton key={i} />
-        ))}
-      </div>
-      <div className="space-y-3">
-        <Skeleton className="h-5 w-36" />
-        {Array.from({ length: 5 }).map((_, i) => (
-          <TransactionRowSkeleton key={i} />
-        ))}
+
+      {/* Stats */}
+      <SkeletonStats />
+
+      {/* Content Grid */}
+      <div className="grid grid-cols-1 lg:grid-cols-3 gap-8">
+        <div className="lg:col-span-2">
+          <Skeleton className="h-96 rounded-2xl" />
+        </div>
+        <div className="space-y-8">
+          <Skeleton className="h-64 rounded-2xl" />
+          <Skeleton className="h-64 rounded-2xl" />
+        </div>
       </div>
     </div>
   );
