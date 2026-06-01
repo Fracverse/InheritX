@@ -1,5 +1,6 @@
 use crate::alert_provider::AlertProvider;
 use crate::api_error::ApiError;
+use crate::retry::{retry_async, RetryConfig};
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use sqlx::PgPool;
@@ -50,35 +51,50 @@ pub struct Notification {
     pub notif_type: String,
     pub message: String,
     pub is_read: bool,
+    pub delivery_status: Option<String>,
+    pub delivery_attempts: Option<i32>,
     pub created_at: DateTime<Utc>,
 }
 
 pub struct NotificationService;
 
 impl NotificationService {
-    /// Insert a notification for a user.
-    /// Now participates in the caller's transaction.
+    /// Insert a notification for a user with delivery guarantee.
+    /// Retries on transient failures to ensure the notification is persisted.
     pub async fn create(
-        executor: &mut sqlx::PgConnection, // Changed from &PgPool
+        executor: &mut sqlx::PgConnection,
         user_id: Uuid,
         notif_type: &str,
         message: impl Into<String>,
     ) -> Result<Notification, ApiError> {
         let message = message.into();
-        let row = sqlx::query_as::<_, Notification>(
-            r#"
-            INSERT INTO notifications (user_id, type, message, is_read)
-            VALUES ($1, $2, $3, false)
-            RETURNING id, user_id, type, message, is_read, created_at
-            "#,
-        )
-        .bind(user_id)
-        .bind(notif_type)
-        .bind(&message)
-        .fetch_one(executor) // Use the passed connection/transaction
-        .await?;
+        let notif_type = notif_type.to_string();
+        let message = message.clone();
 
-        Ok(row)
+        retry_async(
+            RetryConfig::database(),
+            || {
+                let notif_type = notif_type.clone();
+                let message = message.clone();
+                async {
+                    sqlx::query_as::<_, Notification>(
+                        r#"
+                        INSERT INTO notifications (user_id, type, message, is_read, delivery_status, delivery_attempts)
+                        VALUES ($1, $2, $3, false, 'pending', 0)
+                        RETURNING id, user_id, type, message, is_read, delivery_status, delivery_attempts, created_at
+                        "#,
+                    )
+                    .bind(user_id)
+                    .bind(&notif_type)
+                    .bind(&message)
+                    .fetch_one(&mut *executor)
+                    .await
+                    .map_err(|e| ApiError::Internal(anyhow::anyhow!("Failed to insert notification: {e}")))
+                }
+            },
+            |e| matches!(e, ApiError::Internal(_)),
+        )
+        .await
     }
 
     // REMOVED: create_silent
@@ -89,7 +105,7 @@ impl NotificationService {
     pub async fn list_for_user(db: &PgPool, user_id: Uuid) -> Result<Vec<Notification>, ApiError> {
         let rows = sqlx::query_as::<_, Notification>(
             r#"
-            SELECT id, user_id, type, message, is_read, created_at
+            SELECT id, user_id, type, message, is_read, delivery_status, delivery_attempts, created_at
             FROM notifications
             WHERE user_id = $1
             ORDER BY created_at DESC
@@ -111,7 +127,7 @@ impl NotificationService {
         let offset = ((page.saturating_sub(1)) as i64) * (limit as i64);
         let rows = sqlx::query_as::<_, Notification>(
             r#"
-            SELECT id, user_id, type, message, is_read, created_at
+            SELECT id, user_id, type, message, is_read, delivery_status, delivery_attempts, created_at
             FROM notifications
             WHERE user_id = $1
             ORDER BY created_at DESC
@@ -153,7 +169,7 @@ impl NotificationService {
             UPDATE notifications
             SET is_read = true
             WHERE id = $1 AND user_id = $2
-            RETURNING id, user_id, type, message, is_read, created_at
+            RETURNING id, user_id, type, message, is_read, delivery_status, delivery_attempts, created_at
             "#,
         )
         .bind(notif_id)
@@ -162,6 +178,69 @@ impl NotificationService {
         .await?;
 
         row.ok_or_else(|| ApiError::NotFound(format!("Notification {notif_id} not found")))
+    }
+
+    /// Mark notification as delivered.
+    pub async fn mark_delivered(
+        db: &PgPool,
+        notif_id: Uuid,
+    ) -> Result<(), ApiError> {
+        sqlx::query(
+            r#"
+            UPDATE notifications
+            SET delivery_status = 'delivered'
+            WHERE id = $1
+            "#,
+        )
+        .bind(notif_id)
+        .execute(db)
+        .await?;
+
+        Ok(())
+    }
+
+    /// Increment delivery attempts for a notification.
+    pub async fn increment_delivery_attempts(
+        db: &PgPool,
+        notif_id: Uuid,
+    ) -> Result<(), ApiError> {
+        sqlx::query(
+            r#"
+            UPDATE notifications
+            SET delivery_attempts = COALESCE(delivery_attempts, 0) + 1,
+                delivery_status = CASE
+                    WHEN COALESCE(delivery_attempts, 0) >= 3 THEN 'failed'
+                    ELSE 'retrying'
+                END
+            WHERE id = $1
+            "#,
+        )
+        .bind(notif_id)
+        .execute(db)
+        .await?;
+
+        Ok(())
+    }
+
+    /// Fetch undelivered notifications for retry.
+    pub async fn list_undelivered(
+        db: &PgPool,
+        limit: i64,
+    ) -> Result<Vec<Notification>, ApiError> {
+        let rows = sqlx::query_as::<_, Notification>(
+            r#"
+            SELECT id, user_id, type, message, is_read, delivery_status, delivery_attempts, created_at
+            FROM notifications
+            WHERE delivery_status IN ('pending', 'retrying')
+            ORDER BY created_at ASC
+            LIMIT $1
+            "#,
+        )
+        .bind(limit)
+        .fetch_all(db)
+        .await?;
+
+        Ok(rows)
     }
 }
 
@@ -299,6 +378,7 @@ pub struct ActionLog {
     pub old_value: Option<String>,
     pub new_value: Option<String>,
     pub metadata: Option<serde_json::Value>,
+    pub sequence_number: Option<i64>,
     pub timestamp: DateTime<Utc>,
 }
 
@@ -316,14 +396,16 @@ impl AuditLogService {
         old_value: Option<&str>,
         new_value: Option<&str>,
         metadata: Option<serde_json::Value>,
-    ) -> Result<(), ApiError> {
-        sqlx::query(
+    ) -> Result<ActionLog, ApiError> {
+        let log = sqlx::query_as::<_, ActionLog>(
             r#"
             INSERT INTO action_logs (
-                user_id, admin_id, action, entity_id, entity_type, 
+                user_id, admin_id, action, entity_id, entity_type,
                 old_value, new_value, metadata
             )
             VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+            RETURNING id, user_id, admin_id, action, entity_id, entity_type,
+                      old_value, new_value, metadata, sequence_number, timestamp
             "#,
         )
         .bind(user_id)
@@ -334,19 +416,19 @@ impl AuditLogService {
         .bind(old_value)
         .bind(new_value)
         .bind(metadata)
-        .execute(executor)
+        .fetch_one(executor)
         .await?;
 
-        Ok(())
+        Ok(log)
     }
-    /// Return all audit log entries for admin inspection, newest first.
+    /// Return all audit log entries for admin inspection, ordered by sequence number.
     pub async fn list_all(db: &PgPool) -> Result<Vec<ActionLog>, ApiError> {
         let rows = sqlx::query_as::<_, ActionLog>(
             r#"
-            SELECT id, user_id, admin_id, action, entity_id, entity_type, 
-                   old_value, new_value, metadata, timestamp
+            SELECT id, user_id, admin_id, action, entity_id, entity_type,
+                   old_value, new_value, metadata, sequence_number, timestamp
             FROM action_logs
-            ORDER BY timestamp DESC
+            ORDER BY sequence_number DESC
             "#,
         )
         .fetch_all(db)
@@ -363,10 +445,10 @@ impl AuditLogService {
         let offset = ((page.saturating_sub(1)) as i64) * (limit as i64);
         let rows = sqlx::query_as::<_, ActionLog>(
             r#"
-            SELECT id, user_id, admin_id, action, entity_id, entity_type, 
-                   old_value, new_value, metadata, timestamp
+            SELECT id, user_id, admin_id, action, entity_id, entity_type,
+                   old_value, new_value, metadata, sequence_number, timestamp
             FROM action_logs
-            ORDER BY timestamp DESC
+            ORDER BY sequence_number DESC
             LIMIT $1 OFFSET $2
             "#,
         )
@@ -391,15 +473,15 @@ impl AuditLogService {
         Ok(count)
     }
 
-    /// Return audit log entries for a specific user, newest first.
+    /// Return audit log entries for a specific user, ordered by sequence number.
     pub async fn list_for_user(db: &PgPool, user_id: Uuid) -> Result<Vec<ActionLog>, ApiError> {
         let rows = sqlx::query_as::<_, ActionLog>(
             r#"
-            SELECT id, user_id, admin_id, action, entity_id, entity_type, 
-                   old_value, new_value, metadata, timestamp
+            SELECT id, user_id, admin_id, action, entity_id, entity_type,
+                   old_value, new_value, metadata, sequence_number, timestamp
             FROM action_logs
             WHERE user_id = $1
-            ORDER BY timestamp DESC
+            ORDER BY sequence_number DESC
             "#,
         )
         .bind(user_id)
@@ -409,15 +491,15 @@ impl AuditLogService {
         Ok(rows)
     }
 
-    /// Return audit log entries for a specific admin, newest first.
+    /// Return audit log entries for a specific admin, ordered by sequence number.
     pub async fn list_for_admin(db: &PgPool, admin_id: Uuid) -> Result<Vec<ActionLog>, ApiError> {
         let rows = sqlx::query_as::<_, ActionLog>(
             r#"
-            SELECT id, user_id, admin_id, action, entity_id, entity_type, 
-                   old_value, new_value, metadata, timestamp
+            SELECT id, user_id, admin_id, action, entity_id, entity_type,
+                   old_value, new_value, metadata, sequence_number, timestamp
             FROM action_logs
             WHERE admin_id = $1
-            ORDER BY timestamp DESC
+            ORDER BY sequence_number DESC
             "#,
         )
         .bind(admin_id)

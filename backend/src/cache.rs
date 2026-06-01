@@ -355,6 +355,72 @@ impl CacheService {
             }
         }
     }
+
+    /// Invalidate all user-related caches when a user is modified.
+    pub async fn invalidate_user_caches(&self, user_id: &str) -> Result<u64, ApiError> {
+        self.invalidate_prefix(&format!("user:{user_id}:")).await
+    }
+
+    /// Invalidate all plan-related caches when a plan is modified.
+    pub async fn invalidate_plan_caches(&self, plan_id: &str) -> Result<u64, ApiError> {
+        self.invalidate_prefix(&format!("plan:{plan_id}:")).await
+    }
+
+    /// Invalidate all loan-related caches when a loan is modified.
+    pub async fn invalidate_loan_caches(&self, loan_id: &str) -> Result<u64, ApiError> {
+        self.invalidate_prefix(&format!("loan:{loan_id}:")).await
+    }
+
+    /// Invalidate all notification caches for a user.
+    pub async fn invalidate_notification_caches(&self, user_id: &str) -> Result<u64, ApiError> {
+        self.invalidate_prefix(&format!("notifications:{user_id}:")).await
+    }
+
+    /// Invalidate all audit log caches.
+    pub async fn invalidate_audit_log_caches(&self) -> Result<u64, ApiError> {
+        self.invalidate_prefix("audit_logs:").await
+    }
+
+    /// Invalidate all collateral-related caches.
+    pub async fn invalidate_collateral_caches(&self, user_id: &str) -> Result<u64, ApiError> {
+        self.invalidate_prefix(&format!("collateral:{user_id}:")).await
+    }
+
+    /// Invalidate price feed caches.
+    pub async fn invalidate_price_caches(&self) -> Result<u64, ApiError> {
+        self.invalidate_prefix("prices:").await
+    }
+
+    /// Invalidate yield caches.
+    pub async fn invalidate_yield_caches(&self) -> Result<u64, ApiError> {
+        self.invalidate_prefix("yields:").await
+    }
+
+    /// Invalidate all caches (used for system-wide updates).
+    pub async fn invalidate_all(&self) -> Result<u64, ApiError> {
+        match &self.backend {
+            CacheBackend::Redis(manager) => {
+                let mut conn = manager.clone();
+                let keys: Vec<String> = conn.keys("*").await.map_err(|e| {
+                    ApiError::ExternalService(format!("Redis key lookup failed: {e}"))
+                })?;
+                let deleted = if keys.is_empty() {
+                    0
+                } else {
+                    conn.del(keys).await.map_err(|e| {
+                        ApiError::ExternalService(format!("Redis flush failed: {e}"))
+                    })?
+                };
+                Ok(deleted)
+            }
+            CacheBackend::InMemory(store) => {
+                let mut guard = store.write().await;
+                let count = guard.len() as u64;
+                guard.clear();
+                Ok(count)
+            }
+        }
+    }
 }
 
 fn keyspace(key: &str) -> &str {
