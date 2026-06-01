@@ -243,3 +243,58 @@ pub fn operation_exit(env: &Env) {
         env.storage().instance().set(&PauseKey::ActiveOps, &(cnt - 1));
     }
 }
+
+// ─── Version Compatibility ───────────────────────
+
+#[contracttype]
+#[derive(Clone)]
+pub enum VersionKey {
+    ContractVersion,
+}
+
+/// Store the contract version in storage. Call this during contract initialization.
+pub fn set_contract_version(env: &Env, version: u32) {
+    env.storage()
+        .instance()
+        .set(&VersionKey::ContractVersion, &version);
+}
+
+/// Retrieve the contract version from storage.
+pub fn get_contract_version(env: &Env) -> u32 {
+    env.storage()
+        .instance()
+        .get(&VersionKey::ContractVersion)
+        .unwrap_or(1)
+}
+
+/// Verify that a cross-contract call target has a compatible version.
+/// Returns `error` if the target contract version is outside the acceptable range.
+pub fn check_contract_version<E: Into<soroban_sdk::Error> + Copy>(
+    env: &Env,
+    target_contract: &Address,
+    min_version: u32,
+    max_version: u32,
+    error: E,
+) -> Result<(), E> {
+    // Try to get the version from the target contract
+    // If the contract doesn't implement version(), we assume it's incompatible
+    let version_result = env.try_invoke_contract::<u32, soroban_sdk::InvokeError>(
+        target_contract,
+        &soroban_sdk::Symbol::new(env, "version"),
+        soroban_sdk::Vec::new(env),
+    );
+
+    match version_result {
+        Ok(version) => {
+            if version >= min_version && version <= max_version {
+                Ok(())
+            } else {
+                Err(error)
+            }
+        }
+        Err(_) => {
+            // Contract doesn't implement version() or call failed
+            Err(error)
+        }
+    }
+}

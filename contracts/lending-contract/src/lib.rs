@@ -11,6 +11,9 @@ mod reserves;
 // Constants
 // ─────────────────────────────────────────────────
 
+/// Current contract version - bump this on each upgrade
+const CONTRACT_VERSION: u32 = 1;
+
 const MINIMUM_LIQUIDITY: u64 = 1000;
 const PROTOCOL_INTEREST_BPS: u32 = 1000; // 10% of interest retained by protocol
 const BAD_DEBT_RESERVE_BPS: u32 = 5000; // 50% of protocol share routed to reserve
