@@ -331,6 +331,8 @@ impl EventService {
         )
         .await?;
 
+        crate::compliance::dispatch_realtime_event(event.clone());
+
         Ok(event)
     }
 
