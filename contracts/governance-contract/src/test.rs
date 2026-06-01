@@ -16,10 +16,14 @@ fn setup_contract(env: &Env) -> (GovernanceContractClient<'_>, Address) {
 }
 
 fn make_proposal(env: &Env, client: &GovernanceContractClient, proposer: &Address) -> u32 {
+    let contract_id = client.address.clone();
     client.create_proposal(
         proposer,
         &String::from_str(env, "Test Proposal"),
         &String::from_str(env, "A test governance proposal"),
+        &contract_id,
+        &Symbol::new(env, "update_interest_rate"),
+        &Vec::new(env),
     )
 }
 

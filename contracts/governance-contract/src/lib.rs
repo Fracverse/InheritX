@@ -77,6 +77,9 @@ pub struct Proposal {
     pub status: ProposalStatus,
     pub created_at: u64,
     pub expires_at: u64,
+    pub target: Address,
+    pub function: Symbol,
+    pub args: Vec<soroban_sdk::Val>,
 }
 
 #[contracttype]
@@ -389,9 +392,11 @@ impl GovernanceContract {
     ) -> Result<u32, GovernanceError> {
         let mut args = Vec::new(&env);
         args.push_back(new_rate.into_val(&env));
-        Self::propose_transaction(
+        Self::create_proposal(
             env.clone(),
             proposer,
+            String::from_slice(&env, "Update Interest Rate"),
+            String::from_slice(&env, "Proposal to update the interest rate"),
             env.current_contract_address(),
             Symbol::new(&env, "update_interest_rate"),
             args,
@@ -405,9 +410,11 @@ impl GovernanceContract {
     ) -> Result<u32, GovernanceError> {
         let mut args = Vec::new(&env);
         args.push_back(new_ratio.into_val(&env));
-        Self::propose_transaction(
+        Self::create_proposal(
             env.clone(),
             proposer,
+            String::from_slice(&env, "Update Collateral Ratio"),
+            String::from_slice(&env, "Proposal to update the collateral ratio"),
             env.current_contract_address(),
             Symbol::new(&env, "update_collateral_ratio"),
             args,
@@ -421,9 +428,11 @@ impl GovernanceContract {
     ) -> Result<u32, GovernanceError> {
         let mut args = Vec::new(&env);
         args.push_back(new_bonus.into_val(&env));
-        Self::propose_transaction(
+        Self::create_proposal(
             env.clone(),
             proposer,
+            String::from_slice(&env, "Update Liquidation Bonus"),
+            String::from_slice(&env, "Proposal to update the liquidation bonus"),
             env.current_contract_address(),
             Symbol::new(&env, "update_liquidation_bonus"),
             args,
@@ -949,6 +958,9 @@ impl GovernanceContract {
         proposer: Address,
         title: String,
         description: String,
+        target: Address,
+        function: Symbol,
+        args: Vec<soroban_sdk::Val>,
     ) -> Result<u32, GovernanceError> {
         proposer.require_auth();
         Self::require_not_paused(&env)?;
@@ -973,6 +985,9 @@ impl GovernanceContract {
             status: ProposalStatus::Active,
             created_at: now,
             expires_at,
+            target,
+            function,
+            args,
         };
 
         env.storage()
@@ -1091,6 +1106,12 @@ impl GovernanceContract {
 
     /// Execute a passed proposal. Anyone can call this after the voting period ends.
     /// 
+    /// This function:
+    /// 1. Validates the proposal has passed voting
+    /// 2. Invokes the target contract with the stored function and arguments
+    /// 3. Updates the proposal status to Executed
+    /// 4. Emits a ProposalExecutedEvent
+    /// 
     /// # Arguments
     /// * `env` - The Soroban environment
     /// * `executor` - The address executing the proposal (must be authorized)
@@ -1133,11 +1154,20 @@ impl GovernanceContract {
             return Err(GovernanceError::ProposalAlreadyExecuted);
         }
 
+        // Execute the proposal's intended action on the target contract
+        env.invoke_contract::<soroban_sdk::Val>(
+            &proposal.target,
+            &proposal.function,
+            proposal.args.clone(),
+        );
+
+        // Update proposal status to Executed
         proposal.status = ProposalStatus::Executed;
         env.storage()
             .instance()
             .set(&DataKey::Proposal(proposal_id), &proposal);
 
+        // Emit execution event
         env.events().publish(
             (Symbol::new(&env, "PropExec"), executor.clone()),
             ProposalExecutedEvent {
