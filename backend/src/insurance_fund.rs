@@ -260,6 +260,65 @@ impl InsuranceFundService {
         Ok(result)
     }
 
+    /// Recalculate and persist coverage_ratio, reserve_health_score, and status for a fund
+    /// within an existing transaction.
+    async fn recalculate_coverage(
+        tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
+        fund_id: Uuid,
+        db: &PgPool,
+    ) -> Result<(), ApiError> {
+        let fund = sqlx::query_as::<_, InsuranceFund>("SELECT * FROM insurance_fund WHERE id = $1")
+            .bind(fund_id)
+            .fetch_one(&mut **tx)
+            .await
+            .map_err(|e| ApiError::Internal(anyhow::anyhow!("DB error fetching fund: {}", e)))?;
+
+        let liabilities = sqlx::query_scalar::<_, Decimal>(
+            "SELECT COALESCE(SUM(principal), 0) FROM loan_lifecycle WHERE status IN ('active', 'overdue')",
+        )
+        .fetch_one(db)
+        .await
+        .map_err(|e| ApiError::Internal(anyhow::anyhow!("DB error calculating liabilities: {}", e)))?;
+
+        let coverage_ratio = Self::calculate_coverage_ratio(fund.total_reserves, liabilities);
+        let health_score = Self::calculate_health_score(
+            coverage_ratio,
+            fund.min_coverage_ratio,
+            fund.target_coverage_ratio,
+        );
+        let new_status = Self::determine_status(
+            coverage_ratio,
+            (
+                fund.critical_coverage_ratio,
+                fund.min_coverage_ratio,
+                fund.target_coverage_ratio,
+            ),
+        );
+
+        sqlx::query(
+            r#"
+            UPDATE insurance_fund
+            SET total_covered_liabilities = $1,
+                coverage_ratio = $2,
+                reserve_health_score = $3,
+                status = $4,
+                status_changed_at = CASE WHEN status != $4 THEN CURRENT_TIMESTAMP ELSE status_changed_at END,
+                updated_at = CURRENT_TIMESTAMP
+            WHERE id = $5
+            "#,
+        )
+        .bind(liabilities)
+        .bind(coverage_ratio)
+        .bind(health_score)
+        .bind(new_status.as_str())
+        .bind(fund_id)
+        .execute(&mut **tx)
+        .await
+        .map_err(|e| ApiError::Internal(anyhow::anyhow!("DB error updating coverage ratio: {}", e)))?;
+
+        Ok(())
+    }
+
     /// Calculate coverage ratio
     pub fn calculate_coverage_ratio(reserves: Decimal, liabilities: Decimal) -> Decimal {
         if liabilities == Decimal::ZERO {
@@ -512,6 +571,8 @@ impl InsuranceFundService {
         .map_err(|e| {
             ApiError::Internal(anyhow::anyhow!("DB error recording transaction: {}", e))
         })?;
+
+        Self::recalculate_coverage(&mut tx, fund_id, &self.db).await?;
 
         tx.commit()
             .await
@@ -817,6 +878,8 @@ impl InsuranceFundService {
         .execute(&mut *tx)
         .await
         .map_err(|e| ApiError::Internal(anyhow::anyhow!("DB error updating claim status: {}", e)))?;
+
+        Self::recalculate_coverage(&mut tx, claim.fund_id, &self.db).await?;
 
         NotificationService::create(
             &mut tx,
