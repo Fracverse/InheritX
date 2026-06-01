@@ -7,6 +7,7 @@ use rust_decimal::Decimal;
 use sqlx::PgPool;
 use std::sync::Arc;
 use std::time::Duration;
+use chrono::Utc;
 use tracing::{error, info, warn};
 
 pub struct RiskEngine {
@@ -29,12 +30,48 @@ impl RiskEngine {
     }
 
     pub fn start(self: Arc<Self>) {
+        // Periodic full-scan (existing behavior)
+        let periodic = self.clone();
         tokio::spawn(async move {
             let mut interval = tokio::time::interval(Duration::from_secs(60));
             loop {
                 interval.tick().await;
-                if let Err(e) = self.check_all_loans().await {
+                if let Err(e) = periodic.check_all_loans().await {
                     error!("Risk Engine error checking loans: {}", e);
+                }
+            }
+        });
+
+        // Watch for price feed updates and trigger recalculation immediately
+        let watcher = self.clone();
+        tokio::spawn(async move {
+            let mut interval = tokio::time::interval(Duration::from_secs(5));
+            let mut last_seen: Option<chrono::DateTime<Utc>> = None;
+            loop {
+                interval.tick().await;
+
+                let current: Result<Option<chrono::DateTime<Utc>>, sqlx::Error> =
+                    sqlx::query_scalar("SELECT MAX(last_updated) FROM price_feeds")
+                        .fetch_one(&watcher.db)
+                        .await;
+
+                match current {
+                    Ok(ts_opt) => {
+                        if ts_opt != last_seen {
+                            // Update seen timestamp and trigger recalculation when non-none
+                            last_seen = ts_opt;
+                            if last_seen.is_some() {
+                                if let Err(e) = watcher.check_all_loans().await {
+                                    error!("Risk Engine error recalculating after price update: {}", e);
+                                } else {
+                                    info!("Risk Engine recalculated health factors after price update.");
+                                }
+                            }
+                        }
+                    }
+                    Err(e) => {
+                        warn!("Risk Engine watcher DB error reading price_feeds: {}", e);
+                    }
                 }
             }
         });
@@ -57,21 +94,14 @@ impl RiskEngine {
         // Exclude paused plans from risk monitoring
         let loans_health = sqlx::query_as::<_, LoanHealthRow>(
             r#"
-            WITH loan_balances AS (
-                SELECT plan_id, user_id, asset_code AS borrow_asset,
-                       SUM(CASE WHEN event_type = 'borrow' THEN CAST(amount AS numeric) ELSE 0 END) -
-                       SUM(CASE WHEN event_type = 'repay' THEN CAST(amount AS numeric) ELSE 0 END) -
-                       SUM(CASE WHEN event_type = 'liquidation' THEN CAST(amount AS numeric) ELSE 0 END) AS total_debt
-                FROM lending_events
-                WHERE plan_id IS NOT NULL
-                GROUP BY plan_id, user_id, asset_code
-            )
-            SELECT lb.plan_id, lb.user_id, lb.borrow_asset, lb.total_debt,
-                   p.asset_code as collateral_asset, CAST(p.net_amount AS numeric) as collateral_amount, 
+            SELECT ll.plan_id, ll.user_id, ll.borrow_asset, 
+                   (ll.principal - ll.amount_repaid) AS total_debt,
+                   ll.collateral_asset, ll.collateral_amount,
                    p.is_risky, p.risk_override_enabled
-            FROM loan_balances lb
-            JOIN plans p ON p.id = lb.plan_id
-            WHERE lb.total_debt > 0
+            FROM loan_lifecycle ll
+            JOIN plans p ON p.id = ll.plan_id
+            WHERE (ll.principal - ll.amount_repaid) > 0
+              AND ll.status = 'active'
               AND (p.is_paused IS NULL OR p.is_paused = false)
             "#
         )
@@ -135,7 +165,7 @@ impl RiskEngine {
                 sqlx::query(
                     r#"
                     UPDATE plans
-                    SET is_risky = $1, health_factor = $2, risk_flagged_at = CASE WHEN $1 AND risk_flagged_at IS NULL THEN CURRENT_TIMESTAMP ELSE risk_flagged_at END
+                    SET is_risky = $1, health_factor = $2, risk_flagged_at = CASE WHEN $1 AND risk_flagged_at IS NULL THEN CURRENT_TIMESTAMP WHEN NOT $1 THEN NULL ELSE risk_flagged_at END
                     WHERE id = $3
                     "#
                 )
