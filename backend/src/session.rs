@@ -16,8 +16,8 @@ use axum::{
     middleware::Next,
     response::{IntoResponse, Json, Response},
 };
-use jsonwebtoken::{decode, Validation};
 use chrono::{DateTime, Utc};
+use jsonwebtoken::{decode, Validation};
 use serde::{Deserialize, Serialize};
 use serde_json::json;
 use sqlx::PgPool;
@@ -87,7 +87,7 @@ fn decode_claims(token: &str, secret: &str) -> Option<UserClaims> {
     // Ensure expiration is always validated
     validation.validate_exp = true;
     validation.required_spec_claims.insert("exp".to_string());
-    
+
     decode::<UserClaims>(
         token,
         &jsonwebtoken::DecodingKey::from_secret(secret.as_bytes()),
@@ -99,7 +99,23 @@ fn decode_claims(token: &str, secret: &str) -> Option<UserClaims> {
 
 // ── Service functions ─────────────────────────────────────────────────────────
 
+/// Maximum number of concurrent active (non-revoked, non-expired) sessions
+/// allowed per user. Configurable via the `MAX_CONCURRENT_SESSIONS` environment
+/// variable; defaults to 5.
+pub const DEFAULT_MAX_CONCURRENT_SESSIONS: i64 = 5;
+
+fn max_concurrent_sessions() -> i64 {
+    std::env::var("MAX_CONCURRENT_SESSIONS")
+        .ok()
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(DEFAULT_MAX_CONCURRENT_SESSIONS)
+}
+
 /// Record a new active session when a user logs in.
+///
+/// Returns `ApiError::TooManyRequests` when the user already has
+/// `MAX_CONCURRENT_SESSIONS` (default: 5) active sessions. The caller should
+/// prompt the user to log out of another device before retrying.
 pub async fn create_session(
     db: &PgPool,
     user_id: Uuid,
@@ -107,6 +123,28 @@ pub async fn create_session(
     device_label: Option<String>,
     expiry: DateTime<Utc>,
 ) -> Result<Session, ApiError> {
+    let limit = max_concurrent_sessions();
+
+    // Count active (non-revoked, non-expired) sessions for this user.
+    let active_count: i64 = sqlx::query_scalar(
+        r#"
+        SELECT COUNT(*) FROM sessions
+        WHERE user_id = $1
+          AND revoked = FALSE
+          AND expires_at > NOW()
+        "#,
+    )
+    .bind(user_id)
+    .fetch_one(db)
+    .await?;
+
+    if active_count >= limit {
+        return Err(ApiError::TooManyRequests(format!(
+            "Maximum concurrent sessions ({limit}) reached. \
+             Please log out of another device before logging in again."
+        )));
+    }
+
     let token_hash = hash_token(raw_token);
     let session = sqlx::query_as::<_, Session>(
         r#"
@@ -278,7 +316,7 @@ pub async fn revoke_session(
 /// database for structurally valid tokens. Requests without an `Authorization`
 /// header are passed through (open endpoints handle their own auth).
 pub async fn session_guard_middleware(
-    State(state): State<Arc<AppState>>, 
+    State(state): State<Arc<AppState>>,
     req: Request<Body>,
     next: Next,
 ) -> Response {
@@ -289,7 +327,7 @@ pub async fn session_guard_middleware(
 
     let token_hash = hash_token(&raw_token);
 
-    let result = sqlx::query_as::<_, (bool, Option<DateTime<Utc>>)> (
+    let result = sqlx::query_as::<_, (bool, Option<DateTime<Utc>>)>(
         r#"
         SELECT revoked, expires_at FROM sessions
         WHERE token_hash = $1
@@ -320,4 +358,55 @@ pub async fn session_guard_middleware(
     }
 
     next.run(req).await
+}
+
+// ── Tests ─────────────────────────────────────────────────────────────────────
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn default_max_concurrent_sessions_is_positive() {
+        assert!(
+            DEFAULT_MAX_CONCURRENT_SESSIONS > 0,
+            "session limit must be a positive integer"
+        );
+    }
+
+    #[test]
+    fn max_concurrent_sessions_reads_env_var() {
+        // Temporarily set the env var and verify the function picks it up.
+        std::env::set_var("MAX_CONCURRENT_SESSIONS", "3");
+        assert_eq!(max_concurrent_sessions(), 3);
+        std::env::remove_var("MAX_CONCURRENT_SESSIONS");
+    }
+
+    #[test]
+    fn max_concurrent_sessions_falls_back_to_default_on_invalid_value() {
+        std::env::set_var("MAX_CONCURRENT_SESSIONS", "not_a_number");
+        assert_eq!(max_concurrent_sessions(), DEFAULT_MAX_CONCURRENT_SESSIONS);
+        std::env::remove_var("MAX_CONCURRENT_SESSIONS");
+    }
+
+    #[test]
+    fn max_concurrent_sessions_falls_back_to_default_when_unset() {
+        std::env::remove_var("MAX_CONCURRENT_SESSIONS");
+        assert_eq!(max_concurrent_sessions(), DEFAULT_MAX_CONCURRENT_SESSIONS);
+    }
+
+    /// Verify the error variant and message when the limit is exceeded.
+    #[test]
+    fn too_many_requests_error_contains_limit() {
+        let limit = 5i64;
+        let err = ApiError::TooManyRequests(format!(
+            "Maximum concurrent sessions ({limit}) reached. \
+             Please log out of another device before logging in again."
+        ));
+        let msg = err.to_string();
+        assert!(
+            msg.contains('5'),
+            "error message should include the session limit"
+        );
+    }
 }

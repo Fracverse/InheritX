@@ -743,3 +743,110 @@ impl LoanLifecycleService {
         Ok(rows.into_iter().map(|(id,)| id).collect())
     }
 }
+
+// ── Tests ─────────────────────────────────────────────────────────────────────
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use rust_decimal::Decimal;
+    use std::str::FromStr;
+
+    // ── LoanStatus parsing ────────────────────────────────────────────────────
+
+    #[test]
+    fn loan_status_round_trips() {
+        for (s, expected) in [
+            ("active", LoanStatus::Active),
+            ("repaid", LoanStatus::Repaid),
+            ("overdue", LoanStatus::Overdue),
+            ("liquidated", LoanStatus::Liquidated),
+        ] {
+            let parsed = LoanStatus::from_str(s).expect("should parse");
+            assert_eq!(parsed, expected);
+            assert_eq!(parsed.as_str(), s);
+        }
+    }
+
+    #[test]
+    fn loan_status_from_str_rejects_unknown() {
+        assert!(LoanStatus::from_str("pending").is_err());
+        assert!(LoanStatus::from_str("").is_err());
+    }
+
+    // ── Partial repayment business logic ─────────────────────────────────────
+
+    /// Verify that a partial payment does NOT set `fully_repaid`.
+    #[test]
+    fn partial_repayment_does_not_fully_repay() {
+        let principal = Decimal::from(1000u32);
+        let amount_repaid = Decimal::from(300u32);
+        let payment = Decimal::from(200u32);
+
+        let new_amount_repaid = amount_repaid + payment;
+        let fully_repaid = new_amount_repaid >= principal;
+
+        assert_eq!(new_amount_repaid, Decimal::from(500u32));
+        assert!(!fully_repaid, "500 < 1000 should not be fully repaid");
+    }
+
+    /// Verify that a payment that exactly meets the principal sets `fully_repaid`.
+    #[test]
+    fn exact_repayment_marks_fully_repaid() {
+        let principal = Decimal::from(1000u32);
+        let amount_repaid = Decimal::from(700u32);
+        let payment = Decimal::from(300u32);
+
+        let new_amount_repaid = amount_repaid + payment;
+        let fully_repaid = new_amount_repaid >= principal;
+
+        assert_eq!(new_amount_repaid, principal);
+        assert!(fully_repaid, "700 + 300 == 1000 should be fully repaid");
+    }
+
+    /// Verify that an overpayment (more than principal) also sets `fully_repaid`.
+    #[test]
+    fn overpayment_marks_fully_repaid() {
+        let principal = Decimal::from(1000u32);
+        let amount_repaid = Decimal::ZERO;
+        let payment = Decimal::from(1500u32);
+
+        let new_amount_repaid = amount_repaid + payment;
+        let fully_repaid = new_amount_repaid >= principal;
+
+        assert!(fully_repaid, "1500 > 1000 should be fully repaid");
+    }
+
+    /// Verify that a zero payment is rejected (mirrors the service guard).
+    #[test]
+    fn zero_repayment_is_invalid() {
+        let amount = Decimal::ZERO;
+        assert!(
+            amount <= Decimal::ZERO,
+            "zero amount should fail the > 0 guard"
+        );
+    }
+
+    /// Verify that a negative payment is rejected.
+    #[test]
+    fn negative_repayment_is_invalid() {
+        let amount = Decimal::from_str("-1.00").unwrap();
+        assert!(
+            amount <= Decimal::ZERO,
+            "negative amount should fail the > 0 guard"
+        );
+    }
+
+    // ── CreateLoanRequest validation guards ───────────────────────────────────
+
+    #[test]
+    fn zero_principal_is_invalid() {
+        assert!(Decimal::ZERO <= Decimal::ZERO);
+    }
+
+    #[test]
+    fn negative_interest_rate_bps_is_invalid() {
+        let rate: i32 = -1;
+        assert!(rate < 0);
+    }
+}

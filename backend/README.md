@@ -269,3 +269,50 @@ This project is part of the INHERITX ecosystem.
 
 - **GET /api/admin/metrics/plans** – Get comprehensive plan statistics (admin only)
   - Returns: total_plans, active_plans, expired_plans, triggered_plans, claimed_plans, and breakdown by status
+
+## Database Connection Pool Configuration
+
+The backend uses `sqlx`'s `PgPool` with configurable connection pool settings. All values are read from environment variables at startup and fall back to safe defaults when not set.
+
+### Environment Variables
+
+| Variable | Default | Description |
+|---|---|---|
+| `DB_POOL_MAX_CONNECTIONS` | `10` | Maximum number of connections in the pool |
+| `DB_POOL_MIN_CONNECTIONS` | `2` | Minimum number of idle connections to maintain |
+| `DB_POOL_ACQUIRE_TIMEOUT_SECS` | `30` | Seconds to wait for a free connection before failing |
+| `DB_POOL_IDLE_TIMEOUT_SECS` | `600` | Seconds before an idle connection is closed |
+| `DB_POOL_MAX_LIFETIME_SECS` | `1800` | Maximum age of any connection regardless of activity |
+| `DB_POOL_CONNECT_RETRIES` | `5` | Startup retry attempts when the database is unreachable |
+| `DB_POOL_CONNECT_RETRY_BASE_DELAY_SECS` | `2` | Base delay (seconds) for startup retry back-off |
+
+### Recommended Values by Environment
+
+| Setting | Development | Staging | Production |
+|---|---|---|---|
+| `DB_POOL_MAX_CONNECTIONS` | `5` | `10` | `20–50` |
+| `DB_POOL_MIN_CONNECTIONS` | `1` | `2` | `5` |
+| `DB_POOL_ACQUIRE_TIMEOUT_SECS` | `30` | `30` | `10` |
+| `DB_POOL_IDLE_TIMEOUT_SECS` | `300` | `600` | `600` |
+| `DB_POOL_MAX_LIFETIME_SECS` | `900` | `1800` | `1800` |
+| `DB_POOL_CONNECT_RETRIES` | `3` | `5` | `5` |
+| `DB_POOL_CONNECT_RETRY_BASE_DELAY_SECS` | `1` | `2` | `2` |
+
+### Sizing Guidance
+
+- **`max_connections`**: A common starting formula is `(num_cpu_cores × 2) + effective_spindle_count`. For a 4-core production host, 10–20 is a reasonable starting point. Always leave headroom below PostgreSQL's `max_connections` server limit for admin connections and other services.
+- **`min_connections`**: Keeping a small warm pool (2–5) avoids cold-start latency after idle periods.
+- **`acquire_timeout_secs`**: Lower values (10 s) in production surface pool exhaustion quickly rather than silently queuing requests.
+- **`idle_timeout_secs` / `max_lifetime_secs`**: Prevents stale connections after PostgreSQL restarts or network topology changes. `max_lifetime_secs` should always be ≥ `idle_timeout_secs`.
+
+### Example `.env` (Production)
+
+```env
+DB_POOL_MAX_CONNECTIONS=20
+DB_POOL_MIN_CONNECTIONS=5
+DB_POOL_ACQUIRE_TIMEOUT_SECS=10
+DB_POOL_IDLE_TIMEOUT_SECS=600
+DB_POOL_MAX_LIFETIME_SECS=1800
+DB_POOL_CONNECT_RETRIES=5
+DB_POOL_CONNECT_RETRY_BASE_DELAY_SECS=2
+```
