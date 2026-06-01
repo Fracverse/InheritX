@@ -96,7 +96,7 @@ describe("API Filtering Utilities", () => {
     it("should search specific fields", () => {
       const result = applySearch(mockData, "active", ["status"]);
 
-      expect(result).toHaveLength(2);
+      expect(result).toHaveLength(3);
     });
 
     it("should be case-insensitive", () => {

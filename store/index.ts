@@ -4,7 +4,7 @@
  */
 
 import { create } from "zustand";
-import { persist } from "zustand/middleware";
+import { persist, createJSONStorage } from "zustand/middleware";
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
@@ -90,6 +90,22 @@ interface UISlice {
 
 type AppStore = WalletSlice & KYCSlice & PlansSlice & LendingSlice & UISlice;
 
+const getStorage = () => {
+  if (
+    typeof window !== "undefined" &&
+    window.localStorage &&
+    typeof window.localStorage.setItem === "function"
+  ) {
+    return window.localStorage;
+  }
+
+  return {
+    getItem: (_name: string) => null,
+    setItem: (_name: string, _value: string) => undefined,
+    removeItem: (_name: string) => undefined,
+  };
+};
+
 export const useAppStore = create<AppStore>()(
   persist(
     (set) => ({
@@ -137,6 +153,7 @@ export const useAppStore = create<AppStore>()(
     }),
     {
       name: "inheritx-store",
+      storage: createJSONStorage(getStorage),
       // Only persist non-sensitive, non-transient state
       partialize: (state) => ({
         address: state.address,

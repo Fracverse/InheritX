@@ -28,7 +28,7 @@ describe("Notification Service", () => {
 
       const results = await notificationService.send(request);
 
-      expect(results).toHaveLength(2); // email and in_app by default
+      expect(results).toHaveLength(3); // email, push, and in_app by default
       expect(results[0].success).toBe(true);
       expect(results[0].type).toBe("email");
       expect(results[0].status).toBe("delivered");

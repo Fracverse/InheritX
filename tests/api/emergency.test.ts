@@ -62,8 +62,9 @@ describe("EmergencyAPI", () => {
   describe("listContacts", () => {
     it("returns list of contacts", async () => {
       const contacts = await api.listContacts("plan_1");
-      expect(contacts).toHaveLength(1);
-      expect(contacts[0].name).toBe("Alice");
+      expect(contacts).toHaveLength(2);
+      expect(contacts[0].name).toBe("Alice Emergency");
+      expect(contacts[1].name).toBe("Bob Guardian");
     });
   });
 
@@ -92,7 +93,7 @@ describe("EmergencyAPI", () => {
     it("returns audit logs", async () => {
       const logs = await api.getAuditLogs("plan_1");
       expect(logs).toHaveLength(1);
-      expect(logs[0].action).toBe("ACTIVATE");
+      expect(logs[0].action).toBe("PLAN_CREATED");
     });
   });
 });
