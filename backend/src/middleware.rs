@@ -5,7 +5,6 @@ use axum::{
     middleware::Next,
     response::{IntoResponse, Response},
 };
-use hyper::body::to_bytes;
 use serde_json::json;
 use serde_json::Value as JsonValue;
 use std::collections::HashSet;
@@ -31,7 +30,7 @@ pub struct RequestContext {
 
 /// Middleware that enforces a maximum request body size (bytes) and validates
 /// JSON string lengths using the validation helpers.
-pub async fn enforce_max_request_size(mut req: Request<Body>, next: Next) -> Response {
+pub async fn enforce_max_request_size(req: Request<Body>, next: Next) -> Response {
     // Respect a client-provided Content-Length header when present.
     if let Some(clv) = req.headers().get(axum::http::header::CONTENT_LENGTH) {
         if let Ok(s) = clv.to_str() {
@@ -52,7 +51,7 @@ pub async fn enforce_max_request_size(mut req: Request<Body>, next: Next) -> Res
 
     // Read the body up to the configured cap so we can inspect JSON payloads.
     let (parts, body) = req.into_parts();
-    let bytes = match to_bytes(body).await {
+    let bytes: axum::body::Bytes = match axum::body::to_bytes(body, crate::validation::DEFAULT_MAX_BODY_BYTES + 1).await {
         Ok(b) => b,
         Err(_) => {
             // If body couldn't be read, let the inner handler observe the failure.

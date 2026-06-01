@@ -30,6 +30,12 @@ impl LiquidationBotService {
                 interval.tick().await;
                 if let Err(e) = self.process_liquidations().await {
                     error!("Liquidation Bot error: {}", e);
+                    // Capture background task errors in Sentry so they are
+                    // visible even though they never reach an HTTP handler.
+                    crate::error_tracking::capture_message(
+                        &format!("LiquidationBot::process_liquidations failed: {e}"),
+                        sentry::Level::Error,
+                    );
                 }
             }
         });

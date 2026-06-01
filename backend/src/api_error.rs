@@ -130,6 +130,8 @@ impl IntoResponse for ApiError {
                     error.debug = ?e,
                     "Internal server error"
                 );
+                // Capture the full anyhow chain so every cause is visible in Sentry.
+                crate::error_tracking::capture_anyhow(e);
                 (StatusCode::INTERNAL_SERVER_ERROR, self.to_string())
             }
             Self::DatabaseConnection(msg) => {
@@ -137,6 +139,10 @@ impl IntoResponse for ApiError {
                     error_code = "DATABASE_CONNECTION_ERROR",
                     error.message = %msg,
                     "Database connection error"
+                );
+                crate::error_tracking::capture_message(
+                    &format!("Database connection error: {msg}"),
+                    sentry::Level::Error,
                 );
                 (StatusCode::SERVICE_UNAVAILABLE, self.to_string())
             }
@@ -147,6 +153,7 @@ impl IntoResponse for ApiError {
                     error.debug = ?e,
                     "Database operation error"
                 );
+                crate::error_tracking::capture_error(e);
                 (
                     StatusCode::INTERNAL_SERVER_ERROR,
                     "A database operation failed. Please try again.".to_string(),
@@ -158,6 +165,7 @@ impl IntoResponse for ApiError {
                     error.message = %e,
                     "Database migration error"
                 );
+                crate::error_tracking::capture_error(e);
                 (StatusCode::INTERNAL_SERVER_ERROR, self.to_string())
             }
             Self::ExternalService(msg) => {
@@ -165,6 +173,10 @@ impl IntoResponse for ApiError {
                     error_code = "EXTERNAL_SERVICE_ERROR",
                     service = %msg,
                     "External service error"
+                );
+                crate::error_tracking::capture_message(
+                    &format!("External service error: {msg}"),
+                    sentry::Level::Warning,
                 );
                 (StatusCode::BAD_GATEWAY, self.to_string())
             }
@@ -174,10 +186,18 @@ impl IntoResponse for ApiError {
                     service = %service,
                     "Circuit breaker open"
                 );
+                crate::error_tracking::capture_message(
+                    &format!("Circuit breaker open for service: {service}"),
+                    sentry::Level::Warning,
+                );
                 (StatusCode::SERVICE_UNAVAILABLE, self.to_string())
             }
             Self::Timeout => {
                 tracing::warn!(error_code = "TIMEOUT", "Request timeout");
+                crate::error_tracking::capture_message(
+                    "Request timed out",
+                    sentry::Level::Warning,
+                );
                 (StatusCode::GATEWAY_TIMEOUT, self.to_string())
             }
             Self::ServiceUnavailable(msg) => {
@@ -186,8 +206,14 @@ impl IntoResponse for ApiError {
                     reason = %msg,
                     "Service unavailable"
                 );
+                crate::error_tracking::capture_message(
+                    &format!("Service unavailable: {msg}"),
+                    sentry::Level::Warning,
+                );
                 (StatusCode::SERVICE_UNAVAILABLE, self.to_string())
             }
+            // 4xx errors are not sent to Sentry — they represent client mistakes,
+            // not server-side faults.  They remain visible via tracing logs.
             Self::Unauthorized => (StatusCode::UNAUTHORIZED, self.to_string()),
             Self::Forbidden(_) => (StatusCode::FORBIDDEN, self.to_string()),
             Self::NotFound(_) => (StatusCode::NOT_FOUND, self.to_string()),

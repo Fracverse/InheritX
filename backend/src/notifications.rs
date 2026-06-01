@@ -1,6 +1,5 @@
 use crate::alert_provider::AlertProvider;
 use crate::api_error::ApiError;
-use crate::retry::{retry_async, RetryConfig};
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use sqlx::PgPool;
@@ -68,33 +67,20 @@ impl NotificationService {
         message: impl Into<String>,
     ) -> Result<Notification, ApiError> {
         let message = message.into();
-        let notif_type = notif_type.to_string();
-        let message = message.clone();
 
-        retry_async(
-            RetryConfig::database(),
-            || {
-                let notif_type = notif_type.clone();
-                let message = message.clone();
-                async {
-                    sqlx::query_as::<_, Notification>(
-                        r#"
-                        INSERT INTO notifications (user_id, type, message, is_read, delivery_status, delivery_attempts)
-                        VALUES ($1, $2, $3, false, 'pending', 0)
-                        RETURNING id, user_id, type, message, is_read, delivery_status, delivery_attempts, created_at
-                        "#,
-                    )
-                    .bind(user_id)
-                    .bind(&notif_type)
-                    .bind(&message)
-                    .fetch_one(&mut *executor)
-                    .await
-                    .map_err(|e| ApiError::Internal(anyhow::anyhow!("Failed to insert notification: {e}")))
-                }
-            },
-            |e| matches!(e, ApiError::Internal(_)),
+        sqlx::query_as::<_, Notification>(
+            r#"
+            INSERT INTO notifications (user_id, type, message, is_read, delivery_status, delivery_attempts)
+            VALUES ($1, $2, $3, false, 'pending', 0)
+            RETURNING id, user_id, type, message, is_read, delivery_status, delivery_attempts, created_at
+            "#,
         )
+        .bind(user_id)
+        .bind(notif_type)
+        .bind(&message)
+        .fetch_one(&mut *executor)
         .await
+        .map_err(|e| ApiError::Internal(anyhow::anyhow!("Failed to insert notification: {e}")))
     }
 
     // REMOVED: create_silent

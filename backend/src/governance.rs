@@ -326,9 +326,9 @@ impl GovernanceService {
             Some(executor_id),
             audit_action::PARAMETER_UPDATE,
             Some(proposal_id),
-            Some("governance_proposal".to_string()),
+            Some("governance_proposal"),
             None,
-            Some("executed".to_string()),
+            Some("executed"),
             proposal.action_payload.clone(),
         )
         .await?;

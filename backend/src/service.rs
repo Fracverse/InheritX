@@ -1396,7 +1396,7 @@ impl ClaimMetricsService {
 
 // ── User Growth Metrics ──────────────────────────────────────────────────────
 
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct UserGrowthMetrics {
     pub total_users: i64,
@@ -1451,7 +1451,7 @@ impl UserMetricsService {
 
 // ── Plan Statistics ───────────────────────────────────────────────────────────
 
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct PlanStatistics {
     pub total_plans: i64,
     pub active_plans: i64,
@@ -1461,7 +1461,7 @@ pub struct PlanStatistics {
     pub by_status: Vec<PlanStatusCount>,
 }
 
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct PlanStatusCount {
     pub status: String,
     pub count: i64,

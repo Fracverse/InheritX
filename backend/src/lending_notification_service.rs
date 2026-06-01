@@ -26,6 +26,10 @@ impl LendingNotificationService {
                 interval.tick().await;
                 if let Err(e) = self.process_notifications().await {
                     error!("Lending Notification Service error: {}", e);
+                    crate::error_tracking::capture_message(
+                        &format!("LendingNotificationService::process_notifications failed: {e}"),
+                        sentry::Level::Error,
+                    );
                 }
             }
         });

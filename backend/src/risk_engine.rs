@@ -35,6 +35,10 @@ impl RiskEngine {
                 interval.tick().await;
                 if let Err(e) = self.check_all_loans().await {
                     error!("Risk Engine error checking loans: {}", e);
+                    crate::error_tracking::capture_message(
+                        &format!("RiskEngine::check_all_loans failed: {e}"),
+                        sentry::Level::Error,
+                    );
                 }
             }
         });

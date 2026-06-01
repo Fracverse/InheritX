@@ -125,18 +125,22 @@ pub async fn graphql_handler(
     req: GraphQLRequest,
 ) -> GraphQLResponse {
     let config = match schema.data::<Config>() {
-        Ok(config) => config.clone(),
-        Err(_) => {
-            return GraphQLResponse(async_graphql::Response::from_errors(vec![
-                async_graphql::ServerError::new("Server configuration unavailable", None),
-            ]))
+        Some(config) => config.clone(),
+        None => {
+            return GraphQLResponse(async_graphql::BatchResponse::Single(
+                async_graphql::Response::from_errors(vec![
+                    async_graphql::ServerError::new("Server configuration unavailable", None),
+                ]),
+            ))
         }
     };
 
     let Some(user) = extract_user_claims(&headers, &config) else {
-        return GraphQLResponse(async_graphql::Response::from_errors(vec![
-            async_graphql::ServerError::new("Authentication required", None),
-        ]));
+        return GraphQLResponse(async_graphql::BatchResponse::Single(
+            async_graphql::Response::from_errors(vec![
+                async_graphql::ServerError::new("Authentication required", None),
+            ]),
+        ));
     };
 
     let mut gql_req = req.into_inner();

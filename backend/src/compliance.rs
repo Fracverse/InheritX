@@ -47,6 +47,10 @@ impl ComplianceEngine {
                 interval.tick().await;
                 if let Err(e) = self.scan_suspicious_activity().await {
                     error!("Compliance Engine error: {}", e);
+                    crate::error_tracking::capture_message(
+                        &format!("ComplianceEngine::scan_suspicious_activity failed: {e}"),
+                        sentry::Level::Error,
+                    );
                 }
             }
         });

@@ -177,6 +177,13 @@ impl AnchorIntegrationClient {
                     "service" => "anchor_integration"
                 )
                 .increment(1);
+                crate::error_tracking::capture_message(
+                    &format!(
+                        "anchor_integration: compliance flag timed out after all retries \
+                         (plan_id={plan_id}, user_id={user_id})"
+                    ),
+                    sentry::Level::Error,
+                );
                 Ok(())
             }
             Err(e) => Err(e),
@@ -290,6 +297,13 @@ impl ComplianceApiClient {
                     "service" => "compliance_api"
                 )
                 .increment(1);
+                crate::error_tracking::capture_message(
+                    &format!(
+                        "compliance_api: suspicious-activity report timed out after all retries \
+                         (plan_id={plan_id}, user_id={user_id})"
+                    ),
+                    sentry::Level::Error,
+                );
                 Ok(())
             }
             Err(e) => Err(e),
@@ -427,6 +441,13 @@ impl SanctionsApiClient {
                     "service" => "sanctions_api"
                 )
                 .increment(1);
+                crate::error_tracking::capture_message(
+                    &format!(
+                        "sanctions_api: screening timed out after all retries — \
+                         user action blocked (user_id={user_id})"
+                    ),
+                    sentry::Level::Error,
+                );
                 Err(ApiError::ServiceUnavailable(
                     "Sanctions screening is temporarily unavailable. \
                      Please try again shortly."

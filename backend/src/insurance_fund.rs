@@ -189,6 +189,10 @@ impl InsuranceFundService {
                 interval.tick().await;
                 if let Err(e) = self.update_fund_metrics().await {
                     error!("Insurance Fund Service error updating metrics: {}", e);
+                    crate::error_tracking::capture_message(
+                        &format!("InsuranceFundService::update_fund_metrics failed: {e}"),
+                        sentry::Level::Error,
+                    );
                 }
             }
         });
