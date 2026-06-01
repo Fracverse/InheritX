@@ -23,6 +23,9 @@ pub struct ComplianceEngine {
 }
 
 impl ComplianceEngine {
+    const SUDDEN_SPIKE_DORMANCY_DAYS: i64 = 30;
+    const SUDDEN_SPIKE_LOOKBACK_MINUTES: i64 = 5;
+
     pub fn new(
         db: PgPool,
         velocity_threshold: usize,
@@ -153,23 +156,31 @@ impl ComplianceEngine {
             user_id: Uuid,
         }
 
-        // Flag if a user with no activity for 30 days suddenly borrows
+        // Flag if an old account has been dormant for 30 days and then suddenly borrows.
+        //
+        // We use the account creation time as the age check because the database does not
+        // store a dedicated "last activity" timestamp for users. The lending_events table
+        // provides the activity history needed to detect dormancy.
         let spike_matches = sqlx::query_as::<_, SpikeMatch>(
             r#"
-            SELECT le.plan_id, le.user_id
+            SELECT DISTINCT le.plan_id, le.user_id
             FROM lending_events le
             JOIN plans p ON p.id = le.plan_id
+            JOIN users u ON u.id = le.user_id
             WHERE le.event_type = 'borrow'
-              AND le.event_timestamp > NOW() - INTERVAL '5 minutes'
+              AND le.event_timestamp > NOW() - INTERVAL '1 minute' * $1
               AND NOT EXISTS (
                   SELECT 1 FROM lending_events prev
                   WHERE prev.user_id = le.user_id
                     AND prev.event_timestamp < le.event_timestamp
-                    AND prev.event_timestamp > le.event_timestamp - INTERVAL '30 days'
+                    AND prev.event_timestamp > le.event_timestamp - INTERVAL '1 day' * $2
               )
-              AND p.created_at < NOW() - INTERVAL '30 days' -- Ensure it's an old account that was dormant
+              AND p.created_at < NOW() - INTERVAL '1 day' * $2
+              AND u.created_at < NOW() - INTERVAL '1 day' * $2
             "#,
         )
+        .bind(Self::SUDDEN_SPIKE_LOOKBACK_MINUTES)
+        .bind(Self::SUDDEN_SPIKE_DORMANCY_DAYS)
         .fetch_all(&self.db)
         .await?;
 
