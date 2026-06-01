@@ -31,6 +31,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             acquire_timeout_secs: config.db_pool.acquire_timeout_secs,
             idle_timeout_secs: config.db_pool.idle_timeout_secs,
             max_lifetime_secs: config.db_pool.max_lifetime_secs,
+            query_timeout_secs: config.db_pool.query_timeout_secs,
             connect_retries: config.db_pool.connect_retries,
             connect_retry_base_delay_secs: config.db_pool.connect_retry_base_delay_secs,
         },

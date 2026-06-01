@@ -142,6 +142,9 @@ pub struct DbPoolConfig {
     pub acquire_timeout_secs: u64,
     pub idle_timeout_secs: u64,
     pub max_lifetime_secs: u64,
+    /// Per-query timeout enforced on the Postgres server (seconds).
+    /// Configures `statement_timeout` for each connection.
+    pub query_timeout_secs: u64,
     pub connect_retries: u32,
     pub connect_retry_base_delay_secs: u64,
 }
@@ -172,6 +175,7 @@ impl DbPoolConfig {
             acquire_timeout_secs: get_u64("DB_POOL_ACQUIRE_TIMEOUT_SECS", 30),
             idle_timeout_secs: get_u64("DB_POOL_IDLE_TIMEOUT_SECS", 600),
             max_lifetime_secs: get_u64("DB_POOL_MAX_LIFETIME_SECS", 1800),
+            query_timeout_secs: get_u64("DB_POOL_QUERY_TIMEOUT_SECS", 15),
             connect_retries: get_u32("DB_POOL_CONNECT_RETRIES", 5),
             connect_retry_base_delay_secs: get_u64("DB_POOL_CONNECT_RETRY_BASE_DELAY_SECS", 2),
         }
@@ -242,6 +246,7 @@ mod tests {
             "DB_POOL_ACQUIRE_TIMEOUT_SECS",
             "DB_POOL_IDLE_TIMEOUT_SECS",
             "DB_POOL_MAX_LIFETIME_SECS",
+            "DB_POOL_QUERY_TIMEOUT_SECS",
             "DB_POOL_CONNECT_RETRIES",
             "DB_POOL_CONNECT_RETRY_BASE_DELAY_SECS",
         ] {

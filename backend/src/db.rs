@@ -41,6 +41,11 @@ pub struct DbPoolConfig {
     /// server-side resource limits are respected.
     pub max_lifetime_secs: u64,
 
+    /// Per-query timeout enforced on the Postgres server (seconds).
+    /// This sets `statement_timeout` on each connection so long-running
+    /// queries are cancelled by the server. Default: 15 s.
+    pub query_timeout_secs: u64,
+
     /// Number of times to retry the initial pool creation on failure.
     /// Default: 5. Handles transient startup races (e.g. DB container
     /// not yet ready in docker-compose).
@@ -68,6 +73,7 @@ impl DbPoolConfig {
             acquire_timeout_secs: get("DB_POOL_ACQUIRE_TIMEOUT_SECS", 30),
             idle_timeout_secs: get("DB_POOL_IDLE_TIMEOUT_SECS", 600),
             max_lifetime_secs: get("DB_POOL_MAX_LIFETIME_SECS", 1800),
+            query_timeout_secs: get("DB_POOL_QUERY_TIMEOUT_SECS", 15),
             connect_retries: get("DB_POOL_CONNECT_RETRIES", 5) as u32,
             connect_retry_base_delay_secs: get("DB_POOL_CONNECT_RETRY_BASE_DELAY_SECS", 2),
         }
@@ -101,12 +107,26 @@ pub async fn create_pool_with_config(
         "Initialising database connection pool",
     );
 
+    let query_timeout_secs = cfg.query_timeout_secs;
+
     let pool_options = PgPoolOptions::new()
         .max_connections(cfg.max_connections)
         .min_connections(cfg.min_connections)
         .acquire_timeout(Duration::from_secs(cfg.acquire_timeout_secs))
         .idle_timeout(Duration::from_secs(cfg.idle_timeout_secs))
         .max_lifetime(Duration::from_secs(cfg.max_lifetime_secs))
+        // Enforce a per-query timeout at the server using `statement_timeout`.
+        // This cancels queries that exceed the configured duration and prevents
+        // client-side tasks from hanging indefinitely while the DB is busy.
+        .after_connect(move |mut conn| {
+            let timeout_ms = query_timeout_secs * 1000;
+            Box::pin(async move {
+                // Use an explicit SET on the connection. This returns a
+                // Result<Executed, sqlx::Error> which we map to ().
+                let set_stmt = format!("SET statement_timeout = {}", timeout_ms);
+                sqlx::query(&set_stmt).execute(&mut conn).await.map(|_| ())
+            })
+        })
         // Test each connection with a lightweight ping before handing it
         // to a caller, so stale connections are detected early.
         .test_before_acquire(true);
@@ -233,6 +253,7 @@ mod tests {
             acquire_timeout_secs: 30,
             idle_timeout_secs: 600,
             max_lifetime_secs: 1800,
+            query_timeout_secs: 15,
             connect_retries: 5,
             connect_retry_base_delay_secs: 2,
         };
