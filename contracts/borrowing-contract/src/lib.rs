@@ -796,6 +796,8 @@ impl BorrowingContract {
         initial_discount_bps: u32,
         max_discount_bps: u32,
     ) -> Result<(), BorrowingError> {
+        Self::require_not_paused(&env)?;
+
         if initial_discount_bps > 10000
             || max_discount_bps > 10000
             || initial_discount_bps > max_discount_bps
@@ -1060,6 +1062,8 @@ impl BorrowingContract {
     }
 
     pub fn cancel_auction(env: Env, loan_id: u64) -> Result<(), BorrowingError> {
+        Self::require_not_paused(&env)?;
+
         let mut auction: LiquidationAuction = env
             .storage()
             .persistent()
