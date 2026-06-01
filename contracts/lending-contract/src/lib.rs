@@ -3258,9 +3258,17 @@ impl LendingContract {
         let (depositor_interest, protocol_interest) =
             Self::calculate_interest_split(total_interest, pool.reserve_factor_bps);
 
-        // Update pool state
-        pool.retained_yield = pool.retained_yield.saturating_add(depositor_interest);
-        pool.bad_debt_reserve = pool.bad_debt_reserve.saturating_add(protocol_interest);
+        // Split protocol share into reserved and retained portions
+        let reserve_share = ((protocol_interest as u128)
+            .checked_mul(BAD_DEBT_RESERVE_BPS as u128)
+            .and_then(|v| v.checked_div(10000u128))
+            .unwrap_or(0)) as u64;
+        let retained_share = protocol_interest.saturating_sub(reserve_share);
+
+        // Update pool state: depositor share increases pool deposits, protocol keeps retained share, and reserve receives reserve share
+        pool.total_deposits = pool.total_deposits.saturating_add(depositor_interest);
+        pool.retained_yield = pool.retained_yield.saturating_add(retained_share);
+        pool.bad_debt_reserve = pool.bad_debt_reserve.saturating_add(reserve_share);
         pool.total_protocol_revenue = pool
             .total_protocol_revenue
             .saturating_add(protocol_interest);
@@ -3269,11 +3277,13 @@ impl LendingContract {
 
         log!(
             &env,
-            "InterestAccrued: loan_id={}, total_interest={}, depositor_share={}, protocol_share={}",
+            "InterestAccrued: loan_id={}, total_interest={}, depositor_share={}, protocol_share={}, retained_share={}, reserve_share={}",
             loan_id,
             total_interest,
             depositor_interest,
-            protocol_interest
+            protocol_interest,
+            retained_share,
+            reserve_share
         );
 
         Ok(())
@@ -3306,14 +3316,70 @@ impl LendingContract {
     /// Get insurance premium for a given loan amount
     pub fn get_insurance_premium(env: Env, loan_amount: u64) -> Result<u64, LendingError> {
         Self::init_insurance_fund_if_needed(&env);
-        let premium_rate_bps: u32 = env
+
+        // Base premium rate (admin-set minimum)
+        let base_rate_bps: u32 = env
             .storage()
             .instance()
             .get::<_, u32>(&DataKey::InsurancePremiumRate)
             .unwrap_or(DEFAULT_INSURANCE_PREMIUM_RATE_BPS);
 
+        // Compute global utilization across all supported asset pools to adjust premium dynamically
+        let assets: Vec<Address> = env
+            .storage()
+            .instance()
+            .get(&DataKey::SupportedAssets)
+            .unwrap_or_else(|| Vec::new(&env));
+
+        let mut total_borrowed_sum: u128 = 0;
+        let mut total_deposits_sum: u128 = 0;
+        for a in assets.iter() {
+            if env.storage().instance().has(&DataKey::PoolState(a.clone())) {
+                let pool: PoolState = env
+                    .storage()
+                    .instance()
+                    .get(&DataKey::PoolState(a.clone()))
+                    .unwrap_or(PoolState {
+                        total_deposits: 0,
+                        total_shares: 0,
+                        total_borrowed: 0,
+                        base_rate_bps: 0,
+                        multiplier_bps: 0,
+                        utilization_cap_bps: 0,
+                        retained_yield: 0,
+                        bad_debt_reserve: 0,
+                        grace_period_seconds: DEFAULT_GRACE_PERIOD_SECONDS,
+                        late_fee_rate_bps: DEFAULT_LATE_FEE_RATE_BPS,
+                        reserve_factor_bps: 1000,
+                        total_protocol_revenue: 0,
+                        is_paused: false,
+                    });
+
+                total_borrowed_sum = total_borrowed_sum.saturating_add(pool.total_borrowed as u128);
+                total_deposits_sum = total_deposits_sum.saturating_add(pool.total_deposits as u128);
+            }
+        }
+
+        // Calculate utilization in bps (0..10000)
+        let utilization_bps: u32 = if total_deposits_sum == 0 {
+            0u32
+        } else {
+            let util = (total_borrowed_sum.saturating_mul(10000u128))
+                .checked_div(total_deposits_sum)
+                .unwrap_or(0u128);
+            util as u32
+        };
+
+        // Convert utilization into a premium uplift: e.g., utilization_bps/100 -> extra bps (max ~100)
+        let utilization_uplift_bps: u32 = utilization_bps / 100;
+
+        let mut final_rate_bps = base_rate_bps.saturating_add(utilization_uplift_bps);
+        if final_rate_bps > 10000 {
+            final_rate_bps = 10000;
+        }
+
         let premium = (loan_amount as u128)
-            .checked_mul(premium_rate_bps as u128)
+            .checked_mul(final_rate_bps as u128)
             .and_then(|v| v.checked_div(10000u128))
             .ok_or(LendingError::InvalidAmount)? as u64;
 

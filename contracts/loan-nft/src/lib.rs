@@ -1,6 +1,8 @@
 #![no_std]
 use soroban_sdk::{contract, contractimpl, contracttype, Address, Env, String, Symbol};
 
+const DEFAULT_APPROVAL_EXPIRATION_SECONDS: u64 = 60 * 60 * 24 * 7; // 7 days
+
 #[contracttype]
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct LoanMetadata {
@@ -26,6 +28,13 @@ pub enum DataKey {
     ReentrancyGuard,
     Transferable(u64),   // Loan ID -> bool
     MetadataLocked(u64), // Loan ID -> bool; set true after mint to enforce immutability
+}
+
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct ApprovalRecord {
+    pub operator: Address,
+    pub expires_at: u64,
 }
 
 #[contract]
@@ -178,10 +187,17 @@ impl LoanNFT {
                 .get(&DataKey::Operator(from.clone(), spender.clone()))
                 .unwrap_or(false);
             if !is_operator {
-                let approved_op: Option<Address> =
+                let approved_rec: Option<ApprovalRecord> =
                     env.storage().persistent().get(&DataKey::Approved(loan_id));
-                if approved_op != Some(spender.clone()) {
-                    panic!("Not approved");
+
+                match approved_rec {
+                    Some(r) => {
+                        let now = env.ledger().timestamp();
+                        if r.operator != spender || now >= r.expires_at {
+                            panic!("Not approved");
+                        }
+                    }
+                    None => panic!("Not approved"),
                 }
             }
         }
@@ -208,9 +224,16 @@ impl LoanNFT {
             panic!("Not authorized to approve");
         }
 
+        let expires = env.ledger().timestamp().saturating_add(DEFAULT_APPROVAL_EXPIRATION_SECONDS);
+
+        let record = ApprovalRecord {
+            operator: operator.clone(),
+            expires_at: expires,
+        };
+
         env.storage()
             .persistent()
-            .set(&DataKey::Approved(loan_id), &operator);
+            .set(&DataKey::Approved(loan_id), &record);
         Self::emit_approval_event(&env, owner, operator, loan_id);
     }
 
@@ -227,7 +250,13 @@ impl LoanNFT {
     }
 
     pub fn get_approved(env: Env, loan_id: u64) -> Option<Address> {
-        env.storage().persistent().get(&DataKey::Approved(loan_id))
+        if let Some(rec) = env.storage().persistent().get::<_, ApprovalRecord>(&DataKey::Approved(loan_id)) {
+            let now = env.ledger().timestamp();
+            if now < rec.expires_at {
+                return Some(rec.operator);
+            }
+        }
+        None
     }
 
     pub fn is_approved_for_all(env: Env, owner: Address, operator: Address) -> bool {

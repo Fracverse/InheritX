@@ -114,10 +114,21 @@ impl RiskEngine {
                 // Skip risk flagging if risk override is enabled
                 let should_skip_risk_check = loan.risk_override_enabled.unwrap_or(false);
 
+                // Determine liquidation threshold based on collateral asset when possible
+                let asset_upper = collat_asset.to_uppercase();
+                let liquidation_threshold_for_asset = match asset_upper.as_str() {
+                    "USDC" => Decimal::new(95, 2), // 0.95
+                    "ETH" | "WETH" => Decimal::new(85, 2), // 0.85
+                    "BTC" | "WBTC" => Decimal::new(85, 2), // 0.85
+                    "XLM" | "STELLAR_XLM" => Decimal::new(80, 2), // 0.80
+                    // Fallback to engine-wide threshold if unknown
+                    _ => self.liquidation_threshold,
+                };
+
                 let is_now_risky = if should_skip_risk_check {
                     false // Override: never mark as risky
                 } else {
-                    health_factor < self.liquidation_threshold
+                    health_factor < liquidation_threshold_for_asset
                 };
 
                 // Update database state
