@@ -391,6 +391,7 @@ impl PlanService {
         // 4. Commit: If we reached here, both Plan and Audit are saved
         tx.commit().await?;
 
+        crate::metrics::inc_plans_created();
         Ok(plan)
     }
     pub async fn get_plan_by_id<'a, E>(
@@ -670,6 +671,7 @@ impl PlanService {
 
         // 6. Final Commit
         tx.commit().await?;
+        crate::metrics::inc_plans_claimed();
         Ok(plan)
     }
     pub fn is_due_for_claim(
@@ -3725,6 +3727,7 @@ impl EmergencyAdminService {
 
         tx.commit().await?;
 
+        crate::metrics::inc_plans_paused();
         Ok(EmergencyActionResponse {
             success: true,
             plan_id: req.plan_id,
