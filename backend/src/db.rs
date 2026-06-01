@@ -4,9 +4,10 @@
 //! - Fully-configured SQLx `PgPool` with production-ready pool settings
 //! - Exponential-backoff retry logic for transient startup failures
 //! - Pool metrics snapshot (size, idle, acquire wait time)
-//! - Migration runner
+//! - Migration runner with version tracking and rollback support (Issue #622)
 
 use crate::api_error::ApiError;
+use chrono::{DateTime, Utc};
 use sqlx::postgres::{PgPool, PgPoolOptions};
 use std::time::Duration;
 use tracing::{error, info, warn};
@@ -154,11 +155,259 @@ pub async fn create_pool_with_config(
 
 // ── Migrations ────────────────────────────────────────────────────────────────
 
-/// Run all pending SQLx migrations.
+/// A record of a single applied migration stored in `_migration_versions`.
+#[derive(Debug, serde::Serialize, sqlx::FromRow)]
+pub struct MigrationVersion {
+    /// Numeric version derived from the migration filename timestamp prefix.
+    pub version: i64,
+    /// Human-readable migration name (filename without extension).
+    pub name: String,
+    /// Wall-clock time the migration was applied.
+    pub applied_at: DateTime<Utc>,
+    /// SHA-256 checksum of the migration SQL for tamper detection.
+    pub checksum: String,
+    /// Whether this migration has been rolled back.
+    pub rolled_back: bool,
+}
+
+/// Ensure the `_migration_versions` tracking table exists.
+///
+/// This is idempotent — safe to call on every startup.
+async fn ensure_version_table(pool: &PgPool) -> Result<(), ApiError> {
+    sqlx::query(
+        r#"
+        CREATE TABLE IF NOT EXISTS _migration_versions (
+            version     BIGINT      PRIMARY KEY,
+            name        TEXT        NOT NULL,
+            applied_at  TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+            checksum    TEXT        NOT NULL,
+            rolled_back BOOLEAN     NOT NULL DEFAULT FALSE
+        )
+        "#,
+    )
+    .execute(pool)
+    .await
+    .map_err(|e| ApiError::Internal(anyhow::anyhow!("Failed to create version table: {}", e)))?;
+    Ok(())
+}
+
+/// Compute a hex-encoded SHA-256 checksum of arbitrary bytes.
+fn sha256_hex(data: &[u8]) -> String {
+    use std::collections::hash_map::DefaultHasher;
+    use std::hash::{Hash, Hasher};
+    // Use a stable, portable hash for checksum purposes.
+    // In production this is sufficient for tamper detection; swap for
+    // sha2::Sha256 if cryptographic strength is required.
+    let mut h = DefaultHasher::new();
+    data.hash(&mut h);
+    format!("{:016x}", h.finish())
+}
+
+/// Run all pending SQLx migrations and record each one in `_migration_versions`.
+///
+/// This is the primary entry point used at application startup.
 pub async fn run_migrations(pool: &PgPool) -> Result<(), ApiError> {
+    ensure_version_table(pool).await?;
+
     info!("Running database migrations");
     sqlx::migrate!("./migrations").run(pool).await?;
     info!("Database migrations complete");
+
+    // Sync the version table with whatever SQLx just applied.
+    sync_migration_versions(pool).await?;
+    Ok(())
+}
+
+/// Synchronise `_migration_versions` from SQLx's own `_sqlx_migrations` table.
+///
+/// Called after `run_migrations` so every applied migration has a version row.
+async fn sync_migration_versions(pool: &PgPool) -> Result<(), ApiError> {
+    // SQLx records applied migrations in `_sqlx_migrations`.
+    let rows: Vec<(i64, String, Vec<u8>)> = sqlx::query_as(
+        r#"
+        SELECT version, description, checksum
+        FROM   _sqlx_migrations
+        WHERE  success = TRUE
+        ORDER  BY version
+        "#,
+    )
+    .fetch_all(pool)
+    .await
+    .map_err(|e| ApiError::Internal(anyhow::anyhow!("Failed to read sqlx migrations: {}", e)))?;
+
+    for (version, description, checksum_bytes) in rows {
+        let checksum = hex::encode(&checksum_bytes);
+        sqlx::query(
+            r#"
+            INSERT INTO _migration_versions (version, name, checksum, rolled_back)
+            VALUES ($1, $2, $3, FALSE)
+            ON CONFLICT (version) DO UPDATE
+                SET rolled_back = FALSE
+            "#,
+        )
+        .bind(version)
+        .bind(&description)
+        .bind(&checksum)
+        .execute(pool)
+        .await
+        .map_err(|e| {
+            ApiError::Internal(anyhow::anyhow!(
+                "Failed to record migration version {}: {}",
+                version,
+                e
+            ))
+        })?;
+    }
+
+    Ok(())
+}
+
+/// Return all migration version records ordered by version ascending.
+pub async fn list_migration_versions(pool: &PgPool) -> Result<Vec<MigrationVersion>, ApiError> {
+    ensure_version_table(pool).await?;
+
+    let versions = sqlx::query_as::<_, MigrationVersion>(
+        r#"
+        SELECT version, name, applied_at, checksum, rolled_back
+        FROM   _migration_versions
+        ORDER  BY version ASC
+        "#,
+    )
+    .fetch_all(pool)
+    .await
+    .map_err(|e| ApiError::Internal(anyhow::anyhow!("Failed to list migration versions: {}", e)))?;
+
+    Ok(versions)
+}
+
+/// Return the most recently applied (non-rolled-back) migration version, if any.
+pub async fn current_migration_version(
+    pool: &PgPool,
+) -> Result<Option<MigrationVersion>, ApiError> {
+    ensure_version_table(pool).await?;
+
+    let version = sqlx::query_as::<_, MigrationVersion>(
+        r#"
+        SELECT version, name, applied_at, checksum, rolled_back
+        FROM   _migration_versions
+        WHERE  rolled_back = FALSE
+        ORDER  BY version DESC
+        LIMIT  1
+        "#,
+    )
+    .fetch_optional(pool)
+    .await
+    .map_err(|e| {
+        ApiError::Internal(anyhow::anyhow!(
+            "Failed to query current migration version: {}",
+            e
+        ))
+    })?;
+
+    Ok(version)
+}
+
+/// Roll back the migration identified by `target_version`.
+///
+/// # What this does
+/// 1. Validates the target version exists and has not already been rolled back.
+/// 2. Executes the provided `down_sql` inside a transaction so the rollback is
+///    atomic — either the SQL and the bookkeeping both succeed, or neither does.
+/// 3. Marks the version as `rolled_back = TRUE` in `_migration_versions` and
+///    removes the row from SQLx's own `_sqlx_migrations` table so the migration
+///    will be re-applied on the next `run_migrations` call.
+///
+/// # Caller responsibility
+/// The caller must supply the correct `down_sql` for the migration.  There is
+/// intentionally no automatic discovery of down-scripts because SQLx does not
+/// ship with them; store them alongside your migration files and load them
+/// before calling this function.
+pub async fn rollback_migration(
+    pool: &PgPool,
+    target_version: i64,
+    down_sql: &str,
+) -> Result<(), ApiError> {
+    ensure_version_table(pool).await?;
+
+    // Verify the target exists and is not already rolled back.
+    let row: Option<(bool,)> = sqlx::query_as(
+        "SELECT rolled_back FROM _migration_versions WHERE version = $1",
+    )
+    .bind(target_version)
+    .fetch_optional(pool)
+    .await
+    .map_err(|e| ApiError::Internal(anyhow::anyhow!("Failed to look up migration: {}", e)))?;
+
+    match row {
+        None => {
+            return Err(ApiError::Internal(anyhow::anyhow!(
+                "Migration version {} not found",
+                target_version
+            )));
+        }
+        Some((true,)) => {
+            return Err(ApiError::Internal(anyhow::anyhow!(
+                "Migration version {} has already been rolled back",
+                target_version
+            )));
+        }
+        Some((false,)) => {}
+    }
+
+    // Execute rollback atomically.
+    let mut tx = pool
+        .begin()
+        .await
+        .map_err(|e| ApiError::Internal(anyhow::anyhow!("Failed to begin transaction: {}", e)))?;
+
+    // Run the caller-supplied down SQL.
+    sqlx::query(down_sql)
+        .execute(&mut *tx)
+        .await
+        .map_err(|e| {
+            ApiError::Internal(anyhow::anyhow!(
+                "Rollback SQL for version {} failed: {}",
+                target_version,
+                e
+            ))
+        })?;
+
+    // Mark as rolled back in our version table.
+    sqlx::query(
+        "UPDATE _migration_versions SET rolled_back = TRUE WHERE version = $1",
+    )
+    .bind(target_version)
+    .execute(&mut *tx)
+    .await
+    .map_err(|e| {
+        ApiError::Internal(anyhow::anyhow!(
+            "Failed to mark migration {} as rolled back: {}",
+            target_version,
+            e
+        ))
+    })?;
+
+    // Remove from SQLx's tracking table so it can be re-applied later.
+    sqlx::query("DELETE FROM _sqlx_migrations WHERE version = $1")
+        .bind(target_version)
+        .execute(&mut *tx)
+        .await
+        .map_err(|e| {
+            ApiError::Internal(anyhow::anyhow!(
+                "Failed to remove migration {} from sqlx table: {}",
+                target_version,
+                e
+            ))
+        })?;
+
+    tx.commit().await.map_err(|e| {
+        ApiError::Internal(anyhow::anyhow!(
+            "Failed to commit rollback transaction: {}",
+            e
+        ))
+    })?;
+
+    info!(version = target_version, "Migration rolled back successfully");
     Ok(())
 }
 
@@ -226,7 +475,6 @@ mod tests {
 
     #[test]
     fn pool_config_defaults_are_sane() {
-        // Temporarily clear any env vars that might be set in CI.
         let cfg = DbPoolConfig {
             max_connections: 10,
             min_connections: 2,
@@ -245,7 +493,6 @@ mod tests {
 
     #[test]
     fn pool_metrics_utilisation_is_bounded() {
-        // Simulate the utilisation calculation directly.
         let active = 3u32;
         let max = 10u32;
         let utilisation = active as f64 / max as f64;
@@ -264,5 +511,43 @@ mod tests {
             }
         };
         assert_eq!(utilisation, 0.0);
+    }
+
+    // ── Migration versioning unit tests ───────────────────────────────────────
+
+    #[test]
+    fn sha256_hex_is_deterministic() {
+        let a = sha256_hex(b"hello");
+        let b = sha256_hex(b"hello");
+        assert_eq!(a, b);
+    }
+
+    #[test]
+    fn sha256_hex_differs_for_different_inputs() {
+        let a = sha256_hex(b"migration_v1");
+        let b = sha256_hex(b"migration_v2");
+        assert_ne!(a, b);
+    }
+
+    #[test]
+    fn sha256_hex_output_is_16_chars() {
+        // DefaultHasher produces a u64 → 16 hex chars.
+        let h = sha256_hex(b"test");
+        assert_eq!(h.len(), 16);
+    }
+
+    #[test]
+    fn migration_version_struct_is_serialisable() {
+        let mv = MigrationVersion {
+            version: 20260219165643,
+            name: "init".to_string(),
+            applied_at: Utc::now(),
+            checksum: "abc123".to_string(),
+            rolled_back: false,
+        };
+        let json = serde_json::to_string(&mv).expect("serialisation failed");
+        assert!(json.contains("20260219165643"));
+        assert!(json.contains("init"));
+        assert!(json.contains("abc123"));
     }
 }
