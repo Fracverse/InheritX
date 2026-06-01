@@ -42,7 +42,8 @@ use crate::contingent_beneficiary::{
 use crate::csrf::{csrf_protection_middleware, get_csrf_token};
 use crate::document_storage::DocumentStorageService;
 use crate::governance::{
-    CreateProposalRequest, GovernanceService, ParameterUpdateRequest, Proposal, VoteRequest,
+    CreateProposalRequest, DelegateVotesRequest, DelegationResponse, GovernanceDelegation,
+    GovernanceService, ParameterUpdateRequest, Proposal, VoteRequest,
 };
 use crate::insurance_fund::{CreateInsuranceClaimRequest, ProcessInsuranceClaimRequest};
 use crate::legacy_content::{ContentListFilters, LegacyContentService};
@@ -423,6 +424,19 @@ pub async fn create_app(
         .route(
             "/api/admin/governance/parameters/update",
             post(update_protocol_parameter),
+        )
+        // ── Governance Vote Delegation (Issue #649) ───────────────────────────
+        .route(
+            "/api/governance/delegation",
+            post(delegate_governance_votes).delete(undelegate_governance_votes),
+        )
+        .route(
+            "/api/governance/delegation/me",
+            get(get_my_governance_delegation),
+        )
+        .route(
+            "/api/governance/delegation/delegators/:delegate_id",
+            get(get_governance_delegators),
         )
         // ── Insurance Fund Monitoring (Issue #249) ───────────────────────────
         .route(
@@ -1731,6 +1745,50 @@ async fn update_protocol_parameter(
     Ok(Json(
         json!({ "status": "success", "message": "Parameter updated successfully" }),
     ))
+}
+
+// ── Governance Vote Delegation Handlers (Issue #649) ─────────────────────────
+
+/// POST /api/governance/delegation
+/// Delegate the authenticated user's votes to another user.
+async fn delegate_governance_votes(
+    State(state): State<Arc<AppState>>,
+    AuthenticatedUser(user): AuthenticatedUser,
+    Json(req): Json<DelegateVotesRequest>,
+) -> Result<Json<DelegationResponse>, ApiError> {
+    let result = GovernanceService::delegate_votes(&state.db, user.user_id, &req).await?;
+    Ok(Json(result))
+}
+
+/// DELETE /api/governance/delegation
+/// Remove the authenticated user's active delegation.
+async fn undelegate_governance_votes(
+    State(state): State<Arc<AppState>>,
+    AuthenticatedUser(user): AuthenticatedUser,
+) -> Result<Json<DelegationResponse>, ApiError> {
+    let result = GovernanceService::undelegate_votes(&state.db, user.user_id).await?;
+    Ok(Json(result))
+}
+
+/// GET /api/governance/delegation/me
+/// Return the authenticated user's current delegation, if any.
+async fn get_my_governance_delegation(
+    State(state): State<Arc<AppState>>,
+    AuthenticatedUser(user): AuthenticatedUser,
+) -> Result<Json<Option<GovernanceDelegation>>, ApiError> {
+    let delegation = GovernanceService::get_delegation(&state.db, user.user_id).await?;
+    Ok(Json(delegation))
+}
+
+/// GET /api/governance/delegation/delegators/:delegate_id
+/// Return all users who have delegated their votes to the given delegate.
+async fn get_governance_delegators(
+    State(state): State<Arc<AppState>>,
+    AuthenticatedUser(_user): AuthenticatedUser,
+    Path(delegate_id): Path<Uuid>,
+) -> Result<Json<Vec<GovernanceDelegation>>, ApiError> {
+    let delegators = GovernanceService::get_delegators(&state.db, delegate_id).await?;
+    Ok(Json(delegators))
 }
 
 // ─── Will PDF & Template Engine Handlers (Tasks 1 & 2) ───────────────────────

@@ -75,6 +75,33 @@ pub struct ParameterUpdateRequest {
     pub parameter_value: String,
 }
 
+// ── Delegation types ──────────────────────────────────────────────────────────
+
+/// Active delegation row returned from the DB.
+#[derive(Debug, Serialize, Deserialize, sqlx::FromRow)]
+pub struct GovernanceDelegation {
+    pub id: Uuid,
+    pub delegator_id: Uuid,
+    pub delegate_id: Uuid,
+    pub created_at: DateTime<Utc>,
+    pub updated_at: DateTime<Utc>,
+}
+
+/// Request body for delegating votes.
+#[derive(Debug, Deserialize)]
+pub struct DelegateVotesRequest {
+    /// The user to delegate voting power to.
+    pub delegate_id: Uuid,
+}
+
+/// Response returned after a successful delegation operation.
+#[derive(Debug, Serialize)]
+pub struct DelegationResponse {
+    pub delegator_id: Uuid,
+    pub delegate_id: Option<Uuid>,
+    pub message: String,
+}
+
 /// Allowed protocol parameters with their validation rules.
 ///
 /// Each entry is `(name, min_value, max_value, description)`.
@@ -550,5 +577,165 @@ impl GovernanceService {
             .and_then(|v| v.parse::<i32>().ok())
             .unwrap_or(1)
             .max(1))
+    }
+
+    // ── Vote Delegation (Issue #649) ──────────────────────────────────────────
+
+    /// Delegate voting power from `delegator_id` to `delegate_id`.
+    ///
+    /// Rules enforced:
+    /// - A user cannot delegate to themselves.
+    /// - If an active delegation already exists it is replaced (redelegation).
+    /// - The old delegation is removed and the new one is inserted atomically.
+    /// - Every change is recorded in `governance_delegation_history`.
+    pub async fn delegate_votes(
+        db: &PgPool,
+        delegator_id: Uuid,
+        req: &DelegateVotesRequest,
+    ) -> Result<DelegationResponse, ApiError> {
+        let delegate_id = req.delegate_id;
+
+        if delegator_id == delegate_id {
+            return Err(ApiError::BadRequest(
+                "Cannot delegate votes to yourself".to_string(),
+            ));
+        }
+
+        let mut tx = db
+            .begin()
+            .await
+            .map_err(|e| ApiError::Internal(anyhow::anyhow!("Tx start error: {}", e)))?;
+
+        // Check for an existing delegation so we can decide the audit action.
+        let existing: Option<GovernanceDelegation> = sqlx::query_as::<_, GovernanceDelegation>(
+            "SELECT * FROM governance_delegations WHERE delegator_id = $1",
+        )
+        .bind(delegator_id)
+        .fetch_optional(&mut *tx)
+        .await
+        .map_err(|e| ApiError::Internal(anyhow::anyhow!("DB error checking delegation: {}", e)))?;
+
+        let action = if existing.is_some() { "redelegated" } else { "delegated" };
+
+        // Upsert the delegation (insert or update on conflict).
+        sqlx::query(
+            r#"
+            INSERT INTO governance_delegations (delegator_id, delegate_id, updated_at)
+            VALUES ($1, $2, NOW())
+            ON CONFLICT (delegator_id)
+            DO UPDATE SET delegate_id = EXCLUDED.delegate_id, updated_at = NOW()
+            "#,
+        )
+        .bind(delegator_id)
+        .bind(delegate_id)
+        .execute(&mut *tx)
+        .await
+        .map_err(|e| ApiError::Internal(anyhow::anyhow!("DB error upserting delegation: {}", e)))?;
+
+        // Record in audit history.
+        sqlx::query(
+            "INSERT INTO governance_delegation_history (delegator_id, delegate_id, action) VALUES ($1, $2, $3)",
+        )
+        .bind(delegator_id)
+        .bind(delegate_id)
+        .bind(action)
+        .execute(&mut *tx)
+        .await
+        .map_err(|e| ApiError::Internal(anyhow::anyhow!("DB error recording delegation history: {}", e)))?;
+
+        tx.commit()
+            .await
+            .map_err(|e| ApiError::Internal(anyhow::anyhow!("Tx commit error: {}", e)))?;
+
+        info!(
+            delegator_id = %delegator_id,
+            delegate_id = %delegate_id,
+            action = action,
+            "Governance vote delegation updated"
+        );
+
+        Ok(DelegationResponse {
+            delegator_id,
+            delegate_id: Some(delegate_id),
+            message: format!("Votes successfully {action} to {delegate_id}"),
+        })
+    }
+
+    /// Remove an active delegation, restoring voting power to the delegator.
+    pub async fn undelegate_votes(
+        db: &PgPool,
+        delegator_id: Uuid,
+    ) -> Result<DelegationResponse, ApiError> {
+        let mut tx = db
+            .begin()
+            .await
+            .map_err(|e| ApiError::Internal(anyhow::anyhow!("Tx start error: {}", e)))?;
+
+        let existing: Option<GovernanceDelegation> = sqlx::query_as::<_, GovernanceDelegation>(
+            "SELECT * FROM governance_delegations WHERE delegator_id = $1",
+        )
+        .bind(delegator_id)
+        .fetch_optional(&mut *tx)
+        .await
+        .map_err(|e| ApiError::Internal(anyhow::anyhow!("DB error checking delegation: {}", e)))?;
+
+        let delegation = existing.ok_or_else(|| {
+            ApiError::BadRequest("No active delegation found to remove".to_string())
+        })?;
+
+        sqlx::query("DELETE FROM governance_delegations WHERE delegator_id = $1")
+            .bind(delegator_id)
+            .execute(&mut *tx)
+            .await
+            .map_err(|e| ApiError::Internal(anyhow::anyhow!("DB error removing delegation: {}", e)))?;
+
+        sqlx::query(
+            "INSERT INTO governance_delegation_history (delegator_id, delegate_id, action) VALUES ($1, $2, 'undelegated')",
+        )
+        .bind(delegator_id)
+        .bind(delegation.delegate_id)
+        .execute(&mut *tx)
+        .await
+        .map_err(|e| ApiError::Internal(anyhow::anyhow!("DB error recording undelegation: {}", e)))?;
+
+        tx.commit()
+            .await
+            .map_err(|e| ApiError::Internal(anyhow::anyhow!("Tx commit error: {}", e)))?;
+
+        info!(delegator_id = %delegator_id, "Governance vote delegation removed");
+
+        Ok(DelegationResponse {
+            delegator_id,
+            delegate_id: None,
+            message: "Delegation removed; voting power restored".to_string(),
+        })
+    }
+
+    /// Return the current delegation for a user, if one exists.
+    pub async fn get_delegation(
+        db: &PgPool,
+        delegator_id: Uuid,
+    ) -> Result<Option<GovernanceDelegation>, ApiError> {
+        sqlx::query_as::<_, GovernanceDelegation>(
+            "SELECT * FROM governance_delegations WHERE delegator_id = $1",
+        )
+        .bind(delegator_id)
+        .fetch_optional(db)
+        .await
+        .map_err(|e| ApiError::Internal(anyhow::anyhow!("DB error fetching delegation: {}", e)))
+    }
+
+    /// Return all users who have delegated their votes to `delegate_id`.
+    pub async fn get_delegators(
+        db: &PgPool,
+        delegate_id: Uuid,
+    ) -> Result<Vec<GovernanceDelegation>, ApiError> {
+        sqlx::query_as::<_, GovernanceDelegation>(
+            "SELECT * FROM governance_delegations WHERE delegate_id = $1 ORDER BY created_at ASC",
+        )
+        .bind(delegate_id)
+        .fetch_all(db)
+        .await
+        .map_err(|e| ApiError::Internal(anyhow::anyhow!("DB error fetching delegators: {}", e)))
     }
 }
