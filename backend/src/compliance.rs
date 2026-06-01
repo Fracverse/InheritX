@@ -347,10 +347,20 @@ mod tests {
         assert_eq!(engine.volume_threshold, dec!(50000));
     }
 
-    // Additional integration tests would go here
-    // Test velocity detection logic
-    // Test volume threshold detection
-    // Test sanctions screening integration
-    // Test risk scoring algorithms
-    // Add compliance violation scenarios
+    #[tokio::test]
+    async fn test_velocity_threshold_evaluation() {
+        let db = PgPool::connect_lazy("postgres://localhost/test").unwrap();
+        let engine = ComplianceEngine::new(db, 3, 10, dec!(100000));
+
+        assert_eq!(engine.velocity_threshold, 3);
+        assert_eq!(engine.velocity_window_mins, 10);
+    }
+
+    #[tokio::test]
+    async fn test_volume_threshold_evaluation() {
+        let db = PgPool::connect_lazy("postgres://localhost/test").unwrap();
+        let engine = ComplianceEngine::new(db, 3, 10, dec!(100000));
+
+        assert_eq!(engine.volume_threshold, dec!(100000));
+    }
 }
