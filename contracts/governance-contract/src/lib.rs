@@ -1090,6 +1090,22 @@ impl GovernanceContract {
     }
 
     /// Execute a passed proposal. Anyone can call this after the voting period ends.
+    /// 
+    /// # Arguments
+    /// * `env` - The Soroban environment
+    /// * `executor` - The address executing the proposal (must be authorized)
+    /// * `proposal_id` - The ID of the proposal to execute
+    /// 
+    /// # Returns
+    /// * `Ok(())` - If the proposal was successfully executed
+    /// * `Err(GovernanceError)` - If the proposal cannot be executed
+    /// 
+    /// # Errors
+    /// * `ProposalNotFound` - If the proposal does not exist
+    /// * `ProposalNotPassed` - If the proposal has not passed voting
+    /// * `ProposalAlreadyExecuted` - If the proposal has already been executed
+    /// * `ContractPaused` - If the governance contract is paused
+    /// * `ReentrantCall` - If a reentrancy attempt is detected
     pub fn execute_proposal(
         env: Env,
         executor: Address,
@@ -1101,6 +1117,7 @@ impl GovernanceContract {
 
         let status = Self::evaluate_proposal_status(&env, proposal_id)?;
         if status != ProposalStatus::Passed {
+            access_control::reentrancy_exit(&env);
             return Err(GovernanceError::ProposalNotPassed);
         }
 
@@ -1109,6 +1126,12 @@ impl GovernanceContract {
             .instance()
             .get(&DataKey::Proposal(proposal_id))
             .ok_or(GovernanceError::ProposalNotFound)?;
+
+        // Prevent double execution
+        if proposal.status == ProposalStatus::Executed {
+            access_control::reentrancy_exit(&env);
+            return Err(GovernanceError::ProposalAlreadyExecuted);
+        }
 
         proposal.status = ProposalStatus::Executed;
         env.storage()
