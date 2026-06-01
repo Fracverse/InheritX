@@ -182,7 +182,7 @@ export function KYCVerificationModal() {
     });
   }, [formData]);
 
-  const handleSubmit = async (e: React.FormEvent) => {
+  const handleSubmit = async (e: React.FormEvent<HTMLFormElement>) => {
     e.preventDefault();
     if (!validateForm()) return;
 
@@ -192,6 +192,12 @@ export function KYCVerificationModal() {
       console.error("Submission error:", error);
     }
   };
+
+  const handleTextInputChange =
+    (field: keyof typeof formData) =>
+    (e: React.ChangeEvent<HTMLInputElement | HTMLSelectElement>) => {
+      updateFormData({ [field]: e.target.value } as Partial<typeof formData>);
+    };
 
   const handleFileChange = (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
@@ -277,7 +283,7 @@ export function KYCVerificationModal() {
           exit={{ scale: 0.95, opacity: 0, y: 20 }}
           transition={{ duration: 0.2, ease: "easeOut" }}
           className={`bg-[#0D1417] w-full ${showStatusView ? "max-w-md" : "max-w-2xl"} max-h-[90vh] overflow-hidden rounded-2xl`}
-          onClick={(e) => e.stopPropagation()}
+          onClick={(e: React.MouseEvent<HTMLDivElement>) => e.stopPropagation()}
         >
           {showStatusView ? (
             // Status View
@@ -336,9 +342,7 @@ export function KYCVerificationModal() {
                         <input
                           type="text"
                           value={formData.fullName}
-                          onChange={(e) =>
-                            updateFormData({ fullName: e.target.value })
-                          }
+                          onChange={handleTextInputChange("fullName")}
                           className={`${inputClasses} ${errors.fullName ? "border-red-500" : ""}`}
                           placeholder="As shown on ID"
                         />
@@ -357,9 +361,7 @@ export function KYCVerificationModal() {
                         <input
                           type="email"
                           value={formData.email}
-                          onChange={(e) =>
-                            updateFormData({ email: e.target.value })
-                          }
+                          onChange={handleTextInputChange("email")}
                           className={`${inputClasses} ${errors.email ? "border-red-500" : ""}`}
                           placeholder="your@email.com"
                         />
@@ -378,9 +380,7 @@ export function KYCVerificationModal() {
                         <input
                           type="date"
                           value={formData.dateOfBirth}
-                          onChange={(e) =>
-                            updateFormData({ dateOfBirth: e.target.value })
-                          }
+                          onChange={handleTextInputChange("dateOfBirth")}
                           className={`${inputClasses} ${errors.dateOfBirth ? "border-red-500" : ""}`}
                         />
                         {errors.dateOfBirth && (
@@ -397,9 +397,7 @@ export function KYCVerificationModal() {
                         <input
                           type="text"
                           value={formData.nationality}
-                          onChange={(e) =>
-                            updateFormData({ nationality: e.target.value })
-                          }
+                          onChange={handleTextInputChange("nationality")}
                           className={`${inputClasses} ${errors.nationality ? "border-red-500" : ""}`}
                           placeholder="Country of citizenship"
                         />
@@ -428,9 +426,7 @@ export function KYCVerificationModal() {
                         <div className="relative">
                           <select
                             value={formData.idType}
-                            onChange={(e) =>
-                              updateFormData({ idType: e.target.value })
-                            }
+                            onChange={handleTextInputChange("idType")}
                             className={`${inputClasses} appearance-none cursor-pointer`}
                           >
                             {ID_TYPES.map((type) => (
@@ -457,9 +453,7 @@ export function KYCVerificationModal() {
                         <input
                           type="text"
                           value={formData.idNumber}
-                          onChange={(e) =>
-                            updateFormData({ idNumber: e.target.value })
-                          }
+                          onChange={handleTextInputChange("idNumber")}
                           className={`${inputClasses} ${errors.idNumber ? "border-red-500" : ""}`}
                           placeholder="Document number"
                         />
@@ -478,9 +472,7 @@ export function KYCVerificationModal() {
                       <input
                         type="date"
                         value={formData.expiryDate}
-                        onChange={(e) =>
-                          updateFormData({ expiryDate: e.target.value })
-                        }
+                        onChange={handleTextInputChange("expiryDate")}
                         className={`${inputClasses} ${errors.expiryDate ? "border-red-500" : ""}`}
                       />
                       {errors.expiryDate && (
@@ -563,9 +555,7 @@ export function KYCVerificationModal() {
                         <input
                           type="text"
                           value={formData.streetAddress}
-                          onChange={(e) =>
-                            updateFormData({ streetAddress: e.target.value })
-                          }
+                          onChange={handleTextInputChange("streetAddress")}
                           className={`${inputClasses} ${errors.streetAddress ? "border-red-500" : ""}`}
                           placeholder="Street address"
                         />
@@ -584,9 +574,7 @@ export function KYCVerificationModal() {
                           <input
                             type="text"
                             value={formData.city}
-                            onChange={(e) =>
-                              updateFormData({ city: e.target.value })
-                            }
+                            onChange={handleTextInputChange("city")}
                             className={`${inputClasses} ${errors.city ? "border-red-500" : ""}`}
                             placeholder="City"
                           />
@@ -604,9 +592,7 @@ export function KYCVerificationModal() {
                           <input
                             type="text"
                             value={formData.country}
-                            onChange={(e) =>
-                              updateFormData({ country: e.target.value })
-                            }
+                            onChange={handleTextInputChange("country")}
                             className={`${inputClasses} ${errors.country ? "border-red-500" : ""}`}
                             placeholder="Country"
                           />
@@ -625,9 +611,7 @@ export function KYCVerificationModal() {
                         <input
                           type="text"
                           value={formData.postalCode}
-                          onChange={(e) =>
-                            updateFormData({ postalCode: e.target.value })
-                          }
+                          onChange={handleTextInputChange("postalCode")}
                           className={`${inputClasses} ${errors.postalCode ? "border-red-500" : ""}`}
                           placeholder="Postal code"
                         />
@@ -640,28 +624,28 @@ export function KYCVerificationModal() {
                     </div>
                   </div>
                 </section>
-              </form>
 
-              {/* Footer with Submit Button */}
-              <div className="p-6 pt-4 border-t border-[#1C252A]">
-                <button
-                  type="submit"
-                  disabled={isSubmitting}
-                  className="ml-auto flex items-center gap-2 bg-[#33C5E0] text-[#0D1417] px-6 py-3 rounded-lg font-semibold hover:bg-[#2AB8D3] transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
-                >
-                  {isSubmitting ? (
-                    <>
-                      <Loader2 className="animate-spin" size={18} />
-                      Submitting...
-                    </>
-                  ) : (
-                    <>
-                      <Upload size={18} />
-                      Submit KYC
-                    </>
-                  )}
-                </button>
-              </div>
+                {/* Footer with Submit Button */}
+                <div className="p-6 pt-4 border-t border-[#1C252A]">
+                  <button
+                    type="submit"
+                    disabled={isSubmitting}
+                    className="ml-auto flex items-center gap-2 bg-[#33C5E0] text-[#0D1417] px-6 py-3 rounded-lg font-semibold hover:bg-[#2AB8D3] transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
+                  >
+                    {isSubmitting ? (
+                      <>
+                        <Loader2 className="animate-spin" size={18} />
+                        Submitting...
+                      </>
+                    ) : (
+                      <>
+                        <Upload size={18} />
+                        Submit KYC
+                      </>
+                    )}
+                  </button>
+                </div>
+              </form>
             </>
           )}
         </motion.div>
