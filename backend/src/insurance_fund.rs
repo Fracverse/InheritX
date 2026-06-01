@@ -577,6 +577,21 @@ impl InsuranceFundService {
             .await
             .map_err(|e| ApiError::Internal(anyhow::anyhow!("Tx start error: {}", e)))?;
 
+        let fund = sqlx::query_as::<_, InsuranceFund>(
+            "SELECT * FROM insurance_fund WHERE id = $1",
+        )
+        .bind(fund_id)
+        .fetch_optional(&mut *tx)
+        .await
+        .map_err(|e| ApiError::Internal(anyhow::anyhow!("DB error fetching fund: {}", e)))?
+        .ok_or_else(|| ApiError::NotFound("Fund not found".to_string()))?;
+
+        if fund.status == FundStatus::Insolvent.as_str() {
+            return Err(ApiError::BadRequest(
+                "Fund is currently insolvent. New claims cannot be created.".to_string(),
+            ));
+        }
+
         let claim = sqlx::query_as::<_, InsuranceClaim>(
             r#"
             INSERT INTO insurance_claims (
@@ -640,13 +655,19 @@ impl InsuranceFundService {
         .map_err(|e| ApiError::Internal(anyhow::anyhow!("DB error fetching claim: {}", e)))?
         .ok_or_else(|| ApiError::NotFound(format!("Insurance claim {} not found", claim_id)))?;
 
-        if claim.status != "pending" {
+        if claim.status != "pending" && claim.status != "approved" {
             return Err(ApiError::BadRequest(
-                "Claim has already been processed".to_string(),
+                "Claim cannot be processed from its current state".to_string(),
             ));
         }
 
         let (new_status, approved_amount, payout_amount) = if req.approved {
+            if claim.status == "approved" {
+                return Err(ApiError::BadRequest(
+                    "Claim is already approved".to_string(),
+                ));
+            }
+
             let amount = req.approved_amount.unwrap_or(claim.claimed_amount);
             if amount <= Decimal::ZERO {
                 return Err(ApiError::BadRequest(
@@ -658,6 +679,38 @@ impl InsuranceFundService {
                     "Approved amount cannot exceed claimed amount".to_string(),
                 ));
             }
+
+            let fund = sqlx::query_as::<_, InsuranceFund>(
+                "SELECT * FROM insurance_fund WHERE id = $1 FOR UPDATE",
+            )
+            .bind(claim.fund_id)
+            .fetch_optional(&mut *tx)
+            .await
+            .map_err(|e| ApiError::Internal(anyhow::anyhow!("DB error fetching fund: {}", e)))?
+            .ok_or_else(|| ApiError::NotFound(format!("Insurance fund {} not found", claim.fund_id)))?;
+
+            if fund.status == FundStatus::Insolvent.as_str() {
+                return Err(ApiError::BadRequest(
+                    "Cannot approve claims while fund is insolvent".to_string(),
+                ));
+            }
+
+            if fund.available_reserves < amount {
+                return Err(ApiError::BadRequest(
+                    "Insufficient available fund reserves to approve this claim".to_string(),
+                ));
+            }
+
+            // Lock the reserves for this claim
+            sqlx::query(
+                "UPDATE insurance_fund SET available_reserves = available_reserves - $1, locked_reserves = locked_reserves + $1 WHERE id = $2"
+            )
+            .bind(amount)
+            .bind(fund.id)
+            .execute(&mut *tx)
+            .await
+            .map_err(|e| ApiError::Internal(anyhow::anyhow!("DB error updating reserves: {}", e)))?;
+
             ("approved".to_string(), Some(amount), Some(amount))
         } else {
             if req
@@ -670,6 +723,20 @@ impl InsuranceFundService {
                     "Rejection reason is required when rejecting a claim".to_string(),
                 ));
             }
+
+            if claim.status == "approved" {
+                // Restore locked reserves to available reserves
+                let amount = claim.approved_amount.unwrap_or_default();
+                sqlx::query(
+                    "UPDATE insurance_fund SET available_reserves = available_reserves + $1, locked_reserves = locked_reserves - $1 WHERE id = $2"
+                )
+                .bind(amount)
+                .bind(claim.fund_id)
+                .execute(&mut *tx)
+                .await
+                .map_err(|e| ApiError::Internal(anyhow::anyhow!("DB error updating reserves: {}", e)))?;
+            }
+
             ("rejected".to_string(), None, None)
         };
 
@@ -774,15 +841,15 @@ impl InsuranceFundService {
         .map_err(|e| ApiError::Internal(anyhow::anyhow!("DB error fetching fund: {}", e)))?
         .ok_or_else(|| ApiError::NotFound(format!("Insurance fund {} not found", claim.fund_id)))?;
 
-        if fund.available_reserves < payout_amount {
-            return Err(ApiError::BadRequest(
-                "Insufficient fund reserves for payout".to_string(),
-            ));
+        if fund.locked_reserves < payout_amount {
+            return Err(ApiError::Internal(anyhow::anyhow!(
+                "Insufficient locked fund reserves for payout"
+            )));
         }
 
         let new_balance = fund.total_reserves - payout_amount;
         sqlx::query(
-            "UPDATE insurance_fund SET total_reserves = total_reserves - $1, available_reserves = available_reserves - $1, total_payouts = total_payouts + $1 WHERE id = $2",
+            "UPDATE insurance_fund SET total_reserves = total_reserves - $1, locked_reserves = locked_reserves - $1, total_payouts = total_payouts + $1 WHERE id = $2",
         )
         .bind(payout_amount)
         .bind(claim.fund_id)
