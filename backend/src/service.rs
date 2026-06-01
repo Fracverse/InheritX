@@ -1586,19 +1586,23 @@ impl RevenueMetricsService {
             }
         };
 
-        let query = format!(
+        let rows = sqlx::query_as::<_, Row>(
             r#"
             SELECT 
-                DATE_TRUNC('{trunc}', created_at)::DATE::TEXT as date,
+                DATE_TRUNC($1, created_at)::DATE::TEXT as date,
                 COALESCE(SUM(fee), 0)::FLOAT8 as amount
             FROM plans
-            WHERE created_at >= NOW() - INTERVAL '{interval}'
+            WHERE created_at >= NOW() - ($2::text)::interval
             GROUP BY 1
             ORDER BY 1
-            "#
+            "#,
         );
 
-        let rows = sqlx::query_as::<_, Row>(&query).fetch_all(pool).await?;
+        let rows = rows
+            .bind(trunc)
+            .bind(interval)
+            .fetch_all(pool)
+            .await?;
 
         let data = rows
             .into_iter()
@@ -4165,20 +4169,23 @@ impl EmergencyAccessMetricsService {
             _ => ("30 days", "day"), // default to daily
         };
 
-        let trend_query = format!(
+        let trend_rows: Vec<(String, i64)> = sqlx::query_as(
             r#"
             SELECT 
-                DATE_TRUNC('{}', created_at)::DATE::TEXT as date,
+                DATE_TRUNC($1, created_at)::DATE::TEXT as date,
                 COUNT(*)::BIGINT as count
             FROM emergency_access_grants
-            WHERE created_at >= NOW() - INTERVAL '{}'
+            WHERE created_at >= NOW() - ($2::text)::interval
             GROUP BY 1
             ORDER BY 1
             "#,
-            trunc, interval
         );
 
-        let trend_rows: Vec<(String, i64)> = sqlx::query_as(&trend_query).fetch_all(db).await?;
+        let trend_rows: Vec<(String, i64)> = trend_rows
+            .bind(trunc)
+            .bind(interval)
+            .fetch_all(db)
+            .await?;
 
         let grant_trend = trend_rows
             .into_iter()

@@ -6,6 +6,7 @@
 use crate::api_error::ApiError;
 use regex::Regex;
 use std::collections::HashMap;
+use std::sync::OnceLock;
 use serde_json::Value as JsonValue;
 
 /// Collects field-level validation errors.
@@ -42,10 +43,18 @@ impl ValidationErrors {
 
 /// Strips leading/trailing whitespace and removes common SQL injection patterns.
 pub fn sanitize_string(input: &str) -> String {
-    // Remove null bytes and common SQL injection tokens
-    let dangerous = Regex::new(r"(?i)(\x00|--|;|/\*|\*/|xp_|UNION\s+SELECT|DROP\s+TABLE|INSERT\s+INTO|DELETE\s+FROM|UPDATE\s+\w+\s+SET)")
-        .expect("static regex");
-    dangerous.replace_all(input.trim(), "").to_string()
+    sql_injection_pattern().replace_all(input.trim(), "").to_string()
+}
+
+fn sql_injection_pattern() -> &'static Regex {
+    static PATTERN: OnceLock<Regex> = OnceLock::new();
+
+    PATTERN.get_or_init(|| {
+        Regex::new(
+            r"(?i)(\x00|--|/\*|\*/|;|\bunion\s+(?:all\s+)?select\b|\bdrop\s+table\b|\binsert\s+into\b|\bdelete\s+from\b|\bupdate\s+\w+\s+set\b|\bor\s+1\s*=\s*1\b|\band\s+1\s*=\s*1\b|\bexec(?:ute)?\b|\bxp_\w+\b|\bsleep\s*\(|\bbenchmark\s*\()",
+        )
+        .expect("static regex")
+    })
 }
 
 // ── Field validators ──────────────────────────────────────────────────────────
@@ -174,6 +183,15 @@ mod tests {
         let result = sanitize_string(input);
         assert!(!result.contains("DROP TABLE"));
         assert!(!result.contains("--"));
+    }
+
+    #[test]
+    fn test_sanitize_strips_common_injection_payloads() {
+        let input = "' OR 1=1; UNION ALL SELECT * FROM secrets /*";
+        let result = sanitize_string(input);
+        assert!(!result.contains("OR 1=1"));
+        assert!(!result.contains("UNION ALL SELECT"));
+        assert!(!result.contains("/*"));
     }
 
     #[test]

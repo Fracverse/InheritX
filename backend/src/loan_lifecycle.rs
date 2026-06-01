@@ -253,54 +253,26 @@ impl LoanLifecycleService {
         db: &PgPool,
         filters: &LoanListFilters,
     ) -> Result<Vec<LoanLifecycleRecord>, ApiError> {
-        // Build the query dynamically so we only add WHERE clauses that are
-        // actually needed (avoids placeholder mis-alignment in dynamic SQL).
-        let mut conditions: Vec<String> = Vec::new();
-        let mut idx: i32 = 1;
-
-        if filters.user_id.is_some() {
-            conditions.push(format!("user_id = ${idx}"));
-            idx += 1;
-        }
-        if filters.plan_id.is_some() {
-            conditions.push(format!("plan_id = ${idx}"));
-            idx += 1;
-        }
-        if filters.status.is_some() {
-            conditions.push(format!("status = ${idx}::loan_lifecycle_status"));
-        }
-
-        let where_clause = if conditions.is_empty() {
-            String::new()
-        } else {
-            format!("WHERE {}", conditions.join(" AND "))
-        };
-
-        let sql = format!(
+        let rows = sqlx::query_as::<_, LoanLifecycleRow>(
             r#"
             SELECT id, user_id, plan_id, borrow_asset, collateral_asset,
                    principal, interest_rate_bps, collateral_amount, amount_repaid,
                    status, due_date, transaction_hash,
                    created_at, updated_at, repaid_at, liquidated_at
             FROM loan_lifecycle
-            {where_clause}
+            WHERE ($1::uuid IS NULL OR user_id = $1)
+              AND ($2::uuid IS NULL OR plan_id = $2)
+              AND ($3::text IS NULL OR status::text = $3)
             ORDER BY created_at DESC
             "#
         );
 
-        let mut query = sqlx::query_as::<_, LoanLifecycleRow>(&sql);
-
-        if let Some(user_id) = filters.user_id {
-            query = query.bind(user_id);
-        }
-        if let Some(plan_id) = filters.plan_id {
-            query = query.bind(plan_id);
-        }
-        if let Some(ref status) = filters.status {
-            query = query.bind(status.clone());
-        }
-
-        let rows = query.fetch_all(db).await?;
+        let rows = rows
+            .bind(filters.user_id)
+            .bind(filters.plan_id)
+            .bind(filters.status.as_ref().map(|status| status.as_str().to_string()))
+            .fetch_all(db)
+            .await?;
         Ok(rows.into_iter().map(Into::into).collect())
     }
 
@@ -311,104 +283,50 @@ impl LoanLifecycleService {
         limit: i64,
         offset: i64,
     ) -> Result<Vec<LoanLifecycleRecord>, ApiError> {
-        let mut conditions: Vec<String> = Vec::new();
-        let mut idx: i32 = 1;
-
-        if filters.user_id.is_some() {
-            conditions.push(format!("user_id = ${idx}"));
-            idx += 1;
-        }
-        if filters.plan_id.is_some() {
-            conditions.push(format!("plan_id = ${idx}"));
-            idx += 1;
-        }
-        if filters.status.is_some() {
-            conditions.push(format!("status = ${idx}::loan_lifecycle_status"));
-            idx += 1;
-        }
-
-        let where_clause = if conditions.is_empty() {
-            String::new()
-        } else {
-            format!("WHERE {}", conditions.join(" AND "))
-        };
-
-        let sql = format!(
+        let rows = sqlx::query_as::<_, LoanLifecycleRow>(
             r#"
             SELECT id, user_id, plan_id, borrow_asset, collateral_asset,
                    principal, interest_rate_bps, collateral_amount, amount_repaid,
                    status, due_date, transaction_hash,
                    created_at, updated_at, repaid_at, liquidated_at
             FROM loan_lifecycle
-            {where_clause}
+            WHERE ($1::uuid IS NULL OR user_id = $1)
+              AND ($2::uuid IS NULL OR plan_id = $2)
+              AND ($3::text IS NULL OR status::text = $3)
             ORDER BY created_at DESC
-            LIMIT ${idx} OFFSET ${idx_plus_1}
+            LIMIT $4 OFFSET $5
             "#,
-            idx = idx,
-            idx_plus_1 = idx + 1
         );
 
-        let mut query = sqlx::query_as::<_, LoanLifecycleRow>(&sql);
-
-        if let Some(user_id) = filters.user_id {
-            query = query.bind(user_id);
-        }
-        if let Some(plan_id) = filters.plan_id {
-            query = query.bind(plan_id);
-        }
-        if let Some(ref status) = filters.status {
-            query = query.bind(status.clone());
-        }
-        query = query.bind(limit).bind(offset);
-
-        let rows = query.fetch_all(db).await?;
+        let rows = rows
+            .bind(filters.user_id)
+            .bind(filters.plan_id)
+            .bind(filters.status.as_ref().map(|status| status.as_str().to_string()))
+            .bind(limit)
+            .bind(offset)
+            .fetch_all(db)
+            .await?;
         Ok(rows.into_iter().map(Into::into).collect())
     }
 
     /// Count loans with optional filters.
     pub async fn count_loans(db: &PgPool, filters: &LoanListFilters) -> Result<i64, ApiError> {
-        let mut conditions: Vec<String> = Vec::new();
-        let mut idx: i32 = 1;
-
-        if filters.user_id.is_some() {
-            conditions.push(format!("user_id = ${idx}"));
-            idx += 1;
-        }
-        if filters.plan_id.is_some() {
-            conditions.push(format!("plan_id = ${idx}"));
-            idx += 1;
-        }
-        if filters.status.is_some() {
-            conditions.push(format!("status = ${idx}::loan_lifecycle_status"));
-        }
-
-        let where_clause = if conditions.is_empty() {
-            String::new()
-        } else {
-            format!("WHERE {}", conditions.join(" AND "))
-        };
-
-        let sql = format!(
+        let sql = sqlx::query_scalar::<_, i64>(
             r#"
             SELECT COUNT(*)
             FROM loan_lifecycle
-            {where_clause}
+            WHERE ($1::uuid IS NULL OR user_id = $1)
+              AND ($2::uuid IS NULL OR plan_id = $2)
+              AND ($3::text IS NULL OR status::text = $3)
             "#
         );
 
-        let mut query = sqlx::query_scalar::<_, i64>(&sql);
-
-        if let Some(user_id) = filters.user_id {
-            query = query.bind(user_id);
-        }
-        if let Some(plan_id) = filters.plan_id {
-            query = query.bind(plan_id);
-        }
-        if let Some(ref status) = filters.status {
-            query = query.bind(status.clone());
-        }
-
-        let count = query.fetch_one(db).await?;
+        let count = sql
+            .bind(filters.user_id)
+            .bind(filters.plan_id)
+            .bind(filters.status.as_ref().map(|status| status.as_str().to_string()))
+            .fetch_one(db)
+            .await?;
         Ok(count)
     }
 
