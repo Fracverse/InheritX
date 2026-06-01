@@ -31,6 +31,9 @@ impl PriceFeedSource {
     }
 }
 
+/// Maximum acceptable age for a price used in risk calculations (5 minutes)
+pub const MAX_PRICE_AGE_SECS: i64 = 300;
+
 /// Asset price data
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AssetPrice {
@@ -38,6 +41,13 @@ pub struct AssetPrice {
     pub price: Decimal,
     pub timestamp: DateTime<Utc>,
     pub source: String,
+}
+
+impl AssetPrice {
+    /// Returns true if the price is younger than MAX_PRICE_AGE_SECS.
+    pub fn is_fresh(&self) -> bool {
+        Utc::now().signed_duration_since(self.timestamp).num_seconds() < MAX_PRICE_AGE_SECS
+    }
 }
 
 /// Price feed configuration
@@ -99,6 +109,19 @@ pub trait PriceFeedService: Send + Sync {
 
     /// Get all active price feeds
     async fn get_active_feeds(&self) -> Result<Vec<PriceFeedConfig>, ApiError>;
+
+    /// Get price and validate it is fresh; returns an error if the price is stale.
+    async fn get_fresh_price(&self, asset_code: &str) -> Result<AssetPrice, ApiError> {
+        let price = self.get_price(asset_code).await?;
+        if !price.is_fresh() {
+            return Err(ApiError::Internal(anyhow::anyhow!(
+                "Stale price for {}: last updated at {}",
+                asset_code,
+                price.timestamp
+            )));
+        }
+        Ok(price)
+    }
 }
 
 /// In-memory price cache with database persistence and external price fetching

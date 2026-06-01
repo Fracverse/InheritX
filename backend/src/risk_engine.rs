@@ -80,12 +80,12 @@ impl RiskEngine {
         .map_err(|e| ApiError::Internal(anyhow::anyhow!("DB error loading loan balances: {e}")))?;
 
         for loan in loans_health {
-            // Get prices for evaluation
-            let borrow_price = match self.price_feed.get_price(&loan.borrow_asset).await {
+            // Get prices for evaluation — skip loan if either price is stale
+            let borrow_price = match self.price_feed.get_fresh_price(&loan.borrow_asset).await {
                 Ok(p) => p.price,
                 Err(e) => {
                     warn!(
-                        "Risk Engine: Could not get price for borrow asset {}: {}",
+                        "Risk Engine: Could not get fresh price for borrow asset {}: {}",
                         loan.borrow_asset, e
                     );
                     continue;
@@ -93,11 +93,11 @@ impl RiskEngine {
             };
 
             let collat_asset = loan.collateral_asset.unwrap_or_else(|| "USDC".to_string());
-            let collat_price = match self.price_feed.get_price(&collat_asset).await {
+            let collat_price = match self.price_feed.get_fresh_price(&collat_asset).await {
                 Ok(p) => p.price,
                 Err(e) => {
                     warn!(
-                        "Risk Engine: Could not get price for collateral asset {}: {}",
+                        "Risk Engine: Could not get fresh price for collateral asset {}: {}",
                         collat_asset, e
                     );
                     continue;
