@@ -3,23 +3,36 @@
 //! Tracks every loan through a well-defined state machine:
 //!
 //! ```text
-//!              create_loan
-//!                  │
-//!              ┌───▼───┐
-//!              │ACTIVE │
-//!              └───┬───┘
-//!         ┌────────┼────────┐
-//!         │        │        │
-//!    repay_loan  due_date  liquidate_loan
-//!         │     exceeded        │
-//!      ┌──▼──┐  ┌────────┐ ┌───▼────────┐
-//!      │REPAID│  │OVERDUE │ │LIQUIDATED  │
-//!      └──────┘  └────────┘ └────────────┘
+//!        create_draft
+//!            │
+//!        ┌───▼─────┐
+//!        │  Draft  │
+//!        └───┬─────┘
+//!            │ submit_application
+//!        ┌───▼──────┐
+//!        │ Applied  │
+//!        └───┬──────┘
+//!            │ start_review
+//!        ┌───▼──────────┐
+//!        │ UnderReview  │
+//!        └───┬──────────┘
+//!    ┌───────┴───────┐
+//!    │ approve       │ reject
+//! ┌──▼───────┐   ┌───▼─────┐
+//! │ Approved │   │ Rejected│
+//! └───┬──────┘   └─────────┘
+//!     │ activate
+//! ┌───▼───────┐
+//! │   Active  │
+//! └───┬───────┘
+//! ┌──────┴──────┐
+//! │             │
+//! │ repay      │ default
+//! │             │
+//! ├───▼──────┐ ┌▼──────────┐
+//! │ PaidOff  │ │ Defaulted │
+//! └──────────┘ └───────────┘
 //! ```
-//!
-//! Overdue status is set by calling
-//! [`LoanLifecycleService::mark_overdue_loans`], which is designed to be
-//! invoked periodically by a background sweep or cron job.
 
 use crate::api_error::ApiError;
 use crate::notifications::{audit_action, entity_type, AuditLogService};
@@ -35,23 +48,55 @@ use uuid::Uuid;
 // Status enum
 // ─────────────────────────────────────────────────────────────────────────────
 
-/// The four lifecycle states a loan can occupy.
+/// The lifecycle states a loan can occupy.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum LoanStatus {
+    Draft,
+    Applied,
+    UnderReview,
+    Approved,
+    Rejected,
     Active,
-    Repaid,
-    Overdue,
-    Liquidated,
+    PaidOff,
+    Defaulted,
 }
 
 impl LoanStatus {
     pub fn as_str(&self) -> &'static str {
         match self {
+            LoanStatus::Draft => "draft",
+            LoanStatus::Applied => "applied",
+            LoanStatus::UnderReview => "under_review",
+            LoanStatus::Approved => "approved",
+            LoanStatus::Rejected => "rejected",
             LoanStatus::Active => "active",
-            LoanStatus::Repaid => "repaid",
-            LoanStatus::Overdue => "overdue",
-            LoanStatus::Liquidated => "liquidated",
+            LoanStatus::PaidOff => "paid_off",
+            LoanStatus::Defaulted => "defaulted",
+        }
+    }
+
+    /// Check if a transition from this state to `next` is valid
+    pub fn validate_transition(self, next: LoanStatus) -> Result<(), ApiError> {
+        let valid = match (self, next) {
+            // Valid transitions
+            (LoanStatus::Draft, LoanStatus::Applied) => true,
+            (LoanStatus::Applied, LoanStatus::UnderReview) => true,
+            (LoanStatus::UnderReview, LoanStatus::Approved) => true,
+            (LoanStatus::UnderReview, LoanStatus::Rejected) => true,
+            (LoanStatus::Approved, LoanStatus::Active) => true,
+            (LoanStatus::Active, LoanStatus::PaidOff) => true,
+            (LoanStatus::Active, LoanStatus::Defaulted) => true,
+            _ => false,
+        };
+
+        if valid {
+            Ok(())
+        } else {
+            Err(ApiError::BadRequest(format!(
+                "invalid loan state transition: {} → {}",
+                self, next
+            )))
         }
     }
 }
@@ -67,12 +112,16 @@ impl FromStr for LoanStatus {
 
     fn from_str(s: &str) -> Result<Self, Self::Err> {
         match s.trim().to_lowercase().as_str() {
+            "draft" => Ok(LoanStatus::Draft),
+            "applied" => Ok(LoanStatus::Applied),
+            "under_review" => Ok(LoanStatus::UnderReview),
+            "approved" => Ok(LoanStatus::Approved),
+            "rejected" => Ok(LoanStatus::Rejected),
             "active" => Ok(LoanStatus::Active),
-            "repaid" => Ok(LoanStatus::Repaid),
-            "overdue" => Ok(LoanStatus::Overdue),
-            "liquidated" => Ok(LoanStatus::Liquidated),
+            "paid_off" => Ok(LoanStatus::PaidOff),
+            "defaulted" => Ok(LoanStatus::Defaulted),
             other => Err(ApiError::BadRequest(format!(
-                "unknown loan status '{other}'; valid values: active, repaid, overdue, liquidated"
+                "unknown loan status '{other}'; valid values: draft, applied, under_review, approved, rejected, active, paid_off, defaulted"
             ))),
         }
     }
@@ -187,10 +236,14 @@ pub struct LoanListFilters {
 #[serde(rename_all = "camelCase")]
 pub struct LoanLifecycleSummary {
     pub total: i64,
+    pub draft: i64,
+    pub applied: i64,
+    pub under_review: i64,
+    pub approved: i64,
+    pub rejected: i64,
     pub active: i64,
-    pub repaid: i64,
-    pub overdue: i64,
-    pub liquidated: i64,
+    pub paid_off: i64,
+    pub defaulted: i64,
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -420,10 +473,14 @@ impl LoanLifecycleService {
         #[derive(sqlx::FromRow)]
         struct Row {
             total: i64,
+            draft: i64,
+            applied: i64,
+            under_review: i64,
+            approved: i64,
+            rejected: i64,
             active: i64,
-            repaid: i64,
-            overdue: i64,
-            liquidated: i64,
+            paid_off: i64,
+            defaulted: i64,
         }
 
         let row = if let Some(uid) = user_id {
@@ -431,10 +488,14 @@ impl LoanLifecycleService {
                 r#"
                 SELECT
                     COUNT(*)::BIGINT                                                          AS total,
-                    COUNT(*) FILTER (WHERE status = 'active')::BIGINT                        AS active,
-                    COUNT(*) FILTER (WHERE status = 'repaid')::BIGINT                        AS repaid,
-                    COUNT(*) FILTER (WHERE status = 'overdue')::BIGINT                       AS overdue,
-                    COUNT(*) FILTER (WHERE status = 'liquidated')::BIGINT                    AS liquidated
+                    COUNT(*) FILTER (WHERE status = 'draft')::BIGINT                          AS draft,
+                    COUNT(*) FILTER (WHERE status = 'applied')::BIGINT                        AS applied,
+                    COUNT(*) FILTER (WHERE status = 'under_review')::BIGINT                   AS under_review,
+                    COUNT(*) FILTER (WHERE status = 'approved')::BIGINT                       AS approved,
+                    COUNT(*) FILTER (WHERE status = 'rejected')::BIGINT                       AS rejected,
+                    COUNT(*) FILTER (WHERE status = 'active')::BIGINT                         AS active,
+                    COUNT(*) FILTER (WHERE status = 'paid_off')::BIGINT                       AS paid_off,
+                    COUNT(*) FILTER (WHERE status = 'defaulted')::BIGINT                      AS defaulted
                 FROM loan_lifecycle
                 WHERE user_id = $1
                 "#,
@@ -447,10 +508,14 @@ impl LoanLifecycleService {
                 r#"
                 SELECT
                     COUNT(*)::BIGINT                                                          AS total,
-                    COUNT(*) FILTER (WHERE status = 'active')::BIGINT                        AS active,
-                    COUNT(*) FILTER (WHERE status = 'repaid')::BIGINT                        AS repaid,
-                    COUNT(*) FILTER (WHERE status = 'overdue')::BIGINT                       AS overdue,
-                    COUNT(*) FILTER (WHERE status = 'liquidated')::BIGINT                    AS liquidated
+                    COUNT(*) FILTER (WHERE status = 'draft')::BIGINT                          AS draft,
+                    COUNT(*) FILTER (WHERE status = 'applied')::BIGINT                        AS applied,
+                    COUNT(*) FILTER (WHERE status = 'under_review')::BIGINT                   AS under_review,
+                    COUNT(*) FILTER (WHERE status = 'approved')::BIGINT                       AS approved,
+                    COUNT(*) FILTER (WHERE status = 'rejected')::BIGINT                       AS rejected,
+                    COUNT(*) FILTER (WHERE status = 'active')::BIGINT                         AS active,
+                    COUNT(*) FILTER (WHERE status = 'paid_off')::BIGINT                       AS paid_off,
+                    COUNT(*) FILTER (WHERE status = 'defaulted')::BIGINT                      AS defaulted
                 FROM loan_lifecycle
                 "#,
             )
@@ -460,42 +525,24 @@ impl LoanLifecycleService {
 
         Ok(LoanLifecycleSummary {
             total: row.total,
+            draft: row.draft,
+            applied: row.applied,
+            under_review: row.under_review,
+            approved: row.approved,
+            rejected: row.rejected,
             active: row.active,
-            repaid: row.repaid,
-            overdue: row.overdue,
-            liquidated: row.liquidated,
+            paid_off: row.paid_off,
+            defaulted: row.defaulted,
         })
     }
 
     // ── Write operations ──────────────────────────────────────────────────────
 
-    /// Open a new loan in the `active` state.
-    pub async fn create_loan(
+    /// Create a new loan in the `draft` state.
+    pub async fn create_draft_loan(
         pool: &PgPool,
         req: &CreateLoanRequest,
     ) -> Result<LoanLifecycleRecord, ApiError> {
-        // Input validation
-        if req.principal <= Decimal::ZERO {
-            return Err(ApiError::BadRequest(
-                "principal must be greater than zero".to_string(),
-            ));
-        }
-        if req.collateral_amount <= Decimal::ZERO {
-            return Err(ApiError::BadRequest(
-                "collateral_amount must be greater than zero".to_string(),
-            ));
-        }
-        if req.interest_rate_bps < 0 {
-            return Err(ApiError::BadRequest(
-                "interest_rate_bps must be non-negative".to_string(),
-            ));
-        }
-        if req.due_date <= Utc::now() {
-            return Err(ApiError::BadRequest(
-                "due_date must be in the future".to_string(),
-            ));
-        }
-
         let mut tx = pool.begin().await?;
 
         // If plan_id is provided, check if the plan is paused
@@ -522,7 +569,7 @@ impl LoanLifecycleService {
                 principal, interest_rate_bps, collateral_amount,
                 due_date, transaction_hash, status
             )
-            VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, 'active')
+            VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, 'draft')
             RETURNING id, user_id, plan_id, borrow_asset, collateral_asset,
                       principal, interest_rate_bps, collateral_amount, amount_repaid,
                       status, due_date, transaction_hash,
@@ -560,7 +607,319 @@ impl LoanLifecycleService {
         Ok(record)
     }
 
-    /// Transition a loan from `active` or `overdue` → `repaid`.
+    /// Transition a loan from `draft` → `applied`.
+    pub async fn submit_application(
+        pool: &PgPool,
+        loan_id: Uuid,
+        user_id: Uuid,
+    ) -> Result<LoanLifecycleRecord, ApiError> {
+        let mut tx = pool.begin().await?;
+
+        let row = sqlx::query_as::<_, LoanLifecycleRow>(
+            r#"
+            SELECT id, user_id, plan_id, borrow_asset, collateral_asset,
+                   principal, interest_rate_bps, collateral_amount, amount_repaid,
+                   status, due_date, transaction_hash,
+                   created_at, updated_at, repaid_at, liquidated_at
+            FROM loan_lifecycle
+            WHERE id = $1 AND user_id = $2
+            FOR UPDATE
+            "#,
+        )
+        .bind(loan_id)
+        .bind(user_id)
+        .fetch_optional(&mut *tx)
+        .await?
+        .ok_or_else(|| ApiError::NotFound(format!("loan {loan_id} not found")))?;
+
+        let current_status = LoanStatus::from_str(&row.status)?;
+        let next_status = LoanStatus::Applied;
+        current_status.validate_transition(next_status)?;
+
+        let updated = sqlx::query_as::<_, LoanLifecycleRow>(
+            r#"
+            UPDATE loan_lifecycle
+            SET status = 'applied'
+            WHERE id = $1
+            RETURNING id, user_id, plan_id, borrow_asset, collateral_asset,
+                      principal, interest_rate_bps, collateral_amount, amount_repaid,
+                      status, due_date, transaction_hash,
+                      created_at, updated_at, repaid_at, liquidated_at
+            "#,
+        )
+        .bind(loan_id)
+        .fetch_one(&mut *tx)
+        .await?;
+
+        let record: LoanLifecycleRecord = updated.into();
+
+        AuditLogService::log(
+            &mut *tx,
+            Some(user_id),
+            None,
+            "LOAN_SUBMITTED",
+            Some(loan_id),
+            Some(entity_type::LOAN),
+            None,
+            None,
+            None,
+        )
+        .await?;
+
+        tx.commit().await?;
+        Ok(record)
+    }
+
+    /// Transition a loan from `applied` → `under_review`.
+    pub async fn start_review(
+        pool: &PgPool,
+        loan_id: Uuid,
+        admin_id: Uuid,
+    ) -> Result<LoanLifecycleRecord, ApiError> {
+        let mut tx = pool.begin().await?;
+
+        let row = sqlx::query_as::<_, LoanLifecycleRow>(
+            r#"
+            SELECT id, user_id, plan_id, borrow_asset, collateral_asset,
+                   principal, interest_rate_bps, collateral_amount, amount_repaid,
+                   status, due_date, transaction_hash,
+                   created_at, updated_at, repaid_at, liquidated_at
+            FROM loan_lifecycle
+            WHERE id = $1
+            FOR UPDATE
+            "#,
+        )
+        .bind(loan_id)
+        .fetch_optional(&mut *tx)
+        .await?
+        .ok_or_else(|| ApiError::NotFound(format!("loan {loan_id} not found")))?;
+
+        let current_status = LoanStatus::from_str(&row.status)?;
+        let next_status = LoanStatus::UnderReview;
+        current_status.validate_transition(next_status)?;
+
+        let updated = sqlx::query_as::<_, LoanLifecycleRow>(
+            r#"
+            UPDATE loan_lifecycle
+            SET status = 'under_review'
+            WHERE id = $1
+            RETURNING id, user_id, plan_id, borrow_asset, collateral_asset,
+                      principal, interest_rate_bps, collateral_amount, amount_repaid,
+                      status, due_date, transaction_hash,
+                      created_at, updated_at, repaid_at, liquidated_at
+            "#,
+        )
+        .bind(loan_id)
+        .fetch_one(&mut *tx)
+        .await?;
+
+        let record: LoanLifecycleRecord = updated.into();
+
+        AuditLogService::log(
+            &mut *tx,
+            None,
+            Some(admin_id),
+            "LOAN_REVIEW_STARTED",
+            Some(loan_id),
+            Some(entity_type::LOAN),
+            None,
+            None,
+            None,
+        )
+        .await?;
+
+        tx.commit().await?;
+        Ok(record)
+    }
+
+    /// Transition a loan from `under_review` → `approved`.
+    pub async fn approve_loan(
+        pool: &PgPool,
+        loan_id: Uuid,
+        admin_id: Uuid,
+    ) -> Result<LoanLifecycleRecord, ApiError> {
+        let mut tx = pool.begin().await?;
+
+        let row = sqlx::query_as::<_, LoanLifecycleRow>(
+            r#"
+            SELECT id, user_id, plan_id, borrow_asset, collateral_asset,
+                   principal, interest_rate_bps, collateral_amount, amount_repaid,
+                   status, due_date, transaction_hash,
+                   created_at, updated_at, repaid_at, liquidated_at
+            FROM loan_lifecycle
+            WHERE id = $1
+            FOR UPDATE
+            "#,
+        )
+        .bind(loan_id)
+        .fetch_optional(&mut *tx)
+        .await?
+        .ok_or_else(|| ApiError::NotFound(format!("loan {loan_id} not found")))?;
+
+        let current_status = LoanStatus::from_str(&row.status)?;
+        let next_status = LoanStatus::Approved;
+        current_status.validate_transition(next_status)?;
+
+        let updated = sqlx::query_as::<_, LoanLifecycleRow>(
+            r#"
+            UPDATE loan_lifecycle
+            SET status = 'approved'
+            WHERE id = $1
+            RETURNING id, user_id, plan_id, borrow_asset, collateral_asset,
+                      principal, interest_rate_bps, collateral_amount, amount_repaid,
+                      status, due_date, transaction_hash,
+                      created_at, updated_at, repaid_at, liquidated_at
+            "#,
+        )
+        .bind(loan_id)
+        .fetch_one(&mut *tx)
+        .await?;
+
+        let record: LoanLifecycleRecord = updated.into();
+
+        AuditLogService::log(
+            &mut *tx,
+            None,
+            Some(admin_id),
+            "LOAN_APPROVED",
+            Some(loan_id),
+            Some(entity_type::LOAN),
+            None,
+            None,
+            None,
+        )
+        .await?;
+
+        tx.commit().await?;
+        Ok(record)
+    }
+
+    /// Transition a loan from `under_review` → `rejected`.
+    pub async fn reject_loan(
+        pool: &PgPool,
+        loan_id: Uuid,
+        admin_id: Uuid,
+    ) -> Result<LoanLifecycleRecord, ApiError> {
+        let mut tx = pool.begin().await?;
+
+        let row = sqlx::query_as::<_, LoanLifecycleRow>(
+            r#"
+            SELECT id, user_id, plan_id, borrow_asset, collateral_asset,
+                   principal, interest_rate_bps, collateral_amount, amount_repaid,
+                   status, due_date, transaction_hash,
+                   created_at, updated_at, repaid_at, liquidated_at
+            FROM loan_lifecycle
+            WHERE id = $1
+            FOR UPDATE
+            "#,
+        )
+        .bind(loan_id)
+        .fetch_optional(&mut *tx)
+        .await?
+        .ok_or_else(|| ApiError::NotFound(format!("loan {loan_id} not found")))?;
+
+        let current_status = LoanStatus::from_str(&row.status)?;
+        let next_status = LoanStatus::Rejected;
+        current_status.validate_transition(next_status)?;
+
+        let updated = sqlx::query_as::<_, LoanLifecycleRow>(
+            r#"
+            UPDATE loan_lifecycle
+            SET status = 'rejected'
+            WHERE id = $1
+            RETURNING id, user_id, plan_id, borrow_asset, collateral_asset,
+                      principal, interest_rate_bps, collateral_amount, amount_repaid,
+                      status, due_date, transaction_hash,
+                      created_at, updated_at, repaid_at, liquidated_at
+            "#,
+        )
+        .bind(loan_id)
+        .fetch_one(&mut *tx)
+        .await?;
+
+        let record: LoanLifecycleRecord = updated.into();
+
+        AuditLogService::log(
+            &mut *tx,
+            None,
+            Some(admin_id),
+            "LOAN_REJECTED",
+            Some(loan_id),
+            Some(entity_type::LOAN),
+            None,
+            None,
+            None,
+        )
+        .await?;
+
+        tx.commit().await?;
+        Ok(record)
+    }
+
+    /// Transition a loan from `approved` → `active`.
+    pub async fn activate_loan(
+        pool: &PgPool,
+        loan_id: Uuid,
+        user_id: Uuid,
+    ) -> Result<LoanLifecycleRecord, ApiError> {
+        let mut tx = pool.begin().await?;
+
+        let row = sqlx::query_as::<_, LoanLifecycleRow>(
+            r#"
+            SELECT id, user_id, plan_id, borrow_asset, collateral_asset,
+                   principal, interest_rate_bps, collateral_amount, amount_repaid,
+                   status, due_date, transaction_hash,
+                   created_at, updated_at, repaid_at, liquidated_at
+            FROM loan_lifecycle
+            WHERE id = $1 AND user_id = $2
+            FOR UPDATE
+            "#,
+        )
+        .bind(loan_id)
+        .bind(user_id)
+        .fetch_optional(&mut *tx)
+        .await?
+        .ok_or_else(|| ApiError::NotFound(format!("loan {loan_id} not found")))?;
+
+        let current_status = LoanStatus::from_str(&row.status)?;
+        let next_status = LoanStatus::Active;
+        current_status.validate_transition(next_status)?;
+
+        let updated = sqlx::query_as::<_, LoanLifecycleRow>(
+            r#"
+            UPDATE loan_lifecycle
+            SET status = 'active'
+            WHERE id = $1
+            RETURNING id, user_id, plan_id, borrow_asset, collateral_asset,
+                      principal, interest_rate_bps, collateral_amount, amount_repaid,
+                      status, due_date, transaction_hash,
+                      created_at, updated_at, repaid_at, liquidated_at
+            "#,
+        )
+        .bind(loan_id)
+        .fetch_one(&mut *tx)
+        .await?;
+
+        let record: LoanLifecycleRecord = updated.into();
+
+        AuditLogService::log(
+            &mut *tx,
+            Some(user_id),
+            None,
+            "LOAN_ACTIVATED",
+            Some(loan_id),
+            Some(entity_type::LOAN),
+            None,
+            None,
+            None,
+        )
+        .await?;
+
+        tx.commit().await?;
+        Ok(record)
+    }
+
+    /// Transition a loan from `active` → `paid_off`.
     ///
     /// `amount` is the payment being applied. The transition is committed only
     /// when the cumulative `amount_repaid` reaches the full `principal`.
@@ -604,20 +963,20 @@ impl LoanLifecycleService {
         })?;
 
         let current_status = LoanStatus::from_str(&row.status)?;
-        if current_status == LoanStatus::Repaid || current_status == LoanStatus::Liquidated {
-            return Err(ApiError::BadRequest(format!(
-                "cannot repay a loan that is already {current_status}"
-            )));
-        }
-
+        
         let new_amount_repaid = row.amount_repaid + amount;
         let fully_repaid = new_amount_repaid >= row.principal;
+        
+        if fully_repaid {
+            let next_status = LoanStatus::PaidOff;
+            current_status.validate_transition(next_status)?;
+        }
 
         let updated = sqlx::query_as::<_, LoanLifecycleRow>(
             r#"
             UPDATE loan_lifecycle
             SET amount_repaid  = $1,
-                status         = CASE WHEN $2 THEN 'repaid'::loan_lifecycle_status
+                status         = CASE WHEN $2 THEN 'paid_off'::loan_lifecycle_status
                                       ELSE status
                                  END,
                 repaid_at      = CASE WHEN $2 THEN NOW() ELSE repaid_at END
@@ -657,8 +1016,8 @@ impl LoanLifecycleService {
         Ok(record)
     }
 
-    /// Transition a loan from `active` or `overdue` → `liquidated`.
-    pub async fn liquidate_loan(
+    /// Transition a loan from `active` → `defaulted`.
+    pub async fn default_loan(
         pool: &PgPool,
         loan_id: Uuid,
         admin_id: Uuid,
@@ -682,16 +1041,13 @@ impl LoanLifecycleService {
         .ok_or_else(|| ApiError::NotFound(format!("loan {loan_id} not found")))?;
 
         let current_status = LoanStatus::from_str(&row.status)?;
-        if current_status == LoanStatus::Repaid || current_status == LoanStatus::Liquidated {
-            return Err(ApiError::BadRequest(format!(
-                "cannot liquidate a loan that is already {current_status}"
-            )));
-        }
+        let next_status = LoanStatus::Defaulted;
+        current_status.validate_transition(next_status)?;
 
         let updated = sqlx::query_as::<_, LoanLifecycleRow>(
             r#"
             UPDATE loan_lifecycle
-            SET status        = 'liquidated',
+            SET status        = 'defaulted',
                 liquidated_at = NOW()
             WHERE id = $1
             RETURNING id, user_id, plan_id, borrow_asset, collateral_asset,
@@ -710,7 +1066,7 @@ impl LoanLifecycleService {
             &mut *tx,
             None,
             Some(admin_id),
-            audit_action::LOAN_LIQUIDATED,
+            "LOAN_DEFAULTED",
             Some(loan_id),
             Some(entity_type::LOAN),
             None,
@@ -721,26 +1077,6 @@ impl LoanLifecycleService {
 
         tx.commit().await?;
         Ok(record)
-    }
-
-    /// Batch-mark all `active` loans whose `due_date` has passed as `overdue`.
-    ///
-    /// Designed to be called by a periodic background sweep (e.g. every minute).
-    /// Returns the IDs of all loans that were transitioned.
-    pub async fn mark_overdue_loans(pool: &PgPool) -> Result<Vec<Uuid>, ApiError> {
-        let rows: Vec<(Uuid,)> = sqlx::query_as(
-            r#"
-            UPDATE loan_lifecycle
-            SET status = 'overdue'
-            WHERE status = 'active'
-              AND due_date < NOW()
-            RETURNING id
-            "#,
-        )
-        .fetch_all(pool)
-        .await?;
-
-        Ok(rows.into_iter().map(|(id,)| id).collect())
     }
 }
 
@@ -757,10 +1093,14 @@ mod tests {
     #[test]
     fn loan_status_round_trips() {
         for (s, expected) in [
+            ("draft", LoanStatus::Draft),
+            ("applied", LoanStatus::Applied),
+            ("under_review", LoanStatus::UnderReview),
+            ("approved", LoanStatus::Approved),
+            ("rejected", LoanStatus::Rejected),
             ("active", LoanStatus::Active),
-            ("repaid", LoanStatus::Repaid),
-            ("overdue", LoanStatus::Overdue),
-            ("liquidated", LoanStatus::Liquidated),
+            ("paid_off", LoanStatus::PaidOff),
+            ("defaulted", LoanStatus::Defaulted),
         ] {
             let parsed = LoanStatus::from_str(s).expect("should parse");
             assert_eq!(parsed, expected);
@@ -772,6 +1112,30 @@ mod tests {
     fn loan_status_from_str_rejects_unknown() {
         assert!(LoanStatus::from_str("pending").is_err());
         assert!(LoanStatus::from_str("").is_err());
+    }
+
+    // ── State transition validation ───────────────────────────────────────────
+
+    #[test]
+    fn valid_state_transitions_pass() {
+        // All valid transitions
+        assert!(LoanStatus::Draft.validate_transition(LoanStatus::Applied).is_ok());
+        assert!(LoanStatus::Applied.validate_transition(LoanStatus::UnderReview).is_ok());
+        assert!(LoanStatus::UnderReview.validate_transition(LoanStatus::Approved).is_ok());
+        assert!(LoanStatus::UnderReview.validate_transition(LoanStatus::Rejected).is_ok());
+        assert!(LoanStatus::Approved.validate_transition(LoanStatus::Active).is_ok());
+        assert!(LoanStatus::Active.validate_transition(LoanStatus::PaidOff).is_ok());
+        assert!(LoanStatus::Active.validate_transition(LoanStatus::Defaulted).is_ok());
+    }
+
+    #[test]
+    fn invalid_state_transitions_fail() {
+        // A few invalid transitions
+        assert!(LoanStatus::Draft.validate_transition(LoanStatus::Active).is_err());
+        assert!(LoanStatus::Applied.validate_transition(LoanStatus::Approved).is_err());
+        assert!(LoanStatus::Approved.validate_transition(LoanStatus::PaidOff).is_err());
+        assert!(LoanStatus::PaidOff.validate_transition(LoanStatus::Active).is_err());
+        assert!(LoanStatus::Rejected.validate_transition(LoanStatus::UnderReview).is_err());
     }
 
     // ── Partial repayment business logic ─────────────────────────────────────
