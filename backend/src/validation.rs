@@ -7,6 +7,7 @@ use crate::api_error::ApiError;
 use regex::Regex;
 use std::collections::HashMap;
 use serde_json::Value as JsonValue;
+use once_cell::sync::Lazy;
 
 /// Collects field-level validation errors.
 #[derive(Debug, Default)]
@@ -69,8 +70,20 @@ pub fn validate_min_length(errors: &mut ValidationErrors, field: &str, value: &s
 }
 
 pub fn validate_email(errors: &mut ValidationErrors, field: &str, value: &str) {
-    let re = Regex::new(r"^[^\s@]+@[^\s@]+\.[^\s@]+$").expect("static regex");
-    if !re.is_match(value) {
+    static EMAIL_RE: Lazy<Regex> = Lazy::new(|| {
+        // This pattern is a pragmatic RFC 5322 compatible (local@domain) validator.
+        // It supports quoted local-parts, dots, and IPv4/IPv6 literals in domains.
+        Regex::new(r"(?xi)^(?:[a-z0-9!#$%&'*+/=?^_`{|}~-]+(?:\.[a-z0-9!#$%&'*+/=?^_`{|}~-]+)*|\"(?:[\x01-\x08\x0b\x0c\x0e-\x1f\x21\x23-\x5b\x5d-\x7f]|\\[\x00-\x7f])*\")@(?:(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.)+[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?|\[(?:(?:25[0-5]|2[0-4]\d|[01]?\d?\d)(?:\.(?:25[0-5]|2[0-4]\d|[01]?\d?\d)){3}|[a-f0-9:\.]+)\])$").expect("email regex")
+    });
+
+    let s = value.trim();
+    // Per RFCs, the maximum total length for an email address is 254 characters.
+    if s.len() == 0 || s.len() > 254 {
+        errors.add(field, "must be a valid email address");
+        return;
+    }
+
+    if !EMAIL_RE.is_match(s) {
         errors.add(field, "must be a valid email address");
     }
 }
@@ -217,5 +230,53 @@ mod tests {
         errors.add("field", "required");
         let err = errors.into_api_error();
         assert!(matches!(err, crate::api_error::ApiError::BadRequest(_)));
+    }
+
+    #[test]
+    fn test_validate_email_various_valid() {
+        let valids = [
+            "simple@example.com",
+            "very.common@example.com",
+            "disposable.style.email.with+symbol@example.com",
+            "other.email-with-hyphen@example.com",
+            "fully-qualified-domain@example.com",
+            "user.name+tag+sorting@example.com",
+            "x@example.com",
+            "example-indeed@strange-example.com",
+            "\"much.more unusual\"@example.com",
+            "\"very.unusual.@.unusual.com\"@example.com",
+            "user@[192.168.2.1]",
+            "user@[IPv6:2001:db8::1]",
+        ];
+
+        for a in valids.iter() {
+            let mut errors = ValidationErrors::new();
+            validate_email(&mut errors, "email", a);
+            assert!(errors.is_empty(), "valid email rejected: {}", a);
+        }
+    }
+
+    #[test]
+    fn test_validate_email_various_invalid() {
+        let invalids = [
+            "Abc.example.com",
+            "A@b@c@example.com",
+            "a\"b(c)d,e:f;g<h>i[j\\k]l@example.com",
+            "just\"not\"right@example.com",
+            "this is\"not\\allowed@example.com",
+            "this\\ still\\\"not\\\\allowed@example.com",
+            "john..doe@example.com",
+            ".john@example.com",
+            "john.@example.com",
+            "john@.example.com",
+            "",
+            "   ",
+        ];
+
+        for a in invalids.iter() {
+            let mut errors = ValidationErrors::new();
+            validate_email(&mut errors, "email", a);
+            assert!(!errors.is_empty(), "invalid email accepted: {}", a);
+        }
     }
 }
