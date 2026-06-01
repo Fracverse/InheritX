@@ -118,7 +118,8 @@ impl ComplianceEngine {
             amount: rust_decimal::Decimal,
         }
 
-        let volume_matches = sqlx::query_as::<_, VolumeMatch>(
+        // 1. Single-event detection: any individual borrow >= threshold
+        let single_matches = sqlx::query_as::<_, VolumeMatch>(
             r#"
             SELECT plan_id, user_id, asset_code, CAST(amount AS numeric) as amount
             FROM lending_events
@@ -131,13 +132,58 @@ impl ComplianceEngine {
         .fetch_all(&self.db)
         .await?;
 
-        for m in volume_matches {
+        for m in single_matches {
             self.flag_plan(
                 m.plan_id,
                 m.user_id,
                 format!(
                     "Abnormal volume detected: Borrowed {} {} (Threshold: {})",
                     m.amount, m.asset_code, self.volume_threshold
+                ),
+            )
+            .await?;
+        }
+
+        // 2. Cumulative volume detection: net borrows (borrows - repays) per user >= threshold
+        //    Catches split transactions designed to evade single-event detection.
+        #[derive(sqlx::FromRow)]
+        struct CumulativeMatch {
+            plan_id: Uuid,
+            user_id: Uuid,
+            asset_code: String,
+            net_volume: rust_decimal::Decimal,
+        }
+
+        let cumulative_matches = sqlx::query_as::<_, CumulativeMatch>(
+            r#"
+            SELECT
+                plan_id,
+                user_id,
+                asset_code,
+                SUM(CASE WHEN event_type = 'borrow' THEN CAST(amount AS numeric)
+                         WHEN event_type = 'repay'  THEN -CAST(amount AS numeric)
+                         ELSE 0 END) AS net_volume
+            FROM lending_events
+            WHERE event_type IN ('borrow', 'repay')
+              AND event_timestamp > NOW() - (INTERVAL '1 minute' * $2)
+            GROUP BY plan_id, user_id, asset_code
+            HAVING SUM(CASE WHEN event_type = 'borrow' THEN CAST(amount AS numeric)
+                            WHEN event_type = 'repay'  THEN -CAST(amount AS numeric)
+                            ELSE 0 END) >= $1
+            "#,
+        )
+        .bind(self.volume_threshold)
+        .bind(self.velocity_window_mins)
+        .fetch_all(&self.db)
+        .await?;
+
+        for m in cumulative_matches {
+            self.flag_plan(
+                m.plan_id,
+                m.user_id,
+                format!(
+                    "Abnormal cumulative volume detected: Net {} {} in {} minutes (Threshold: {})",
+                    m.net_volume, m.asset_code, self.velocity_window_mins, self.volume_threshold
                 ),
             )
             .await?;
