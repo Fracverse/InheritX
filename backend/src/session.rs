@@ -277,7 +277,7 @@ pub async fn list_sessions(
 /// Revoke a specific session by ID (e.g., from the "manage devices" UI).
 pub async fn revoke_session(
     State(state): State<Arc<AppState>>,
-    axum::extract::Path(session_id): axum::extract::Path<Uuid>,
+    crate::validation::Path(session_id): crate::validation::Path<Uuid>,
     req: Request<Body>,
 ) -> Result<Json<serde_json::Value>, ApiError> {
     let raw_token = extract_bearer(&req).ok_or_else(|| ApiError::Unauthorized)?;

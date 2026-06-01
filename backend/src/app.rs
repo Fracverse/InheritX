@@ -1,11 +1,12 @@
 use axum::{
-    extract::{Path, Query, State},
+    extract::{Query, State},
     http::HeaderMap,
     middleware,
     response::IntoResponse,
     routing::{delete, get, post, put},
     Json, Router,
 };
+use crate::validation::Path;
 use metrics_exporter_prometheus::PrometheusHandle;
 use serde_json::{json, Value};
 use sqlx::PgPool;

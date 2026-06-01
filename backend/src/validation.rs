@@ -164,6 +164,34 @@ macro_rules! bail_if_invalid {
     };
 }
 
+// ── Custom Path Extractor for Input Validation ───────────────────────────────
+
+/// A wrapper around `axum::extract::Path` that converts deserialisation rejections
+/// into structured `ApiError::BadRequest` responses.
+#[derive(Debug)]
+pub struct Path<T>(pub T);
+
+#[axum::async_trait]
+impl<S, T> axum::extract::FromRequestParts<S> for Path<T>
+where
+    T: serde::de::DeserializeOwned + Send,
+    S: Send + Sync,
+{
+    type Rejection = ApiError;
+
+    async fn from_request_parts(
+        parts: &mut axum::http::request::Parts,
+        state: &S,
+    ) -> Result<Self, Self::Rejection> {
+        match axum::extract::Path::<T>::from_request_parts(parts, state).await {
+            Ok(axum::extract::Path(value)) => Ok(Path(value)),
+            Err(err) => {
+                Err(ApiError::BadRequest(format!("Invalid path parameter: {}", err)))
+            }
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
