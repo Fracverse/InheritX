@@ -798,6 +798,10 @@ impl BorrowingContract {
     ) -> Result<(), BorrowingError> {
         Self::require_not_paused(&env)?;
 
+        if duration == 0 {
+            return Err(BorrowingError::InvalidAmount);
+        }
+
         if initial_discount_bps > 10000
             || max_discount_bps > 10000
             || initial_discount_bps > max_discount_bps
