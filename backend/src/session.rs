@@ -26,7 +26,7 @@ use uuid::Uuid;
 
 use crate::api_error::ApiError;
 use crate::app::AppState;
-use crate::auth::UserClaims;
+use crate::auth::{AuthenticatedUser, UserClaims};
 
 // ── Domain types ──────────────────────────────────────────────────────────────
 
@@ -187,6 +187,7 @@ async fn revoke_by_hash(db: &PgPool, token_hash: &str) -> Result<u64, ApiError> 
 /// Revokes the session associated with the current `Authorization` token.
 pub async fn logout(
     State(state): State<Arc<AppState>>,
+    AuthenticatedUser(user): AuthenticatedUser,
     req: Request<Body>,
 ) -> Result<Json<serde_json::Value>, ApiError> {
     let raw_token = extract_bearer(&req).ok_or_else(|| ApiError::Unauthorized)?;
@@ -207,13 +208,8 @@ pub async fn logout(
 /// Revokes **all** active sessions for the authenticated user.
 pub async fn logout_all(
     State(state): State<Arc<AppState>>,
-    req: Request<Body>,
+    AuthenticatedUser(user): AuthenticatedUser,
 ) -> Result<Json<serde_json::Value>, ApiError> {
-    let raw_token = extract_bearer(&req).ok_or_else(|| ApiError::Unauthorized)?;
-
-    let claims = decode_claims(&raw_token, &state.config.jwt_secret)
-        .ok_or_else(|| ApiError::Unauthorized)?;
-
     let result = sqlx::query(
         r#"
         UPDATE sessions
@@ -221,7 +217,7 @@ pub async fn logout_all(
         WHERE user_id = $1 AND revoked = FALSE
         "#,
     )
-    .bind(claims.user_id)
+    .bind(user.user_id)
     .execute(&state.db)
     .await?;
 
@@ -236,13 +232,8 @@ pub async fn logout_all(
 /// Returns all sessions for the authenticated user.
 pub async fn list_sessions(
     State(state): State<Arc<AppState>>,
-    req: Request<Body>,
+    AuthenticatedUser(user): AuthenticatedUser,
 ) -> Result<Json<SessionListResponse>, ApiError> {
-    let raw_token = extract_bearer(&req).ok_or_else(|| ApiError::Unauthorized)?;
-
-    let claims = decode_claims(&raw_token, &state.config.jwt_secret)
-        .ok_or_else(|| ApiError::Unauthorized)?;
-
     let sessions = sqlx::query_as::<_, Session>(
         r#"
         SELECT * FROM sessions
@@ -251,7 +242,7 @@ pub async fn list_sessions(
         LIMIT 50
         "#,
     )
-    .bind(claims.user_id)
+    .bind(user.user_id)
     .fetch_all(&state.db)
     .await?;
 
@@ -278,13 +269,8 @@ pub async fn list_sessions(
 pub async fn revoke_session(
     State(state): State<Arc<AppState>>,
     axum::extract::Path(session_id): axum::extract::Path<Uuid>,
-    req: Request<Body>,
+    AuthenticatedUser(user): AuthenticatedUser,
 ) -> Result<Json<serde_json::Value>, ApiError> {
-    let raw_token = extract_bearer(&req).ok_or_else(|| ApiError::Unauthorized)?;
-
-    let claims = decode_claims(&raw_token, &state.config.jwt_secret)
-        .ok_or_else(|| ApiError::Unauthorized)?;
-
     // Ensure the session belongs to the authenticated user
     let rows = sqlx::query(
         r#"
@@ -294,7 +280,7 @@ pub async fn revoke_session(
         "#,
     )
     .bind(session_id)
-    .bind(claims.user_id)
+    .bind(user.user_id)
     .execute(&state.db)
     .await?
     .rows_affected();
@@ -307,6 +293,7 @@ pub async fn revoke_session(
 
     Ok(Json(json!({ "message": "Session revoked" })))
 }
+
 
 // ── Middleware ────────────────────────────────────────────────────────────────
 

@@ -1,5 +1,5 @@
 use crate::api_error::ApiError;
-use crate::auth::AuthenticatedAdmin;
+use crate::auth::{AuthenticatedAdmin, AuthenticatedUser};
 use crate::notifications::AuditLogService;
 use crate::price_feed::{PriceFeedService, PriceFeedSource};
 use axum::extract::{Path, State};
@@ -238,16 +238,18 @@ pub async fn calculate_valuation(
 pub async fn get_plan_valuation(
     State((db, price_service)): State<(PgPool, Arc<dyn PriceFeedService>)>,
     Path(plan_id): Path<Uuid>,
+    AuthenticatedUser(user): AuthenticatedUser,
 ) -> Result<Json<Value>, ApiError> {
-    // Fetch plan from database
+    // Fetch plan from database ensuring ownership
     let plan = sqlx::query_as::<_, (String, String)>(
         r#"
         SELECT asset_code, net_amount::text
         FROM plans
-        WHERE id = $1
+        WHERE id = $1 AND user_id = $2
         "#,
     )
     .bind(plan_id)
+    .bind(user.user_id)
     .fetch_optional(&db)
     .await
     .map_err(|e| {
@@ -281,6 +283,7 @@ pub async fn get_plan_valuation(
         }
     })))
 }
+
 
 /// Get all active price feeds (admin only)
 pub async fn get_active_feeds(

@@ -2068,9 +2068,25 @@ async fn decline_witness(
 
 async fn verify_document_integrity(
     State(state): State<Arc<AppState>>,
+    AuthenticatedUser(user): AuthenticatedUser,
     Path(document_id): Path<Uuid>,
     Query(params): Query<PaginationParams>,
 ) -> Result<Json<Value>, ApiError> {
+    // Ensure ownership
+    let exists: bool = sqlx::query_scalar(
+        "SELECT EXISTS(SELECT 1 FROM will_documents WHERE id = $1 AND user_id = $2)",
+    )
+    .bind(document_id)
+    .bind(user.user_id)
+    .fetch_one(&state.db)
+    .await?;
+
+    if !exists {
+        return Err(ApiError::NotFound(format!(
+            "Will document {document_id} not found"
+        )));
+    }
+
     let version = params.page; // Reusing page param for version number
     let result = crate::document_verification::DocumentVerificationService::verify_document(
         &state.db,
@@ -2089,9 +2105,25 @@ struct VerifyHashRequest {
 
 async fn verify_document_hash(
     State(state): State<Arc<AppState>>,
+    AuthenticatedUser(user): AuthenticatedUser,
     Path(document_id): Path<Uuid>,
     Json(req): Json<VerifyHashRequest>,
 ) -> Result<Json<Value>, ApiError> {
+    // Ensure ownership
+    let exists: bool = sqlx::query_scalar(
+        "SELECT EXISTS(SELECT 1 FROM will_documents WHERE id = $1 AND user_id = $2)",
+    )
+    .bind(document_id)
+    .bind(user.user_id)
+    .fetch_one(&state.db)
+    .await?;
+
+    if !exists {
+        return Err(ApiError::NotFound(format!(
+            "Will document {document_id} not found"
+        )));
+    }
+
     let result = crate::document_verification::DocumentVerificationService::verify_hash(
         &state.db,
         document_id,
@@ -2110,9 +2142,25 @@ struct VerifyContentRequest {
 
 async fn verify_document_content(
     State(state): State<Arc<AppState>>,
+    AuthenticatedUser(user): AuthenticatedUser,
     Path(document_id): Path<Uuid>,
     Json(req): Json<VerifyContentRequest>,
 ) -> Result<Json<Value>, ApiError> {
+    // Ensure ownership
+    let exists: bool = sqlx::query_scalar(
+        "SELECT EXISTS(SELECT 1 FROM will_documents WHERE id = $1 AND user_id = $2)",
+    )
+    .bind(document_id)
+    .bind(user.user_id)
+    .fetch_one(&state.db)
+    .await?;
+
+    if !exists {
+        return Err(ApiError::NotFound(format!(
+            "Will document {document_id} not found"
+        )));
+    }
+
     let result = crate::document_verification::DocumentVerificationService::verify_content(
         &state.db,
         document_id,
