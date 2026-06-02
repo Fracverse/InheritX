@@ -268,8 +268,8 @@ pub async fn list_sessions(
 /// Revoke a specific session by ID (e.g., from the "manage devices" UI).
 pub async fn revoke_session(
     State(state): State<Arc<AppState>>,
-    axum::extract::Path(session_id): axum::extract::Path<Uuid>,
-    AuthenticatedUser(user): AuthenticatedUser,
+    crate::validation::Path(session_id): crate::validation::Path<Uuid>,
+    req: Request<Body>,
 ) -> Result<Json<serde_json::Value>, ApiError> {
     // Ensure the session belongs to the authenticated user
     let rows = sqlx::query(

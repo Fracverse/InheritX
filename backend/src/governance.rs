@@ -75,9 +75,94 @@ pub struct ParameterUpdateRequest {
     pub parameter_value: String,
 }
 
+/// Allowed protocol parameters with their validation rules.
+///
+/// Each entry is `(name, min_value, max_value, description)`.
+/// All parameter values are stored as strings but must parse to `u64` within
+/// the specified inclusive range.
+const ALLOWED_PARAMETERS: &[(&str, u64, u64, &str)] = &[
+    ("governance_quorum", 1, 1_000_000, "Minimum votes required for a proposal to pass"),
+    ("governance_voting_period_days", 1, 365, "Duration of the voting period in days"),
+    ("platform_fee_bps", 0, 10_000, "Platform fee in basis points (0–100%)"),
+    ("insurance_fund_fee_bps", 0, 5_000, "Insurance fund contribution in basis points"),
+    ("loan_liquidation_threshold_bps", 1, 10_000, "Collateral ratio at which a loan is liquidated (basis points)"),
+    ("loan_max_duration_days", 1, 3_650, "Maximum allowed loan duration in days"),
+    ("loan_min_collateral_bps", 1, 100_000, "Minimum collateral ratio for new loans (basis points)"),
+    ("max_beneficiaries_per_plan", 1, 100, "Maximum number of beneficiaries allowed per inheritance plan"),
+    ("claim_inactivity_period_days", 1, 3_650, "Days of inactivity before a claim can be triggered"),
+];
+
 pub struct GovernanceService;
 
 impl GovernanceService {
+    /// Validate a parameter name/value pair before it is written to the database.
+    ///
+    /// Rules enforced:
+    /// - `parameter_name` must be in the `ALLOWED_PARAMETERS` allowlist.
+    /// - `parameter_name` must be non-empty and contain only lowercase letters, digits, and underscores.
+    /// - `parameter_value` must be non-empty, parse as a `u64`, and fall within the
+    ///   inclusive `[min, max]` range defined for that parameter.
+    fn validate_parameter(name: &str, value: &str) -> Result<(), ApiError> {
+        // Basic name format check (prevents injection / typos)
+        if name.is_empty() {
+            return Err(ApiError::BadRequest(
+                "parameter_name must not be empty".to_string(),
+            ));
+        }
+        if !name
+            .chars()
+            .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '_')
+        {
+            return Err(ApiError::BadRequest(format!(
+                "parameter_name '{}' contains invalid characters; only lowercase letters, digits, and underscores are allowed",
+                name
+            )));
+        }
+
+        // Allowlist check
+        let rule = ALLOWED_PARAMETERS
+            .iter()
+            .find(|(allowed_name, ..)| *allowed_name == name)
+            .ok_or_else(|| {
+                ApiError::BadRequest(format!(
+                    "Unknown parameter '{}'. Allowed parameters: {}",
+                    name,
+                    ALLOWED_PARAMETERS
+                        .iter()
+                        .map(|(n, ..)| *n)
+                        .collect::<Vec<_>>()
+                        .join(", ")
+                ))
+            })?;
+
+        let (_, min, max, description) = rule;
+
+        // Value must be non-empty
+        if value.is_empty() {
+            return Err(ApiError::BadRequest(format!(
+                "parameter_value for '{}' must not be empty",
+                name
+            )));
+        }
+
+        // Value must parse as a non-negative integer
+        let parsed: u64 = value.trim().parse().map_err(|_| {
+            ApiError::BadRequest(format!(
+                "parameter_value '{}' for '{}' is not a valid non-negative integer",
+                value, name
+            ))
+        })?;
+
+        // Range check
+        if parsed < *min || parsed > *max {
+            return Err(ApiError::BadRequest(format!(
+                "parameter_value {} for '{}' is out of range [{}, {}] ({})",
+                parsed, name, min, max, description
+            )));
+        }
+
+        Ok(())
+    }
     pub async fn create_proposal(
         db: &PgPool,
         proposer_id: Uuid,
@@ -351,6 +436,9 @@ impl GovernanceService {
         _admin_id: Uuid,
         req: &ParameterUpdateRequest,
     ) -> Result<(), ApiError> {
+        // Validate before touching the database
+        Self::validate_parameter(&req.parameter_name, &req.parameter_value)?;
+
         info!(
             "Updating protocol parameter: {} = {}",
             req.parameter_name, req.parameter_value
@@ -397,11 +485,8 @@ impl GovernanceService {
                             "action_payload.parameter_value is required".to_string(),
                         )
                     })?;
-                if name.is_empty() || value.is_empty() {
-                    return Err(ApiError::BadRequest(
-                        "parameter_name and parameter_value must not be empty".to_string(),
-                    ));
-                }
+                // Delegate to the shared validator for full allowlist + range checks
+                Self::validate_parameter(name, value)?;
                 Ok(())
             }
             other => Err(ApiError::BadRequest(format!(
@@ -429,6 +514,10 @@ impl GovernanceService {
                     .ok_or_else(|| {
                         ApiError::BadRequest("Missing parameter_value in action payload".to_string())
                     })?;
+
+                // Re-validate at execution time; the parameter rules may have changed
+                // since the proposal was created, and this is the last safety gate.
+                Self::validate_parameter(name, value)?;
 
                 sqlx::query(
                     "INSERT INTO protocol_parameters (name, value, updated_at) VALUES ($1, $2, NOW()) ON CONFLICT (name) DO UPDATE SET value = $2, updated_at = NOW()",
