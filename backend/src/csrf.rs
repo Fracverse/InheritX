@@ -48,6 +48,47 @@ fn decode_user_claims(token: &str, secret: &str) -> Result<UserClaims, ApiError>
     .map_err(|_| ApiError::Unauthorized)
 }
 
+/// Rotate a CSRF token: mark the old one as used and insert a fresh one.
+/// Returns the new token string and its expiry.
+async fn rotate_csrf_token(
+    db: &sqlx::PgPool,
+    old_token: &str,
+) -> Result<(String, chrono::DateTime<chrono::Utc>), ()> {
+    let user_id: Option<Uuid> = sqlx::query_scalar(
+        "SELECT user_id FROM csrf_tokens WHERE token = $1 AND used = FALSE",
+    )
+    .bind(old_token)
+    .fetch_optional(db)
+    .await
+    .map_err(|_| ())?
+    .ok_or(())?;
+
+    let new_token = generate_csrf_token();
+    let expires_at = Utc::now() + Duration::minutes(60);
+
+    sqlx::query("UPDATE csrf_tokens SET used = TRUE WHERE token = $1")
+        .bind(old_token)
+        .execute(db)
+        .await
+        .map_err(|_| ())?;
+
+    sqlx::query(
+        r#"
+        INSERT INTO csrf_tokens (id, user_id, token, expires_at, used)
+        VALUES ($1, $2, $3, $4, FALSE)
+        "#,
+    )
+    .bind(Uuid::new_v4())
+    .bind(user_id)
+    .bind(&new_token)
+    .bind(expires_at)
+    .execute(db)
+    .await
+    .map_err(|_| ())?;
+
+    Ok((new_token, expires_at))
+}
+
 // ── HTTP handler ──────────────────────────────────────────────────────────────
 
 #[derive(Serialize)]
@@ -158,12 +199,15 @@ pub async fn csrf_protection_middleware(
 
     match valid {
         Ok(true) => {
-            // Single-use: mark consumed immediately before processing the request
-            let _ = sqlx::query("UPDATE csrf_tokens SET used = TRUE WHERE token = $1")
-                .bind(&token)
-                .execute(&state.db)
-                .await;
-            next.run(req).await
+            // Rotate: consume old token and issue a fresh one
+            let rotated = rotate_csrf_token(&state.db, &token).await;
+            let mut response = next.run(req).await;
+            if let Ok((new_token, _expires_at)) = rotated {
+                response
+                    .headers_mut()
+                    .insert("X-CSRF-Token", new_token.parse().unwrap());
+            }
+            response
         }
         Ok(false) => (
             StatusCode::FORBIDDEN,
