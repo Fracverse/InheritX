@@ -88,6 +88,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let legacy_message_delivery_service =
         Arc::new(LegacyMessageDeliveryService::new(db_pool.clone()));
     legacy_message_delivery_service.start();
+    // Start automated overdue loan detection sweep (Issue #643).
+    inheritx_backend::LoanLifecycleService::start_overdue_loan_sweep(db_pool.clone());
 
     // Start server
     let addr = SocketAddr::from(([0, 0, 0, 0], config.port));

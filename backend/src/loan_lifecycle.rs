@@ -160,14 +160,10 @@ pub struct CreateLoanRequest {
     pub plan_id: Option<Uuid>,
     pub borrow_asset: String,
     pub collateral_asset: String,
-    /// Loan principal in the borrow asset's native units.
     pub principal: Decimal,
-    /// Annual interest rate expressed in basis-points (e.g. 800 = 8 %).
     pub interest_rate_bps: i32,
     pub collateral_amount: Decimal,
-    /// ISO-8601 datetime when the loan is due.
     pub due_date: DateTime<Utc>,
-    /// Optional on-chain transaction hash for cross-reference.
     pub transaction_hash: Option<String>,
 }
 
@@ -202,8 +198,6 @@ pub struct LoanLifecycleService;
 impl LoanLifecycleService {
     // ── Read operations ───────────────────────────────────────────────────────
 
-    /// Fetch a single loan by its `id` for a specific user. Returns `NotFound` when absent
-    /// or not owned by the caller.
     pub async fn get_loan_for_user(
         db: &PgPool,
         id: Uuid,
@@ -228,7 +222,6 @@ impl LoanLifecycleService {
         Ok(row.into())
     }
 
-    /// Fetch a single loan by its `id`. Returns `NotFound` when absent.
     pub async fn get_loan(db: &PgPool, id: Uuid) -> Result<LoanLifecycleRecord, ApiError> {
         let row = sqlx::query_as::<_, LoanLifecycleRow>(
             r#"
@@ -248,13 +241,10 @@ impl LoanLifecycleService {
         Ok(row.into())
     }
 
-    /// List loans with optional filters. Results are ordered newest-first.
     pub async fn list_loans(
         db: &PgPool,
         filters: &LoanListFilters,
     ) -> Result<Vec<LoanLifecycleRecord>, ApiError> {
-        // Build the query dynamically so we only add WHERE clauses that are
-        // actually needed (avoids placeholder mis-alignment in dynamic SQL).
         let mut conditions: Vec<String> = Vec::new();
         let mut idx: i32 = 1;
 
@@ -304,7 +294,6 @@ impl LoanLifecycleService {
         Ok(rows.into_iter().map(Into::into).collect())
     }
 
-    /// List loans with pagination and optional filters.
     pub async fn list_loans_paginated(
         db: &PgPool,
         filters: &LoanListFilters,
@@ -365,7 +354,6 @@ impl LoanLifecycleService {
         Ok(rows.into_iter().map(Into::into).collect())
     }
 
-    /// Count loans with optional filters.
     pub async fn count_loans(db: &PgPool, filters: &LoanListFilters) -> Result<i64, ApiError> {
         let mut conditions: Vec<String> = Vec::new();
         let mut idx: i32 = 1;
@@ -412,7 +400,6 @@ impl LoanLifecycleService {
         Ok(count)
     }
 
-    /// Returns aggregate counts of loans grouped by status.
     pub async fn get_lifecycle_summary(
         db: &PgPool,
         user_id: Option<Uuid>,
@@ -469,12 +456,10 @@ impl LoanLifecycleService {
 
     // ── Write operations ──────────────────────────────────────────────────────
 
-    /// Open a new loan in the `active` state.
     pub async fn create_loan(
         pool: &PgPool,
         req: &CreateLoanRequest,
     ) -> Result<LoanLifecycleRecord, ApiError> {
-        // Input validation
         if req.principal <= Decimal::ZERO {
             return Err(ApiError::BadRequest(
                 "principal must be greater than zero".to_string(),
@@ -498,7 +483,6 @@ impl LoanLifecycleService {
 
         let mut tx = pool.begin().await?;
 
-        // If plan_id is provided, check if the plan is paused
         if let Some(plan_id) = req.plan_id {
             let is_paused: Option<bool> =
                 sqlx::query_scalar("SELECT is_paused FROM plans WHERE id = $1")
@@ -560,10 +544,6 @@ impl LoanLifecycleService {
         Ok(record)
     }
 
-    /// Transition a loan from `active` or `overdue` → `repaid`.
-    ///
-    /// `amount` is the payment being applied. The transition is committed only
-    /// when the cumulative `amount_repaid` reaches the full `principal`.
     pub async fn repay_loan(
         pool: &PgPool,
         loan_id: Uuid,
@@ -578,8 +558,6 @@ impl LoanLifecycleService {
 
         let mut tx = pool.begin().await?;
 
-        // Lock the row for the duration of the transaction
-        // Join with plans to check if the plan is paused
         let row = sqlx::query_as::<_, LoanLifecycleRow>(
             r#"
             SELECT ll.id, ll.user_id, ll.plan_id, ll.borrow_asset, ll.collateral_asset,
@@ -657,7 +635,6 @@ impl LoanLifecycleService {
         Ok(record)
     }
 
-    /// Transition a loan from `active` or `overdue` → `liquidated`.
     pub async fn liquidate_loan(
         pool: &PgPool,
         loan_id: Uuid,
@@ -742,6 +719,45 @@ impl LoanLifecycleService {
 
         Ok(rows.into_iter().map(|(id,)| id).collect())
     }
+
+    /// Spawn a background task that periodically calls [`mark_overdue_loans`].
+    ///
+    /// The sweep interval defaults to 60 seconds and can be overridden with
+    /// the `OVERDUE_LOAN_SWEEP_INTERVAL_SECS` environment variable.
+    pub fn start_overdue_loan_sweep(pool: sqlx::PgPool) {
+        let interval_secs: u64 = std::env::var("OVERDUE_LOAN_SWEEP_INTERVAL_SECS")
+            .ok()
+            .and_then(|v| v.parse().ok())
+            .unwrap_or(60);
+
+        tokio::spawn(async move {
+            let mut ticker =
+                tokio::time::interval(std::time::Duration::from_secs(interval_secs));
+            tracing::info!(interval_secs, "overdue loan sweep started");
+
+            loop {
+                ticker.tick().await;
+                match Self::mark_overdue_loans(&pool).await {
+                    Ok(ids) if ids.is_empty() => {
+                        tracing::debug!("overdue loan sweep: no loans transitioned");
+                    }
+                    Ok(ids) => {
+                        tracing::info!(
+                            count = ids.len(),
+                            "overdue loan sweep: transitioned {} loan(s) to overdue",
+                            ids.len()
+                        );
+                    }
+                    Err(e) => {
+                        tracing::error!(
+                            error = %e,
+                            "overdue loan sweep: failed to mark overdue loans"
+                        );
+                    }
+                }
+            }
+        });
+    }
 }
 
 // ── Tests ─────────────────────────────────────────────────────────────────────
@@ -751,8 +767,6 @@ mod tests {
     use super::*;
     use rust_decimal::Decimal;
     use std::str::FromStr;
-
-    // ── LoanStatus parsing ────────────────────────────────────────────────────
 
     #[test]
     fn loan_status_round_trips() {
@@ -774,70 +788,49 @@ mod tests {
         assert!(LoanStatus::from_str("").is_err());
     }
 
-    // ── Partial repayment business logic ─────────────────────────────────────
-
-    /// Verify that a partial payment does NOT set `fully_repaid`.
     #[test]
     fn partial_repayment_does_not_fully_repay() {
         let principal = Decimal::from(1000u32);
         let amount_repaid = Decimal::from(300u32);
         let payment = Decimal::from(200u32);
-
         let new_amount_repaid = amount_repaid + payment;
         let fully_repaid = new_amount_repaid >= principal;
-
         assert_eq!(new_amount_repaid, Decimal::from(500u32));
-        assert!(!fully_repaid, "500 < 1000 should not be fully repaid");
+        assert!(!fully_repaid);
     }
 
-    /// Verify that a payment that exactly meets the principal sets `fully_repaid`.
     #[test]
     fn exact_repayment_marks_fully_repaid() {
         let principal = Decimal::from(1000u32);
         let amount_repaid = Decimal::from(700u32);
         let payment = Decimal::from(300u32);
-
         let new_amount_repaid = amount_repaid + payment;
         let fully_repaid = new_amount_repaid >= principal;
-
         assert_eq!(new_amount_repaid, principal);
-        assert!(fully_repaid, "700 + 300 == 1000 should be fully repaid");
+        assert!(fully_repaid);
     }
 
-    /// Verify that an overpayment (more than principal) also sets `fully_repaid`.
     #[test]
     fn overpayment_marks_fully_repaid() {
         let principal = Decimal::from(1000u32);
         let amount_repaid = Decimal::ZERO;
         let payment = Decimal::from(1500u32);
-
         let new_amount_repaid = amount_repaid + payment;
         let fully_repaid = new_amount_repaid >= principal;
-
-        assert!(fully_repaid, "1500 > 1000 should be fully repaid");
+        assert!(fully_repaid);
     }
 
-    /// Verify that a zero payment is rejected (mirrors the service guard).
     #[test]
     fn zero_repayment_is_invalid() {
         let amount = Decimal::ZERO;
-        assert!(
-            amount <= Decimal::ZERO,
-            "zero amount should fail the > 0 guard"
-        );
+        assert!(amount <= Decimal::ZERO);
     }
 
-    /// Verify that a negative payment is rejected.
     #[test]
     fn negative_repayment_is_invalid() {
         let amount = Decimal::from_str("-1.00").unwrap();
-        assert!(
-            amount <= Decimal::ZERO,
-            "negative amount should fail the > 0 guard"
-        );
+        assert!(amount <= Decimal::ZERO);
     }
-
-    // ── CreateLoanRequest validation guards ───────────────────────────────────
 
     #[test]
     fn zero_principal_is_invalid() {
@@ -848,5 +841,28 @@ mod tests {
     fn negative_interest_rate_bps_is_invalid() {
         let rate: i32 = -1;
         assert!(rate < 0);
+    }
+
+    // ── Sweep configuration ───────────────────────────────────────────────────
+
+    #[test]
+    fn sweep_interval_defaults_to_60() {
+        std::env::remove_var("OVERDUE_LOAN_SWEEP_INTERVAL_SECS");
+        let interval_secs: u64 = std::env::var("OVERDUE_LOAN_SWEEP_INTERVAL_SECS")
+            .ok()
+            .and_then(|v| v.parse().ok())
+            .unwrap_or(60);
+        assert_eq!(interval_secs, 60);
+    }
+
+    #[test]
+    fn sweep_interval_reads_env_var() {
+        std::env::set_var("OVERDUE_LOAN_SWEEP_INTERVAL_SECS", "120");
+        let interval_secs: u64 = std::env::var("OVERDUE_LOAN_SWEEP_INTERVAL_SECS")
+            .ok()
+            .and_then(|v| v.parse().ok())
+            .unwrap_or(60);
+        assert_eq!(interval_secs, 120);
+        std::env::remove_var("OVERDUE_LOAN_SWEEP_INTERVAL_SECS");
     }
 }
