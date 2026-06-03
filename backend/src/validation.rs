@@ -84,9 +84,14 @@ pub fn validate_email(errors: &mut ValidationErrors, field: &str, value: &str) {
         return;
     }
 
-    let mut parts = s.splitn(2, '@');
-    let local = parts.next().unwrap_or("");
-    let domain = parts.next().unwrap_or("");
+    let parts: Vec<&str> = s.rsplitn(2, '@').collect();
+    if parts.len() != 2 {
+        errors.add(field, "must be a valid email address");
+        return;
+    }
+
+    let domain = parts[0];
+    let local = parts[1];
 
     if local.is_empty() || domain.is_empty() {
         errors.add(field, "must be a valid email address");
@@ -135,8 +140,7 @@ fn is_valid_unquoted_local_part(local: &str) -> bool {
         | b'&'
         | b'\''
         | b'*'
-        | b'+'
-        | b'/'
+        | b'+'        | b'-'        | b'/'
         | b'='
         | b'?'
         | b'^'
