@@ -151,6 +151,19 @@ pub struct LoanLifecycleRecord {
     pub updated_at: DateTime<Utc>,
     pub repaid_at: Option<DateTime<Utc>>,
     pub liquidated_at: Option<DateTime<Utc>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub plan: Option<LoanPlanSummary>,
+}
+
+/// A compact plan summary attached to a loan for eager-loaded loan lifecycle
+/// queries.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct LoanPlanSummary {
+    pub id: Uuid,
+    pub title: Option<String>,
+    pub status: Option<String>,
+    pub is_paused: Option<bool>,
 }
 
 /// Raw sqlx row helper – mirrors the table schema exactly.
@@ -174,6 +187,29 @@ pub(crate) struct LoanLifecycleRow {
     pub liquidated_at: Option<DateTime<Utc>>,
 }
 
+#[derive(sqlx::FromRow)]
+pub(crate) struct LoanLifecycleRowWithPlan {
+    pub id: Uuid,
+    pub user_id: Uuid,
+    pub plan_id: Option<Uuid>,
+    pub borrow_asset: String,
+    pub collateral_asset: String,
+    pub principal: Decimal,
+    pub interest_rate_bps: i32,
+    pub collateral_amount: Decimal,
+    pub amount_repaid: Decimal,
+    pub status: String,
+    pub due_date: DateTime<Utc>,
+    pub transaction_hash: Option<String>,
+    pub created_at: DateTime<Utc>,
+    pub updated_at: DateTime<Utc>,
+    pub repaid_at: Option<DateTime<Utc>>,
+    pub liquidated_at: Option<DateTime<Utc>>,
+    pub plan_title: Option<String>,
+    pub plan_status: Option<String>,
+    pub plan_is_paused: Option<bool>,
+}
+
 impl From<LoanLifecycleRow> for LoanLifecycleRecord {
     fn from(r: LoanLifecycleRow) -> Self {
         LoanLifecycleRecord {
@@ -193,6 +229,38 @@ impl From<LoanLifecycleRow> for LoanLifecycleRecord {
             updated_at: r.updated_at,
             repaid_at: r.repaid_at,
             liquidated_at: r.liquidated_at,
+            plan: None,
+        }
+    }
+}
+
+impl From<LoanLifecycleRowWithPlan> for LoanLifecycleRecord {
+    fn from(r: LoanLifecycleRowWithPlan) -> Self {
+        let plan = r.plan_id.map(|id| LoanPlanSummary {
+            id,
+            title: r.plan_title,
+            status: r.plan_status,
+            is_paused: r.plan_is_paused,
+        });
+
+        LoanLifecycleRecord {
+            id: r.id,
+            user_id: r.user_id,
+            plan_id: r.plan_id,
+            borrow_asset: r.borrow_asset,
+            collateral_asset: r.collateral_asset,
+            principal: r.principal,
+            interest_rate_bps: r.interest_rate_bps,
+            collateral_amount: r.collateral_amount,
+            amount_repaid: r.amount_repaid,
+            status: r.status,
+            due_date: r.due_date,
+            transaction_hash: r.transaction_hash,
+            created_at: r.created_at,
+            updated_at: r.updated_at,
+            repaid_at: r.repaid_at,
+            liquidated_at: r.liquidated_at,
+            plan,
         }
     }
 }
@@ -262,14 +330,16 @@ impl LoanLifecycleService {
         id: Uuid,
         user_id: Uuid,
     ) -> Result<LoanLifecycleRecord, ApiError> {
-        let row = sqlx::query_as::<_, LoanLifecycleRow>(
+        let row = sqlx::query_as::<_, LoanLifecycleRowWithPlan>(
             r#"
-            SELECT id, user_id, plan_id, borrow_asset, collateral_asset,
-                   principal, interest_rate_bps, collateral_amount, amount_repaid,
-                   status, due_date, transaction_hash,
-                   created_at, updated_at, repaid_at, liquidated_at
-            FROM loan_lifecycle
-            WHERE id = $1 AND user_id = $2
+            SELECT ll.id, ll.user_id, ll.plan_id, ll.borrow_asset, ll.collateral_asset,
+                   ll.principal, ll.interest_rate_bps, ll.collateral_amount, ll.amount_repaid,
+                   ll.status, ll.due_date, ll.transaction_hash,
+                   ll.created_at, ll.updated_at, ll.repaid_at, ll.liquidated_at,
+                   p.title AS plan_title, p.status AS plan_status, p.is_paused AS plan_is_paused
+            FROM loan_lifecycle ll
+            LEFT JOIN plans p ON p.id = ll.plan_id
+            WHERE ll.id = $1 AND ll.user_id = $2
             "#,
         )
         .bind(id)
@@ -283,14 +353,16 @@ impl LoanLifecycleService {
 
     /// Fetch a single loan by its `id`. Returns `NotFound` when absent.
     pub async fn get_loan(db: &PgPool, id: Uuid) -> Result<LoanLifecycleRecord, ApiError> {
-        let row = sqlx::query_as::<_, LoanLifecycleRow>(
+        let row = sqlx::query_as::<_, LoanLifecycleRowWithPlan>(
             r#"
-            SELECT id, user_id, plan_id, borrow_asset, collateral_asset,
-                   principal, interest_rate_bps, collateral_amount, amount_repaid,
-                   status, due_date, transaction_hash,
-                   created_at, updated_at, repaid_at, liquidated_at
-            FROM loan_lifecycle
-            WHERE id = $1
+            SELECT ll.id, ll.user_id, ll.plan_id, ll.borrow_asset, ll.collateral_asset,
+                   ll.principal, ll.interest_rate_bps, ll.collateral_amount, ll.amount_repaid,
+                   ll.status, ll.due_date, ll.transaction_hash,
+                   ll.created_at, ll.updated_at, ll.repaid_at, ll.liquidated_at,
+                   p.title AS plan_title, p.status AS plan_status, p.is_paused AS plan_is_paused
+            FROM loan_lifecycle ll
+            LEFT JOIN plans p ON p.id = ll.plan_id
+            WHERE ll.id = $1
             "#,
         )
         .bind(id)
@@ -306,17 +378,19 @@ impl LoanLifecycleService {
         db: &PgPool,
         filters: &LoanListFilters,
     ) -> Result<Vec<LoanLifecycleRecord>, ApiError> {
-        let rows = sqlx::query_as::<_, LoanLifecycleRow>(
+        let rows = sqlx::query_as::<_, LoanLifecycleRowWithPlan>(
             r#"
-            SELECT id, user_id, plan_id, borrow_asset, collateral_asset,
-                   principal, interest_rate_bps, collateral_amount, amount_repaid,
-                   status, due_date, transaction_hash,
-                   created_at, updated_at, repaid_at, liquidated_at
-            FROM loan_lifecycle
-            WHERE ($1::uuid IS NULL OR user_id = $1)
-              AND ($2::uuid IS NULL OR plan_id = $2)
-              AND ($3::text IS NULL OR status::text = $3)
-            ORDER BY created_at DESC
+            SELECT ll.id, ll.user_id, ll.plan_id, ll.borrow_asset, ll.collateral_asset,
+                   ll.principal, ll.interest_rate_bps, ll.collateral_amount, ll.amount_repaid,
+                   ll.status, ll.due_date, ll.transaction_hash,
+                   ll.created_at, ll.updated_at, ll.repaid_at, ll.liquidated_at,
+                   p.title AS plan_title, p.status AS plan_status, p.is_paused AS plan_is_paused
+            FROM loan_lifecycle ll
+            LEFT JOIN plans p ON p.id = ll.plan_id
+            WHERE ($1::uuid IS NULL OR ll.user_id = $1)
+              AND ($2::uuid IS NULL OR ll.plan_id = $2)
+              AND ($3::text IS NULL OR ll.status::text = $3)
+            ORDER BY ll.created_at DESC
             "#
         );
 
@@ -336,17 +410,19 @@ impl LoanLifecycleService {
         limit: i64,
         offset: i64,
     ) -> Result<Vec<LoanLifecycleRecord>, ApiError> {
-        let rows = sqlx::query_as::<_, LoanLifecycleRow>(
+        let rows = sqlx::query_as::<_, LoanLifecycleRowWithPlan>(
             r#"
-            SELECT id, user_id, plan_id, borrow_asset, collateral_asset,
-                   principal, interest_rate_bps, collateral_amount, amount_repaid,
-                   status, due_date, transaction_hash,
-                   created_at, updated_at, repaid_at, liquidated_at
-            FROM loan_lifecycle
-            WHERE ($1::uuid IS NULL OR user_id = $1)
-              AND ($2::uuid IS NULL OR plan_id = $2)
-              AND ($3::text IS NULL OR status::text = $3)
-            ORDER BY created_at DESC
+            SELECT ll.id, ll.user_id, ll.plan_id, ll.borrow_asset, ll.collateral_asset,
+                   ll.principal, ll.interest_rate_bps, ll.collateral_amount, ll.amount_repaid,
+                   ll.status, ll.due_date, ll.transaction_hash,
+                   ll.created_at, ll.updated_at, ll.repaid_at, ll.liquidated_at,
+                   p.title AS plan_title, p.status AS plan_status, p.is_paused AS plan_is_paused
+            FROM loan_lifecycle ll
+            LEFT JOIN plans p ON p.id = ll.plan_id
+            WHERE ($1::uuid IS NULL OR ll.user_id = $1)
+              AND ($2::uuid IS NULL OR ll.plan_id = $2)
+              AND ($3::text IS NULL OR ll.status::text = $3)
+            ORDER BY ll.created_at DESC
             LIMIT $4 OFFSET $5
             "#,
         );
@@ -1000,6 +1076,47 @@ impl LoanLifecycleService {
         tx.commit().await?;
         crate::metrics::inc_loans_liquidated();
         Ok(record)
+    }
+
+    /// Convenience wrapper used by older call-sites to create and immediately
+    /// activate a loan. This delegates to `create_draft_loan` and then
+    /// transitions the loan to `active` so higher-level handlers can call a
+    /// single method.
+    pub async fn create_loan(
+        pool: &PgPool,
+        req: &CreateLoanRequest,
+    ) -> Result<LoanLifecycleRecord, ApiError> {
+        let draft = Self::create_draft_loan(pool, req).await?;
+        // Activate the draft loan on behalf of the requesting user.
+        Self::activate_loan(pool, draft.id, req.user_id).await
+    }
+
+    /// Admin-facing wrapper to liquidate a loan. Reuses `default_loan` which
+    /// marks the loan as defaulted/liquidated and logs metrics.
+    pub async fn liquidate_loan(
+        pool: &PgPool,
+        loan_id: Uuid,
+        admin_id: Uuid,
+    ) -> Result<LoanLifecycleRecord, ApiError> {
+        Self::default_loan(pool, loan_id, admin_id).await
+    }
+
+    /// Sweep active loans past their due date and mark them as `defaulted`.
+    /// Returns the list of loan ids that were marked. This is a best-effort
+    /// implementation useful for tests and cron jobs.
+    pub async fn mark_overdue_loans(db: &PgPool) -> Result<Vec<Uuid>, ApiError> {
+        let rows = sqlx::query_as::<_, (Uuid,)>(
+            r#"
+            UPDATE loan_lifecycle
+            SET status = 'defaulted', liquidated_at = NOW()
+            WHERE status = 'active' AND due_date < NOW()
+            RETURNING id
+            "#,
+        )
+        .fetch_all(db)
+        .await?;
+
+        Ok(rows.into_iter().map(|(id,)| id).collect())
     }
 }
 

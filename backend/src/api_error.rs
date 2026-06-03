@@ -79,7 +79,7 @@ pub enum ApiError {
     PayloadTooLarge(String),
 
     /// Client has exceeded the configured rate limit for the endpoint.
-    #[error("Rate limit exceeded. Please slow down and retry after the indicated period.")]
+    #[error("Rate limit exceeded: {0}")]
     TooManyRequests(String),
 }
 

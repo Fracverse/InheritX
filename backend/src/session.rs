@@ -269,6 +269,7 @@ pub async fn list_sessions(
 pub async fn revoke_session(
     State(state): State<Arc<AppState>>,
     crate::validation::Path(session_id): crate::validation::Path<Uuid>,
+    AuthenticatedUser(user): AuthenticatedUser,
     req: Request<Body>,
 ) -> Result<Json<serde_json::Value>, ApiError> {
     // Ensure the session belongs to the authenticated user

@@ -119,13 +119,13 @@ pub async fn create_pool_with_config(
         // Enforce a per-query timeout at the server using `statement_timeout`.
         // This cancels queries that exceed the configured duration and prevents
         // client-side tasks from hanging indefinitely while the DB is busy.
-        .after_connect(move |mut conn| {
+        .after_connect(move |mut conn, _pool| {
             let timeout_ms = query_timeout_secs * 1000;
             Box::pin(async move {
                 // Use an explicit SET on the connection. This returns a
                 // Result<Executed, sqlx::Error> which we map to ().
                 let set_stmt = format!("SET statement_timeout = {}", timeout_ms);
-                sqlx::query(&set_stmt).execute(&mut conn).await.map(|_| ())
+                sqlx::query(&set_stmt).execute(conn).await.map(|_| ())
             })
         })
         // Test each connection with a lightweight ping before handing it
@@ -443,6 +443,8 @@ pub struct PoolMetrics {
     pub idle: u32,
     /// Connections currently checked out by active queries.
     pub active: u32,
+    /// Connections currently waiting for a connection from the pool.
+    pub pending: u32,
     /// Configured upper bound on pool size.
     pub max_connections: u32,
     /// Pool utilisation as a fraction in [0.0, 1.0].
@@ -454,6 +456,9 @@ pub fn pool_metrics(pool: &PgPool) -> PoolMetrics {
     let size = pool.size();
     let idle = pool.num_idle() as u32;
     let active = size.saturating_sub(idle);
+    // sqlx 0.7 doesn't expose a `num_waiters()` API on `Pool`.
+    // Use a conservative placeholder until a more accurate metric is available.
+    let pending = 0u32;
     let max_connections = pool.options().get_max_connections();
     let utilisation = if max_connections > 0 {
         active as f64 / max_connections as f64
@@ -465,6 +470,7 @@ pub fn pool_metrics(pool: &PgPool) -> PoolMetrics {
         size,
         idle,
         active,
+        pending,
         max_connections,
         utilisation,
     }

@@ -4172,7 +4172,7 @@ impl EmergencyAccessMetricsService {
             _ => ("30 days", "day"), // default to daily
         };
 
-        let trend_rows: Vec<(String, i64)> = sqlx::query_as(
+        let trend_rows: Vec<(String, i64)> = sqlx::query_as::<_, (String, i64)>(
             r#"
             SELECT 
                 DATE_TRUNC($1, created_at)::DATE::TEXT as date,
@@ -4182,13 +4182,11 @@ impl EmergencyAccessMetricsService {
             GROUP BY 1
             ORDER BY 1
             "#,
-        );
-
-        let trend_rows: Vec<(String, i64)> = trend_rows
-            .bind(trunc)
-            .bind(interval)
-            .fetch_all(db)
-            .await?;
+        )
+        .bind(trunc)
+        .bind(interval)
+        .fetch_all(db)
+        .await?;
 
         let grant_trend = trend_rows
             .into_iter()

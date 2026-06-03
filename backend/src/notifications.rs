@@ -619,6 +619,8 @@ mod tests {
             notif_type: notif_type::KYC_APPROVED.to_string(),
             message: "Approved!".to_string(),
             is_read: false,
+            delivery_status: None,
+            delivery_attempts: None,
             created_at: Utc::now(),
         };
         let json = serde_json::to_value(&n).unwrap();
@@ -640,6 +642,8 @@ mod tests {
             notif_type: notif_type::PLAN_CREATED.to_string(),
             message: "Plan created".to_string(),
             is_read: false,
+            delivery_status: None,
+            delivery_attempts: None,
             created_at: Utc::now(),
         };
         assert!(!n.is_read);
@@ -657,6 +661,7 @@ mod tests {
             old_value: None,
             new_value: None,
             metadata: None,
+            sequence_number: None,
             timestamp: Utc::now(),
         };
         let json = serde_json::to_value(&log).unwrap();
@@ -676,6 +681,7 @@ mod tests {
             old_value: None,
             new_value: None,
             metadata: None,
+            sequence_number: None,
             timestamp: Utc::now(),
         };
         let json = serde_json::to_value(&log).unwrap();
