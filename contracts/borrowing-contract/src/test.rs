@@ -1,7 +1,10 @@
 #![cfg(test)]
 
 use super::*;
-use soroban_sdk::{testutils::{Address as _, Ledger as _}, token, Address, Env};
+use soroban_sdk::{
+    testutils::{Address as _, Ledger as _},
+    token, Address, Env,
+};
 
 fn create_token_addr(env: &Env) -> Address {
     let admin = Address::generate(env);
@@ -351,6 +354,27 @@ fn test_liquidation_auction() {
 
     let loan = client.get_loan(&loan_id);
     assert!(!loan.is_active);
+}
+
+#[test]
+fn test_liquidation_auction_zero_duration_fails() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let admin = Address::generate(&env);
+    let collateral_addr = create_token_addr(&env);
+    let contract_id = env.register_contract(None, BorrowingContract);
+    let client = BorrowingContractClient::new(&env, &contract_id);
+    client.initialize(&admin, &12000, &13000, &500);
+    client.whitelist_collateral(&admin, &collateral_addr);
+
+    let borrower = Address::generate(&env);
+    sac_client(&env, &collateral_addr).mint(&borrower, &1200);
+
+    let loan_id = client.create_loan(&borrower, &1000, &5, &1000000, &collateral_addr, &1200);
+
+    // Duration is 0, should fail with InvalidAmount
+    let result = client.try_start_liquidation_auction(&loan_id, &0, &100, &2000);
+    assert_eq!(result, Err(Ok(BorrowingError::InvalidAmount)));
 }
 
 // ─────────────────────────────────────────────────

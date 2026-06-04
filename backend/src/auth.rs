@@ -6,7 +6,7 @@ use axum::{extract::State, Json};
 use bcrypt::verify;
 use chrono::{DateTime, Duration, Utc};
 use hex;
-use jsonwebtoken::{encode, decode, EncodingKey, Header, Validation};
+use jsonwebtoken::{decode, encode, EncodingKey, Header, Validation};
 use ring::signature;
 use serde::{Deserialize, Serialize};
 use sqlx::FromRow;
@@ -98,9 +98,11 @@ pub async fn web3_login(
     let public_key_bytes = {
         // Enforce strict Stellar address validation
         if !payload.wallet_address.starts_with('G') || payload.wallet_address.len() != 56 {
-            return Err(ApiError::BadRequest("Invalid Stellar address format".to_string()));
+            return Err(ApiError::BadRequest(
+                "Invalid Stellar address format".to_string(),
+            ));
         }
-        
+
         let strkey = Strkey::from_string(&payload.wallet_address)
             .map_err(|_| ApiError::BadRequest("Invalid Stellar address".to_string()))?;
 
@@ -513,17 +515,17 @@ where
                 }
                 let token = auth_header.strip_prefix("Bearer ").unwrap();
                 let mut validation = Validation::default();
-                    // Ensure expiration is always validated
-                    validation.validate_exp = true;
-                    validation.required_spec_claims.insert("exp".to_string());
-                    
-                    let claims: UserClaims = decode(
-                        token,
-                        &jsonwebtoken::DecodingKey::from_secret(config.jwt_secret.as_bytes()),
-                        &validation,
-                    )
-                    .map_err(|_| ApiError::Unauthorized)?
-                    .claims;
+                // Ensure expiration is always validated
+                validation.validate_exp = true;
+                validation.required_spec_claims.insert("exp".to_string());
+
+                let claims: UserClaims = decode(
+                    token,
+                    &jsonwebtoken::DecodingKey::from_secret(config.jwt_secret.as_bytes()),
+                    &validation,
+                )
+                .map_err(|_| ApiError::Unauthorized)?
+                .claims;
                 return Ok(AuthenticatedUser(claims));
             }
 
@@ -570,17 +572,17 @@ where
                 }
                 let token = auth_header.strip_prefix("Bearer ").unwrap();
                 let mut validation = Validation::default();
-                    // Ensure expiration is always validated
-                    validation.validate_exp = true;
-                    validation.required_spec_claims.insert("exp".to_string());
-                    
-                    let claims: AdminClaims = decode(
-                        token,
-                        &jsonwebtoken::DecodingKey::from_secret(config.jwt_secret.as_bytes()),
-                        &validation,
-                    )
-                    .map_err(|_| ApiError::Unauthorized)?
-                    .claims;
+                // Ensure expiration is always validated
+                validation.validate_exp = true;
+                validation.required_spec_claims.insert("exp".to_string());
+
+                let claims: AdminClaims = decode(
+                    token,
+                    &jsonwebtoken::DecodingKey::from_secret(config.jwt_secret.as_bytes()),
+                    &validation,
+                )
+                .map_err(|_| ApiError::Unauthorized)?
+                .claims;
                 return Ok(AuthenticatedAdmin(claims));
             }
 

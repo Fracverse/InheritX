@@ -1,0 +1,3 @@
+module.exports=[83747,a=>{"use strict";var b=a.i(7997);let c=(0,a.i(94474).generateSEO)({title:"Claims",description:"Submit and manage inheritance claims. Track claim status and access your inherited digital assets.",url:"/asset-owner/claim",keywords:["inheritance claims","asset claims","beneficiary claims","claim management","inherited assets"],noindex:!0});function d({children:a}){return(0,b.jsx)(b.Fragment,{children:a})}a.s(["default",()=>d,"metadata",0,c])}];
+
+//# sourceMappingURL=app_asset-owner_claim_layout_tsx_f8d42399._.js.map

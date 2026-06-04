@@ -1,0 +1,1 @@
+{"version":3,"file":"loanDelete.d.ts","sourceRoot":"","sources":["../../../../src/models/transactions/loanDelete.ts"],"names":[],"mappings":"AAEA,OAAO,EACL,eAAe,EAKhB,MAAM,UAAU,CAAA;AAOjB,MAAM,WAAW,UAAW,SAAQ,eAAe;IACjD,eAAe,EAAE,YAAY,CAAA;IAK7B,MAAM,EAAE,MAAM,CAAA;CACf;AAQD,wBAAgB,kBAAkB,CAAC,EAAE,EAAE,MAAM,CAAC,MAAM,EAAE,OAAO,CAAC,GAAG,IAAI,CAUpE"}

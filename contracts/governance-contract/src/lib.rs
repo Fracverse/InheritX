@@ -638,7 +638,7 @@ impl GovernanceContract {
         }
 
         let multi_sig = Self::get_multi_sig_config(env.clone());
-        
+
         // Validate all signatures are from authorized signers with no duplicates
         // and that the threshold is met
         Self::validate_signatures(&env, &pending_tx.signatures, &multi_sig)?;
@@ -1105,22 +1105,22 @@ impl GovernanceContract {
     }
 
     /// Execute a passed proposal. Anyone can call this after the voting period ends.
-    /// 
+    ///
     /// This function:
     /// 1. Validates the proposal has passed voting
     /// 2. Invokes the target contract with the stored function and arguments
     /// 3. Updates the proposal status to Executed
     /// 4. Emits a ProposalExecutedEvent
-    /// 
+    ///
     /// # Arguments
     /// * `env` - The Soroban environment
     /// * `executor` - The address executing the proposal (must be authorized)
     /// * `proposal_id` - The ID of the proposal to execute
-    /// 
+    ///
     /// # Returns
     /// * `Ok(())` - If the proposal was successfully executed
     /// * `Err(GovernanceError)` - If the proposal cannot be executed
-    /// 
+    ///
     /// # Errors
     /// * `ProposalNotFound` - If the proposal does not exist
     /// * `ProposalNotPassed` - If the proposal has not passed voting

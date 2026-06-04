@@ -1,0 +1,16 @@
+{
+  "headers": {
+    "x-nextjs-stale-time": "300",
+    "x-nextjs-prerender": "1",
+    "x-next-cache-tags": "_N_T_/layout,_N_T_/admin/layout,_N_T_/admin/insurance-fund/layout,_N_T_/admin/insurance-fund/page,_N_T_/admin/insurance-fund"
+  },
+  "segmentPaths": [
+    "/_tree",
+    "/_full",
+    "/admin/insurance-fund/__PAGE__",
+    "/admin/insurance-fund",
+    "/admin",
+    "/_index",
+    "/_head"
+  ]
+}

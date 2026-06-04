@@ -224,7 +224,10 @@ impl LoanNFT {
             panic!("Not authorized to approve");
         }
 
-        let expires = env.ledger().timestamp().saturating_add(DEFAULT_APPROVAL_EXPIRATION_SECONDS);
+        let expires = env
+            .ledger()
+            .timestamp()
+            .saturating_add(DEFAULT_APPROVAL_EXPIRATION_SECONDS);
 
         let record = ApprovalRecord {
             operator: operator.clone(),
@@ -250,7 +253,11 @@ impl LoanNFT {
     }
 
     pub fn get_approved(env: Env, loan_id: u64) -> Option<Address> {
-        if let Some(rec) = env.storage().persistent().get::<_, ApprovalRecord>(&DataKey::Approved(loan_id)) {
+        if let Some(rec) = env
+            .storage()
+            .persistent()
+            .get::<_, ApprovalRecord>(&DataKey::Approved(loan_id))
+        {
             let now = env.ledger().timestamp();
             if now < rec.expires_at {
                 return Some(rec.operator);

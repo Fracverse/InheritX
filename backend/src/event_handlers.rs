@@ -2,13 +2,13 @@ use crate::api_error::ApiError;
 use crate::app::AppState;
 use crate::auth::AuthenticatedUser;
 use crate::events::{EventService, EventType, LendingEvent};
+use crate::validation::Path;
 use axum::{
     extract::{Query, State},
     http::StatusCode,
     response::IntoResponse,
     Json,
 };
-use crate::validation::Path;
 use serde::{Deserialize, Serialize};
 use std::sync::Arc;
 use uuid::Uuid;

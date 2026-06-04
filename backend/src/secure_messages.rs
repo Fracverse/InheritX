@@ -465,6 +465,10 @@ impl LegacyMessageDeliveryService {
                 interval.tick().await;
                 if let Err(e) = self.process_due_messages().await {
                     error!("Legacy Message Delivery Service error: {}", e);
+                    crate::error_tracking::capture_message(
+                        &format!("LegacyMessageDeliveryService::process_due_messages failed: {e}"),
+                        sentry::Level::Error,
+                    );
                 }
             }
         });

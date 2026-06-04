@@ -29,7 +29,15 @@ impl LendingDataWarehouseService {
                 interval.tick().await;
                 match self.snapshot_current_metrics().await {
                     Ok(_) => info!("Lending metrics snapshot written"),
-                    Err(e) => error!("Lending data warehouse snapshot failed: {}", e),
+                    Err(e) => {
+                        error!("Lending data warehouse snapshot failed: {}", e);
+                        crate::error_tracking::capture_message(
+                            &format!(
+                                "LendingDataWarehouseService::snapshot_current_metrics failed: {e}"
+                            ),
+                            sentry::Level::Error,
+                        );
+                    }
                 }
             }
         });

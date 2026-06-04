@@ -1,0 +1,1 @@
+{"version":3,"file":"loanBrokerDelete.d.ts","sourceRoot":"","sources":["../../../../src/models/transactions/loanBrokerDelete.ts"],"names":[],"mappings":"AAEA,OAAO,EACL,eAAe,EAKhB,MAAM,UAAU,CAAA;AAOjB,MAAM,WAAW,gBAAiB,SAAQ,eAAe;IACvD,eAAe,EAAE,kBAAkB,CAAA;IAKnC,YAAY,EAAE,MAAM,CAAA;CACrB;AAQD,wBAAgB,wBAAwB,CAAC,EAAE,EAAE,MAAM,CAAC,MAAM,EAAE,OAAO,CAAC,GAAG,IAAI,CAU1E"}

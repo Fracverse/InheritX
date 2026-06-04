@@ -1,0 +1,6 @@
+{
+  "version": 3,
+  "sources": [],
+  "sections": [
+    {"offset": {"line": 22, "column": 0}, "map": {"version":3,"sources":["file:///Users/mac/Desktop/codes/drips_network/inheritx/app/admin/users/page.tsx"],"sourcesContent":["export default function UsersPage() {\n    return (\n        <div>\n            <h1>Users</h1>\n        </div>\n    )\n}"],"names":[],"mappings":";;;;;;AAAe,SAAS;IACpB,qBACI,8OAAC;kBACG,cAAA,8OAAC;sBAAG;;;;;;;;;;;AAGhB"}}]
+}

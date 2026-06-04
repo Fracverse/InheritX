@@ -1,0 +1,1 @@
+{"version":3,"file":"BaseLedgerEntry.d.ts","sourceRoot":"","sources":["../../../../src/models/ledger/BaseLedgerEntry.ts"],"names":[],"mappings":"AAAA,MAAM,WAAW,eAAe;IAC9B,KAAK,EAAE,MAAM,CAAA;CACd;AAED,MAAM,WAAW,gBAAgB;IAK/B,aAAa,EAAE,MAAM,CAAA;IAKrB,iBAAiB,EAAE,MAAM,CAAA;CAC1B;AAED,MAAM,WAAW,wBAAwB;IAMvC,aAAa,CAAC,EAAE,MAAM,CAAA;IAMtB,iBAAiB,CAAC,EAAE,MAAM,CAAA;CAC3B"}

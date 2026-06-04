@@ -189,6 +189,10 @@ impl InsuranceFundService {
                 interval.tick().await;
                 if let Err(e) = self.update_fund_metrics().await {
                     error!("Insurance Fund Service error updating metrics: {}", e);
+                    crate::error_tracking::capture_message(
+                        &format!("InsuranceFundService::update_fund_metrics failed: {e}"),
+                        sentry::Level::Error,
+                    );
                 }
             }
         });
@@ -591,14 +595,13 @@ impl InsuranceFundService {
         }
 
         if let Some(plan_id) = req.plan_id {
-            let owner: Option<Uuid> =
-                sqlx::query_scalar("SELECT user_id FROM plans WHERE id = $1")
-                    .bind(plan_id)
-                    .fetch_optional(&self.db)
-                    .await
-                    .map_err(|e| {
-                        ApiError::Internal(anyhow::anyhow!("DB error resolving plan owner: {}", e))
-                    })?;
+            let owner: Option<Uuid> = sqlx::query_scalar("SELECT user_id FROM plans WHERE id = $1")
+                .bind(plan_id)
+                .fetch_optional(&self.db)
+                .await
+                .map_err(|e| {
+                    ApiError::Internal(anyhow::anyhow!("DB error resolving plan owner: {}", e))
+                })?;
             if let Some(user_id) = owner {
                 return Ok(user_id);
             }
@@ -638,14 +641,12 @@ impl InsuranceFundService {
             .await
             .map_err(|e| ApiError::Internal(anyhow::anyhow!("Tx start error: {}", e)))?;
 
-        let fund = sqlx::query_as::<_, InsuranceFund>(
-            "SELECT * FROM insurance_fund WHERE id = $1",
-        )
-        .bind(fund_id)
-        .fetch_optional(&mut *tx)
-        .await
-        .map_err(|e| ApiError::Internal(anyhow::anyhow!("DB error fetching fund: {}", e)))?
-        .ok_or_else(|| ApiError::NotFound("Fund not found".to_string()))?;
+        let fund = sqlx::query_as::<_, InsuranceFund>("SELECT * FROM insurance_fund WHERE id = $1")
+            .bind(fund_id)
+            .fetch_optional(&mut *tx)
+            .await
+            .map_err(|e| ApiError::Internal(anyhow::anyhow!("DB error fetching fund: {}", e)))?
+            .ok_or_else(|| ApiError::NotFound("Fund not found".to_string()))?;
 
         if fund.status == FundStatus::Insolvent.as_str() {
             return Err(ApiError::BadRequest(
@@ -748,7 +749,9 @@ impl InsuranceFundService {
             .fetch_optional(&mut *tx)
             .await
             .map_err(|e| ApiError::Internal(anyhow::anyhow!("DB error fetching fund: {}", e)))?
-            .ok_or_else(|| ApiError::NotFound(format!("Insurance fund {} not found", claim.fund_id)))?;
+            .ok_or_else(|| {
+                ApiError::NotFound(format!("Insurance fund {} not found", claim.fund_id))
+            })?;
 
             if fund.status == FundStatus::Insolvent.as_str() {
                 return Err(ApiError::BadRequest(
@@ -889,9 +892,9 @@ impl InsuranceFundService {
             ));
         }
 
-        let payout_amount = claim.payout_amount.ok_or_else(|| {
-            ApiError::BadRequest("Claim has no payout amount set".to_string())
-        })?;
+        let payout_amount = claim
+            .payout_amount
+            .ok_or_else(|| ApiError::BadRequest("Claim has no payout amount set".to_string()))?;
 
         let fund = sqlx::query_as::<_, InsuranceFund>(
             "SELECT * FROM insurance_fund WHERE id = $1 FOR UPDATE",

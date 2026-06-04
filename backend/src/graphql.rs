@@ -37,13 +37,12 @@ impl QueryRoot {
         let parsed_id =
             Uuid::parse_str(&id).map_err(|_| async_graphql::Error::new("Invalid ID"))?;
 
-        let record = sqlx::query(
-            "SELECT id, user_id, status FROM plans WHERE id = $1 AND user_id = $2",
-        )
-        .bind(parsed_id)
-        .bind(user.user_id)
-        .fetch_optional(db)
-        .await?;
+        let record =
+            sqlx::query("SELECT id, user_id, status FROM plans WHERE id = $1 AND user_id = $2")
+                .bind(parsed_id)
+                .bind(user.user_id)
+                .fetch_optional(db)
+                .await?;
 
         Ok(record.map(|r| Plan {
             id: r.get::<Uuid, _>("id").to_string(),
@@ -125,18 +124,24 @@ pub async fn graphql_handler(
     req: GraphQLRequest,
 ) -> GraphQLResponse {
     let config = match schema.data::<Config>() {
-        Ok(config) => config.clone(),
-        Err(_) => {
-            return GraphQLResponse(async_graphql::Response::from_errors(vec![
-                async_graphql::ServerError::new("Server configuration unavailable", None),
-            ]))
+        Some(config) => config.clone(),
+        None => {
+            return GraphQLResponse(async_graphql::BatchResponse::Single(
+                async_graphql::Response::from_errors(vec![async_graphql::ServerError::new(
+                    "Server configuration unavailable",
+                    None,
+                )]),
+            ))
         }
     };
 
     let Some(user) = extract_user_claims(&headers, &config) else {
-        return GraphQLResponse(async_graphql::Response::from_errors(vec![
-            async_graphql::ServerError::new("Authentication required", None),
-        ]));
+        return GraphQLResponse(async_graphql::BatchResponse::Single(
+            async_graphql::Response::from_errors(vec![async_graphql::ServerError::new(
+                "Authentication required",
+                None,
+            )]),
+        ));
     };
 
     let mut gql_req = req.into_inner();

@@ -1,0 +1,13 @@
+import { AbstractMethod, MethodReturnType, Payload } from '../core/AbstractMethod';
+import type { CoinInfo } from '../types';
+type Params = {
+    coinInfo: CoinInfo;
+    identity?: string;
+    request: Payload<'blockchainEstimateFee'>['request'];
+};
+export default class BlockchainEstimateFee extends AbstractMethod<'blockchainEstimateFee', Params> {
+    init(): void;
+    run(): Promise<MethodReturnType<"blockchainEstimateFee">>;
+}
+export {};
+//# sourceMappingURL=blockchainEstimateFee.d.ts.map

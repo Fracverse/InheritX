@@ -5,9 +5,9 @@
 /// before processing the request body.
 use crate::api_error::ApiError;
 use regex::Regex;
-use std::collections::HashMap;
 use serde_json::Value as JsonValue;
-use once_cell::sync::Lazy;
+use std::collections::HashMap;
+use std::sync::OnceLock;
 
 /// Collects field-level validation errors.
 #[derive(Debug, Default)]
@@ -43,10 +43,20 @@ impl ValidationErrors {
 
 /// Strips leading/trailing whitespace and removes common SQL injection patterns.
 pub fn sanitize_string(input: &str) -> String {
-    // Remove null bytes and common SQL injection tokens
-    let dangerous = Regex::new(r"(?i)(\x00|--|;|/\*|\*/|xp_|UNION\s+SELECT|DROP\s+TABLE|INSERT\s+INTO|DELETE\s+FROM|UPDATE\s+\w+\s+SET)")
-        .expect("static regex");
-    dangerous.replace_all(input.trim(), "").to_string()
+    sql_injection_pattern()
+        .replace_all(input.trim(), "")
+        .to_string()
+}
+
+fn sql_injection_pattern() -> &'static Regex {
+    static PATTERN: OnceLock<Regex> = OnceLock::new();
+
+    PATTERN.get_or_init(|| {
+        Regex::new(
+            r"(?i)(\x00|--|/\*|\*/|;|\bunion\s+(?:all\s+)?select\b|\bdrop\s+table\b|\binsert\s+into\b|\bdelete\s+from\b|\bupdate\s+\w+\s+set\b|\bor\s+1\s*=\s*1\b|\band\s+1\s*=\s*1\b|\bexec(?:ute)?\b|\bxp_\w+\b|\bsleep\s*\(|\bbenchmark\s*\()",
+        )
+        .expect("static regex")
+    })
 }
 
 // ── Field validators ──────────────────────────────────────────────────────────
@@ -70,22 +80,160 @@ pub fn validate_min_length(errors: &mut ValidationErrors, field: &str, value: &s
 }
 
 pub fn validate_email(errors: &mut ValidationErrors, field: &str, value: &str) {
-    static EMAIL_RE: Lazy<Regex> = Lazy::new(|| {
-        // This pattern is a pragmatic RFC 5322 compatible (local@domain) validator.
-        // It supports quoted local-parts, dots, and IPv4/IPv6 literals in domains.
-        Regex::new(r"(?xi)^(?:[a-z0-9!#$%&'*+/=?^_`{|}~-]+(?:\.[a-z0-9!#$%&'*+/=?^_`{|}~-]+)*|\"(?:[\x01-\x08\x0b\x0c\x0e-\x1f\x21\x23-\x5b\x5d-\x7f]|\\[\x00-\x7f])*\")@(?:(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.)+[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?|\[(?:(?:25[0-5]|2[0-4]\d|[01]?\d?\d)(?:\.(?:25[0-5]|2[0-4]\d|[01]?\d?\d)){3}|[a-f0-9:\.]+)\])$").expect("email regex")
-    });
-
     let s = value.trim();
-    // Per RFCs, the maximum total length for an email address is 254 characters.
-    if s.len() == 0 || s.len() > 254 {
+    if s.is_empty() || s.len() > 254 {
         errors.add(field, "must be a valid email address");
         return;
     }
 
-    if !EMAIL_RE.is_match(s) {
+    let parts: Vec<&str> = s.rsplitn(2, '@').collect();
+    if parts.len() != 2 {
+        errors.add(field, "must be a valid email address");
+        return;
+    }
+
+    let domain = parts[0];
+    let local = parts[1];
+
+    if local.is_empty() || domain.is_empty() {
+        errors.add(field, "must be a valid email address");
+        return;
+    }
+
+    if local.starts_with('.') || local.ends_with('.') || local.contains("..") {
+        errors.add(field, "must be a valid email address");
+        return;
+    }
+
+    if domain.starts_with('.') || domain.ends_with('.') || domain.contains("..") {
+        errors.add(field, "must be a valid email address");
+        return;
+    }
+
+    let valid_local = if local.starts_with('"') && local.ends_with('"') {
+        validate_quoted_local_part(local)
+    } else {
+        is_valid_unquoted_local_part(local)
+    };
+
+    if !valid_local {
+        errors.add(field, "must be a valid email address");
+        return;
+    }
+
+    if !is_valid_domain(domain) {
         errors.add(field, "must be a valid email address");
     }
+}
+
+fn is_valid_unquoted_local_part(local: &str) -> bool {
+    if local.is_empty() {
+        return false;
+    }
+
+    local.as_bytes().iter().all(|&b| match b {
+        b'a'..=b'z'
+        | b'A'..=b'Z'
+        | b'0'..=b'9'
+        | b'!'
+        | b'#'
+        | b'$'
+        | b'%'
+        | b'&'
+        | b'\''
+        | b'*'
+        | b'+'
+        | b'-'
+        | b'/'
+        | b'='
+        | b'?'
+        | b'^'
+        | b'_'
+        | b'`'
+        | b'{'
+        | b'|'
+        | b'}'
+        | b'~'
+        | b'.' => true,
+        _ => false,
+    })
+}
+
+fn is_valid_domain(domain: &str) -> bool {
+    if domain.starts_with('[') && domain.ends_with(']') {
+        let literal = &domain[1..domain.len() - 1];
+        return is_valid_ipv4(literal) || is_valid_ipv6_literal(literal);
+    }
+
+    if domain.len() > 255 {
+        return false;
+    }
+
+    for label in domain.split('.') {
+        if label.is_empty() || label.len() > 63 {
+            return false;
+        }
+        if label.starts_with('-') || label.ends_with('-') {
+            return false;
+        }
+        if !label.as_bytes().iter().all(|&b| match b {
+            b'a'..=b'z' | b'A'..=b'Z' | b'0'..=b'9' | b'-' => true,
+            _ => false,
+        }) {
+            return false;
+        }
+    }
+
+    true
+}
+
+fn is_valid_ipv4(literal: &str) -> bool {
+    let octets: Vec<&str> = literal.split('.').collect();
+    if octets.len() != 4 {
+        return false;
+    }
+    for octet in octets {
+        if octet.is_empty() || octet.len() > 3 {
+            return false;
+        }
+        if octet.starts_with('0') && octet.len() > 1 {
+            return false;
+        }
+        let value = octet.parse::<u8>();
+        if value.is_err() {
+            return false;
+        }
+    }
+    true
+}
+
+fn is_valid_ipv6_literal(literal: &str) -> bool {
+    literal
+        .strip_prefix("IPv6:")
+        .map(|v| {
+            v.chars()
+                .all(|ch| ch.is_ascii_hexdigit() || ch == ':' || ch == '.')
+        })
+        .unwrap_or(false)
+}
+
+fn validate_quoted_local_part(local: &str) -> bool {
+    let inner = &local[1..local.len() - 1];
+    let mut chars = inner.chars();
+    while let Some(ch) = chars.next() {
+        if ch == '\\' {
+            if chars.next().is_none() {
+                return false;
+            }
+            continue;
+        }
+
+        if ch == '"' || ch == '\r' || ch == '\n' || ch.is_control() {
+            return false;
+        }
+    }
+
+    true
 }
 
 pub fn validate_uuid(errors: &mut ValidationErrors, field: &str, value: &str) {
@@ -184,7 +332,6 @@ macro_rules! bail_if_invalid {
 #[derive(Debug)]
 pub struct Path<T>(pub T);
 
-#[axum::async_trait]
 impl<S, T> axum::extract::FromRequestParts<S> for Path<T>
 where
     T: serde::de::DeserializeOwned + Send,
@@ -192,14 +339,17 @@ where
 {
     type Rejection = ApiError;
 
-    async fn from_request_parts(
+    fn from_request_parts(
         parts: &mut axum::http::request::Parts,
         state: &S,
-    ) -> Result<Self, Self::Rejection> {
-        match axum::extract::Path::<T>::from_request_parts(parts, state).await {
-            Ok(axum::extract::Path(value)) => Ok(Path(value)),
-            Err(err) => {
-                Err(ApiError::BadRequest(format!("Invalid path parameter: {}", err)))
+    ) -> impl std::future::Future<Output = Result<Self, Self::Rejection>> + Send {
+        async move {
+            match axum::extract::Path::<T>::from_request_parts(parts, state).await {
+                Ok(axum::extract::Path(value)) => Ok(Path(value)),
+                Err(err) => Err(ApiError::BadRequest(format!(
+                    "Invalid path parameter: {}",
+                    err
+                ))),
             }
         }
     }
@@ -215,6 +365,15 @@ mod tests {
         let result = sanitize_string(input);
         assert!(!result.contains("DROP TABLE"));
         assert!(!result.contains("--"));
+    }
+
+    #[test]
+    fn test_sanitize_strips_common_injection_payloads() {
+        let input = "' OR 1=1; UNION ALL SELECT * FROM secrets /*";
+        let result = sanitize_string(input);
+        assert!(!result.contains("OR 1=1"));
+        assert!(!result.contains("UNION ALL SELECT"));
+        assert!(!result.contains("/*"));
     }
 
     #[test]

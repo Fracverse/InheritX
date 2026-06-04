@@ -1,0 +1,16 @@
+{
+  "headers": {
+    "x-nextjs-stale-time": "300",
+    "x-nextjs-prerender": "1",
+    "x-next-cache-tags": "_N_T_/layout,_N_T_/asset-owner/layout,_N_T_/asset-owner/borrowing/layout,_N_T_/asset-owner/borrowing/page,_N_T_/asset-owner/borrowing"
+  },
+  "segmentPaths": [
+    "/_tree",
+    "/_full",
+    "/asset-owner/borrowing/__PAGE__",
+    "/asset-owner/borrowing",
+    "/asset-owner",
+    "/_index",
+    "/_head"
+  ]
+}

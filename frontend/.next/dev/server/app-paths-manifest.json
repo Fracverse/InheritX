@@ -1,0 +1,12 @@
+{
+  "/_not-found/page": "app/_not-found/page.js",
+  "/admin/activity-log/page": "app/admin/activity-log/page.js",
+  "/admin/login/page": "app/admin/login/page.js",
+  "/admin/page": "app/admin/page.js",
+  "/asset-owner/claim/page": "app/asset-owner/claim/page.js",
+  "/asset-owner/inactivity/page": "app/asset-owner/inactivity/page.js",
+  "/asset-owner/page": "app/asset-owner/page.js",
+  "/asset-owner/plans/page": "app/asset-owner/plans/page.js",
+  "/asset-owner/security/page": "app/asset-owner/security/page.js",
+  "/page": "app/page.js"
+}

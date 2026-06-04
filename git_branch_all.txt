@@ -1,9 +1,0 @@
-* feature/multi-asset-lending-491
-  master
-  remotes/origin/HEAD -> origin/master
-  remotes/origin/feature/accounting-reconciliation-engine
-  remotes/origin/feature/admin-audit-logs
-  remotes/origin/feature/emergency-access-monitoring
-  remotes/origin/feature/governance-api
-  remotes/origin/feature/stress-testing-engine
-  remotes/origin/master

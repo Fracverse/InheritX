@@ -23,6 +23,8 @@
 //! | `db_pool_size` | Gauge | — | Open connections (idle + active) |
 //! | `db_pool_idle` | Gauge | — | Idle connections |
 //! | `db_pool_active` | Gauge | — | Checked-out connections |
+//! | `db_pool_pending` | Gauge | — | Connections waiting for checkout |
+//! | `db_pool_max_connections` | Gauge | — | Configured pool size limit |
 //! | `db_pool_utilisation` | Gauge | — | active / max_connections |
 //! | `db_query_duration_seconds` | Histogram | operation | Query round-trip latency |
 //!
@@ -194,6 +196,8 @@ pub fn record_pool_metrics(m: &crate::db::PoolMetrics) {
     metrics::gauge!("db_pool_size").set(m.size as f64);
     metrics::gauge!("db_pool_idle").set(m.idle as f64);
     metrics::gauge!("db_pool_active").set(m.active as f64);
+    metrics::gauge!("db_pool_pending").set(m.pending as f64);
+    metrics::gauge!("db_pool_max_connections").set(m.max_connections as f64);
     metrics::gauge!("db_pool_utilisation").set(m.utilisation);
 }
 
@@ -351,6 +355,7 @@ mod tests {
             size: 3,
             idle: 1,
             active: 2,
+            pending: 0,
             max_connections: 10,
             utilisation: 0.2,
         };

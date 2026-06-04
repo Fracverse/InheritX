@@ -1,0 +1,3 @@
+module.exports=[65366,a=>{"use strict";var b=a.i(7997);let c=(0,a.i(94474).generateSEO)({title:"My Plans",description:"Create and manage your inheritance plans. Set up beneficiaries, define asset distribution rules, and secure your legacy.",url:"/asset-owner/plans",keywords:["inheritance plans","estate planning","beneficiary setup","asset distribution","legacy planning"],noindex:!0});function d({children:a}){return(0,b.jsx)(b.Fragment,{children:a})}a.s(["default",()=>d,"metadata",0,c])}];
+
+//# sourceMappingURL=app_asset-owner_plans_layout_tsx_ab1254b7._.js.map

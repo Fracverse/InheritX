@@ -1,3 +1,0 @@
-  feature/inheritance-ownership-494
-* feature/multi-asset-lending-491
-  master

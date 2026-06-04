@@ -1,0 +1,3 @@
+module.exports=[89300,a=>{"use strict";var b=a.i(7997);let c=(0,a.i(94474).generateSEO)({title:"Portfolio",description:"View and manage your digital asset portfolio. Track your crypto holdings and NFTs in one secure dashboard.",url:"/asset-owner/portfolio",keywords:["crypto portfolio","digital assets","nft management","asset tracking","portfolio dashboard"],noindex:!0});function d({children:a}){return(0,b.jsx)(b.Fragment,{children:a})}a.s(["default",()=>d,"metadata",0,c])}];
+
+//# sourceMappingURL=app_asset-owner_portfolio_layout_tsx_c789129c._.js.map

@@ -1,0 +1,3 @@
+import { CoinSelectSuccess, ComposeChangeAddress, ComposeFinalOutput, ComposeInput, ComposeRequest, ComposedTransaction } from '../types';
+export declare function createTransaction<Input extends ComposeInput, Change extends ComposeChangeAddress>(request: ComposeRequest<Input, ComposeFinalOutput, Change>, result: CoinSelectSuccess): ComposedTransaction<Input, ComposeFinalOutput, Change>;
+//# sourceMappingURL=transaction.d.ts.map

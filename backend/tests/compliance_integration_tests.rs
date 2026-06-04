@@ -1,3 +1,4 @@
+use chrono::Utc;
 use inheritx_backend::compliance::ComplianceEngine;
 use rust_decimal_macros::dec;
 use sqlx::PgPool;
@@ -10,6 +11,22 @@ async fn insert_test_user(db: &PgPool, user_id: Uuid) {
     )
     .bind(user_id)
     .bind(format!("user_{}@test.com", user_id))
+    .execute(db)
+    .await
+    .unwrap();
+}
+
+async fn insert_test_user_with_created_at(
+    db: &PgPool,
+    user_id: Uuid,
+    created_at: chrono::DateTime<Utc>,
+) {
+    sqlx::query(
+        "INSERT INTO users (id, email, password_hash, is_verified, created_at) VALUES ($1, $2, 'hash', true, $3)",
+    )
+    .bind(user_id)
+    .bind(format!("user_{}@test.com", user_id))
+    .bind(created_at)
     .execute(db)
     .await
     .unwrap();
@@ -416,6 +433,68 @@ async fn test_velocity_suspicion_flags_stored(db: PgPool) {
     assert!(flags.contains("High velocity detected"));
     assert!(flags.contains("4 borrowing events"));
     assert!(flags.contains("10 minutes"));
+}
+
+#[sqlx::test]
+async fn test_sudden_activity_spike_is_not_flagged_for_recent_activity(db: PgPool) {
+    let user_id = Uuid::new_v4();
+    let plan_id = Uuid::new_v4();
+
+    insert_test_user_with_created_at(&db, user_id, Utc::now() - chrono::Duration::days(60)).await;
+
+    sqlx::query(
+        r#"
+        INSERT INTO plans (id, user_id, title, is_flagged, created_at)
+        VALUES ($1, $2, 'Old Plan', false, NOW() - INTERVAL '60 days')
+        "#,
+    )
+    .bind(plan_id)
+    .bind(user_id)
+    .execute(&db)
+    .await
+    .unwrap();
+
+    sqlx::query(
+        r#"
+        INSERT INTO lending_events (id, plan_id, user_id, event_type, amount, asset_code, event_timestamp)
+        VALUES ($1, $2, $3, 'borrow', 2500, 'USD', NOW() - INTERVAL '10 days')
+        "#,
+    )
+    .bind(Uuid::new_v4())
+    .bind(plan_id)
+    .bind(user_id)
+    .execute(&db)
+    .await
+    .unwrap();
+
+    sqlx::query(
+        r#"
+        INSERT INTO lending_events (id, plan_id, user_id, event_type, amount, asset_code, event_timestamp)
+        VALUES ($1, $2, $3, 'borrow', 5000, 'USD', NOW())
+        "#,
+    )
+    .bind(Uuid::new_v4())
+    .bind(plan_id)
+    .bind(user_id)
+    .execute(&db)
+    .await
+    .unwrap();
+
+    let engine = ComplianceEngine::new(db.clone(), 3, 10, dec!(100000));
+    let engine = Arc::new(engine);
+
+    engine.scan_suspicious_activity().await.unwrap();
+
+    let flagged: bool = sqlx::query_scalar("SELECT is_flagged FROM plans WHERE id = $1")
+        .bind(plan_id)
+        .fetch_one(&db)
+        .await
+        .unwrap_or(false);
+
+    assert!(
+        !flagged,
+        "Plan should not be flagged when there was recent activity within 30 days"
+    );
 }
 
 #[sqlx::test]

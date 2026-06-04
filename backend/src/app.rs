@@ -1,3 +1,4 @@
+use crate::validation::Path;
 use axum::{
     extract::{Query, State},
     http::HeaderMap,
@@ -6,7 +7,6 @@ use axum::{
     routing::{delete, get, post, put},
     Json, Router,
 };
-use crate::validation::Path;
 use metrics_exporter_prometheus::PrometheusHandle;
 use serde_json::{json, Value};
 use sqlx::PgPool;
@@ -42,7 +42,8 @@ use crate::contingent_beneficiary::{
 use crate::csrf::{csrf_protection_middleware, get_csrf_token};
 use crate::document_storage::DocumentStorageService;
 use crate::governance::{
-    CreateProposalRequest, GovernanceService, ParameterUpdateRequest, Proposal, VoteRequest,
+    CreateProposalRequest, DelegateVotesRequest, DelegationResponse, GovernanceDelegation,
+    GovernanceService, ParameterUpdateRequest, Proposal, VoteRequest,
 };
 use crate::insurance_fund::{CreateInsuranceClaimRequest, ProcessInsuranceClaimRequest};
 use crate::legacy_content::{ContentListFilters, LegacyContentService};
@@ -423,6 +424,19 @@ pub async fn create_app(
         .route(
             "/api/admin/governance/parameters/update",
             post(update_protocol_parameter),
+        )
+        // ── Governance Vote Delegation (Issue #649) ───────────────────────────
+        .route(
+            "/api/governance/delegation",
+            post(delegate_governance_votes).delete(undelegate_governance_votes),
+        )
+        .route(
+            "/api/governance/delegation/me",
+            get(get_my_governance_delegation),
+        )
+        .route(
+            "/api/governance/delegation/delegators/:delegate_id",
+            get(get_governance_delegators),
         )
         // ── Insurance Fund Monitoring (Issue #249) ───────────────────────────
         .route(
@@ -1733,6 +1747,50 @@ async fn update_protocol_parameter(
     ))
 }
 
+// ── Governance Vote Delegation Handlers (Issue #649) ─────────────────────────
+
+/// POST /api/governance/delegation
+/// Delegate the authenticated user's votes to another user.
+async fn delegate_governance_votes(
+    State(state): State<Arc<AppState>>,
+    AuthenticatedUser(user): AuthenticatedUser,
+    Json(req): Json<DelegateVotesRequest>,
+) -> Result<Json<DelegationResponse>, ApiError> {
+    let result = GovernanceService::delegate_votes(&state.db, user.user_id, &req).await?;
+    Ok(Json(result))
+}
+
+/// DELETE /api/governance/delegation
+/// Remove the authenticated user's active delegation.
+async fn undelegate_governance_votes(
+    State(state): State<Arc<AppState>>,
+    AuthenticatedUser(user): AuthenticatedUser,
+) -> Result<Json<DelegationResponse>, ApiError> {
+    let result = GovernanceService::undelegate_votes(&state.db, user.user_id).await?;
+    Ok(Json(result))
+}
+
+/// GET /api/governance/delegation/me
+/// Return the authenticated user's current delegation, if any.
+async fn get_my_governance_delegation(
+    State(state): State<Arc<AppState>>,
+    AuthenticatedUser(user): AuthenticatedUser,
+) -> Result<Json<Option<GovernanceDelegation>>, ApiError> {
+    let delegation = GovernanceService::get_delegation(&state.db, user.user_id).await?;
+    Ok(Json(delegation))
+}
+
+/// GET /api/governance/delegation/delegators/:delegate_id
+/// Return all users who have delegated their votes to the given delegate.
+async fn get_governance_delegators(
+    State(state): State<Arc<AppState>>,
+    AuthenticatedUser(_user): AuthenticatedUser,
+    Path(delegate_id): Path<Uuid>,
+) -> Result<Json<Vec<GovernanceDelegation>>, ApiError> {
+    let delegators = GovernanceService::get_delegators(&state.db, delegate_id).await?;
+    Ok(Json(delegators))
+}
+
 // ─── Will PDF & Template Engine Handlers (Tasks 1 & 2) ───────────────────────
 
 #[derive(serde::Deserialize)]
@@ -2069,9 +2127,25 @@ async fn decline_witness(
 
 async fn verify_document_integrity(
     State(state): State<Arc<AppState>>,
+    AuthenticatedUser(user): AuthenticatedUser,
     Path(document_id): Path<Uuid>,
     Query(params): Query<PaginationParams>,
 ) -> Result<Json<Value>, ApiError> {
+    // Ensure ownership
+    let exists: bool = sqlx::query_scalar(
+        "SELECT EXISTS(SELECT 1 FROM will_documents WHERE id = $1 AND user_id = $2)",
+    )
+    .bind(document_id)
+    .bind(user.user_id)
+    .fetch_one(&state.db)
+    .await?;
+
+    if !exists {
+        return Err(ApiError::NotFound(format!(
+            "Will document {document_id} not found"
+        )));
+    }
+
     let version = params.page; // Reusing page param for version number
     let result = crate::document_verification::DocumentVerificationService::verify_document(
         &state.db,
@@ -2090,9 +2164,25 @@ struct VerifyHashRequest {
 
 async fn verify_document_hash(
     State(state): State<Arc<AppState>>,
+    AuthenticatedUser(user): AuthenticatedUser,
     Path(document_id): Path<Uuid>,
     Json(req): Json<VerifyHashRequest>,
 ) -> Result<Json<Value>, ApiError> {
+    // Ensure ownership
+    let exists: bool = sqlx::query_scalar(
+        "SELECT EXISTS(SELECT 1 FROM will_documents WHERE id = $1 AND user_id = $2)",
+    )
+    .bind(document_id)
+    .bind(user.user_id)
+    .fetch_one(&state.db)
+    .await?;
+
+    if !exists {
+        return Err(ApiError::NotFound(format!(
+            "Will document {document_id} not found"
+        )));
+    }
+
     let result = crate::document_verification::DocumentVerificationService::verify_hash(
         &state.db,
         document_id,
@@ -2111,9 +2201,25 @@ struct VerifyContentRequest {
 
 async fn verify_document_content(
     State(state): State<Arc<AppState>>,
+    AuthenticatedUser(user): AuthenticatedUser,
     Path(document_id): Path<Uuid>,
     Json(req): Json<VerifyContentRequest>,
 ) -> Result<Json<Value>, ApiError> {
+    // Ensure ownership
+    let exists: bool = sqlx::query_scalar(
+        "SELECT EXISTS(SELECT 1 FROM will_documents WHERE id = $1 AND user_id = $2)",
+    )
+    .bind(document_id)
+    .bind(user.user_id)
+    .fetch_one(&state.db)
+    .await?;
+
+    if !exists {
+        return Err(ApiError::NotFound(format!(
+            "Will document {document_id} not found"
+        )));
+    }
+
     let result = crate::document_verification::DocumentVerificationService::verify_content(
         &state.db,
         document_id,
@@ -2163,12 +2269,9 @@ async fn get_plan_events(
     Path(plan_id): Path<Uuid>,
     AuthenticatedUser(user): AuthenticatedUser,
 ) -> Result<Json<Value>, ApiError> {
-    let events = crate::will_events::WillEventService::get_plan_events(
-        &state.db,
-        plan_id,
-        user.user_id,
-    )
-    .await?;
+    let events =
+        crate::will_events::WillEventService::get_plan_events(&state.db, plan_id, user.user_id)
+            .await?;
     Ok(Json(
         json!({ "status": "success", "data": events, "count": events.len() }),
     ))
@@ -2882,13 +2985,9 @@ async fn get_collateral_value(
         state.db.clone(),
         3600,
     ));
-    let info = CollateralManagementService::get_collateral_value(
-        &state.db,
-        price_feed,
-        id,
-        user.user_id,
-    )
-    .await?;
+    let info =
+        CollateralManagementService::get_collateral_value(&state.db, price_feed, id, user.user_id)
+            .await?;
     Ok(Json(json!({ "status": "success", "data": info })))
 }
 

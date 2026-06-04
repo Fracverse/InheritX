@@ -1,0 +1,10 @@
+import { JavaScriptTypeBuilder, Kind, TSchema } from '@sinclair/typebox';
+export interface TArrayBuffer extends TSchema {
+    [Kind]: 'ArrayBuffer';
+    static: ArrayBuffer;
+    type: 'ArrayBuffer';
+}
+export declare class ArrayBufferBuilder extends JavaScriptTypeBuilder {
+    ArrayBuffer(options?: TSchema): TArrayBuffer;
+}
+//# sourceMappingURL=array-buffer.d.ts.map

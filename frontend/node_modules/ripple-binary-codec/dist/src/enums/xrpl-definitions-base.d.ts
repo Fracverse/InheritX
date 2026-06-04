@@ -1,0 +1,47 @@
+import { SerializedType } from '../types/serialized-type';
+import { Bytes, BytesLookup } from './bytes';
+import { FieldInfo, FieldLookup, FieldInstance } from './field';
+interface DefinitionsData {
+    TYPES: Record<string, number>;
+    LEDGER_ENTRY_TYPES: Record<string, number>;
+    FIELDS: (string | FieldInfo)[][];
+    TRANSACTION_RESULTS: Record<string, number>;
+    TRANSACTION_TYPES: Record<string, number>;
+}
+/**
+ * Stores the various types and fields for rippled to be used to encode/decode information later on.
+ * XrplDefinitions should be instantiated instead of this class.
+ */
+declare class XrplDefinitionsBase {
+    field: FieldLookup;
+    ledgerEntryType: BytesLookup;
+    type: BytesLookup;
+    transactionResult: BytesLookup;
+    transactionType: BytesLookup;
+    transactionNames: string[];
+    dataTypes: Record<string, typeof SerializedType>;
+    granularPermissions: Record<string, number>;
+    delegatablePermissions: BytesLookup;
+    /**
+     * Present rippled types in a typed and updatable format.
+     * For an example of the input format see `definitions.json`.
+     * To generate a new definitions file from rippled source code, use the tool at
+     * `packages/ripple-binary-codec/tools/generateDefinitions.js`.
+     *
+     * See the definitions.test.js file for examples of how to create your own updated definitions.json.
+     *
+     * @param enums - A json encoding of the core types, transaction types, transaction results, transaction names, and fields.
+     * @param types - A list of type objects with the same name as the fields defined.
+     *              You can use the coreTypes object if you are not adding new types.
+     */
+    constructor(enums: DefinitionsData, types: Record<string, typeof SerializedType>);
+    /**
+     * Associates each Field to a corresponding class that TypeScript can recognize.
+     *
+     * @param types a list of type objects with the same name as the fields defined.
+     *              Defaults to xrpl.js's core type definitions.
+     */
+    associateTypes(types: Record<string, typeof SerializedType>): void;
+    getAssociatedTypes(): Record<string, typeof SerializedType>;
+}
+export { DefinitionsData, XrplDefinitionsBase, FieldLookup, FieldInfo, FieldInstance, Bytes, BytesLookup, };

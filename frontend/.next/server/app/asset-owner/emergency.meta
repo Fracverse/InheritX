@@ -1,0 +1,16 @@
+{
+  "headers": {
+    "x-nextjs-stale-time": "300",
+    "x-nextjs-prerender": "1",
+    "x-next-cache-tags": "_N_T_/layout,_N_T_/asset-owner/layout,_N_T_/asset-owner/emergency/layout,_N_T_/asset-owner/emergency/page,_N_T_/asset-owner/emergency"
+  },
+  "segmentPaths": [
+    "/_tree",
+    "/_full",
+    "/asset-owner/emergency/__PAGE__",
+    "/asset-owner/emergency",
+    "/asset-owner",
+    "/_index",
+    "/_head"
+  ]
+}

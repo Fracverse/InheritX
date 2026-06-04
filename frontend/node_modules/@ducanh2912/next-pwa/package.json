@@ -1,0 +1,89 @@
+{
+  "name": "@ducanh2912/next-pwa",
+  "version": "10.2.9",
+  "type": "module",
+  "private": false,
+  "description": "PWA for Next.js, powered by Workbox.",
+  "keywords": [
+    "nextjs",
+    "pwa",
+    "workbox",
+    "web",
+    "service-worker"
+  ],
+  "author": "ShadowWalker <w@weiw.io>, DuCanhGH",
+  "license": "MIT",
+  "repository": "https://github.com/DuCanhGH/next-pwa",
+  "bugs": "https://github.com/DuCanhGH/next-pwa/issues",
+  "homepage": "https://ducanh-next-pwa.vercel.app",
+  "files": [
+    "dist",
+    "!dist/dts"
+  ],
+  "source": "./src/index.ts",
+  "imports": {
+    "#utils/*.js": "./src/utils/*.ts"
+  },
+  "exports": {
+    ".": {
+      "require": {
+        "types": "./dist/index.d.cts",
+        "default": "./dist/index.cjs"
+      },
+      "default": {
+        "types": "./dist/index.d.ts",
+        "default": "./dist/index.js"
+      }
+    },
+    "./workbox": {
+      "require": {
+        "types": "./dist/sw-entry.d.cts"
+      },
+      "default": {
+        "types": "./dist/sw-entry.d.ts"
+      }
+    }
+  },
+  "main": "./dist/index.cjs",
+  "module": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "typesVersions": {
+    "*": {
+      "workbox": [
+        "./dist/sw-entry.d.ts"
+      ]
+    }
+  },
+  "dependencies": {
+    "fast-glob": "3.3.2",
+    "semver": "7.6.3",
+    "workbox-build": "7.1.1",
+    "workbox-core": "7.1.0",
+    "workbox-webpack-plugin": "7.1.0",
+    "workbox-window": "7.1.0"
+  },
+  "devDependencies": {
+    "@types/node": "22.5.5",
+    "@types/semver": "7.5.8",
+    "chalk": "5.3.0",
+    "next": "14.2.12",
+    "rollup": "3.28.1",
+    "react": "19.0.0-rc-5dcb0097-20240918",
+    "react-dom": "19.0.0-rc-5dcb0097-20240918",
+    "type-fest": "4.26.1",
+    "typescript": "5.7.0-dev.20240918",
+    "webpack": "5.94.0",
+    "@serwist/configs": "10.2.5"
+  },
+  "peerDependencies": {
+    "next": ">=14.0.0",
+    "webpack": ">=5.9.0"
+  },
+  "scripts": {
+    "dev": "rimraf dist && rollup --config --watch",
+    "build": "rimraf dist && NODE_ENV=production rollup --config --compact",
+    "lint": "eslint src --ext ts,tsx,js,jsx,cjs,mjs",
+    "test": "NODE_OPTIONS=--experimental-vm-modules jest",
+    "typecheck": "tsc"
+  }
+}

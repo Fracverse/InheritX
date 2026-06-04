@@ -16,6 +16,19 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // Dropping it flushes buffered events and shuts down the client.
     let _sentry_guard = error_tracking::init();
 
+    // Run the rest of startup inside a helper so any error can be captured
+    // by Sentry before the guard is dropped.
+    if let Err(e) = run().await {
+        error_tracking::capture_message(&format!("Fatal startup error: {e}"), sentry::Level::Fatal);
+        // Give Sentry a moment to flush the event before the process exits.
+        std::thread::sleep(std::time::Duration::from_secs(2));
+        return Err(e);
+    }
+
+    Ok(())
+}
+
+async fn run() -> Result<(), Box<dyn std::error::Error>> {
     // Install Prometheus metrics recorder (Issue #423).
     let prometheus_handle = metrics::get_or_install_recorder();
 
@@ -25,12 +38,13 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // Initialize database with pool settings from config (Issue #420).
     let db_pool = db::create_pool_with_config(
         &config.database_url,
-        &crate::db::DbPoolConfig {
+        &db::DbPoolConfig {
             max_connections: config.db_pool.max_connections,
             min_connections: config.db_pool.min_connections,
             acquire_timeout_secs: config.db_pool.acquire_timeout_secs,
             idle_timeout_secs: config.db_pool.idle_timeout_secs,
             max_lifetime_secs: config.db_pool.max_lifetime_secs,
+            query_timeout_secs: config.db_pool.query_timeout_secs,
             connect_retries: config.db_pool.connect_retries,
             connect_retry_base_delay_secs: config.db_pool.connect_retry_base_delay_secs,
         },

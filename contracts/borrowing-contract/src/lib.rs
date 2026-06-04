@@ -798,6 +798,10 @@ impl BorrowingContract {
     ) -> Result<(), BorrowingError> {
         Self::require_not_paused(&env)?;
 
+        if duration == 0 {
+            return Err(BorrowingError::InvalidAmount);
+        }
+
         if initial_discount_bps > 10000
             || max_discount_bps > 10000
             || initial_discount_bps > max_discount_bps
@@ -1376,10 +1380,7 @@ impl BorrowingContract {
             .set(&DataKey::OraclePriceTimestamp(token.clone()), &timestamp);
         env.events().publish(
             (symbol_short!("ORACLE"), symbol_short!("UPDATE")),
-            OracleUpdatedEvent {
-                token,
-                timestamp,
-            },
+            OracleUpdatedEvent { token, timestamp },
         );
         Ok(())
     }

@@ -1,0 +1,38 @@
+import { PROTO } from '../constants';
+import { AbstractMethod } from '../core/AbstractMethod';
+import { type BitcoinNetworkInfo } from '../types';
+type Params = PROTO.GetAddress & {
+    address?: string;
+    coinInfo: BitcoinNetworkInfo;
+    unlockPath?: PROTO.UnlockPath;
+};
+export default class GetAddress extends AbstractMethod<'getAddress', Params[]> {
+    hasBundle?: boolean;
+    progress: number;
+    init(): void;
+    get info(): string;
+    getButtonRequestData(code: string): {
+        type: "address";
+        serializedPath: string;
+        address: string;
+    } | undefined;
+    get confirmation(): {
+        view: "export-address";
+        label: string;
+    } | undefined;
+    _call({ address_n, show_display, multisig, script_type, coinInfo, unlockPath, chunkify, }: Params): Promise<{
+        path: number[];
+        serializedPath: string;
+        address: string;
+        mac: string | undefined;
+    }>;
+    run(): Promise<(import("../types").Address & {
+        mac?: string | undefined;
+        address: string;
+    }) | (import("../types").Address & {
+        mac?: string | undefined;
+        address: string;
+    })[]>;
+}
+export {};
+//# sourceMappingURL=getAddress.d.ts.map

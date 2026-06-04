@@ -1,9 +1,5 @@
-use axum::{
-    extract::State,
-    http::StatusCode,
-    Json,
-};
 use crate::validation::Path;
+use axum::{extract::State, http::StatusCode, Json};
 use base64::engine::general_purpose;
 use base64::Engine as _;
 use rand::Rng;

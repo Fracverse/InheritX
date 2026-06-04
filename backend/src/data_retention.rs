@@ -142,6 +142,10 @@ impl DataRetentionService {
                     }
                     Err(e) => {
                         tracing::warn!(error = %e, "Data retention archival cycle failed");
+                        crate::error_tracking::capture_message(
+                            &format!("DataRetentionService::run_archive failed: {e}"),
+                            sentry::Level::Warning,
+                        );
                     }
                 }
             }

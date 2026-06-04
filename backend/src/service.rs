@@ -391,6 +391,7 @@ impl PlanService {
         // 4. Commit: If we reached here, both Plan and Audit are saved
         tx.commit().await?;
 
+        crate::metrics::inc_plans_created();
         Ok(plan)
     }
     pub async fn get_plan_by_id<'a, E>(
@@ -458,13 +459,12 @@ impl PlanService {
     where
         E: sqlx::Executor<'a, Database = sqlx::Postgres>,
     {
-        let exists: bool = sqlx::query_scalar(
-            "SELECT EXISTS(SELECT 1 FROM plans WHERE id = $1 AND user_id = $2)",
-        )
-        .bind(plan_id)
-        .bind(user_id)
-        .fetch_one(executor)
-        .await?;
+        let exists: bool =
+            sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM plans WHERE id = $1 AND user_id = $2)")
+                .bind(plan_id)
+                .bind(user_id)
+                .fetch_one(executor)
+                .await?;
 
         if !exists {
             return Err(ApiError::NotFound(format!("Plan {plan_id} not found")));
@@ -670,6 +670,7 @@ impl PlanService {
 
         // 6. Final Commit
         tx.commit().await?;
+        crate::metrics::inc_plans_claimed();
         Ok(plan)
     }
     pub fn is_due_for_claim(
@@ -1396,7 +1397,7 @@ impl ClaimMetricsService {
 
 // ── User Growth Metrics ──────────────────────────────────────────────────────
 
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct UserGrowthMetrics {
     pub total_users: i64,
@@ -1451,7 +1452,7 @@ impl UserMetricsService {
 
 // ── Plan Statistics ───────────────────────────────────────────────────────────
 
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct PlanStatistics {
     pub total_plans: i64,
     pub active_plans: i64,
@@ -1461,7 +1462,7 @@ pub struct PlanStatistics {
     pub by_status: Vec<PlanStatusCount>,
 }
 
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct PlanStatusCount {
     pub status: String,
     pub count: i64,
@@ -1586,19 +1587,19 @@ impl RevenueMetricsService {
             }
         };
 
-        let query = format!(
+        let rows = sqlx::query_as::<_, Row>(
             r#"
             SELECT 
-                DATE_TRUNC('{trunc}', created_at)::DATE::TEXT as date,
+                DATE_TRUNC($1, created_at)::DATE::TEXT as date,
                 COALESCE(SUM(fee), 0)::FLOAT8 as amount
             FROM plans
-            WHERE created_at >= NOW() - INTERVAL '{interval}'
+            WHERE created_at >= NOW() - ($2::text)::interval
             GROUP BY 1
             ORDER BY 1
-            "#
+            "#,
         );
 
-        let rows = sqlx::query_as::<_, Row>(&query).fetch_all(pool).await?;
+        let rows = rows.bind(trunc).bind(interval).fetch_all(pool).await?;
 
         let data = rows
             .into_iter()
@@ -3725,6 +3726,7 @@ impl EmergencyAdminService {
 
         tx.commit().await?;
 
+        crate::metrics::inc_plans_paused();
         Ok(EmergencyActionResponse {
             success: true,
             plan_id: req.plan_id,
@@ -4165,20 +4167,21 @@ impl EmergencyAccessMetricsService {
             _ => ("30 days", "day"), // default to daily
         };
 
-        let trend_query = format!(
+        let trend_rows: Vec<(String, i64)> = sqlx::query_as::<_, (String, i64)>(
             r#"
             SELECT 
-                DATE_TRUNC('{}', created_at)::DATE::TEXT as date,
+                DATE_TRUNC($1, created_at)::DATE::TEXT as date,
                 COUNT(*)::BIGINT as count
             FROM emergency_access_grants
-            WHERE created_at >= NOW() - INTERVAL '{}'
+            WHERE created_at >= NOW() - ($2::text)::interval
             GROUP BY 1
             ORDER BY 1
             "#,
-            trunc, interval
-        );
-
-        let trend_rows: Vec<(String, i64)> = sqlx::query_as(&trend_query).fetch_all(db).await?;
+        )
+        .bind(trunc)
+        .bind(interval)
+        .fetch_all(db)
+        .await?;
 
         let grant_trend = trend_rows
             .into_iter()

@@ -1,0 +1,298 @@
+"use strict";
+Object.defineProperty(exports, "__esModule", { value: true });
+exports.AccessList2930Tx = void 0;
+const util_1 = require("@ethereumjs/util");
+const EIP2718 = require("../capabilities/eip2718.js");
+const EIP2930 = require("../capabilities/eip2930.js");
+const Legacy = require("../capabilities/legacy.js");
+const types_ts_1 = require("../types.js");
+const internal_ts_1 = require("../util/internal.js");
+const constructors_ts_1 = require("./constructors.js");
+const access_ts_1 = require("../util/access.js");
+/**
+ * Typed transaction with optional access lists
+ *
+ * - TransactionType: 1
+ * - EIP: [EIP-2930](https://eips.ethereum.org/EIPS/eip-2930)
+ */
+class AccessList2930Tx {
+    /**
+     * This constructor takes the values, validates them, assigns them and freezes the object.
+     *
+     * It is not recommended to use this constructor directly. Instead use
+     * the static factory methods to assist in creating a Transaction object from
+     * varying data types.
+     */
+    constructor(txData, opts = {}) {
+        this.type = types_ts_1.TransactionType.AccessListEIP2930; // 2930 tx type
+        this.cache = {};
+        /**
+         * List of tx type defining EIPs,
+         * e.g. 1559 (fee market) and 2930 (access lists)
+         * for FeeMarket1559Tx objects
+         */
+        this.activeCapabilities = [];
+        (0, internal_ts_1.sharedConstructor)(this, { ...txData, type: types_ts_1.TransactionType.AccessListEIP2930 }, opts);
+        const { chainId, accessList: rawAccessList, gasPrice } = txData;
+        const accessList = rawAccessList ?? [];
+        if (chainId !== undefined && (0, util_1.bytesToBigInt)((0, util_1.toBytes)(chainId)) !== this.common.chainId()) {
+            throw (0, util_1.EthereumJSErrorWithoutCode)(`Common chain ID ${this.common.chainId} not matching the derived chain ID ${chainId}`);
+        }
+        this.chainId = this.common.chainId();
+        // EIP-2718 check is done in Common
+        if (!this.common.isActivatedEIP(2930)) {
+            throw (0, util_1.EthereumJSErrorWithoutCode)('EIP-2930 not enabled on Common');
+        }
+        this.activeCapabilities = this.activeCapabilities.concat([2718, 2930]);
+        // Populate the access list fields
+        this.accessList = (0, types_ts_1.isAccessList)(accessList) ? (0, access_ts_1.accessListJSONToBytes)(accessList) : accessList;
+        // Verify the access list format.
+        EIP2930.verifyAccessList(this);
+        this.gasPrice = (0, util_1.bytesToBigInt)((0, util_1.toBytes)(gasPrice));
+        (0, internal_ts_1.valueOverflowCheck)({ gasPrice: this.gasPrice });
+        if (this.gasPrice * this.gasLimit > util_1.MAX_INTEGER) {
+            const msg = Legacy.errorMsg(this, 'gasLimit * gasPrice cannot exceed MAX_INTEGER');
+            throw (0, util_1.EthereumJSErrorWithoutCode)(msg);
+        }
+        EIP2718.validateYParity(this);
+        Legacy.validateHighS(this);
+        const freeze = opts?.freeze ?? true;
+        if (freeze) {
+            Object.freeze(this);
+        }
+    }
+    /**
+     * Checks if a tx type defining capability is active
+     * on a tx, for example the EIP-1559 fee market mechanism
+     * or the EIP-2930 access list feature.
+     *
+     * Note that this is different from the tx type itself,
+     * so EIP-2930 access lists can very well be active
+     * on an EIP-1559 tx for example.
+     *
+     * This method can be useful for feature checks if the
+     * tx type is unknown (e.g. when instantiated with
+     * the tx factory).
+     *
+     * See `Capabilities` in the `types` module for a reference
+     * on all supported capabilities.
+     */
+    supports(capability) {
+        return this.activeCapabilities.includes(capability);
+    }
+    getEffectivePriorityFee(baseFee) {
+        return Legacy.getEffectivePriorityFee(this.gasPrice, baseFee);
+    }
+    /**
+     * The amount of gas paid for the data in this tx
+     */
+    getDataGas() {
+        return EIP2930.getDataGas(this);
+    }
+    /**
+     * The up front amount that an account must have for this transaction to be valid
+     */
+    getUpfrontCost() {
+        return this.gasLimit * this.gasPrice + this.value;
+    }
+    /**
+     * The minimum gas limit which the tx to have to be valid.
+     * This covers costs as the standard fee (21000 gas), the data fee (paid for each calldata byte),
+     * the optional creation fee (if the transaction creates a contract), and if relevant the gas
+     * to be paid for access lists (EIP-2930) and authority lists (EIP-7702).
+     */
+    getIntrinsicGas() {
+        return Legacy.getIntrinsicGas(this);
+    }
+    // TODO figure out if this is necessary
+    /**
+     * If the tx's `to` is to the creation address
+     */
+    toCreationAddress() {
+        return Legacy.toCreationAddress(this);
+    }
+    /**
+     * Returns a Uint8Array Array of the raw Bytes of the EIP-2930 transaction, in order.
+     *
+     * Format: `[chainId, nonce, gasPrice, gasLimit, to, value, data, accessList,
+     * signatureYParity (v), signatureR (r), signatureS (s)]`
+     *
+     * Use {@link AccessList2930Tx.serialize} to add a transaction to a block
+     * with {@link createBlockFromBytesArray}.
+     *
+     * For an unsigned tx this method uses the empty Bytes values for the
+     * signature parameters `v`, `r` and `s` for encoding. For an EIP-155 compliant
+     * representation for external signing use {@link AccessList2930Tx.getMessageToSign}.
+     */
+    raw() {
+        return [
+            (0, util_1.bigIntToUnpaddedBytes)(this.chainId),
+            (0, util_1.bigIntToUnpaddedBytes)(this.nonce),
+            (0, util_1.bigIntToUnpaddedBytes)(this.gasPrice),
+            (0, util_1.bigIntToUnpaddedBytes)(this.gasLimit),
+            this.to !== undefined ? this.to.bytes : new Uint8Array(0),
+            (0, util_1.bigIntToUnpaddedBytes)(this.value),
+            this.data,
+            this.accessList,
+            this.v !== undefined ? (0, util_1.bigIntToUnpaddedBytes)(this.v) : new Uint8Array(0),
+            this.r !== undefined ? (0, util_1.bigIntToUnpaddedBytes)(this.r) : new Uint8Array(0),
+            this.s !== undefined ? (0, util_1.bigIntToUnpaddedBytes)(this.s) : new Uint8Array(0),
+        ];
+    }
+    /**
+     * Returns the serialized encoding of the EIP-2930 transaction.
+     *
+     * Format: `0x01 || rlp([chainId, nonce, gasPrice, gasLimit, to, value, data, accessList,
+     * signatureYParity (v), signatureR (r), signatureS (s)])`
+     *
+     * Note that in contrast to the legacy tx serialization format this is not
+     * valid RLP any more due to the raw tx type preceding and concatenated to
+     * the RLP encoding of the values.
+     */
+    serialize() {
+        return EIP2718.serialize(this);
+    }
+    /**
+     * Returns the raw serialized unsigned tx, which can be used
+     * to sign the transaction (e.g. for sending to a hardware wallet).
+     *
+     * Note: in contrast to the legacy tx the raw message format is already
+     * serialized and doesn't need to be RLP encoded any more.
+     *
+     * ```javascript
+     * const serializedMessage = tx.getMessageToSign() // use this for the HW wallet input
+     * ```
+     * @returns Serialized unsigned transaction payload
+     */
+    getMessageToSign() {
+        return EIP2718.serialize(this, this.raw().slice(0, 8));
+    }
+    /**
+     * Returns the hashed serialized unsigned tx, which can be used
+     * to sign the transaction (e.g. for sending to a hardware wallet).
+     *
+     * Note: in contrast to the legacy tx the raw message format is already
+     * serialized and doesn't need to be RLP encoded any more.
+     * @returns Keccak hash of the unsigned transaction payload
+     */
+    getHashedMessageToSign() {
+        return EIP2718.getHashedMessageToSign(this);
+    }
+    /**
+     * Computes a sha3-256 hash of the serialized tx.
+     *
+     * This method can only be used for signed txs (it throws otherwise).
+     * Use {@link Transaction.getMessageToSign} to get a tx hash for the purpose of signing.
+     * @returns Hash of the serialized signed transaction
+     */
+    hash() {
+        return Legacy.hash(this);
+    }
+    /**
+     * Computes a sha3-256 hash which can be used to verify the signature
+     * @returns Hash used when verifying the signature
+     */
+    getMessageToVerifySignature() {
+        return this.getHashedMessageToSign();
+    }
+    /**
+     * Returns the public key of the sender
+     * @returns Sender public key
+     */
+    getSenderPublicKey() {
+        return Legacy.getSenderPublicKey(this);
+    }
+    /**
+     * Adds the provided signature values and returns a new transaction instance.
+     * @param v - Recovery parameter (y-parity)
+     * @param r - `r` component of the signature
+     * @param s - `s` component of the signature
+     * @returns New `AccessList2930Tx` with the supplied signature
+     */
+    addSignature(v, r, s) {
+        r = (0, util_1.toBytes)(r);
+        s = (0, util_1.toBytes)(s);
+        const opts = { ...this.txOptions, common: this.common };
+        return (0, constructors_ts_1.createAccessList2930Tx)({
+            chainId: this.chainId,
+            nonce: this.nonce,
+            gasPrice: this.gasPrice,
+            gasLimit: this.gasLimit,
+            to: this.to,
+            value: this.value,
+            data: this.data,
+            accessList: this.accessList,
+            v,
+            r: (0, util_1.bytesToBigInt)(r),
+            s: (0, util_1.bytesToBigInt)(s),
+        }, opts);
+    }
+    /**
+     * Returns an object with the JSON representation of the transaction
+     * @returns JSON encoding of the transaction
+     */
+    toJSON() {
+        const accessListJSON = (0, access_ts_1.accessListBytesToJSON)(this.accessList);
+        const baseJSON = (0, internal_ts_1.getBaseJSON)(this);
+        return {
+            ...baseJSON,
+            chainId: (0, util_1.bigIntToHex)(this.chainId),
+            gasPrice: (0, util_1.bigIntToHex)(this.gasPrice),
+            accessList: accessListJSON,
+        };
+    }
+    /**
+     * Runs transaction validation and returns any discovered errors.
+     * @returns Array of validation error messages
+     */
+    getValidationErrors() {
+        return Legacy.getValidationErrors(this);
+    }
+    /**
+     * @returns true if the transaction has no validation errors
+     */
+    isValid() {
+        return Legacy.isValid(this);
+    }
+    /**
+     * Checks whether the signature currently attached to the transaction is valid.
+     * @returns true if signature verification succeeds
+     */
+    verifySignature() {
+        return Legacy.verifySignature(this);
+    }
+    /**
+     * Returns the signer's address recovered from the signature.
+     * @returns Sender {@link Address}
+     */
+    getSenderAddress() {
+        return Legacy.getSenderAddress(this);
+    }
+    /**
+     * Signs the transaction with the provided private key and returns a new instance.
+     * @param privateKey - 32-byte private key
+     * @param extraEntropy - Optional entropy fed into the signing algorithm
+     * @returns Newly signed transaction
+     */
+    sign(privateKey, extraEntropy = false) {
+        return Legacy.sign(this, privateKey, extraEntropy);
+    }
+    /**
+     * Reports whether the transaction already contains signature values.
+     * @returns true if signature parts are present
+     */
+    isSigned() {
+        return Legacy.isSigned(this);
+    }
+    /**
+     * Return a compact error string representation of the object
+     */
+    errorStr() {
+        let errorStr = Legacy.getSharedErrorPostfix(this);
+        // Keep ? for this.accessList since this otherwise causes Hardhat E2E tests to fail
+        errorStr += ` gasPrice=${this.gasPrice} accessListCount=${this.accessList?.length ?? 0}`;
+        return errorStr;
+    }
+}
+exports.AccessList2930Tx = AccessList2930Tx;
+//# sourceMappingURL=tx.js.map

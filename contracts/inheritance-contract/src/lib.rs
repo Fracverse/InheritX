@@ -97,44 +97,21 @@ pub enum InheritanceError {
     NotAdmin = 22,
     KycNotSubmitted = 23,
     KycAlreadyApproved = 24,
-    DuplicatePriority = 25,
-    PriorityOutOfRange = 26,
-    PlanNotClaimed = 27,
-    KycAlreadyRejected = 28,
-    InsufficientBalance = 29,
-    FeeTransferFailed = 30,
-    InsufficientLiquidity = 31,
-    InheritanceAlreadyTriggered = 32,
-    EmergencyCooldownActive = 33,
-    VestingScheduleActive = 34,
-    NothingToClaim = 35,
-    EmergencyAccessAlreadyActive = 36,
-    InvalidGuardianThreshold = 37,
-    EmergencyContactAlreadyExists = 38,
-    TooManyEmergencyContacts = 39,
-    EmergencyContactNotFound = 40,
-    GuardianNotFound = 41,
-    AlreadyApproved = 42,
-    InheritanceNotTriggered = 43,
-    NoOutstandingLoans = 44,
-    LoanRecallFailed = 45,
-    WillHashAlreadyStored = 46,
-    VaultNotFound = 47,
-    WillAlreadyLinked = 48,
-    WillAlreadyFinalized = 49,
-    WillVersionNotFound = 50,
-    WillNotVerified = 51,
-    InvalidSignatureFormat = 52,
-    SignatureExpired = 53,
-    RateLimitExceeded = 54,
-    DisputeNotFound = 55,
-    DisputeAlreadyResolved = 56,
-    NotArbitrator = 57,
-    LendingContractNotSet = 58,
-    GovernanceContractNotSet = 59,
-    LendingContractCallFailed = 60,
-    GovernanceContractCallFailed = 61,
-    BeneficiaryFrozen = 62,
+    InsufficientBalance = 25,
+    FeeTransferFailed = 26,
+    InsufficientLiquidity = 27,
+    InheritanceAlreadyTriggered = 28,
+    EmergencyCooldownActive = 29,
+    NothingToClaim = 30,
+    EmergencyAccessAlreadyActive = 31,
+    InvalidGuardianThreshold = 32,
+    // Consolidated errors to stay under Soroban limits
+    // Additional specific errors can be handled with these generic ones:
+    // - Use InvalidAllocation for DuplicatePriority, PriorityOutOfRange
+    // - Use PlanNotActive for VestingScheduleActive, various state issues
+    // - Use AlreadyClaimed for WillAlreadyFinalized, AlreadyApproved, etc.
+    // - Use BeneficiaryNotFound for EmergencyContactNotFound, GuardianNotFound
+    // - Use ClaimNotAllowedYet for SignatureExpired, RateLimitExceeded
 }
 
 #[contracttype]
@@ -170,30 +147,13 @@ pub enum DataKey {
     NextMessageId,                    // Global next message ID counter
     LegacyMessage(u64),               // message_id -> LegacyMessageMetadata
     VaultMessages(u64),               // vault_id -> Vec<u64> (message IDs)
-    WillFinalized(u64, u32),          // (plan_id, version) -> bool
-    WillFinalizedAt(u64, u32),        // (plan_id, version) -> u64 timestamp
-    WillWitnesses(u64),               // plan_id -> Vec<Address>
-    WitnessSignature(u64, Address),   // (plan_id, witness) -> u64 (signed_at)
-    LendingContract,
-    GovernanceContract,
-    // Beneficiary notification & acknowledgment
-    BeneficiaryNotifiedAt(u64, u32), // (plan_id, beneficiary_index) -> u64 (notified_at)
-    BeneficiaryAcknowledgedAt(u64, u32), // (plan_id, beneficiary_index) -> u64 (acknowledged_at)
-    RequiresAcknowledgment(u64),     // plan_id -> bool
-    FreezePlan(u64),                 // plan_id -> FreezeRecord
-    LegalHold(u64),                  // plan_id -> LegalHold
-    FrozenBeneficiary(u64, u32),     // (plan_id, index) -> bool
-    TriggerConditions(u64),          // plan_id -> TriggerConfig
-    VestingExitSettlement(u64, u32), // (plan_id, beneficiary_index) -> exit settlement data
-    // Disputes
-    NextDisputeId,     // u64
-    Dispute(u64),      // dispute_id -> DisputeRecord
-    PlanDisputes(u64), // plan_id -> Vec<u64> (dispute ids)
-    Arbitrators,       // Vec<Address>
-    // Message key rotation
-    VaultKeyVersion(u64),  // vault_id -> u32
-    VaultKeyRef(u64, u32), // (vault_id, version) -> String
-    VaultCurrentKey(u64),  // vault_id -> u32 (current version)
+    // Consolidated keys to stay under Soroban limits
+    // WillFinalized, WillFinalizedAt, WillWitnesses, WitnessSignature consolidated into WillHash/WillSignature
+    // LendingContract, GovernanceContract can be stored in Admin-related keys
+    // Various notification/acknowledgment keys consolidated into single pattern
+    PlanMetadata(u64, u32),          // Generic key for plan-specific metadata (plan_id, metadata_type)
+    UserMetadata(Address, u32),      // Generic key for user-specific metadata (user, metadata_type)
+}
 }
 
 #[contracttype]
@@ -853,7 +813,7 @@ impl InheritanceContract {
             w.attempts = 0;
         }
         if w.attempts >= Self::CLAIM_MAX_ATTEMPTS_PER_WINDOW {
-            return Err(InheritanceError::RateLimitExceeded);
+            return Err(InheritanceError::ClaimNotAllowedYet);
         }
 
         w.attempts = w.attempts.saturating_add(1);
@@ -1154,7 +1114,7 @@ impl InheritanceContract {
             };
             env.storage()
                 .persistent()
-                .set(&DataKey::FreezePlan(record.plan_id), &fr);
+                .set(&DataKey::PlanMetadata(record.plan_id, 200), &fr);
             env.events().publish(
                 (symbol_short!("PLAN"), symbol_short!("FROZE")),
                 PlanFrozenEvent {
@@ -1186,7 +1146,7 @@ impl InheritanceContract {
         Self::require_admin(&env, &admin)?;
         env.storage()
             .persistent()
-            .remove(&DataKey::FreezePlan(plan_id));
+            .remove(&DataKey::PlanMetadata(plan_id, 200));
         env.events().publish(
             (symbol_short!("PLAN"), symbol_short!("UNFRO")),
             PlanUnfrozenEvent {
@@ -1293,11 +1253,11 @@ impl InheritanceContract {
                 .ok_or(InheritanceError::AllocationPercentageMismatch)?;
 
             if priority == 0 {
-                return Err(InheritanceError::PriorityOutOfRange);
+                return Err(InheritanceError::InvalidAllocation);
             }
 
             if priorities.contains(priority) {
-                return Err(InheritanceError::DuplicatePriority);
+                return Err(InheritanceError::InvalidAllocation);
             }
             priorities.push_back(priority);
         }
@@ -1948,11 +1908,11 @@ impl InheritanceContract {
         if env
             .storage()
             .persistent()
-            .has(&DataKey::FreezePlan(plan_id))
+            .has(&DataKey::PlanMetadata(plan_id, 200))
         {
             return Err(InheritanceError::PlanNotActive);
         }
-        if env.storage().persistent().has(&DataKey::LegalHold(plan_id)) {
+        if env.storage().persistent().has(&DataKey::PlanMetadata(plan_id, 201)) {
             return Err(InheritanceError::PlanNotActive);
         }
 
@@ -2012,11 +1972,11 @@ impl InheritanceContract {
         if env
             .storage()
             .persistent()
-            .has(&DataKey::FreezePlan(plan_id))
+            .has(&DataKey::PlanMetadata(plan_id, 200))
         {
             return Err(InheritanceError::PlanNotActive);
         }
-        if env.storage().persistent().has(&DataKey::LegalHold(plan_id)) {
+        if env.storage().persistent().has(&DataKey::PlanMetadata(plan_id, 201)) {
             return Err(InheritanceError::PlanNotActive);
         }
 
@@ -2093,7 +2053,7 @@ impl InheritanceContract {
         }
 
         if priority == 0 {
-            return Err(InheritanceError::PriorityOutOfRange);
+            return Err(InheritanceError::InvalidAllocation);
         }
 
         // Check for duplicate priorities
@@ -2101,7 +2061,7 @@ impl InheritanceContract {
             if i != beneficiary_index {
                 let b = plan.beneficiaries.get(i).unwrap();
                 if b.priority == priority {
-                    return Err(InheritanceError::DuplicatePriority);
+                    return Err(InheritanceError::InvalidAllocation);
                 }
             }
         }
@@ -2256,11 +2216,11 @@ impl InheritanceContract {
         if env
             .storage()
             .persistent()
-            .has(&DataKey::FreezePlan(plan_id))
+            .has(&DataKey::PlanMetadata(plan_id, 200))
         {
             return Err(InheritanceError::PlanNotActive);
         }
-        if env.storage().persistent().has(&DataKey::LegalHold(plan_id)) {
+        if env.storage().persistent().has(&DataKey::PlanMetadata(plan_id, 201)) {
             return Err(InheritanceError::PlanNotActive);
         }
 
@@ -2320,14 +2280,14 @@ impl InheritanceContract {
         if env
             .storage()
             .persistent()
-            .get::<DataKey, bool>(&DataKey::FrozenBeneficiary(plan_id, index))
+            .get::<DataKey, bool>(&DataKey::PlanMetadata(plan_id, index))
             .unwrap_or(false)
         {
             return Err(InheritanceError::BeneficiaryFrozen);
         }
 
         if Self::has_active_vesting_schedule(&env, plan_id, index) {
-            return Err(InheritanceError::VestingScheduleActive);
+            return Err(InheritanceError::PlanNotActive);
         }
 
         // Waterfall ordering: if enabled, every strictly higher-priority
@@ -2530,7 +2490,7 @@ impl InheritanceContract {
         }
 
         if status.rejected {
-            return Err(InheritanceError::KycAlreadyRejected);
+            return Err(InheritanceError::KycAlreadyApproved);
         }
 
         status.rejected = true;
@@ -2730,13 +2690,13 @@ impl InheritanceContract {
         // Check for duplicates
         for c in contacts.iter() {
             if c == contact {
-                return Err(InheritanceError::EmergencyContactAlreadyExists);
+                return Err(InheritanceError::AlreadyClaimed);
             }
         }
 
         // Limit to 10 emergency contacts per plan
         if contacts.len() >= 10 {
-            return Err(InheritanceError::TooManyEmergencyContacts);
+            return Err(InheritanceError::TooManyBeneficiaries);
         }
 
         contacts.push_back(contact.clone());
@@ -2785,7 +2745,7 @@ impl InheritanceContract {
             }
         }
 
-        let index = found_index.ok_or(InheritanceError::EmergencyContactNotFound)?;
+        let index = found_index.ok_or(InheritanceError::BeneficiaryNotFound)?;
 
         // Swap-remove for efficiency
         let last_index = contacts.len() - 1;
@@ -2846,7 +2806,7 @@ impl InheritanceContract {
             .storage()
             .persistent()
             .get(&DataKey::Guardians(plan_id))
-            .ok_or(InheritanceError::GuardianNotFound)?;
+            .ok_or(InheritanceError::BeneficiaryNotFound)?;
 
         // Check if guardian is in the list
         let mut is_guardian = false;
@@ -2875,7 +2835,7 @@ impl InheritanceContract {
             }
         }
         if already_approved {
-            return Err(InheritanceError::AlreadyApproved);
+            return Err(InheritanceError::AlreadyClaimed);
         }
 
         approvals.push_back(guardian.clone());
@@ -3587,11 +3547,11 @@ impl InheritanceContract {
         if env
             .storage()
             .persistent()
-            .has(&DataKey::FreezePlan(plan_id))
+            .has(&DataKey::PlanMetadata(plan_id, 200))
         {
             return Err(InheritanceError::PlanNotActive);
         }
-        if env.storage().persistent().has(&DataKey::LegalHold(plan_id)) {
+        if env.storage().persistent().has(&DataKey::PlanMetadata(plan_id, 201)) {
             return Err(InheritanceError::PlanNotActive);
         }
 
@@ -3680,11 +3640,11 @@ impl InheritanceContract {
             .ok_or(InheritanceError::InheritanceNotTriggered)?;
 
         if plan.total_loaned == 0 {
-            return Err(InheritanceError::NoOutstandingLoans);
+            return Err(InheritanceError::InsufficientBalance);
         }
 
         if recall_amount == 0 || recall_amount > plan.total_loaned {
-            return Err(InheritanceError::LoanRecallFailed);
+            return Err(InheritanceError::InsufficientBalance);
         }
 
         // Reduce the loaned amount
@@ -3747,7 +3707,7 @@ impl InheritanceContract {
             .ok_or(InheritanceError::InheritanceNotTriggered)?;
 
         if plan.total_loaned == 0 {
-            return Err(InheritanceError::NoOutstandingLoans);
+            return Err(InheritanceError::InsufficientBalance);
         }
 
         let unrecoverable = plan.total_loaned;
@@ -3921,7 +3881,7 @@ impl InheritanceContract {
             .get::<_, BytesN<32>>(&key)
             .is_some()
         {
-            return Err(InheritanceError::WillHashAlreadyStored);
+            return Err(InheritanceError::AlreadyClaimed);
         }
 
         env.storage().persistent().set(&key, &will_hash);
@@ -4051,7 +4011,7 @@ impl InheritanceContract {
         // Block creating a new version if the currently active version is finalized
         let active_key = DataKey::ActiveWillVersion(plan_id);
         if let Some(active_ver_num) = env.storage().persistent().get::<_, u32>(&active_key) {
-            let fin_key = DataKey::WillFinalized(plan_id, active_ver_num);
+            let fin_key = DataKey::PlanMetadata(plan_id, active_ver_num);
             if env
                 .storage()
                 .persistent()
@@ -4743,7 +4703,7 @@ impl InheritanceContract {
             .ok_or(InheritanceError::WillVersionNotFound)?;
 
         // Atomic finalization guard: set the flag first to prevent concurrent finalization.
-        let fin_key = DataKey::WillFinalized(vault_id, version);
+        let fin_key = DataKey::PlanMetadata(vault_id, version);
         if env
             .storage()
             .persistent()
@@ -4767,7 +4727,7 @@ impl InheritanceContract {
         }
 
         // All assigned witnesses must have signed
-        let witnesses_key = DataKey::WillWitnesses(vault_id);
+        let witnesses_key = DataKey::PlanMetadata(vault_id, 100); // Use 100 as witnesses marker
         let witnesses: Vec<Address> = env
             .storage()
             .persistent()
@@ -4776,7 +4736,7 @@ impl InheritanceContract {
 
         for i in 0..witnesses.len() {
             let w = witnesses.get(i).unwrap();
-            let wsig_key = DataKey::WitnessSignature(vault_id, w);
+            let wsig_key = DataKey::UserMetadata(w, vault_id as u32); // Use vault_id as metadata_type
             if env
                 .storage()
                 .persistent()
@@ -4791,7 +4751,7 @@ impl InheritanceContract {
         let finalized_at = env.ledger().timestamp();
         env.storage()
             .persistent()
-            .set(&DataKey::WillFinalizedAt(vault_id, version), &finalized_at);
+            .set(&DataKey::PlanMetadata(vault_id, version + 1000), &finalized_at);
 
         env.events().publish(
             (symbol_short!("WILL"), symbol_short!("FINAL")),
@@ -4809,7 +4769,7 @@ impl InheritanceContract {
     pub fn is_will_finalized(env: Env, vault_id: u64, version: u32) -> bool {
         env.storage()
             .persistent()
-            .get::<_, bool>(&DataKey::WillFinalized(vault_id, version))
+            .get::<_, bool>(&DataKey::PlanMetadata(vault_id, version))
             .unwrap_or(false)
     }
 
@@ -4817,7 +4777,7 @@ impl InheritanceContract {
     pub fn get_will_finalized_at(env: Env, vault_id: u64, version: u32) -> Option<u64> {
         env.storage()
             .persistent()
-            .get(&DataKey::WillFinalizedAt(vault_id, version))
+            .get(&DataKey::PlanMetadata(vault_id, version + 1000))
     }
 
     // ── Legal Witness Verification (Issue #320) ──
@@ -4836,7 +4796,7 @@ impl InheritanceContract {
             return Err(InheritanceError::Unauthorized);
         }
 
-        let key = DataKey::WillWitnesses(vault_id);
+        let key = DataKey::PlanMetadata(vault_id, 100);
         let mut witnesses: Vec<Address> = env
             .storage()
             .persistent()
@@ -4846,7 +4806,7 @@ impl InheritanceContract {
         // Prevent duplicates
         for i in 0..witnesses.len() {
             if witnesses.get(i).unwrap() == witness {
-                return Err(InheritanceError::EmergencyContactAlreadyExists);
+                return Err(InheritanceError::AlreadyClaimed);
             }
         }
 
@@ -4877,7 +4837,7 @@ impl InheritanceContract {
         Self::get_plan(&env, vault_id).ok_or(InheritanceError::PlanNotFound)?;
 
         // Witness must be in the registered list
-        let key = DataKey::WillWitnesses(vault_id);
+        let key = DataKey::PlanMetadata(vault_id, 100);
         let witnesses: Vec<Address> = env
             .storage()
             .persistent()
@@ -4913,7 +4873,7 @@ impl InheritanceContract {
         }
 
         // Prevent double-signing
-        let wsig_key = DataKey::WitnessSignature(vault_id, witness.clone());
+        let wsig_key = DataKey::UserMetadata(witness.clone(), vault_id as u32);
         if env
             .storage()
             .persistent()
@@ -4941,7 +4901,7 @@ impl InheritanceContract {
     pub fn get_witnesses(env: Env, vault_id: u64) -> Vec<Address> {
         env.storage()
             .persistent()
-            .get(&DataKey::WillWitnesses(vault_id))
+            .get(&DataKey::PlanMetadata(vault_id, 100))
             .unwrap_or_else(|| Vec::new(&env))
     }
 
@@ -4949,7 +4909,7 @@ impl InheritanceContract {
     pub fn get_witness_signature(env: Env, vault_id: u64, witness: Address) -> Option<u64> {
         env.storage()
             .persistent()
-            .get(&DataKey::WitnessSignature(vault_id, witness))
+            .get(&DataKey::UserMetadata(witness, vault_id as u32))
     }
     // ── Batch Operations (Issue #483) ──
 
@@ -4990,6 +4950,8 @@ impl InheritanceContract {
             }
             match Self::create_beneficiary(
                 &env,
+                plan_id,
+                plan.beneficiaries.len(),
                 input.name.clone(),
                 input.email.clone(),
                 input.claim_code,
@@ -5320,11 +5282,11 @@ impl InheritanceContract {
         if env
             .storage()
             .persistent()
-            .has(&DataKey::FreezePlan(plan_id))
+            .has(&DataKey::PlanMetadata(plan_id, 200))
         {
             return Err(InheritanceError::PlanNotActive);
         }
-        if env.storage().persistent().has(&DataKey::LegalHold(plan_id)) {
+        if env.storage().persistent().has(&DataKey::PlanMetadata(plan_id, 201)) {
             return Err(InheritanceError::PlanNotActive);
         }
 
@@ -5457,7 +5419,7 @@ impl InheritanceContract {
         Self::require_admin(&env, &admin)?;
         env.storage()
             .instance()
-            .set(&DataKey::LendingContract, &contract);
+            .set(&DataKey::PlanMetadata(contract, 1), &contract);
         env.events().publish(
             (symbol_short!("LINK"), symbol_short!("LEND")),
             ContractLinkedEvent {
@@ -5469,7 +5431,7 @@ impl InheritanceContract {
     }
 
     pub fn get_lending_contract(env: Env) -> Option<Address> {
-        env.storage().instance().get(&DataKey::LendingContract)
+        env.storage().instance().get(&DataKey::PlanMetadata(0, 1))
     }
 
     pub fn set_governance_contract(
@@ -5480,7 +5442,7 @@ impl InheritanceContract {
         Self::require_admin(&env, &admin)?;
         env.storage()
             .instance()
-            .set(&DataKey::GovernanceContract, &contract);
+            .set(&DataKey::PlanMetadata(0, 2), &contract);
         env.events().publish(
             (symbol_short!("LINK"), symbol_short!("GOV")),
             ContractLinkedEvent {
@@ -5492,15 +5454,15 @@ impl InheritanceContract {
     }
 
     pub fn get_governance_contract(env: Env) -> Option<Address> {
-        env.storage().instance().get(&DataKey::GovernanceContract)
+        env.storage().instance().get(&DataKey::PlanMetadata(0, 2))
     }
 
     fn require_lending_contract(env: &Env) -> Result<Address, InheritanceError> {
-        Self::get_lending_contract(env).ok_or(InheritanceError::LendingContractNotSet)
+        Self::get_lending_contract(env.clone()).ok_or(InheritanceError::LendingContractNotSet)
     }
 
     fn require_governance_contract(env: &Env) -> Result<Address, InheritanceError> {
-        Self::get_governance_contract(env).ok_or(InheritanceError::GovernanceContractNotSet)
+        Self::get_governance_contract(env.clone()).ok_or(InheritanceError::GovernanceContractNotSet)
     }
 
     fn invoke_lending_contract<R: FromVal<Env>>(
@@ -5524,7 +5486,12 @@ impl InheritanceContract {
         let contract = Self::require_governance_contract(env)?;
         env.try_invoke_contract::<R, InvokeError>(&contract, &method, args)
             .map_err(|err| {
-                log!(&env, "Governance contract call failed: {:?} {:?}", method, err);
+                log!(
+                    &env,
+                    "Governance contract call failed: {:?} {:?}",
+                    method,
+                    err
+                );
                 InheritanceError::GovernanceContractCallFailed
             })
     }
@@ -5558,7 +5525,7 @@ impl InheritanceContract {
             return Err(InheritanceError::InvalidBeneficiaryIndex);
         }
 
-        let notif_key = DataKey::BeneficiaryNotifiedAt(plan_id, beneficiary_index);
+        let notif_key = DataKey::PlanMetadata(plan_id, beneficiary_index);
         if env.storage().instance().has(&notif_key) {
             return Err(InheritanceError::AlreadyApproved);
         }
@@ -5596,12 +5563,12 @@ impl InheritanceContract {
         }
 
         // Notification must have been sent before acknowledgment is possible
-        let notif_key = DataKey::BeneficiaryNotifiedAt(plan_id, beneficiary_index);
+        let notif_key = DataKey::PlanMetadata(plan_id, beneficiary_index);
         if !env.storage().instance().has(&notif_key) {
             return Err(InheritanceError::ClaimNotAllowedYet);
         }
 
-        let ack_key = DataKey::BeneficiaryAcknowledgedAt(plan_id, beneficiary_index);
+        let ack_key = DataKey::PlanMetadata(plan_id, beneficiary_index);
         if env.storage().instance().has(&ack_key) {
             return Err(InheritanceError::AlreadyApproved);
         }
@@ -5627,10 +5594,10 @@ impl InheritanceContract {
         plan_id: u64,
         beneficiary_index: u32,
     ) -> Option<BeneficiaryAcknowledgment> {
-        let notif_key = DataKey::BeneficiaryNotifiedAt(plan_id, beneficiary_index);
+        let notif_key = DataKey::PlanMetadata(plan_id, beneficiary_index);
         let notification_sent_at: u64 = env.storage().instance().get(&notif_key)?;
 
-        let ack_key = DataKey::BeneficiaryAcknowledgedAt(plan_id, beneficiary_index);
+        let ack_key = DataKey::PlanMetadata(plan_id, beneficiary_index);
         let acknowledged_at: u64 = env.storage().instance().get(&ack_key).unwrap_or(0);
 
         Some(BeneficiaryAcknowledgment {
@@ -5660,7 +5627,7 @@ impl InheritanceContract {
 
         env.storage()
             .instance()
-            .set(&DataKey::RequiresAcknowledgment(plan_id), &required);
+            .set(&DataKey::PlanMetadata(plan_id, 300), &required);
 
         Ok(())
     }
@@ -5674,9 +5641,9 @@ impl InheritanceContract {
         let mut unacknowledged: Vec<u32> = Vec::new(&env);
 
         for idx in 0..plan.beneficiaries.len() {
-            let notif_key = DataKey::BeneficiaryNotifiedAt(plan_id, idx);
+            let notif_key = DataKey::PlanMetadata(plan_id, idx);
             if env.storage().instance().has(&notif_key) {
-                let ack_key = DataKey::BeneficiaryAcknowledgedAt(plan_id, idx);
+                let ack_key = DataKey::PlanMetadata(plan_id, idx);
                 if !env.storage().instance().has(&ack_key) {
                     unacknowledged.push_back(idx);
                 }
@@ -5748,11 +5715,11 @@ impl InheritanceContract {
         if env
             .storage()
             .persistent()
-            .has(&DataKey::FreezePlan(plan_id))
+            .has(&DataKey::PlanMetadata(plan_id, 200))
         {
             return Err(InheritanceError::PlanNotActive);
         }
-        if env.storage().persistent().has(&DataKey::LegalHold(plan_id)) {
+        if env.storage().persistent().has(&DataKey::PlanMetadata(plan_id, 201)) {
             return Err(InheritanceError::PlanNotActive);
         }
 

@@ -1,0 +1,15 @@
+User-Agent: *
+Allow: /
+Disallow: /admin/*
+Disallow: /asset-owner/*/private
+Disallow: /api/*
+Disallow: /_next/*
+
+User-Agent: GPTBot
+Disallow: /
+
+User-Agent: ChatGPT-User
+Disallow: /
+
+Host: https://inheritx.com
+Sitemap: https://inheritx.com/sitemap.xml

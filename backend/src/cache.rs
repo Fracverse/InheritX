@@ -373,7 +373,8 @@ impl CacheService {
 
     /// Invalidate all notification caches for a user.
     pub async fn invalidate_notification_caches(&self, user_id: &str) -> Result<u64, ApiError> {
-        self.invalidate_prefix(&format!("notifications:{user_id}:")).await
+        self.invalidate_prefix(&format!("notifications:{user_id}:"))
+            .await
     }
 
     /// Invalidate all audit log caches.
@@ -383,7 +384,8 @@ impl CacheService {
 
     /// Invalidate all collateral-related caches.
     pub async fn invalidate_collateral_caches(&self, user_id: &str) -> Result<u64, ApiError> {
-        self.invalidate_prefix(&format!("collateral:{user_id}:")).await
+        self.invalidate_prefix(&format!("collateral:{user_id}:"))
+            .await
     }
 
     /// Invalidate price feed caches.

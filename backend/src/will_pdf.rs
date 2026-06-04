@@ -382,6 +382,7 @@ impl WillPdfService {
             tracing::warn!("Failed to emit WillCreated event: {}", e);
         }
 
+        crate::metrics::inc_will_documents_generated();
         Ok(GeneratedWillDocument {
             document_id,
             plan_id: input.plan_id,

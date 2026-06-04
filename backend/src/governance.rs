@@ -31,7 +31,9 @@ impl ProposalStatus {
             "passed" => Ok(ProposalStatus::Passed),
             "rejected" => Ok(ProposalStatus::Rejected),
             "executed" => Ok(ProposalStatus::Executed),
-            other => Err(ApiError::BadRequest(format!("Unknown proposal status: {other}"))),
+            other => Err(ApiError::BadRequest(format!(
+                "Unknown proposal status: {other}"
+            ))),
         }
     }
 }
@@ -75,21 +77,93 @@ pub struct ParameterUpdateRequest {
     pub parameter_value: String,
 }
 
+// ── Delegation types ──────────────────────────────────────────────────────────
+
+/// Active delegation row returned from the DB.
+#[derive(Debug, Serialize, Deserialize, sqlx::FromRow)]
+pub struct GovernanceDelegation {
+    pub id: Uuid,
+    pub delegator_id: Uuid,
+    pub delegate_id: Uuid,
+    pub created_at: DateTime<Utc>,
+    pub updated_at: DateTime<Utc>,
+}
+
+/// Request body for delegating votes.
+#[derive(Debug, Deserialize)]
+pub struct DelegateVotesRequest {
+    /// The user to delegate voting power to.
+    pub delegate_id: Uuid,
+}
+
+/// Response returned after a successful delegation operation.
+#[derive(Debug, Serialize)]
+pub struct DelegationResponse {
+    pub delegator_id: Uuid,
+    pub delegate_id: Option<Uuid>,
+    pub message: String,
+}
+
 /// Allowed protocol parameters with their validation rules.
 ///
 /// Each entry is `(name, min_value, max_value, description)`.
 /// All parameter values are stored as strings but must parse to `u64` within
 /// the specified inclusive range.
 const ALLOWED_PARAMETERS: &[(&str, u64, u64, &str)] = &[
-    ("governance_quorum", 1, 1_000_000, "Minimum votes required for a proposal to pass"),
-    ("governance_voting_period_days", 1, 365, "Duration of the voting period in days"),
-    ("platform_fee_bps", 0, 10_000, "Platform fee in basis points (0–100%)"),
-    ("insurance_fund_fee_bps", 0, 5_000, "Insurance fund contribution in basis points"),
-    ("loan_liquidation_threshold_bps", 1, 10_000, "Collateral ratio at which a loan is liquidated (basis points)"),
-    ("loan_max_duration_days", 1, 3_650, "Maximum allowed loan duration in days"),
-    ("loan_min_collateral_bps", 1, 100_000, "Minimum collateral ratio for new loans (basis points)"),
-    ("max_beneficiaries_per_plan", 1, 100, "Maximum number of beneficiaries allowed per inheritance plan"),
-    ("claim_inactivity_period_days", 1, 3_650, "Days of inactivity before a claim can be triggered"),
+    (
+        "governance_quorum",
+        1,
+        1_000_000,
+        "Minimum votes required for a proposal to pass",
+    ),
+    (
+        "governance_voting_period_days",
+        1,
+        365,
+        "Duration of the voting period in days",
+    ),
+    (
+        "platform_fee_bps",
+        0,
+        10_000,
+        "Platform fee in basis points (0–100%)",
+    ),
+    (
+        "insurance_fund_fee_bps",
+        0,
+        5_000,
+        "Insurance fund contribution in basis points",
+    ),
+    (
+        "loan_liquidation_threshold_bps",
+        1,
+        10_000,
+        "Collateral ratio at which a loan is liquidated (basis points)",
+    ),
+    (
+        "loan_max_duration_days",
+        1,
+        3_650,
+        "Maximum allowed loan duration in days",
+    ),
+    (
+        "loan_min_collateral_bps",
+        1,
+        100_000,
+        "Minimum collateral ratio for new loans (basis points)",
+    ),
+    (
+        "max_beneficiaries_per_plan",
+        1,
+        100,
+        "Maximum number of beneficiaries allowed per inheritance plan",
+    ),
+    (
+        "claim_inactivity_period_days",
+        1,
+        3_650,
+        "Days of inactivity before a claim can be triggered",
+    ),
 ];
 
 pub struct GovernanceService;
@@ -163,6 +237,42 @@ impl GovernanceService {
 
         Ok(())
     }
+
+    /// Persist terminal statuses for any proposals whose voting window has ended.
+    ///
+    /// This keeps expired proposals from lingering in `active` state until a manual
+    /// finalize call happens.
+    async fn refresh_expired_proposals(db: &PgPool) -> Result<(), ApiError> {
+        let expired_proposal_ids = sqlx::query_scalar::<_, Uuid>(
+            r#"
+            SELECT id
+            FROM governance_proposals
+            WHERE status = 'active' AND expires_at <= NOW()
+            ORDER BY expires_at ASC
+            "#,
+        )
+        .fetch_all(db)
+        .await
+        .map_err(|e| {
+            ApiError::Internal(anyhow::anyhow!("DB error finding expired proposals: {}", e))
+        })?;
+
+        if expired_proposal_ids.is_empty() {
+            return Ok(());
+        }
+
+        info!(
+            count = expired_proposal_ids.len(),
+            "Auto-finalizing expired governance proposals"
+        );
+
+        for proposal_id in expired_proposal_ids {
+            Self::finalize_proposal(db, proposal_id).await?;
+        }
+
+        Ok(())
+    }
+
     pub async fn create_proposal(
         db: &PgPool,
         proposer_id: Uuid,
@@ -197,6 +307,8 @@ impl GovernanceService {
     }
 
     pub async fn list_proposals(db: &PgPool) -> Result<Vec<Proposal>, ApiError> {
+        Self::refresh_expired_proposals(db).await?;
+
         let proposals = sqlx::query_as::<_, Proposal>(
             "SELECT * FROM governance_proposals ORDER BY created_at DESC",
         )
@@ -208,6 +320,8 @@ impl GovernanceService {
     }
 
     pub async fn get_proposal(db: &PgPool, proposal_id: Uuid) -> Result<Proposal, ApiError> {
+        Self::refresh_expired_proposals(db).await?;
+
         sqlx::query_as::<_, Proposal>("SELECT * FROM governance_proposals WHERE id = $1")
             .bind(proposal_id)
             .fetch_optional(db)
@@ -222,6 +336,8 @@ impl GovernanceService {
         proposal_id: Uuid,
         req: &VoteRequest,
     ) -> Result<(), ApiError> {
+        Self::refresh_expired_proposals(db).await?;
+
         let mut tx = db
             .begin()
             .await
@@ -328,9 +444,9 @@ impl GovernanceService {
         }
 
         if current == ProposalStatus::Passed || current == ProposalStatus::Rejected {
-            tx.commit().await.map_err(|e| {
-                ApiError::Internal(anyhow::anyhow!("Tx commit error: {}", e))
-            })?;
+            tx.commit()
+                .await
+                .map_err(|e| ApiError::Internal(anyhow::anyhow!("Tx commit error: {}", e)))?;
             return Ok(proposal);
         }
 
@@ -386,7 +502,8 @@ impl GovernanceService {
         .await
         .map_err(|e| ApiError::Internal(anyhow::anyhow!("DB error fetching proposal: {}", e)))?;
 
-        if let (Some(action_type), Some(payload)) = (&proposal.action_type, &proposal.action_payload)
+        if let (Some(action_type), Some(payload)) =
+            (&proposal.action_type, &proposal.action_payload)
         {
             Self::apply_action(&mut tx, action_type, payload).await?;
         }
@@ -411,9 +528,9 @@ impl GovernanceService {
             Some(executor_id),
             audit_action::PARAMETER_UPDATE,
             Some(proposal_id),
-            Some("governance_proposal".to_string()),
+            Some("governance_proposal"),
             None,
-            Some("executed".to_string()),
+            Some("executed"),
             proposal.action_payload.clone(),
         )
         .await?;
@@ -512,7 +629,9 @@ impl GovernanceService {
                     .get("parameter_value")
                     .and_then(|v| v.as_str())
                     .ok_or_else(|| {
-                        ApiError::BadRequest("Missing parameter_value in action payload".to_string())
+                        ApiError::BadRequest(
+                            "Missing parameter_value in action payload".to_string(),
+                        )
                     })?;
 
                 // Re-validate at execution time; the parameter rules may have changed
@@ -538,17 +657,184 @@ impl GovernanceService {
     }
 
     async fn get_quorum_threshold(db: &PgPool) -> Result<i32, ApiError> {
-        let value: Option<String> =
-            sqlx::query_scalar("SELECT value FROM protocol_parameters WHERE name = 'governance_quorum'")
-                .fetch_optional(db)
-                .await
-                .map_err(|e| {
-                    ApiError::Internal(anyhow::anyhow!("Failed to read governance quorum: {}", e))
-                })?;
+        let value: Option<String> = sqlx::query_scalar(
+            "SELECT value FROM protocol_parameters WHERE name = 'governance_quorum'",
+        )
+        .fetch_optional(db)
+        .await
+        .map_err(|e| {
+            ApiError::Internal(anyhow::anyhow!("Failed to read governance quorum: {}", e))
+        })?;
 
         Ok(value
             .and_then(|v| v.parse::<i32>().ok())
             .unwrap_or(1)
             .max(1))
+    }
+
+    // ── Vote Delegation (Issue #649) ──────────────────────────────────────────
+
+    /// Delegate voting power from `delegator_id` to `delegate_id`.
+    ///
+    /// Rules enforced:
+    /// - A user cannot delegate to themselves.
+    /// - If an active delegation already exists it is replaced (redelegation).
+    /// - The old delegation is removed and the new one is inserted atomically.
+    /// - Every change is recorded in `governance_delegation_history`.
+    pub async fn delegate_votes(
+        db: &PgPool,
+        delegator_id: Uuid,
+        req: &DelegateVotesRequest,
+    ) -> Result<DelegationResponse, ApiError> {
+        let delegate_id = req.delegate_id;
+
+        if delegator_id == delegate_id {
+            return Err(ApiError::BadRequest(
+                "Cannot delegate votes to yourself".to_string(),
+            ));
+        }
+
+        let mut tx = db
+            .begin()
+            .await
+            .map_err(|e| ApiError::Internal(anyhow::anyhow!("Tx start error: {}", e)))?;
+
+        // Check for an existing delegation so we can decide the audit action.
+        let existing: Option<GovernanceDelegation> = sqlx::query_as::<_, GovernanceDelegation>(
+            "SELECT * FROM governance_delegations WHERE delegator_id = $1",
+        )
+        .bind(delegator_id)
+        .fetch_optional(&mut *tx)
+        .await
+        .map_err(|e| ApiError::Internal(anyhow::anyhow!("DB error checking delegation: {}", e)))?;
+
+        let action = if existing.is_some() {
+            "redelegated"
+        } else {
+            "delegated"
+        };
+
+        // Upsert the delegation (insert or update on conflict).
+        sqlx::query(
+            r#"
+            INSERT INTO governance_delegations (delegator_id, delegate_id, updated_at)
+            VALUES ($1, $2, NOW())
+            ON CONFLICT (delegator_id)
+            DO UPDATE SET delegate_id = EXCLUDED.delegate_id, updated_at = NOW()
+            "#,
+        )
+        .bind(delegator_id)
+        .bind(delegate_id)
+        .execute(&mut *tx)
+        .await
+        .map_err(|e| ApiError::Internal(anyhow::anyhow!("DB error upserting delegation: {}", e)))?;
+
+        // Record in audit history.
+        sqlx::query(
+            "INSERT INTO governance_delegation_history (delegator_id, delegate_id, action) VALUES ($1, $2, $3)",
+        )
+        .bind(delegator_id)
+        .bind(delegate_id)
+        .bind(action)
+        .execute(&mut *tx)
+        .await
+        .map_err(|e| ApiError::Internal(anyhow::anyhow!("DB error recording delegation history: {}", e)))?;
+
+        tx.commit()
+            .await
+            .map_err(|e| ApiError::Internal(anyhow::anyhow!("Tx commit error: {}", e)))?;
+
+        info!(
+            delegator_id = %delegator_id,
+            delegate_id = %delegate_id,
+            action = action,
+            "Governance vote delegation updated"
+        );
+
+        Ok(DelegationResponse {
+            delegator_id,
+            delegate_id: Some(delegate_id),
+            message: format!("Votes successfully {action} to {delegate_id}"),
+        })
+    }
+
+    /// Remove an active delegation, restoring voting power to the delegator.
+    pub async fn undelegate_votes(
+        db: &PgPool,
+        delegator_id: Uuid,
+    ) -> Result<DelegationResponse, ApiError> {
+        let mut tx = db
+            .begin()
+            .await
+            .map_err(|e| ApiError::Internal(anyhow::anyhow!("Tx start error: {}", e)))?;
+
+        let existing: Option<GovernanceDelegation> = sqlx::query_as::<_, GovernanceDelegation>(
+            "SELECT * FROM governance_delegations WHERE delegator_id = $1",
+        )
+        .bind(delegator_id)
+        .fetch_optional(&mut *tx)
+        .await
+        .map_err(|e| ApiError::Internal(anyhow::anyhow!("DB error checking delegation: {}", e)))?;
+
+        let delegation = existing.ok_or_else(|| {
+            ApiError::BadRequest("No active delegation found to remove".to_string())
+        })?;
+
+        sqlx::query("DELETE FROM governance_delegations WHERE delegator_id = $1")
+            .bind(delegator_id)
+            .execute(&mut *tx)
+            .await
+            .map_err(|e| {
+                ApiError::Internal(anyhow::anyhow!("DB error removing delegation: {}", e))
+            })?;
+
+        sqlx::query(
+            "INSERT INTO governance_delegation_history (delegator_id, delegate_id, action) VALUES ($1, $2, 'undelegated')",
+        )
+        .bind(delegator_id)
+        .bind(delegation.delegate_id)
+        .execute(&mut *tx)
+        .await
+        .map_err(|e| ApiError::Internal(anyhow::anyhow!("DB error recording undelegation: {}", e)))?;
+
+        tx.commit()
+            .await
+            .map_err(|e| ApiError::Internal(anyhow::anyhow!("Tx commit error: {}", e)))?;
+
+        info!(delegator_id = %delegator_id, "Governance vote delegation removed");
+
+        Ok(DelegationResponse {
+            delegator_id,
+            delegate_id: None,
+            message: "Delegation removed; voting power restored".to_string(),
+        })
+    }
+
+    /// Return the current delegation for a user, if one exists.
+    pub async fn get_delegation(
+        db: &PgPool,
+        delegator_id: Uuid,
+    ) -> Result<Option<GovernanceDelegation>, ApiError> {
+        sqlx::query_as::<_, GovernanceDelegation>(
+            "SELECT * FROM governance_delegations WHERE delegator_id = $1",
+        )
+        .bind(delegator_id)
+        .fetch_optional(db)
+        .await
+        .map_err(|e| ApiError::Internal(anyhow::anyhow!("DB error fetching delegation: {}", e)))
+    }
+
+    /// Return all users who have delegated their votes to `delegate_id`.
+    pub async fn get_delegators(
+        db: &PgPool,
+        delegate_id: Uuid,
+    ) -> Result<Vec<GovernanceDelegation>, ApiError> {
+        sqlx::query_as::<_, GovernanceDelegation>(
+            "SELECT * FROM governance_delegations WHERE delegate_id = $1 ORDER BY created_at ASC",
+        )
+        .bind(delegate_id)
+        .fetch_all(db)
+        .await
+        .map_err(|e| ApiError::Internal(anyhow::anyhow!("DB error fetching delegators: {}", e)))
     }
 }

@@ -278,8 +278,8 @@ mod tests {
         // The payload is base64url({"user_id":"<id>","exp":9999999999}).
         use base64::Engine as _;
         let payload = serde_json::json!({ "user_id": user_id, "exp": 9_999_999_999u64 });
-        let payload_b64 = base64::engine::general_purpose::URL_SAFE_NO_PAD
-            .encode(payload.to_string().as_bytes());
+        let payload_b64 =
+            base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(payload.to_string().as_bytes());
         // header and signature can be arbitrary for this test
         format!("eyJhbGciOiJIUzI1NiJ9.{payload_b64}.fakesig")
     }

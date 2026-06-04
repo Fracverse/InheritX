@@ -1,0 +1,29 @@
+import type { SubscriptionAccountInfo } from '@trezor/blockchain-link-types';
+import { Cache } from '@trezor/utils';
+export declare class WorkerState {
+    addresses: string[];
+    accounts: SubscriptionAccountInfo[];
+    subscription: {
+        [key: string]: unknown;
+    };
+    cache: Cache;
+    constructor();
+    private validateAddresses;
+    addAddresses(addr: string[]): string[];
+    getAddresses(): string[];
+    removeAddresses(addr: string[]): string[];
+    private validateAccounts;
+    private getAccountAddresses;
+    addAccounts(acc: SubscriptionAccountInfo[]): SubscriptionAccountInfo[];
+    getAccount(address: string): SubscriptionAccountInfo | undefined;
+    getAccounts(): SubscriptionAccountInfo[];
+    removeAccounts(acc: SubscriptionAccountInfo[]): SubscriptionAccountInfo[];
+    addSubscription(type: string, id?: unknown): void;
+    getSubscription(type: string): unknown;
+    hasSubscriptions(): boolean;
+    removeSubscription(type: string): void;
+    clearSubscriptions(): void;
+    removeEmpty(obj: Record<string, any>): Record<string, any>;
+    cleanup(): void;
+}
+//# sourceMappingURL=state.d.ts.map

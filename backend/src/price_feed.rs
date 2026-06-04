@@ -46,7 +46,10 @@ pub struct AssetPrice {
 impl AssetPrice {
     /// Returns true if the price is younger than MAX_PRICE_AGE_SECS.
     pub fn is_fresh(&self) -> bool {
-        Utc::now().signed_duration_since(self.timestamp).num_seconds() < MAX_PRICE_AGE_SECS
+        Utc::now()
+            .signed_duration_since(self.timestamp)
+            .num_seconds()
+            < MAX_PRICE_AGE_SECS
     }
 }
 

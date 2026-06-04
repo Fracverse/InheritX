@@ -2514,6 +2514,7 @@ dependencies = [
  "jsonwebtoken",
  "metrics",
  "metrics-exporter-prometheus",
+ "once_cell",
  "postgres-types",
  "rand 0.8.6",
  "redis",

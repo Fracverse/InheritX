@@ -1,0 +1,1 @@
+{"version":3,"file":"vaultDelete.d.ts","sourceRoot":"","sources":["../../../../src/models/transactions/vaultDelete.ts"],"names":[],"mappings":"AAAA,OAAO,EACL,eAAe,EAIhB,MAAM,UAAU,CAAA;AAOjB,MAAM,WAAW,WAAY,SAAQ,eAAe;IAClD,eAAe,EAAE,aAAa,CAAA;IAK9B,OAAO,EAAE,MAAM,CAAA;CAChB;AAQD,wBAAgB,mBAAmB,CAAC,EAAE,EAAE,MAAM,CAAC,MAAM,EAAE,OAAO,CAAC,GAAG,IAAI,CAIrE"}

@@ -1,0 +1,182 @@
+"use strict";
+/*
+The MIT License
+
+Copyright (c) 2016 Nick Dodson. nickdodson.com
+
+Permission is hereby granted, free of charge, to any person obtaining a copy
+of this software and associated documentation files (the "Software"), to deal
+in the Software without restriction, including without limitation the rights
+to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+copies of the Software, and to permit persons to whom the Software is
+furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in
+all copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
+THE SOFTWARE
+ */
+Object.defineProperty(exports, "__esModule", { value: true });
+exports.stripHexPrefix = void 0;
+exports.isHexString = isHexString;
+exports.padToEven = padToEven;
+exports.getBinarySize = getBinarySize;
+exports.arrayContainsArray = arrayContainsArray;
+exports.toAscii = toAscii;
+exports.fromUtf8 = fromUtf8;
+exports.fromAscii = fromAscii;
+exports.getKeys = getKeys;
+const bytes_ts_1 = require("./bytes.js");
+const errors_ts_1 = require("./errors.js");
+/**
+ * Returns a boolean on whether or not the the input starts with '0x' and matches the optional length
+ * @param {string} value the string input value
+ * @param {number|undefined} length the optional length of the hex string in bytes
+ * @returns {boolean} Whether or not the string is a valid PrefixedHexString matching the optional length
+ */
+function isHexString(value, length) {
+    if (typeof value !== 'string' || !value.match(/^0x[0-9A-Fa-f]*$/))
+        return false;
+    if (typeof length !== 'undefined' && length > 0 && value.length !== 2 + 2 * length)
+        return false;
+    return true;
+}
+/**
+ * Removes '0x' from a given `String` if present
+ * @param str the string value
+ * @returns the string without 0x prefix
+ */
+const stripHexPrefix = (str) => {
+    if (typeof str !== 'string')
+        throw (0, errors_ts_1.EthereumJSErrorWithoutCode)(`[stripHexPrefix] input must be type 'string', received ${typeof str}`);
+    return isHexString(str) ? str.slice(2) : str;
+};
+exports.stripHexPrefix = stripHexPrefix;
+/**
+ * Pads a `String` to have an even length
+ * @param value
+ * @return output
+ */
+function padToEven(value) {
+    let a = value;
+    if (typeof a !== 'string') {
+        throw (0, errors_ts_1.EthereumJSErrorWithoutCode)(`[padToEven] value must be type 'string', received ${typeof a}`);
+    }
+    if (a.length % 2)
+        a = `0${a}`;
+    return a;
+}
+/**
+ * Get the binary size of a string
+ * @param str
+ * @returns the number of bytes contained within the string
+ */
+function getBinarySize(str) {
+    if (typeof str !== 'string') {
+        throw (0, errors_ts_1.EthereumJSErrorWithoutCode)(`[getBinarySize] method requires input type 'string', received ${typeof str}`);
+    }
+    return (0, bytes_ts_1.utf8ToBytes)(str).byteLength;
+}
+/**
+ * Returns TRUE if the first specified array contains all elements
+ * from the second one. FALSE otherwise.
+ *
+ * @param superset
+ * @param subset
+ *
+ */
+function arrayContainsArray(superset, subset, some) {
+    if (Array.isArray(superset) !== true) {
+        throw (0, errors_ts_1.EthereumJSErrorWithoutCode)(`[arrayContainsArray] method requires input 'superset' to be an array, got type '${typeof superset}'`);
+    }
+    if (Array.isArray(subset) !== true) {
+        throw (0, errors_ts_1.EthereumJSErrorWithoutCode)(`[arrayContainsArray] method requires input 'subset' to be an array, got type '${typeof subset}'`);
+    }
+    return subset[some === true ? 'some' : 'every']((value) => superset.indexOf(value) >= 0);
+}
+/**
+ * Should be called to get ascii from its hex representation
+ *
+ * @param string in hex
+ * @returns ascii string representation of hex value
+ */
+function toAscii(hex) {
+    let str = '';
+    let i = 0;
+    const l = hex.length;
+    if (hex.substring(0, 2) === '0x')
+        i = 2;
+    for (; i < l; i += 2) {
+        const code = parseInt(hex.substr(i, 2), 16);
+        str += String.fromCharCode(code);
+    }
+    return str;
+}
+/**
+ * Should be called to get hex representation (prefixed by 0x) of utf8 string.
+ * Strips leading and trailing 0's.
+ *
+ * @param string
+ * @param optional padding
+ * @returns hex representation of input string
+ */
+function fromUtf8(stringValue) {
+    const str = (0, bytes_ts_1.utf8ToBytes)(stringValue);
+    // Using deprecated bytesToUnprefixedHex for performance: we're building a hex string with 0x prefix,
+    // so using bytesToUnprefixedHex avoids creating an intermediate prefixed string and then stripping it.
+    return `0x${padToEven((0, bytes_ts_1.bytesToUnprefixedHex)(str)).replace(/^0+|0+$/g, '')}`;
+}
+/**
+ * Should be called to get hex representation (prefixed by 0x) of ascii string
+ *
+ * @param  string
+ * @param  optional padding
+ * @returns  hex representation of input string
+ */
+function fromAscii(stringValue) {
+    let hex = '';
+    for (let i = 0; i < stringValue.length; i++) {
+        const code = stringValue.charCodeAt(i);
+        const n = code.toString(16);
+        hex += n.length < 2 ? `0${n}` : n;
+    }
+    return `0x${hex}`;
+}
+/**
+ * Returns the keys from an array of objects.
+ * @example
+ * ```js
+ * getKeys([{a: '1', b: '2'}, {a: '3', b: '4'}], 'a') => ['1', '3']
+ *````
+ * @param  params
+ * @param  key
+ * @param  allowEmpty
+ * @returns output just a simple array of output keys
+ */
+function getKeys(params, key, allowEmpty) {
+    if (!Array.isArray(params)) {
+        throw (0, errors_ts_1.EthereumJSErrorWithoutCode)(`[getKeys] method expects input 'params' to be an array, got ${typeof params}`);
+    }
+    if (typeof key !== 'string') {
+        throw (0, errors_ts_1.EthereumJSErrorWithoutCode)(`[getKeys] method expects input 'key' to be type 'string', got ${typeof params}`);
+    }
+    const result = [];
+    for (let i = 0; i < params.length; i++) {
+        let value = params[i][key];
+        if (allowEmpty === true && !value) {
+            value = '';
+        }
+        else if (typeof value !== 'string') {
+            throw (0, errors_ts_1.EthereumJSErrorWithoutCode)(`invalid abi - expected type 'string', received ${typeof value}`);
+        }
+        result.push(value);
+    }
+    return result;
+}
+//# sourceMappingURL=internal.js.map

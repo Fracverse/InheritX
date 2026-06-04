@@ -33,9 +33,19 @@ impl InterestReconciliationService {
                 interval.tick().await;
                 if let Err(e) = self.reconcile_yields().await {
                     error!("Interest Reconciliation Engine error (yields): {}", e);
+                    crate::error_tracking::capture_message(
+                        &format!("InterestReconciliationService::reconcile_yields failed: {e}"),
+                        sentry::Level::Error,
+                    );
                 }
                 if let Err(e) = self.reconcile_vault_balances().await {
                     error!("Interest Reconciliation Engine error (vaults): {}", e);
+                    crate::error_tracking::capture_message(
+                        &format!(
+                            "InterestReconciliationService::reconcile_vault_balances failed: {e}"
+                        ),
+                        sentry::Level::Error,
+                    );
                 }
             }
         });

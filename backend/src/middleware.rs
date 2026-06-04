@@ -5,12 +5,12 @@ use axum::{
     middleware::Next,
     response::{IntoResponse, Response},
 };
-use hyper::body::to_bytes;
 use serde_json::json;
 use serde_json::Value as JsonValue;
-use std::collections::HashSet;
-use std::sync::Arc;
-use std::time::Duration;
+use std::collections::{hash_map::DefaultHasher, HashSet};
+use std::hash::{Hash, Hasher};
+use std::sync::{Arc, OnceLock};
+use std::time::{Duration, Instant};
 use tokio::time::timeout;
 use tower_governor::{errors::GovernorError, key_extractor::KeyExtractor};
 use uuid::Uuid;
@@ -31,7 +31,7 @@ pub struct RequestContext {
 
 /// Middleware that enforces a maximum request body size (bytes) and validates
 /// JSON string lengths using the validation helpers.
-pub async fn enforce_max_request_size(mut req: Request<Body>, next: Next) -> Response {
+pub async fn enforce_max_request_size(req: Request<Body>, next: Next) -> Response {
     // Respect a client-provided Content-Length header when present.
     if let Some(clv) = req.headers().get(axum::http::header::CONTENT_LENGTH) {
         if let Ok(s) = clv.to_str() {
@@ -52,14 +52,15 @@ pub async fn enforce_max_request_size(mut req: Request<Body>, next: Next) -> Res
 
     // Read the body up to the configured cap so we can inspect JSON payloads.
     let (parts, body) = req.into_parts();
-    let bytes = match to_bytes(body).await {
-        Ok(b) => b,
-        Err(_) => {
-            // If body couldn't be read, let the inner handler observe the failure.
-            let req = Request::from_parts(parts, Body::empty());
-            return next.run(req).await;
-        }
-    };
+    let bytes: axum::body::Bytes =
+        match axum::body::to_bytes(body, crate::validation::DEFAULT_MAX_BODY_BYTES + 1).await {
+            Ok(b) => b,
+            Err(_) => {
+                // If body couldn't be read, let the inner handler observe the failure.
+                let req = Request::from_parts(parts, Body::empty());
+                return next.run(req).await;
+            }
+        };
 
     if bytes.len() > crate::validation::DEFAULT_MAX_BODY_BYTES {
         return (
@@ -259,9 +260,10 @@ pub async fn attach_correlation_id(req: Request<Body>, next: Next) -> impl IntoR
 }
 
 /// Logs each incoming request with its method, URI, and assigned request ID.
-pub async fn request_logging_middleware(req: Request, next: Next) -> Response {
+pub async fn request_logging_middleware(mut req: Request, next: Next) -> Response {
     let method = req.method().clone();
     let uri = req.uri().clone();
+    let path = uri.path().to_string();
     let request_id = req
         .headers()
         .get(&X_REQUEST_ID)
@@ -269,17 +271,143 @@ pub async fn request_logging_middleware(req: Request, next: Next) -> Response {
         .unwrap_or("unknown")
         .to_owned();
 
-    tracing::info!(request_id = %request_id, method = %method, uri = %uri, "incoming request");
+    let context = req
+        .extensions()
+        .get::<RequestContext>()
+        .cloned()
+        .unwrap_or_default();
+
+    let headers = sanitize_headers(req.headers());
+    let start = Instant::now();
 
     let response = next.run(req).await;
+    let duration_ms = start.elapsed().as_secs_f64() * 1000.0;
+    let status = response.status();
 
-    tracing::info!(
-        request_id = %request_id,
-        status = %response.status(),
-        "request completed"
-    );
+    let sampling_ratio = log_sampling_ratio();
+    let is_high_traffic = is_high_traffic_path(&path);
+    let should_emit_full_details =
+        !is_high_traffic || should_sample_request(&request_id, sampling_ratio);
+
+    if should_emit_full_details {
+        tracing::info!(
+            request_id = %request_id,
+            http.method = %method,
+            http.path = %path,
+            http.status_code = %status,
+            http.duration_ms = duration_ms,
+            user_id = ?context.user_id,
+            plan_id = ?context.plan_id,
+            http.request_headers = ?headers,
+            "request completed"
+        );
+    } else {
+        tracing::info!(
+            request_id = %request_id,
+            http.method = %method,
+            http.path = %path,
+            http.status_code = %status,
+            http.duration_ms = duration_ms,
+            user_id = ?context.user_id,
+            plan_id = ?context.plan_id,
+            "request completed"
+        );
+    }
 
     response
+}
+
+fn sanitize_headers(headers: &HeaderMap) -> Vec<(String, String)> {
+    headers
+        .iter()
+        .map(|(name, value)| {
+            (
+                name.as_str().to_string(),
+                sanitize_header_value(name, value),
+            )
+        })
+        .collect()
+}
+
+fn sanitize_header_value(name: &HeaderName, value: &HeaderValue) -> String {
+    let sensitive_headers = [
+        "authorization",
+        "cookie",
+        "set-cookie",
+        "x-api-key",
+        "x-csrf-token",
+        "x-csrf",
+    ];
+    let header_name = name.as_str().to_ascii_lowercase();
+
+    if sensitive_headers.contains(&header_name.as_str()) {
+        "***".to_string()
+    } else {
+        value.to_str().unwrap_or("<binary>").to_string()
+    }
+}
+
+fn is_high_traffic_path(path: &str) -> bool {
+    matches!(
+        path,
+        "/api/metrics" | "/api/health" | "/api/ping" | "/api/status" | "/api/loans/lifecycle"
+    )
+}
+
+fn log_sampling_ratio() -> f64 {
+    static RATIO: OnceLock<f64> = OnceLock::new();
+    *RATIO.get_or_init(|| {
+        std::env::var("LOG_SAMPLING_PERCENT")
+            .ok()
+            .and_then(|value| value.parse::<f64>().ok())
+            .map(|percent| percent.clamp(0.0, 100.0) / 100.0)
+            .unwrap_or(0.1)
+    })
+}
+
+fn should_sample_request(request_id: &str, ratio: f64) -> bool {
+    if ratio <= 0.0 {
+        return false;
+    }
+    if ratio >= 1.0 {
+        return true;
+    }
+
+    let mut hasher = DefaultHasher::new();
+    request_id.hash(&mut hasher);
+    let bucket = hasher.finish() % 1000;
+    bucket < (ratio * 1000.0).round() as u64
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use axum::http::HeaderMap;
+    use axum::http::HeaderValue;
+
+    #[test]
+    fn sanitize_headers_masks_sensitive_values() {
+        let mut headers = HeaderMap::new();
+        headers.insert("authorization", HeaderValue::from_static("Bearer abc123"));
+        headers.insert("cookie", HeaderValue::from_static("session=secret"));
+        headers.insert("x-api-key", HeaderValue::from_static("key"));
+        headers.insert("content-type", HeaderValue::from_static("application/json"));
+
+        let sanitized = sanitize_headers(&headers);
+        assert!(sanitized.contains(&("authorization".to_string(), "***".to_string())));
+        assert!(sanitized.contains(&("cookie".to_string(), "***".to_string())));
+        assert!(sanitized.contains(&("x-api-key".to_string(), "***".to_string())));
+        assert!(sanitized.contains(&("content-type".to_string(), "application/json".to_string())));
+    }
+
+    #[test]
+    fn should_sample_request_is_deterministic() {
+        let request_id = "abc-123";
+        let ratio = 0.5;
+        let first = should_sample_request(request_id, ratio);
+        let second = should_sample_request(request_id, ratio);
+        assert_eq!(first, second);
+    }
 }
 
 pub async fn log_rate_limit_violations(req: Request<Body>, next: Next) -> impl IntoResponse {

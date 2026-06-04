@@ -141,6 +141,7 @@ impl EmergencyAccessService {
 
         tx.commit().await?;
 
+        crate::metrics::inc_emergency_access_grants();
         Ok(EmergencyAccessResponse {
             success: true,
             access_id,

@@ -1,0 +1,16 @@
+{
+  "headers": {
+    "x-nextjs-stale-time": "300",
+    "x-nextjs-prerender": "1",
+    "x-next-cache-tags": "_N_T_/layout,_N_T_/Guidelines/layout,_N_T_/Guidelines/Code-of-ethics/layout,_N_T_/Guidelines/Code-of-ethics/page,_N_T_/Guidelines/Code-of-ethics"
+  },
+  "segmentPaths": [
+    "/_tree",
+    "/_full",
+    "/Guidelines/Code-of-ethics/__PAGE__",
+    "/Guidelines/Code-of-ethics",
+    "/Guidelines",
+    "/_index",
+    "/_head"
+  ]
+}

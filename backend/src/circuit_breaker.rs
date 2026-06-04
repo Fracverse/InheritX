@@ -147,6 +147,15 @@ impl CircuitBreaker {
                 failure_threshold = self.0.failure_threshold,
                 "Circuit breaker opened after consecutive failures"
             );
+            // Alert Sentry when a circuit trips — this indicates a sustained
+            // external-service outage that warrants immediate attention.
+            crate::error_tracking::capture_message(
+                &format!(
+                    "Circuit breaker opened for service '{}' after {} consecutive failures",
+                    self.0.service_name, self.0.failure_threshold
+                ),
+                sentry::Level::Error,
+            );
         }
     }
 
