@@ -8,6 +8,7 @@ members = [
   "mock-token",
   "governance-contract",
   "loan-nft",
+  "genetic-verification",
 ]
 
 [workspace.dependencies]
