@@ -151,9 +151,8 @@ pub enum DataKey {
     // WillFinalized, WillFinalizedAt, WillWitnesses, WitnessSignature consolidated into WillHash/WillSignature
     // LendingContract, GovernanceContract can be stored in Admin-related keys
     // Various notification/acknowledgment keys consolidated into single pattern
-    PlanMetadata(u64, u32),          // Generic key for plan-specific metadata (plan_id, metadata_type)
-    UserMetadata(Address, u32),      // Generic key for user-specific metadata (user, metadata_type)
-}
+    PlanMetadata(u64, u32), // Generic key for plan-specific metadata (plan_id, metadata_type)
+    UserMetadata(Address, u32), // Generic key for user-specific metadata (user, metadata_type)
 }
 
 #[contracttype]
@@ -1912,7 +1911,11 @@ impl InheritanceContract {
         {
             return Err(InheritanceError::PlanNotActive);
         }
-        if env.storage().persistent().has(&DataKey::PlanMetadata(plan_id, 201)) {
+        if env
+            .storage()
+            .persistent()
+            .has(&DataKey::PlanMetadata(plan_id, 201))
+        {
             return Err(InheritanceError::PlanNotActive);
         }
 
@@ -1976,7 +1979,11 @@ impl InheritanceContract {
         {
             return Err(InheritanceError::PlanNotActive);
         }
-        if env.storage().persistent().has(&DataKey::PlanMetadata(plan_id, 201)) {
+        if env
+            .storage()
+            .persistent()
+            .has(&DataKey::PlanMetadata(plan_id, 201))
+        {
             return Err(InheritanceError::PlanNotActive);
         }
 
@@ -2220,7 +2227,11 @@ impl InheritanceContract {
         {
             return Err(InheritanceError::PlanNotActive);
         }
-        if env.storage().persistent().has(&DataKey::PlanMetadata(plan_id, 201)) {
+        if env
+            .storage()
+            .persistent()
+            .has(&DataKey::PlanMetadata(plan_id, 201))
+        {
             return Err(InheritanceError::PlanNotActive);
         }
 
@@ -3551,7 +3562,11 @@ impl InheritanceContract {
         {
             return Err(InheritanceError::PlanNotActive);
         }
-        if env.storage().persistent().has(&DataKey::PlanMetadata(plan_id, 201)) {
+        if env
+            .storage()
+            .persistent()
+            .has(&DataKey::PlanMetadata(plan_id, 201))
+        {
             return Err(InheritanceError::PlanNotActive);
         }
 
@@ -4749,9 +4764,10 @@ impl InheritanceContract {
         }
 
         let finalized_at = env.ledger().timestamp();
-        env.storage()
-            .persistent()
-            .set(&DataKey::PlanMetadata(vault_id, version + 1000), &finalized_at);
+        env.storage().persistent().set(
+            &DataKey::PlanMetadata(vault_id, version + 1000),
+            &finalized_at,
+        );
 
         env.events().publish(
             (symbol_short!("WILL"), symbol_short!("FINAL")),
@@ -5286,7 +5302,11 @@ impl InheritanceContract {
         {
             return Err(InheritanceError::PlanNotActive);
         }
-        if env.storage().persistent().has(&DataKey::PlanMetadata(plan_id, 201)) {
+        if env
+            .storage()
+            .persistent()
+            .has(&DataKey::PlanMetadata(plan_id, 201))
+        {
             return Err(InheritanceError::PlanNotActive);
         }
 
@@ -5719,7 +5739,11 @@ impl InheritanceContract {
         {
             return Err(InheritanceError::PlanNotActive);
         }
-        if env.storage().persistent().has(&DataKey::PlanMetadata(plan_id, 201)) {
+        if env
+            .storage()
+            .persistent()
+            .has(&DataKey::PlanMetadata(plan_id, 201))
+        {
             return Err(InheritanceError::PlanNotActive);
         }
 

@@ -72,20 +72,44 @@ fn test_genetic_condition_variants() {
     assert_ne!(hrf, arc);
 
     // Same value equals itself
-    assert_eq!(GeneticCondition::LifeExpectancyMarker, GeneticCondition::LifeExpectancyMarker);
-    assert_eq!(GeneticCondition::HealthRiskFactor(80), GeneticCondition::HealthRiskFactor(80));
-    assert_ne!(GeneticCondition::HealthRiskFactor(80), GeneticCondition::HealthRiskFactor(50));
+    assert_eq!(
+        GeneticCondition::LifeExpectancyMarker,
+        GeneticCondition::LifeExpectancyMarker
+    );
+    assert_eq!(
+        GeneticCondition::HealthRiskFactor(80),
+        GeneticCondition::HealthRiskFactor(80)
+    );
+    assert_ne!(
+        GeneticCondition::HealthRiskFactor(80),
+        GeneticCondition::HealthRiskFactor(50)
+    );
 }
 
 // ─── DNAVerificationStatus ────────────────────────────────────────────────────
 
 #[test]
 fn test_dna_verification_status_variants() {
-    assert_eq!(DNAVerificationStatus::Pending, DNAVerificationStatus::Pending);
-    assert_eq!(DNAVerificationStatus::Verified, DNAVerificationStatus::Verified);
-    assert_ne!(DNAVerificationStatus::Pending, DNAVerificationStatus::Verified);
-    assert_ne!(DNAVerificationStatus::Rejected, DNAVerificationStatus::PartialMatch);
-    assert_ne!(DNAVerificationStatus::RequiresRetest, DNAVerificationStatus::Verified);
+    assert_eq!(
+        DNAVerificationStatus::Pending,
+        DNAVerificationStatus::Pending
+    );
+    assert_eq!(
+        DNAVerificationStatus::Verified,
+        DNAVerificationStatus::Verified
+    );
+    assert_ne!(
+        DNAVerificationStatus::Pending,
+        DNAVerificationStatus::Verified
+    );
+    assert_ne!(
+        DNAVerificationStatus::Rejected,
+        DNAVerificationStatus::PartialMatch
+    );
+    assert_ne!(
+        DNAVerificationStatus::RequiresRetest,
+        DNAVerificationStatus::Verified
+    );
 }
 
 // ─── LineageRecord ────────────────────────────────────────────────────────────
@@ -120,9 +144,18 @@ fn test_relationship_degree_validation() {
 
 #[test]
 fn test_genetic_trigger_type_variants() {
-    assert_eq!(GeneticTriggerType::HealthConditionDetected, GeneticTriggerType::HealthConditionDetected);
-    assert_ne!(GeneticTriggerType::AgeThresholdReached, GeneticTriggerType::RiskFactorExceeded);
-    assert_ne!(GeneticTriggerType::CarrierStatusConfirmed, GeneticTriggerType::LifeExpectancyReduced);
+    assert_eq!(
+        GeneticTriggerType::HealthConditionDetected,
+        GeneticTriggerType::HealthConditionDetected
+    );
+    assert_ne!(
+        GeneticTriggerType::AgeThresholdReached,
+        GeneticTriggerType::RiskFactorExceeded
+    );
+    assert_ne!(
+        GeneticTriggerType::CarrierStatusConfirmed,
+        GeneticTriggerType::LifeExpectancyReduced
+    );
 }
 
 // ─── GeneticTriggerConfig ─────────────────────────────────────────────────────
