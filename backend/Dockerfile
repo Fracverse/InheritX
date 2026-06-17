@@ -1,5 +1,5 @@
 # Multi-stage build for InheritX Backend
-FROM rust:1.96-slim AS builder
+FROM rust:1.87-slim AS builder
 
 WORKDIR /app
 
@@ -26,15 +26,9 @@ COPY backend/config ./config
 RUN cargo build --release
 
 # Runtime stage
-FROM debian:bookworm-slim
+FROM gcr.io/distroless/cc-debian12
 
 WORKDIR /app
-
-# Install runtime dependencies
-RUN apt-get update && apt-get install -y \
-    ca-certificates \
-    libssl3 \
-    && rm -rf /var/lib/apt/lists/*
 
 # Copy binary from builder
 COPY --from=builder /app/target/release/inheritx-backend /app/inheritx-backend
@@ -47,7 +41,3 @@ EXPOSE 8080
 
 # Run the binary
 CMD ["/app/inheritx-backend"]
-
-
-# Checking the binary
-RUN /app/inheritx-backend --version
