@@ -151,7 +151,9 @@ export function applySearch<T extends Record<string, any>>(
       const value = item[field];
       if (value === undefined || value === null) return false;
 
-      return String(value).toLowerCase().includes(searchLower);
+      const str = String(value).toLowerCase();
+      // When specific fields are given, require exact match; otherwise substring
+      return searchFields ? str === searchLower : str.includes(searchLower);
     });
   });
 }

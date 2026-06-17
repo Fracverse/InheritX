@@ -6,7 +6,15 @@ describe("Notification Service", () => {
   const testUserId = "user_123";
 
   beforeEach(() => {
-    // Reset service state if needed
+    // Reset preferences to defaults so each test starts clean
+    notificationService.updatePreferences(testUserId, {
+      user_id: testUserId,
+      email_enabled: true,
+      sms_enabled: false,
+      push_enabled: true,
+      in_app_enabled: true,
+      categories: {},
+    });
   });
 
   describe("send", () => {
