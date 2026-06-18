@@ -1,7 +1,7 @@
 #![no_std]
-use soroban_sdk::{contracttype, Address, BytesN, String, Vec};
+use soroban_sdk::{contract, contracterror, contractimpl, contracttype, Address, Bytes, BytesN, Env, String, Vec};
 
-// ─── Enums ────────────────────────────────────────────────────────────────────
+// ─── Enums ──────────────────────────────────────────────────────────────────
 
 /// Health-based conditions that can serve as inheritance triggers.
 #[contracttype]
@@ -39,6 +39,54 @@ pub enum GeneticTriggerType {
     CarrierStatusConfirmed,
     RiskFactorExceeded,
     LifeExpectancyReduced,
+}
+
+/// Privacy level for DNA data.
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum PrivacyLevel {
+    Public, // Basic family verification only
+    Protected, // Health conditions hidden
+    Private, // Full genetic privacy
+    Medical, // Medical professional access only
+}
+
+/// Hashing algorithm used for DNA hashing.
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum HashAlgorithm {
+    Sha256,
+    HmacSha256,
+}
+
+/// Genetic marker types.
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum GeneticMarker {
+    IdentityMarker(String), // For lineage verification
+    HealthMarker(String), // For health condition detection
+    TraitMarker(String), // For trait verification
+    AncestryMarker(String), // For ancestry verification
+}
+
+/// Risk level for detected conditions.
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum RiskLevel {
+    Low,
+    Medium,
+    High,
+    Critical,
+}
+
+/// Errors for the genetic verification contract.
+#[contracterror]
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum GeneticVerificationError {
+    InvalidInput = 1,
+    HashGenerationFailed = 2,
+    VerificationFailed = 3,
+    InvalidSimilarityThreshold = 4,
 }
 
 // ─── Core Structs ─────────────────────────────────────────────────────────────
@@ -136,6 +184,27 @@ pub struct FamilyTree {
     pub pending_discoveries: Vec<PendingRelative>,
 }
 
+/// DNA hash configuration.
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct DNAHashConfig {
+    pub privacy_level: PrivacyLevel,
+    pub hash_algorithm: HashAlgorithm,
+    pub salt_complexity: u32,
+    pub selective_markers: Vec<GeneticMarker>,
+}
+
+/// Detected genetic condition.
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct DetectedCondition {
+    pub condition_name: String,
+    pub confidence_level: u32, // 0-100
+    pub risk_level: RiskLevel,
+    pub age_of_onset: Option<u32>,
+    pub requires_confirmation: bool,
+}
+
 // ─── Helper Functions ─────────────────────────────────────────────────────────
 
 /// Returns true when `degree` is a valid relationship degree (1-based, ≥ 1).
@@ -151,6 +220,130 @@ pub fn is_valid_confidence_score(score: u32) -> bool {
 /// Returns true when `risk` is within the valid 0–100 range.
 pub fn is_valid_risk_score(risk: u32) -> bool {
     risk <= 100
+}
+
+#[contract]
+pub struct GeneticVerificationContract;
+
+#[contractimpl]
+impl GeneticVerificationContract {
+    /// Generate a DNA hash from DNA data, salt, and privacy level.
+    pub fn generate_dna_hash(
+        env: &Env,
+        dna_data: Bytes,
+        salt: BytesN<32>,
+        _privacy_level: PrivacyLevel,
+    ) -> Result<BytesN<32>, GeneticVerificationError> {
+        if dna_data.is_empty() {
+            return Err(GeneticVerificationError::InvalidInput);
+        }
+
+        let mut data = Bytes::new(env);
+        for b in salt.to_array().iter() {
+            data.push_back(*b);
+        }
+        for b in dna_data.iter() {
+            data.push_back(b);
+        }
+
+        Ok(env.crypto().sha256(&data).into())
+    }
+
+    /// Verify if two DNA hashes match within a similarity threshold.
+    pub fn verify_dna_match(
+        env: &Env,
+        claimed_hash: BytesN<32>,
+        reference_hash: BytesN<32>,
+        similarity_threshold: u32,
+    ) -> Result<bool, GeneticVerificationError> {
+        if similarity_threshold > 100 {
+            return Err(GeneticVerificationError::InvalidSimilarityThreshold);
+        }
+
+        let similarity = Self::calculate_genetic_similarity(env, claimed_hash, reference_hash)?;
+        Ok(similarity >= similarity_threshold)
+    }
+
+    /// Calculate genetic similarity score (0-100) between two DNA hashes.
+    pub fn calculate_genetic_similarity(
+        _env: &Env,
+        dna_hash1: BytesN<32>,
+        dna_hash2: BytesN<32>,
+    ) -> Result<u32, GeneticVerificationError> {
+        let arr1 = dna_hash1.to_array();
+        let arr2 = dna_hash2.to_array();
+
+        let mut matching_bytes = 0;
+        for i in 0..32 {
+            if arr1[i] == arr2[i] {
+                matching_bytes += 1;
+            }
+        }
+
+        Ok((matching_bytes * 100) / 32)
+    }
+
+    /// Generate a genetic salt for a user.
+    pub fn generate_genetic_salt(env: &Env, _user_address: Address) -> BytesN<32> {
+        // Simple salt based on ledger sequence and a fixed constant
+        let sequence = env.ledger().sequence();
+        let mut data = Bytes::new(env);
+        // Add sequence bytes
+        let mut seq_val = sequence;
+        let mut count: u32 = 0;
+        while count < 8 {
+            data.push_back((seq_val & 0xFF) as u8);
+            seq_val >>= 8;
+            count += 1;
+        }
+        // Add a genetic salt prefix
+        data.push_back(0x47);
+        data.push_back(0x45);
+        data.push_back(0x4E);
+        data.push_back(0x45);
+        data.push_back(0x54);
+        data.push_back(0x49);
+        data.push_back(0x43);
+        env.crypto().sha256(&data).into()
+    }
+
+    /// Validate genetic integrity.
+    pub fn validate_genetic_integrity(
+        env: &Env,
+        dna_hash: BytesN<32>,
+        integrity_proof: Bytes,
+    ) -> Result<bool, GeneticVerificationError> {
+        let calculated_hash = env.crypto().sha256(&integrity_proof);
+        // Compare hash bytes with dna_hash bytes
+        let hash_arr = calculated_hash.to_array();
+        let dna_arr = dna_hash.to_array();
+        let mut matching = 0u32;
+        for i in 0..32 {
+            if hash_arr[i] == dna_arr[i] {
+                matching += 1;
+            }
+        }
+        Ok(matching == 32)
+    }
+
+    /// Detect genetic conditions (placeholder implementation).
+    pub fn detect_genetic_conditions(
+        _env: &Env,
+        _dna_hash: BytesN<32>,
+        _condition_markers: Vec<GeneticMarker>,
+    ) -> Result<Vec<DetectedCondition>, GeneticVerificationError> {
+        Ok(Vec::new(_env))
+    }
+
+    /// Calculate health risk score (placeholder implementation).
+    pub fn calculate_health_risk_score(
+        _env: &Env,
+        _dna_hash: BytesN<32>,
+        _age: u32,
+        _lifestyle_factors: Vec<String>,
+    ) -> Result<u32, GeneticVerificationError> {
+        Ok(0)
+    }
 }
 
 mod test;
