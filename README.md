@@ -1,4 +1,4 @@
-# InheritX
+# InheritX 
 
 **Programmable, Fiat‑Native Digital Inheritance Infrastructure on Stellar**
 
