@@ -4,6 +4,7 @@ use crate::notifications::{
 };
 use crate::price_feed::PriceFeedService;
 use crate::safe_math::SafeMath;
+use crate::token_metadata;
 use chrono::Utc;
 use rust_decimal::Decimal;
 use sqlx::PgPool;
@@ -23,26 +24,11 @@ const USD_VALUATION_SCALE: u32 = 8;
 /// liquidation-threshold boundary.
 const HEALTH_FACTOR_SCALE: u32 = 4;
 
-/// Native on-chain decimal precision for an asset, case-insensitive.
-///
-/// Token amounts are stored as `NUMERIC(_, 8)`, but each token has its own true
-/// precision (USDC: 6, XLM: 7, BTC: 8, ETH: 18). Anything stored beyond a
-/// token's native precision is dust that must not influence a valuation.
-/// Unknown assets fall back to the storage scale of 8.
-fn token_decimals(asset_code: &str) -> u32 {
-    match asset_code.to_uppercase().as_str() {
-        "USDC" | "USDT" => 6,
-        "XLM" | "STELLAR_XLM" => 7,
-        "BTC" | "WBTC" => 8,
-        "ETH" | "WETH" => 18,
-        _ => 8,
-    }
-}
-
 /// Round a stored token amount to its native on-chain precision, dropping any
 /// sub-unit dust that the flat `NUMERIC(_, 8)` storage scale may have retained.
+/// Native precision is resolved from the shared [`token_metadata`] registry.
 fn normalize_amount(amount: Decimal, asset_code: &str) -> Decimal {
-    amount.round_dp(token_decimals(asset_code))
+    amount.round_dp(token_metadata::decimals_for(asset_code))
 }
 
 /// Value `amount` of `asset_code` in USD at `price`, normalizing the amount to
@@ -63,19 +49,6 @@ fn compute_health_factor(
 ) -> Result<Decimal, ApiError> {
     let hf = SafeMath::div(collateral_value, debt_value)?;
     Ok(hf.round_dp(HEALTH_FACTOR_SCALE))
-}
-
-/// Liquidation threshold for a given collateral asset, case-insensitive. More
-/// volatile assets carry a lower threshold; unknown assets fall back to the
-/// engine-wide `fallback` threshold.
-fn liquidation_threshold_for_asset(asset_code: &str, fallback: Decimal) -> Decimal {
-    match asset_code.to_uppercase().as_str() {
-        "USDC" => Decimal::new(95, 2),                // 0.95
-        "ETH" | "WETH" => Decimal::new(85, 2),        // 0.85
-        "BTC" | "WBTC" => Decimal::new(85, 2),        // 0.85
-        "XLM" | "STELLAR_XLM" => Decimal::new(80, 2), // 0.80
-        _ => fallback,
-    }
 }
 
 /// Outcome of evaluating a single borrowing position's collateral health.
@@ -124,7 +97,7 @@ fn assess_position(
 
     let health_factor = compute_health_factor(collateral_value, debt_value)?;
     let liquidation_threshold =
-        liquidation_threshold_for_asset(collateral_asset, fallback_threshold);
+        token_metadata::liquidation_threshold_for(collateral_asset, fallback_threshold);
 
     let is_risky = if risk_override_enabled {
         false
@@ -374,26 +347,6 @@ mod tests {
     use rust_decimal_macros::dec;
 
     #[test]
-    fn token_decimals_known_assets() {
-        // Native on-chain precision per asset, case-insensitive.
-        assert_eq!(token_decimals("USDC"), 6);
-        assert_eq!(token_decimals("usdc"), 6);
-        assert_eq!(token_decimals("USDT"), 6);
-        assert_eq!(token_decimals("BTC"), 8);
-        assert_eq!(token_decimals("WBTC"), 8);
-        assert_eq!(token_decimals("ETH"), 18);
-        assert_eq!(token_decimals("WETH"), 18);
-        assert_eq!(token_decimals("XLM"), 7);
-        assert_eq!(token_decimals("STELLAR_XLM"), 7);
-    }
-
-    #[test]
-    fn token_decimals_unknown_asset_defaults_to_storage_scale() {
-        // Unknown assets fall back to the NUMERIC(_, 8) storage scale.
-        assert_eq!(token_decimals("DOGE"), 8);
-    }
-
-    #[test]
     fn normalize_amount_drops_dust_below_token_precision() {
         // USDC has 6 decimals; digits beyond that are dust and must be dropped.
         assert_eq!(
@@ -446,48 +399,6 @@ mod tests {
     #[test]
     fn compute_health_factor_zero_debt_is_error() {
         assert!(compute_health_factor(dec!(100), dec!(0)).is_err());
-    }
-
-    // --- liquidation_threshold_for_asset ---
-
-    #[test]
-    fn liquidation_threshold_uses_asset_specific_values() {
-        let fallback = dec!(0.90);
-        assert_eq!(
-            liquidation_threshold_for_asset("USDC", fallback),
-            dec!(0.95)
-        );
-        assert_eq!(liquidation_threshold_for_asset("ETH", fallback), dec!(0.85));
-        assert_eq!(
-            liquidation_threshold_for_asset("WETH", fallback),
-            dec!(0.85)
-        );
-        assert_eq!(liquidation_threshold_for_asset("BTC", fallback), dec!(0.85));
-        assert_eq!(
-            liquidation_threshold_for_asset("WBTC", fallback),
-            dec!(0.85)
-        );
-        assert_eq!(liquidation_threshold_for_asset("XLM", fallback), dec!(0.80));
-        assert_eq!(
-            liquidation_threshold_for_asset("STELLAR_XLM", fallback),
-            dec!(0.80)
-        );
-    }
-
-    #[test]
-    fn liquidation_threshold_is_case_insensitive() {
-        let fallback = dec!(0.90);
-        assert_eq!(
-            liquidation_threshold_for_asset("usdc", fallback),
-            dec!(0.95)
-        );
-        assert_eq!(liquidation_threshold_for_asset("eth", fallback), dec!(0.85));
-    }
-
-    #[test]
-    fn liquidation_threshold_unknown_asset_uses_fallback() {
-        let fallback = dec!(0.77);
-        assert_eq!(liquidation_threshold_for_asset("DOGE", fallback), fallback);
     }
 
     // --- assess_position ---
