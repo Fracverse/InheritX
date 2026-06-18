@@ -3411,10 +3411,7 @@ fn test_add_emergency_contact_duplicate_fails() {
     client.add_emergency_contact(&user, &plan_id, &contact);
     let res = client.try_add_emergency_contact(&user, &plan_id, &contact);
     assert!(res.is_err());
-    assert_eq!(
-        res.err().unwrap(),
-        Ok(InheritanceError::AlreadyClaimed)
-    );
+    assert_eq!(res.err().unwrap(), Ok(InheritanceError::AlreadyClaimed));
 }
 
 #[test]
@@ -6390,7 +6387,10 @@ fn test_genetic_health_trigger_flow() {
     let triggers = client.get_genetic_triggers(&plan_id);
     assert_eq!(triggers.len(), 1);
     let retrieved = triggers.get(0).unwrap();
-    assert_eq!(retrieved.condition_name, String::from_str(&env, "Parkinson"));
+    assert_eq!(
+        retrieved.condition_name,
+        String::from_str(&env, "Parkinson")
+    );
 
     // 2. Set genetic oracle
     let oracle = Address::generate(&env);
@@ -6414,11 +6414,21 @@ fn test_genetic_health_trigger_flow() {
     // 4. Report genetic data from unauthorized oracle
     let stranger = Address::generate(&env);
     env.mock_all_auths();
-    let result = client.try_report_genetic_data(&stranger, &plan_id, &String::from_str(&env, "Parkinson"), &1u32);
+    let result = client.try_report_genetic_data(
+        &stranger,
+        &plan_id,
+        &String::from_str(&env, "Parkinson"),
+        &1u32,
+    );
     assert!(result.is_err());
 
     // 5. Report matching genetic data from authorized oracle -> should trigger inheritance
-    client.report_genetic_data(&oracle, &plan_id, &String::from_str(&env, "Parkinson"), &1u32);
+    client.report_genetic_data(
+        &oracle,
+        &plan_id,
+        &String::from_str(&env, "Parkinson"),
+        &1u32,
+    );
 
     // Assert inheritance is triggered
     let trigger_info = client.get_inheritance_trigger(&plan_id);

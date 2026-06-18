@@ -1,12 +1,12 @@
 #![no_std]
 use access_control::{self, Role};
+use genetic_verification::{
+    is_valid_risk_score, DNAVerificationStatus, GeneticCondition, GeneticInheritance,
+    GeneticTriggerConfig, GeneticTriggerType,
+};
 use soroban_sdk::{
     contract, contracterror, contractimpl, contracttype, log, symbol_short, token, vec, Address,
     Bytes, BytesN, Env, FromVal, IntoVal, InvokeError, String, Symbol, Val, Vec,
-};
-use genetic_verification::{
-    GeneticCondition, GeneticTriggerType, GeneticTriggerConfig, DNAVerificationStatus,
-    GeneticInheritance, is_valid_risk_score,
 };
 
 mod disputes;
@@ -952,7 +952,9 @@ impl InheritanceContract {
             }
         }
         list.push_back(arbitrator);
-        env.storage().persistent().set(&DataKey::PlanMetadata(0, 6000), &list);
+        env.storage()
+            .persistent()
+            .set(&DataKey::PlanMetadata(0, 6000), &list);
         Ok(())
     }
 
@@ -3666,8 +3668,8 @@ impl InheritanceContract {
 
         let mut plan = Self::get_plan(&env, plan_id).ok_or(InheritanceError::PlanNotFound)?;
 
-        let mut trigger_info = Self::get_trigger_info(&env, plan_id)
-            .ok_or(InheritanceError::ClaimNotAllowedYet)?;
+        let mut trigger_info =
+            Self::get_trigger_info(&env, plan_id).ok_or(InheritanceError::ClaimNotAllowedYet)?;
 
         if plan.total_loaned == 0 {
             return Err(InheritanceError::InsufficientBalance);
@@ -3733,8 +3735,8 @@ impl InheritanceContract {
 
         let mut plan = Self::get_plan(&env, plan_id).ok_or(InheritanceError::PlanNotFound)?;
 
-        let mut trigger_info = Self::get_trigger_info(&env, plan_id)
-            .ok_or(InheritanceError::ClaimNotAllowedYet)?;
+        let mut trigger_info =
+            Self::get_trigger_info(&env, plan_id).ok_or(InheritanceError::ClaimNotAllowedYet)?;
 
         if plan.total_loaned == 0 {
             return Err(InheritanceError::InsufficientBalance);
@@ -4231,9 +4233,10 @@ impl InheritanceContract {
             .unwrap_or(0u32);
         let next = current.saturating_add(1);
 
-        env.storage()
-            .persistent()
-            .set(&DataKey::PlanMetadata(vault_id, 10000 + next), &new_key_reference);
+        env.storage().persistent().set(
+            &DataKey::PlanMetadata(vault_id, 10000 + next),
+            &new_key_reference,
+        );
         env.storage()
             .persistent()
             .set(&DataKey::PlanMetadata(vault_id, 2000), &next);
