@@ -23,6 +23,7 @@ pub mod event_handlers;
 pub mod events;
 pub mod external_integrations;
 pub mod external_price_fetcher;
+pub mod genetic_analysis;
 pub mod governance;
 pub mod graphql;
 pub mod insurance_fund;
@@ -68,6 +69,10 @@ pub use compliance::ComplianceEngine;
 pub use config::Config;
 pub use data_retention::DataRetentionService;
 pub use events::{EventService, EventType, LendingEvent};
+pub use genetic_analysis::{
+    GeneticAnalysisService, GeneticDatabaseClient, GeneticError, GeneticSimilarityCalculator,
+    HealthConditionAnalyzer, PrivacyLevel, ProcessedDNAData, RiskAssessment,
+};
 pub use governance::GovernanceService;
 pub use interest_reconciliation::InterestReconciliationService;
 pub use lending_data_warehouse::LendingDataWarehouseService;

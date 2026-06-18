@@ -147,7 +147,7 @@ fn extract_user_id_from_bearer(headers: &axum::http::HeaderMap) -> Option<String
     let auth = headers.get("Authorization")?.to_str().ok()?;
     let token = auth.strip_prefix("Bearer ")?;
     // JWT format: base64url(header).base64url(payload).base64url(signature)
-    let payload_b64 = token.splitn(3, '.').nth(1)?;
+    let payload_b64 = token.split('.').nth(1)?;
     let bytes = base64::engine::general_purpose::URL_SAFE_NO_PAD
         .decode(payload_b64)
         .ok()?;

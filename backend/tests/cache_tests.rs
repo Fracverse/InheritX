@@ -12,18 +12,8 @@ use axum::{
     Router,
 };
 use inheritx_backend::cache;
-use serde_json::{json, Value};
+use serde_json::json;
 use tower::ServiceExt; // for `oneshot`
-
-// ── Helper ────────────────────────────────────────────────────────────────────
-
-/// Extract the first header value as a string.
-fn get_header<'a>(
-    response: &'a axum::response::Response,
-    name: header::HeaderName,
-) -> Option<&'a str> {
-    response.headers().get(name).and_then(|v| v.to_str().ok())
-}
 
 // ── ETag unit tests ───────────────────────────────────────────────────────────
 

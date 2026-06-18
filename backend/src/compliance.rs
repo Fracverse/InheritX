@@ -718,7 +718,6 @@ impl RealtimeComplianceListener for ComplianceEngine {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use anyhow::anyhow;
     use chrono::Utc;
     use rust_decimal_macros::dec;
     use serde_json::json;

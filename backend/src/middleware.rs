@@ -260,7 +260,7 @@ pub async fn attach_correlation_id(req: Request<Body>, next: Next) -> impl IntoR
 }
 
 /// Logs each incoming request with its method, URI, and assigned request ID.
-pub async fn request_logging_middleware(mut req: Request, next: Next) -> Response {
+pub async fn request_logging_middleware(req: Request, next: Next) -> Response {
     let method = req.method().clone();
     let uri = req.uri().clone();
     let path = uri.path().to_string();
@@ -379,37 +379,6 @@ fn should_sample_request(request_id: &str, ratio: f64) -> bool {
     bucket < (ratio * 1000.0).round() as u64
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use axum::http::HeaderMap;
-    use axum::http::HeaderValue;
-
-    #[test]
-    fn sanitize_headers_masks_sensitive_values() {
-        let mut headers = HeaderMap::new();
-        headers.insert("authorization", HeaderValue::from_static("Bearer abc123"));
-        headers.insert("cookie", HeaderValue::from_static("session=secret"));
-        headers.insert("x-api-key", HeaderValue::from_static("key"));
-        headers.insert("content-type", HeaderValue::from_static("application/json"));
-
-        let sanitized = sanitize_headers(&headers);
-        assert!(sanitized.contains(&("authorization".to_string(), "***".to_string())));
-        assert!(sanitized.contains(&("cookie".to_string(), "***".to_string())));
-        assert!(sanitized.contains(&("x-api-key".to_string(), "***".to_string())));
-        assert!(sanitized.contains(&("content-type".to_string(), "application/json".to_string())));
-    }
-
-    #[test]
-    fn should_sample_request_is_deterministic() {
-        let request_id = "abc-123";
-        let ratio = 0.5;
-        let first = should_sample_request(request_id, ratio);
-        let second = should_sample_request(request_id, ratio);
-        assert_eq!(first, second);
-    }
-}
-
 pub async fn log_rate_limit_violations(req: Request<Body>, next: Next) -> impl IntoResponse {
     let path = req.uri().path().to_string();
     let method = req.method().clone();
@@ -513,4 +482,35 @@ pub async fn cache_headers_middleware(req: Request, next: Next) -> Response {
     }
 
     response
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use axum::http::HeaderMap;
+    use axum::http::HeaderValue;
+
+    #[test]
+    fn sanitize_headers_masks_sensitive_values() {
+        let mut headers = HeaderMap::new();
+        headers.insert("authorization", HeaderValue::from_static("Bearer abc123"));
+        headers.insert("cookie", HeaderValue::from_static("session=secret"));
+        headers.insert("x-api-key", HeaderValue::from_static("key"));
+        headers.insert("content-type", HeaderValue::from_static("application/json"));
+
+        let sanitized = sanitize_headers(&headers);
+        assert!(sanitized.contains(&("authorization".to_string(), "***".to_string())));
+        assert!(sanitized.contains(&("cookie".to_string(), "***".to_string())));
+        assert!(sanitized.contains(&("x-api-key".to_string(), "***".to_string())));
+        assert!(sanitized.contains(&("content-type".to_string(), "application/json".to_string())));
+    }
+
+    #[test]
+    fn should_sample_request_is_deterministic() {
+        let request_id = "abc-123";
+        let ratio = 0.5;
+        let first = should_sample_request(request_id, ratio);
+        let second = should_sample_request(request_id, ratio);
+        assert_eq!(first, second);
+    }
 }

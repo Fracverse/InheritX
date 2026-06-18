@@ -17,7 +17,6 @@ use axum::{
     response::{IntoResponse, Json, Response},
 };
 use chrono::{DateTime, Utc};
-use jsonwebtoken::{decode, Validation};
 use serde::{Deserialize, Serialize};
 use serde_json::json;
 use sqlx::PgPool;
@@ -26,7 +25,7 @@ use uuid::Uuid;
 
 use crate::api_error::ApiError;
 use crate::app::AppState;
-use crate::auth::{AuthenticatedUser, UserClaims};
+use crate::auth::AuthenticatedUser;
 
 // ── Domain types ──────────────────────────────────────────────────────────────
 
@@ -80,21 +79,6 @@ fn extract_bearer(req: &Request<Body>) -> Option<String> {
         .and_then(|v| v.to_str().ok())
         .and_then(|s| s.strip_prefix("Bearer "))
         .map(|s| s.to_string())
-}
-
-fn decode_claims(token: &str, secret: &str) -> Option<UserClaims> {
-    let mut validation = Validation::default();
-    // Ensure expiration is always validated
-    validation.validate_exp = true;
-    validation.required_spec_claims.insert("exp".to_string());
-
-    decode::<UserClaims>(
-        token,
-        &jsonwebtoken::DecodingKey::from_secret(secret.as_bytes()),
-        &validation,
-    )
-    .map(|d| d.claims)
-    .ok()
 }
 
 // ── Service functions ─────────────────────────────────────────────────────────
@@ -187,7 +171,7 @@ async fn revoke_by_hash(db: &PgPool, token_hash: &str) -> Result<u64, ApiError> 
 /// Revokes the session associated with the current `Authorization` token.
 pub async fn logout(
     State(state): State<Arc<AppState>>,
-    AuthenticatedUser(user): AuthenticatedUser,
+    AuthenticatedUser(_user): AuthenticatedUser,
     req: Request<Body>,
 ) -> Result<Json<serde_json::Value>, ApiError> {
     let raw_token = extract_bearer(&req).ok_or_else(|| ApiError::Unauthorized)?;
@@ -270,7 +254,7 @@ pub async fn revoke_session(
     State(state): State<Arc<AppState>>,
     crate::validation::Path(session_id): crate::validation::Path<Uuid>,
     AuthenticatedUser(user): AuthenticatedUser,
-    req: Request<Body>,
+    _req: Request<Body>,
 ) -> Result<Json<serde_json::Value>, ApiError> {
     // Ensure the session belongs to the authenticated user
     let rows = sqlx::query(
@@ -355,10 +339,12 @@ mod tests {
 
     #[test]
     fn default_max_concurrent_sessions_is_positive() {
-        assert!(
-            DEFAULT_MAX_CONCURRENT_SESSIONS > 0,
-            "session limit must be a positive integer"
-        );
+        const {
+            assert!(
+                DEFAULT_MAX_CONCURRENT_SESSIONS > 0,
+                "session limit must be a positive integer"
+            );
+        }
     }
 
     #[test]

@@ -24,8 +24,12 @@ impl ProposalStatus {
             ProposalStatus::Executed => "executed",
         }
     }
+}
 
-    pub fn from_str(s: &str) -> Result<Self, ApiError> {
+impl std::str::FromStr for ProposalStatus {
+    type Err = ApiError;
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
         match s {
             "active" => Ok(ProposalStatus::Active),
             "passed" => Ok(ProposalStatus::Passed),
@@ -400,7 +404,7 @@ impl GovernanceService {
         db: &PgPool,
         proposal: &Proposal,
     ) -> Result<ProposalStatus, ApiError> {
-        let current = ProposalStatus::from_str(&proposal.status)?;
+        let current = proposal.status.parse::<ProposalStatus>()?;
 
         if current == ProposalStatus::Executed || current == ProposalStatus::Rejected {
             return Ok(current);
@@ -436,7 +440,7 @@ impl GovernanceService {
         .map_err(|e| ApiError::Internal(anyhow::anyhow!("DB error fetching proposal: {}", e)))?
         .ok_or_else(|| ApiError::NotFound(format!("Proposal {} not found", proposal_id)))?;
 
-        let current = ProposalStatus::from_str(&proposal.status)?;
+        let current = proposal.status.parse::<ProposalStatus>()?;
         if current == ProposalStatus::Executed {
             return Err(ApiError::BadRequest(
                 "Proposal has already been executed".to_string(),
@@ -481,7 +485,7 @@ impl GovernanceService {
         proposal_id: Uuid,
     ) -> Result<Proposal, ApiError> {
         let finalized = Self::finalize_proposal(db, proposal_id).await?;
-        let status = ProposalStatus::from_str(&finalized.status)?;
+        let status = finalized.status.parse::<ProposalStatus>()?;
 
         if status != ProposalStatus::Passed {
             return Err(ApiError::BadRequest(

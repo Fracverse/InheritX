@@ -119,7 +119,7 @@ pub async fn create_pool_with_config(
         // Enforce a per-query timeout at the server using `statement_timeout`.
         // This cancels queries that exceed the configured duration and prevents
         // client-side tasks from hanging indefinitely while the DB is busy.
-        .after_connect(move |mut conn, _pool| {
+        .after_connect(move |conn, _pool| {
             let timeout_ms = query_timeout_secs * 1000;
             Box::pin(async move {
                 // Use an explicit SET on the connection. This returns a
@@ -212,6 +212,7 @@ async fn ensure_version_table(pool: &PgPool) -> Result<(), ApiError> {
 }
 
 /// Compute a hex-encoded SHA-256 checksum of arbitrary bytes.
+#[cfg(test)]
 fn sha256_hex(data: &[u8]) -> String {
     use std::collections::hash_map::DefaultHasher;
     use std::hash::{Hash, Hasher};

@@ -131,31 +131,33 @@ fn is_valid_unquoted_local_part(local: &str) -> bool {
         return false;
     }
 
-    local.as_bytes().iter().all(|&b| match b {
-        b'a'..=b'z'
-        | b'A'..=b'Z'
-        | b'0'..=b'9'
-        | b'!'
-        | b'#'
-        | b'$'
-        | b'%'
-        | b'&'
-        | b'\''
-        | b'*'
-        | b'+'
-        | b'-'
-        | b'/'
-        | b'='
-        | b'?'
-        | b'^'
-        | b'_'
-        | b'`'
-        | b'{'
-        | b'|'
-        | b'}'
-        | b'~'
-        | b'.' => true,
-        _ => false,
+    local.as_bytes().iter().all(|&b| {
+        matches!(
+            b,
+            b'a'..=b'z'
+                | b'A'..=b'Z'
+                | b'0'..=b'9'
+                | b'!'
+                | b'#'
+                | b'$'
+                | b'%'
+                | b'&'
+                | b'\''
+                | b'*'
+                | b'+'
+                | b'-'
+                | b'/'
+                | b'='
+                | b'?'
+                | b'^'
+                | b'_'
+                | b'`'
+                | b'{'
+                | b'|'
+                | b'}'
+                | b'~'
+                | b'.'
+        )
     })
 }
 
@@ -176,10 +178,11 @@ fn is_valid_domain(domain: &str) -> bool {
         if label.starts_with('-') || label.ends_with('-') {
             return false;
         }
-        if !label.as_bytes().iter().all(|&b| match b {
-            b'a'..=b'z' | b'A'..=b'Z' | b'0'..=b'9' | b'-' => true,
-            _ => false,
-        }) {
+        if !label
+            .as_bytes()
+            .iter()
+            .all(|&b| matches!(b, b'a'..=b'z' | b'A'..=b'Z' | b'0'..=b'9' | b'-'))
+        {
             return false;
         }
     }
@@ -339,18 +342,16 @@ where
 {
     type Rejection = ApiError;
 
-    fn from_request_parts(
+    async fn from_request_parts(
         parts: &mut axum::http::request::Parts,
         state: &S,
-    ) -> impl std::future::Future<Output = Result<Self, Self::Rejection>> + Send {
-        async move {
-            match axum::extract::Path::<T>::from_request_parts(parts, state).await {
-                Ok(axum::extract::Path(value)) => Ok(Path(value)),
-                Err(err) => Err(ApiError::BadRequest(format!(
-                    "Invalid path parameter: {}",
-                    err
-                ))),
-            }
+    ) -> Result<Self, Self::Rejection> {
+        match axum::extract::Path::<T>::from_request_parts(parts, state).await {
+            Ok(axum::extract::Path(value)) => Ok(Path(value)),
+            Err(err) => Err(ApiError::BadRequest(format!(
+                "Invalid path parameter: {}",
+                err
+            ))),
         }
     }
 }

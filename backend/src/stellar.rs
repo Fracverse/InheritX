@@ -3,7 +3,7 @@
 //! Provides:
 //! * [`HorizonClient`]     – REST wrapper around the Stellar Horizon API.
 //! * [`SorobanRpcClient`]  – JSON-RPC wrapper for the Soroban RPC endpoint,
-//!                           enabling contract invocations from the backend.
+//!   enabling contract invocations from the backend.
 //! * [`TransactionMonitor`] – polling-based transaction-status monitor.
 //!
 //! All network I/O goes through `reqwest`, which is already part of the
