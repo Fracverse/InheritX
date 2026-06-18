@@ -278,3 +278,110 @@ fn test_pending_relative_creation() {
     assert_eq!(pending.person_id, 99);
     assert_eq!(pending.proposed_relationship, RelationshipType::Grandchild);
 }
+
+// ─── Contract Tests ───────────────────────────────────────────────────────────
+
+#[test]
+fn test_generate_dna_hash() {
+    let env = Env::default();
+    let dna_data = Bytes::from_array(&env, &[1, 2, 3, 4, 5]);
+    let salt = BytesN::from_array(&env, &[0xAA; 32]);
+    let privacy_level = PrivacyLevel::Private;
+
+    let result =
+        GeneticVerificationContract::generate_dna_hash(&env, dna_data, salt, privacy_level);
+    assert!(result.is_ok());
+}
+
+#[test]
+fn test_generate_dna_hash_empty_data() {
+    let env = Env::default();
+    let dna_data = Bytes::new(&env);
+    let salt = BytesN::from_array(&env, &[0xAA; 32]);
+    let privacy_level = PrivacyLevel::Private;
+
+    let result =
+        GeneticVerificationContract::generate_dna_hash(&env, dna_data, salt, privacy_level);
+    assert!(result.is_err());
+    assert_eq!(result.unwrap_err(), GeneticVerificationError::InvalidInput);
+}
+
+#[test]
+fn test_calculate_genetic_similarity() {
+    let env = Env::default();
+    let hash1 = BytesN::from_array(&env, &[0xAA; 32]);
+    let hash2 = BytesN::from_array(&env, &[0xAA; 32]);
+
+    let similarity =
+        GeneticVerificationContract::calculate_genetic_similarity(&env, hash1.clone(), hash2);
+    assert_eq!(similarity.unwrap(), 100);
+
+    let hash3 = BytesN::from_array(&env, &[0xBB; 32]);
+    let similarity2 = GeneticVerificationContract::calculate_genetic_similarity(&env, hash1, hash3);
+    assert_eq!(similarity2.unwrap(), 0);
+}
+
+#[test]
+fn test_verify_dna_match() {
+    let env = Env::default();
+    let hash1 = BytesN::from_array(&env, &[0xAA; 32]);
+    let hash2 = BytesN::from_array(&env, &[0xAA; 32]);
+
+    let result = GeneticVerificationContract::verify_dna_match(&env, hash1, hash2, 50);
+    assert!(result.is_ok());
+    assert!(result.unwrap());
+}
+
+#[test]
+fn test_verify_dna_match_invalid_threshold() {
+    let env = Env::default();
+    let hash1 = BytesN::from_array(&env, &[0xAA; 32]);
+    let hash2 = BytesN::from_array(&env, &[0xAA; 32]);
+
+    let result = GeneticVerificationContract::verify_dna_match(&env, hash1, hash2, 101);
+    assert!(result.is_err());
+    assert_eq!(
+        result.unwrap_err(),
+        GeneticVerificationError::InvalidSimilarityThreshold
+    );
+}
+
+#[test]
+fn test_generate_genetic_salt() {
+    let env = Env::default();
+    let user = test_address(&env);
+    let salt = GeneticVerificationContract::generate_genetic_salt(&env, user);
+    assert_eq!(salt.len(), 32);
+}
+
+#[test]
+fn test_validate_genetic_integrity() {
+    let env = Env::default();
+    let data = Bytes::from_array(&env, &[1, 2, 3, 4, 5]);
+    let hash: BytesN<32> = env.crypto().sha256(&data).into();
+    let result = GeneticVerificationContract::validate_genetic_integrity(&env, hash, data);
+    assert!(result.is_ok());
+    assert!(result.unwrap());
+}
+
+#[test]
+fn test_detect_genetic_conditions() {
+    let env = Env::default();
+    let hash = BytesN::from_array(&env, &[0xAA; 32]);
+    let markers = vec![&env];
+
+    let result = GeneticVerificationContract::detect_genetic_conditions(&env, hash, markers);
+    assert!(result.is_ok());
+    assert_eq!(result.unwrap().len(), 0);
+}
+
+#[test]
+fn test_calculate_health_risk_score() {
+    let env = Env::default();
+    let hash = BytesN::from_array(&env, &[0xAA; 32]);
+    let factors = vec![&env];
+
+    let result = GeneticVerificationContract::calculate_health_risk_score(&env, hash, 30, factors);
+    assert!(result.is_ok());
+    assert_eq!(result.unwrap(), 0);
+}
