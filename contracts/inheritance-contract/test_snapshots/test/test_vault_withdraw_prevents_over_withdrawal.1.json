@@ -326,6 +326,57 @@
             "key": {
               "vec": [
                 {
+                  "symbol": "ClaimSalt"
+                },
+                {
+                  "u64": 1
+                },
+                {
+                  "u32": 0
+                }
+              ]
+            },
+            "durability": "persistent"
+          }
+        },
+        [
+          {
+            "last_modified_ledger_seq": 0,
+            "data": {
+              "contract_data": {
+                "ext": "v0",
+                "contract": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAD2KM",
+                "key": {
+                  "vec": [
+                    {
+                      "symbol": "ClaimSalt"
+                    },
+                    {
+                      "u64": 1
+                    },
+                    {
+                      "u32": 0
+                    }
+                  ]
+                },
+                "durability": "persistent",
+                "val": {
+                  "bytes": "524ee29b9c71075ed2e71f310e269e1d77a9434a0021e5057c588e9b64fc587c"
+                }
+              }
+            },
+            "ext": "v0"
+          },
+          4095
+        ]
+      ],
+      [
+        {
+          "contract_data": {
+            "contract": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAD2KM",
+            "key": {
+              "vec": [
+                {
                   "symbol": "Kyc"
                 },
                 {
@@ -487,7 +538,7 @@
                                   "symbol": "hashed_claim_code"
                                 },
                                 "val": {
-                                  "bytes": "94edf28c6d6da38fd35d7ad53e485307f89fbeaf120485c8d17a43f323deee71"
+                                  "bytes": "e37e0ec0ff2b3cc246c795a5a0c3307260e871aecd951ca91efbb5f5ba65d579"
                                 }
                               },
                               {
@@ -495,7 +546,7 @@
                                   "symbol": "hashed_email"
                                 },
                                 "val": {
-                                  "bytes": "86eba947d50c2c01570fe1bb5ca552958dabbdbb59b0657f0f26e21ff011e5c7"
+                                  "bytes": "e8f39b3e1382367d6d41ab34dc270d4e7533f978c9e9a775dfe2185b2f96b96c"
                                 }
                               },
                               {
@@ -503,7 +554,7 @@
                                   "symbol": "hashed_full_name"
                                 },
                                 "val": {
-                                  "bytes": "6e340b9cffb37a989ca544e6bb780a2c78901d3fb33738768511a30617afa01d"
+                                  "bytes": "df7e70e5021544f4834bbee64a9e3789febc4be81470df629cad6ddb03320a5c"
                                 }
                               },
                               {
@@ -618,6 +669,112 @@
                       "val": {
                         "bool": false
                       }
+                    }
+                  ]
+                }
+              }
+            },
+            "ext": "v0"
+          },
+          4095
+        ]
+      ],
+      [
+        {
+          "contract_data": {
+            "contract": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAD2KM",
+            "key": {
+              "vec": [
+                {
+                  "symbol": "Roles"
+                },
+                {
+                  "address": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAHK3M"
+                }
+              ]
+            },
+            "durability": "persistent"
+          }
+        },
+        [
+          {
+            "last_modified_ledger_seq": 0,
+            "data": {
+              "contract_data": {
+                "ext": "v0",
+                "contract": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAD2KM",
+                "key": {
+                  "vec": [
+                    {
+                      "symbol": "Roles"
+                    },
+                    {
+                      "address": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAHK3M"
+                    }
+                  ]
+                },
+                "durability": "persistent",
+                "val": {
+                  "vec": [
+                    {
+                      "vec": [
+                        {
+                          "symbol": "Admin"
+                        }
+                      ]
+                    }
+                  ]
+                }
+              }
+            },
+            "ext": "v0"
+          },
+          4095
+        ]
+      ],
+      [
+        {
+          "contract_data": {
+            "contract": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAD2KM",
+            "key": {
+              "vec": [
+                {
+                  "symbol": "Roles"
+                },
+                {
+                  "address": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAITA4"
+                }
+              ]
+            },
+            "durability": "persistent"
+          }
+        },
+        [
+          {
+            "last_modified_ledger_seq": 0,
+            "data": {
+              "contract_data": {
+                "ext": "v0",
+                "contract": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAD2KM",
+                "key": {
+                  "vec": [
+                    {
+                      "symbol": "Roles"
+                    },
+                    {
+                      "address": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAITA4"
+                    }
+                  ]
+                },
+                "durability": "persistent",
+                "val": {
+                  "vec": [
+                    {
+                      "vec": [
+                        {
+                          "symbol": "Owner"
+                        }
+                      ]
                     }
                   ]
                 }
@@ -808,6 +965,21 @@
                           "i128": {
                             "hi": 0,
                             "lo": 19998900
+                          }
+                        }
+                      },
+                      {
+                        "key": {
+                          "vec": [
+                            {
+                              "symbol": "TotalSupply"
+                            }
+                          ]
+                        },
+                        "val": {
+                          "i128": {
+                            "hi": 0,
+                            "lo": 20000000
                           }
                         }
                       }
@@ -2007,7 +2179,7 @@
                               "symbol": "hashed_claim_code"
                             },
                             "val": {
-                              "bytes": "94edf28c6d6da38fd35d7ad53e485307f89fbeaf120485c8d17a43f323deee71"
+                              "bytes": "e37e0ec0ff2b3cc246c795a5a0c3307260e871aecd951ca91efbb5f5ba65d579"
                             }
                           },
                           {
@@ -2015,7 +2187,7 @@
                               "symbol": "hashed_email"
                             },
                             "val": {
-                              "bytes": "86eba947d50c2c01570fe1bb5ca552958dabbdbb59b0657f0f26e21ff011e5c7"
+                              "bytes": "e8f39b3e1382367d6d41ab34dc270d4e7533f978c9e9a775dfe2185b2f96b96c"
                             }
                           },
                           {
@@ -2023,7 +2195,7 @@
                               "symbol": "hashed_full_name"
                             },
                             "val": {
-                              "bytes": "6e340b9cffb37a989ca544e6bb780a2c78901d3fb33738768511a30617afa01d"
+                              "bytes": "df7e70e5021544f4834bbee64a9e3789febc4be81470df629cad6ddb03320a5c"
                             }
                           },
                           {
@@ -2226,7 +2398,7 @@
                               "symbol": "hashed_claim_code"
                             },
                             "val": {
-                              "bytes": "94edf28c6d6da38fd35d7ad53e485307f89fbeaf120485c8d17a43f323deee71"
+                              "bytes": "e37e0ec0ff2b3cc246c795a5a0c3307260e871aecd951ca91efbb5f5ba65d579"
                             }
                           },
                           {
@@ -2234,7 +2406,7 @@
                               "symbol": "hashed_email"
                             },
                             "val": {
-                              "bytes": "86eba947d50c2c01570fe1bb5ca552958dabbdbb59b0657f0f26e21ff011e5c7"
+                              "bytes": "e8f39b3e1382367d6d41ab34dc270d4e7533f978c9e9a775dfe2185b2f96b96c"
                             }
                           },
                           {
@@ -2242,7 +2414,7 @@
                               "symbol": "hashed_full_name"
                             },
                             "val": {
-                              "bytes": "6e340b9cffb37a989ca544e6bb780a2c78901d3fb33738768511a30617afa01d"
+                              "bytes": "df7e70e5021544f4834bbee64a9e3789febc4be81470df629cad6ddb03320a5c"
                             }
                           },
                           {
@@ -2611,7 +2783,7 @@
             ],
             "data": {
               "error": {
-                "contract": 31
+                "contract": 27
               }
             }
           }
@@ -2632,7 +2804,7 @@
               },
               {
                 "error": {
-                  "contract": 31
+                  "contract": 27
                 }
               }
             ],
@@ -2657,7 +2829,7 @@
               },
               {
                 "error": {
-                  "contract": 31
+                  "contract": 27
                 }
               }
             ],

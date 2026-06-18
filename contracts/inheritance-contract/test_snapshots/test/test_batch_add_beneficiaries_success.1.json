@@ -444,6 +444,108 @@
             "key": {
               "vec": [
                 {
+                  "symbol": "ClaimSalt"
+                },
+                {
+                  "u64": 1
+                },
+                {
+                  "u32": 0
+                }
+              ]
+            },
+            "durability": "persistent"
+          }
+        },
+        [
+          {
+            "last_modified_ledger_seq": 0,
+            "data": {
+              "contract_data": {
+                "ext": "v0",
+                "contract": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAD2KM",
+                "key": {
+                  "vec": [
+                    {
+                      "symbol": "ClaimSalt"
+                    },
+                    {
+                      "u64": 1
+                    },
+                    {
+                      "u32": 0
+                    }
+                  ]
+                },
+                "durability": "persistent",
+                "val": {
+                  "bytes": "3a350933e1ba82ea38f084d71183761bd9ba23b2bdcddfed02fc5b61ae91792f"
+                }
+              }
+            },
+            "ext": "v0"
+          },
+          4095
+        ]
+      ],
+      [
+        {
+          "contract_data": {
+            "contract": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAD2KM",
+            "key": {
+              "vec": [
+                {
+                  "symbol": "ClaimSalt"
+                },
+                {
+                  "u64": 1
+                },
+                {
+                  "u32": 1
+                }
+              ]
+            },
+            "durability": "persistent"
+          }
+        },
+        [
+          {
+            "last_modified_ledger_seq": 0,
+            "data": {
+              "contract_data": {
+                "ext": "v0",
+                "contract": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAD2KM",
+                "key": {
+                  "vec": [
+                    {
+                      "symbol": "ClaimSalt"
+                    },
+                    {
+                      "u64": 1
+                    },
+                    {
+                      "u32": 1
+                    }
+                  ]
+                },
+                "durability": "persistent",
+                "val": {
+                  "bytes": "c2f0ec9745e7cc92299f0a777bc01ad4912d6c6014cbbfe3b495f5a003f391f6"
+                }
+              }
+            },
+            "ext": "v0"
+          },
+          4095
+        ]
+      ],
+      [
+        {
+          "contract_data": {
+            "contract": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAD2KM",
+            "key": {
+              "vec": [
+                {
                   "symbol": "Kyc"
                 },
                 {
@@ -605,7 +707,7 @@
                                   "symbol": "hashed_claim_code"
                                 },
                                 "val": {
-                                  "bytes": "68487dc295052aa79c530e283ce698b8c6bb1b42ff0944252e1910dbecdc5425"
+                                  "bytes": "27f0817867390d7587a3e5008d1d44e6fade9add567b5b83c31b01f5a1c11347"
                                 }
                               },
                               {
@@ -613,7 +715,7 @@
                                   "symbol": "hashed_email"
                                 },
                                 "val": {
-                                  "bytes": "7071fc3188fde7e7e500d4768f1784bede1a22e991648dcab9dc3219acff1d4c"
+                                  "bytes": "62937d0273fad9ecd81d6c13ae03efb0ab80bddda5e3d9c6f4f13f1a7eb7754b"
                                 }
                               },
                               {
@@ -621,7 +723,7 @@
                                   "symbol": "hashed_full_name"
                                 },
                                 "val": {
-                                  "bytes": "08bb5e5d6eaac1049ede0893d30ed022b1a4d9b5b48db414871f51c9cb35283d"
+                                  "bytes": "b2dd7d8a70567a0e23308a6a77b38d603eaf2baca5da320082184a9951063a95"
                                 }
                               },
                               {
@@ -665,7 +767,7 @@
                                   "symbol": "hashed_claim_code"
                                 },
                                 "val": {
-                                  "bytes": "69f7f7a7f8bca9970fa6f9c0b8dad06901d3ef23fd599d3213aa5eee5621c3e3"
+                                  "bytes": "45ef750a290452597bd4f1cf984a70f79fdace4909e7b45462c162037cb3877b"
                                 }
                               },
                               {
@@ -673,7 +775,7 @@
                                   "symbol": "hashed_email"
                                 },
                                 "val": {
-                                  "bytes": "ab107f1bd632d3c3f5c724a99d024f7faa033f33c07696384b604bfe78ac352d"
+                                  "bytes": "c8f014c18ca26570e6dd79d286610d2cf0bff1f9d6b328a0c48d181e5397afc6"
                                 }
                               },
                               {
@@ -681,7 +783,7 @@
                                   "symbol": "hashed_full_name"
                                 },
                                 "val": {
-                                  "bytes": "054edec1d0211f624fed0cbca9d4f9400b0e491c43742af2c5b0abebf0c990d8"
+                                  "bytes": "809a721743350c0c49a7b444ad3aeaf1341fdd48d1bf510e08b008edab72dc70"
                                 }
                               },
                               {
@@ -796,6 +898,112 @@
                       "val": {
                         "bool": false
                       }
+                    }
+                  ]
+                }
+              }
+            },
+            "ext": "v0"
+          },
+          4095
+        ]
+      ],
+      [
+        {
+          "contract_data": {
+            "contract": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAD2KM",
+            "key": {
+              "vec": [
+                {
+                  "symbol": "Roles"
+                },
+                {
+                  "address": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAHK3M"
+                }
+              ]
+            },
+            "durability": "persistent"
+          }
+        },
+        [
+          {
+            "last_modified_ledger_seq": 0,
+            "data": {
+              "contract_data": {
+                "ext": "v0",
+                "contract": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAD2KM",
+                "key": {
+                  "vec": [
+                    {
+                      "symbol": "Roles"
+                    },
+                    {
+                      "address": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAHK3M"
+                    }
+                  ]
+                },
+                "durability": "persistent",
+                "val": {
+                  "vec": [
+                    {
+                      "vec": [
+                        {
+                          "symbol": "Admin"
+                        }
+                      ]
+                    }
+                  ]
+                }
+              }
+            },
+            "ext": "v0"
+          },
+          4095
+        ]
+      ],
+      [
+        {
+          "contract_data": {
+            "contract": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAD2KM",
+            "key": {
+              "vec": [
+                {
+                  "symbol": "Roles"
+                },
+                {
+                  "address": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAITA4"
+                }
+              ]
+            },
+            "durability": "persistent"
+          }
+        },
+        [
+          {
+            "last_modified_ledger_seq": 0,
+            "data": {
+              "contract_data": {
+                "ext": "v0",
+                "contract": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAD2KM",
+                "key": {
+                  "vec": [
+                    {
+                      "symbol": "Roles"
+                    },
+                    {
+                      "address": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAITA4"
+                    }
+                  ]
+                },
+                "durability": "persistent",
+                "val": {
+                  "vec": [
+                    {
+                      "vec": [
+                        {
+                          "symbol": "Owner"
+                        }
+                      ]
                     }
                   ]
                 }
@@ -986,6 +1194,21 @@
                           "i128": {
                             "hi": 0,
                             "lo": 9900000
+                          }
+                        }
+                      },
+                      {
+                        "key": {
+                          "vec": [
+                            {
+                              "symbol": "TotalSupply"
+                            }
+                          ]
+                        },
+                        "val": {
+                          "i128": {
+                            "hi": 0,
+                            "lo": 10000000
                           }
                         }
                       }
@@ -2457,7 +2680,7 @@
                               "symbol": "hashed_claim_code"
                             },
                             "val": {
-                              "bytes": "68487dc295052aa79c530e283ce698b8c6bb1b42ff0944252e1910dbecdc5425"
+                              "bytes": "27f0817867390d7587a3e5008d1d44e6fade9add567b5b83c31b01f5a1c11347"
                             }
                           },
                           {
@@ -2465,7 +2688,7 @@
                               "symbol": "hashed_email"
                             },
                             "val": {
-                              "bytes": "7071fc3188fde7e7e500d4768f1784bede1a22e991648dcab9dc3219acff1d4c"
+                              "bytes": "62937d0273fad9ecd81d6c13ae03efb0ab80bddda5e3d9c6f4f13f1a7eb7754b"
                             }
                           },
                           {
@@ -2473,7 +2696,7 @@
                               "symbol": "hashed_full_name"
                             },
                             "val": {
-                              "bytes": "08bb5e5d6eaac1049ede0893d30ed022b1a4d9b5b48db414871f51c9cb35283d"
+                              "bytes": "b2dd7d8a70567a0e23308a6a77b38d603eaf2baca5da320082184a9951063a95"
                             }
                           },
                           {
@@ -2517,7 +2740,7 @@
                               "symbol": "hashed_claim_code"
                             },
                             "val": {
-                              "bytes": "69f7f7a7f8bca9970fa6f9c0b8dad06901d3ef23fd599d3213aa5eee5621c3e3"
+                              "bytes": "45ef750a290452597bd4f1cf984a70f79fdace4909e7b45462c162037cb3877b"
                             }
                           },
                           {
@@ -2525,7 +2748,7 @@
                               "symbol": "hashed_email"
                             },
                             "val": {
-                              "bytes": "ab107f1bd632d3c3f5c724a99d024f7faa033f33c07696384b604bfe78ac352d"
+                              "bytes": "c8f014c18ca26570e6dd79d286610d2cf0bff1f9d6b328a0c48d181e5397afc6"
                             }
                           },
                           {
@@ -2533,7 +2756,7 @@
                               "symbol": "hashed_full_name"
                             },
                             "val": {
-                              "bytes": "054edec1d0211f624fed0cbca9d4f9400b0e491c43742af2c5b0abebf0c990d8"
+                              "bytes": "809a721743350c0c49a7b444ad3aeaf1341fdd48d1bf510e08b008edab72dc70"
                             }
                           },
                           {

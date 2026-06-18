@@ -12,6 +12,7 @@ doctest = false
 access-control = { workspace = true }
 mock_token = { path = "../mock-token" }
 soroban-sdk = { workspace = true }
+genetic-verification = { path = "../genetic-verification" }
 
 [dev-dependencies]
 soroban-sdk = { workspace = true, features = ["testutils"] }

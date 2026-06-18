@@ -476,7 +476,7 @@
                   "symbol": "Claim"
                 },
                 {
-                  "bytes": "a0befa1bd56e5d20266c5defc06531823d4b516327d4da9d3efc389e891c87fd"
+                  "bytes": "30ba6e578ee44afca6388c9e556611c7dfb2d04990a3bac958d87f8745a7ae2d"
                 }
               ]
             },
@@ -496,7 +496,7 @@
                       "symbol": "Claim"
                     },
                     {
-                      "bytes": "a0befa1bd56e5d20266c5defc06531823d4b516327d4da9d3efc389e891c87fd"
+                      "bytes": "30ba6e578ee44afca6388c9e556611c7dfb2d04990a3bac958d87f8745a7ae2d"
                     }
                   ]
                 },
@@ -546,7 +546,7 @@
                   "symbol": "Claim"
                 },
                 {
-                  "bytes": "d4db13b3e28099887162c89569ef36aaf387d7e3eb54b2251931cfdd68c79692"
+                  "bytes": "feb27b67016d24060b4199b0a7b408bda54cc14ab9bcc375824b2f09fd7620f0"
                 }
               ]
             },
@@ -566,7 +566,7 @@
                       "symbol": "Claim"
                     },
                     {
-                      "bytes": "d4db13b3e28099887162c89569ef36aaf387d7e3eb54b2251931cfdd68c79692"
+                      "bytes": "feb27b67016d24060b4199b0a7b408bda54cc14ab9bcc375824b2f09fd7620f0"
                     }
                   ]
                 },
@@ -598,6 +598,244 @@
                       }
                     }
                   ]
+                }
+              }
+            },
+            "ext": "v0"
+          },
+          4095
+        ]
+      ],
+      [
+        {
+          "contract_data": {
+            "contract": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAD2KM",
+            "key": {
+              "vec": [
+                {
+                  "symbol": "ClaimAttempts"
+                },
+                {
+                  "u64": 1
+                },
+                {
+                  "address": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAK3IM"
+                }
+              ]
+            },
+            "durability": "persistent"
+          }
+        },
+        [
+          {
+            "last_modified_ledger_seq": 0,
+            "data": {
+              "contract_data": {
+                "ext": "v0",
+                "contract": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAD2KM",
+                "key": {
+                  "vec": [
+                    {
+                      "symbol": "ClaimAttempts"
+                    },
+                    {
+                      "u64": 1
+                    },
+                    {
+                      "address": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAK3IM"
+                    }
+                  ]
+                },
+                "durability": "persistent",
+                "val": {
+                  "map": [
+                    {
+                      "key": {
+                        "symbol": "attempts"
+                      },
+                      "val": {
+                        "u32": 1
+                      }
+                    },
+                    {
+                      "key": {
+                        "symbol": "window_start"
+                      },
+                      "val": {
+                        "u64": 0
+                      }
+                    }
+                  ]
+                }
+              }
+            },
+            "ext": "v0"
+          },
+          4095
+        ]
+      ],
+      [
+        {
+          "contract_data": {
+            "contract": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAD2KM",
+            "key": {
+              "vec": [
+                {
+                  "symbol": "ClaimAttempts"
+                },
+                {
+                  "u64": 1
+                },
+                {
+                  "address": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAMDR4"
+                }
+              ]
+            },
+            "durability": "persistent"
+          }
+        },
+        [
+          {
+            "last_modified_ledger_seq": 0,
+            "data": {
+              "contract_data": {
+                "ext": "v0",
+                "contract": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAD2KM",
+                "key": {
+                  "vec": [
+                    {
+                      "symbol": "ClaimAttempts"
+                    },
+                    {
+                      "u64": 1
+                    },
+                    {
+                      "address": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAMDR4"
+                    }
+                  ]
+                },
+                "durability": "persistent",
+                "val": {
+                  "map": [
+                    {
+                      "key": {
+                        "symbol": "attempts"
+                      },
+                      "val": {
+                        "u32": 1
+                      }
+                    },
+                    {
+                      "key": {
+                        "symbol": "window_start"
+                      },
+                      "val": {
+                        "u64": 0
+                      }
+                    }
+                  ]
+                }
+              }
+            },
+            "ext": "v0"
+          },
+          4095
+        ]
+      ],
+      [
+        {
+          "contract_data": {
+            "contract": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAD2KM",
+            "key": {
+              "vec": [
+                {
+                  "symbol": "ClaimSalt"
+                },
+                {
+                  "u64": 1
+                },
+                {
+                  "u32": 0
+                }
+              ]
+            },
+            "durability": "persistent"
+          }
+        },
+        [
+          {
+            "last_modified_ledger_seq": 0,
+            "data": {
+              "contract_data": {
+                "ext": "v0",
+                "contract": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAD2KM",
+                "key": {
+                  "vec": [
+                    {
+                      "symbol": "ClaimSalt"
+                    },
+                    {
+                      "u64": 1
+                    },
+                    {
+                      "u32": 0
+                    }
+                  ]
+                },
+                "durability": "persistent",
+                "val": {
+                  "bytes": "524ee29b9c71075ed2e71f310e269e1d77a9434a0021e5057c588e9b64fc587c"
+                }
+              }
+            },
+            "ext": "v0"
+          },
+          4095
+        ]
+      ],
+      [
+        {
+          "contract_data": {
+            "contract": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAD2KM",
+            "key": {
+              "vec": [
+                {
+                  "symbol": "ClaimSalt"
+                },
+                {
+                  "u64": 1
+                },
+                {
+                  "u32": 1
+                }
+              ]
+            },
+            "durability": "persistent"
+          }
+        },
+        [
+          {
+            "last_modified_ledger_seq": 0,
+            "data": {
+              "contract_data": {
+                "ext": "v0",
+                "contract": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAD2KM",
+                "key": {
+                  "vec": [
+                    {
+                      "symbol": "ClaimSalt"
+                    },
+                    {
+                      "u64": 1
+                    },
+                    {
+                      "u32": 1
+                    }
+                  ]
+                },
+                "durability": "persistent",
+                "val": {
+                  "bytes": "87c05be3c95b5e9360e918dd7a90d41004881c29f9697e9f65b83a7a500809fa"
                 }
               }
             },
@@ -962,7 +1200,7 @@
                                   "symbol": "hashed_claim_code"
                                 },
                                 "val": {
-                                  "bytes": "bcb15f821479b4d5772bd0ca866c00ad5f926e3580720659cc80d39c9d09802a"
+                                  "bytes": "f048016fe6ecaa827481b3c6a35deb6ed84c0c30090ddecf166b35f461f69e7a"
                                 }
                               },
                               {
@@ -970,7 +1208,7 @@
                                   "symbol": "hashed_email"
                                 },
                                 "val": {
-                                  "bytes": "ab107f1bd632d3c3f5c724a99d024f7faa033f33c07696384b604bfe78ac352d"
+                                  "bytes": "fc8a942d5e6ffccb36dcc2be4309f31486125e2dc4deaada25c7ca95c3f8453f"
                                 }
                               },
                               {
@@ -978,7 +1216,7 @@
                                   "symbol": "hashed_full_name"
                                 },
                                 "val": {
-                                  "bytes": "1f825aa2f0020ef7cf91dfa30da4668d791c5d4824fc8e41354b89ec05795ab3"
+                                  "bytes": "79f0f3c62d63a402a13a8b2fd2898224561ab5f792e33c4b0d655e715f8a3710"
                                 }
                               },
                               {
@@ -1022,7 +1260,7 @@
                                   "symbol": "hashed_claim_code"
                                 },
                                 "val": {
-                                  "bytes": "4cc8f4d609b717356701c57a03e737e5ac8fe885da8c7163d3de47e01849c635"
+                                  "bytes": "b1c0e8cddced839aff4c804986bd215a480dca595da49710324120d7c2d43726"
                                 }
                               },
                               {
@@ -1030,7 +1268,7 @@
                                   "symbol": "hashed_email"
                                 },
                                 "val": {
-                                  "bytes": "5f9a753613d87b8a17302373c4aee56faa310d3b24b6ae1862d673aa22e1790f"
+                                  "bytes": "d2c5fc4dcfe04bc4b723ade83b92503a66e03f00449599fac112409f6a7e9e65"
                                 }
                               },
                               {
@@ -1038,7 +1276,7 @@
                                   "symbol": "hashed_full_name"
                                 },
                                 "val": {
-                                  "bytes": "1f825aa2f0020ef7cf91dfa30da4668d791c5d4824fc8e41354b89ec05795ab3"
+                                  "bytes": "282e73a1d2927c371d85a38dcf68acbfe8864e8396e1ddd2be168203303e3037"
                                 }
                               },
                               {
@@ -1153,6 +1391,218 @@
                       "val": {
                         "bool": true
                       }
+                    }
+                  ]
+                }
+              }
+            },
+            "ext": "v0"
+          },
+          4095
+        ]
+      ],
+      [
+        {
+          "contract_data": {
+            "contract": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAD2KM",
+            "key": {
+              "vec": [
+                {
+                  "symbol": "Roles"
+                },
+                {
+                  "address": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAHK3M"
+                }
+              ]
+            },
+            "durability": "persistent"
+          }
+        },
+        [
+          {
+            "last_modified_ledger_seq": 0,
+            "data": {
+              "contract_data": {
+                "ext": "v0",
+                "contract": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAD2KM",
+                "key": {
+                  "vec": [
+                    {
+                      "symbol": "Roles"
+                    },
+                    {
+                      "address": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAHK3M"
+                    }
+                  ]
+                },
+                "durability": "persistent",
+                "val": {
+                  "vec": [
+                    {
+                      "vec": [
+                        {
+                          "symbol": "Admin"
+                        }
+                      ]
+                    }
+                  ]
+                }
+              }
+            },
+            "ext": "v0"
+          },
+          4095
+        ]
+      ],
+      [
+        {
+          "contract_data": {
+            "contract": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAD2KM",
+            "key": {
+              "vec": [
+                {
+                  "symbol": "Roles"
+                },
+                {
+                  "address": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAITA4"
+                }
+              ]
+            },
+            "durability": "persistent"
+          }
+        },
+        [
+          {
+            "last_modified_ledger_seq": 0,
+            "data": {
+              "contract_data": {
+                "ext": "v0",
+                "contract": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAD2KM",
+                "key": {
+                  "vec": [
+                    {
+                      "symbol": "Roles"
+                    },
+                    {
+                      "address": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAITA4"
+                    }
+                  ]
+                },
+                "durability": "persistent",
+                "val": {
+                  "vec": [
+                    {
+                      "vec": [
+                        {
+                          "symbol": "Owner"
+                        }
+                      ]
+                    }
+                  ]
+                }
+              }
+            },
+            "ext": "v0"
+          },
+          4095
+        ]
+      ],
+      [
+        {
+          "contract_data": {
+            "contract": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAD2KM",
+            "key": {
+              "vec": [
+                {
+                  "symbol": "Roles"
+                },
+                {
+                  "address": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAK3IM"
+                }
+              ]
+            },
+            "durability": "persistent"
+          }
+        },
+        [
+          {
+            "last_modified_ledger_seq": 0,
+            "data": {
+              "contract_data": {
+                "ext": "v0",
+                "contract": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAD2KM",
+                "key": {
+                  "vec": [
+                    {
+                      "symbol": "Roles"
+                    },
+                    {
+                      "address": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAK3IM"
+                    }
+                  ]
+                },
+                "durability": "persistent",
+                "val": {
+                  "vec": [
+                    {
+                      "vec": [
+                        {
+                          "symbol": "Beneficiary"
+                        }
+                      ]
+                    }
+                  ]
+                }
+              }
+            },
+            "ext": "v0"
+          },
+          4095
+        ]
+      ],
+      [
+        {
+          "contract_data": {
+            "contract": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAD2KM",
+            "key": {
+              "vec": [
+                {
+                  "symbol": "Roles"
+                },
+                {
+                  "address": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAMDR4"
+                }
+              ]
+            },
+            "durability": "persistent"
+          }
+        },
+        [
+          {
+            "last_modified_ledger_seq": 0,
+            "data": {
+              "contract_data": {
+                "ext": "v0",
+                "contract": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAD2KM",
+                "key": {
+                  "vec": [
+                    {
+                      "symbol": "Roles"
+                    },
+                    {
+                      "address": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAMDR4"
+                    }
+                  ]
+                },
+                "durability": "persistent",
+                "val": {
+                  "vec": [
+                    {
+                      "vec": [
+                        {
+                          "symbol": "Beneficiary"
+                        }
+                      ]
                     }
                   ]
                 }
@@ -1392,6 +1842,21 @@
                           "i128": {
                             "hi": 0,
                             "lo": 9999000
+                          }
+                        }
+                      },
+                      {
+                        "key": {
+                          "vec": [
+                            {
+                              "symbol": "TotalSupply"
+                            }
+                          ]
+                        },
+                        "val": {
+                          "i128": {
+                            "hi": 0,
+                            "lo": 10000000
                           }
                         }
                       }
@@ -2573,7 +3038,7 @@
                               "symbol": "hashed_claim_code"
                             },
                             "val": {
-                              "bytes": "bcb15f821479b4d5772bd0ca866c00ad5f926e3580720659cc80d39c9d09802a"
+                              "bytes": "f048016fe6ecaa827481b3c6a35deb6ed84c0c30090ddecf166b35f461f69e7a"
                             }
                           },
                           {
@@ -2581,7 +3046,7 @@
                               "symbol": "hashed_email"
                             },
                             "val": {
-                              "bytes": "ab107f1bd632d3c3f5c724a99d024f7faa033f33c07696384b604bfe78ac352d"
+                              "bytes": "fc8a942d5e6ffccb36dcc2be4309f31486125e2dc4deaada25c7ca95c3f8453f"
                             }
                           },
                           {
@@ -2589,7 +3054,7 @@
                               "symbol": "hashed_full_name"
                             },
                             "val": {
-                              "bytes": "1f825aa2f0020ef7cf91dfa30da4668d791c5d4824fc8e41354b89ec05795ab3"
+                              "bytes": "79f0f3c62d63a402a13a8b2fd2898224561ab5f792e33c4b0d655e715f8a3710"
                             }
                           },
                           {
@@ -2633,7 +3098,7 @@
                               "symbol": "hashed_claim_code"
                             },
                             "val": {
-                              "bytes": "4cc8f4d609b717356701c57a03e737e5ac8fe885da8c7163d3de47e01849c635"
+                              "bytes": "b1c0e8cddced839aff4c804986bd215a480dca595da49710324120d7c2d43726"
                             }
                           },
                           {
@@ -2641,7 +3106,7 @@
                               "symbol": "hashed_email"
                             },
                             "val": {
-                              "bytes": "5f9a753613d87b8a17302373c4aee56faa310d3b24b6ae1862d673aa22e1790f"
+                              "bytes": "d2c5fc4dcfe04bc4b723ade83b92503a66e03f00449599fac112409f6a7e9e65"
                             }
                           },
                           {
@@ -2649,7 +3114,7 @@
                               "symbol": "hashed_full_name"
                             },
                             "val": {
-                              "bytes": "1f825aa2f0020ef7cf91dfa30da4668d791c5d4824fc8e41354b89ec05795ab3"
+                              "bytes": "282e73a1d2927c371d85a38dcf68acbfe8864e8396e1ddd2be168203303e3037"
                             }
                           },
                           {
@@ -3363,7 +3828,7 @@
                   "u64": 1
                 },
                 {
-                  "bytes": "ab107f1bd632d3c3f5c724a99d024f7faa033f33c07696384b604bfe78ac352d"
+                  "bytes": "fc8a942d5e6ffccb36dcc2be4309f31486125e2dc4deaada25c7ca95c3f8453f"
                 },
                 {
                   "u64": 588
@@ -3506,7 +3971,7 @@
                               "symbol": "hashed_claim_code"
                             },
                             "val": {
-                              "bytes": "bcb15f821479b4d5772bd0ca866c00ad5f926e3580720659cc80d39c9d09802a"
+                              "bytes": "f048016fe6ecaa827481b3c6a35deb6ed84c0c30090ddecf166b35f461f69e7a"
                             }
                           },
                           {
@@ -3514,7 +3979,7 @@
                               "symbol": "hashed_email"
                             },
                             "val": {
-                              "bytes": "ab107f1bd632d3c3f5c724a99d024f7faa033f33c07696384b604bfe78ac352d"
+                              "bytes": "fc8a942d5e6ffccb36dcc2be4309f31486125e2dc4deaada25c7ca95c3f8453f"
                             }
                           },
                           {
@@ -3522,7 +3987,7 @@
                               "symbol": "hashed_full_name"
                             },
                             "val": {
-                              "bytes": "1f825aa2f0020ef7cf91dfa30da4668d791c5d4824fc8e41354b89ec05795ab3"
+                              "bytes": "79f0f3c62d63a402a13a8b2fd2898224561ab5f792e33c4b0d655e715f8a3710"
                             }
                           },
                           {
@@ -3566,7 +4031,7 @@
                               "symbol": "hashed_claim_code"
                             },
                             "val": {
-                              "bytes": "4cc8f4d609b717356701c57a03e737e5ac8fe885da8c7163d3de47e01849c635"
+                              "bytes": "b1c0e8cddced839aff4c804986bd215a480dca595da49710324120d7c2d43726"
                             }
                           },
                           {
@@ -3574,7 +4039,7 @@
                               "symbol": "hashed_email"
                             },
                             "val": {
-                              "bytes": "5f9a753613d87b8a17302373c4aee56faa310d3b24b6ae1862d673aa22e1790f"
+                              "bytes": "d2c5fc4dcfe04bc4b723ade83b92503a66e03f00449599fac112409f6a7e9e65"
                             }
                           },
                           {
@@ -3582,7 +4047,7 @@
                               "symbol": "hashed_full_name"
                             },
                             "val": {
-                              "bytes": "1f825aa2f0020ef7cf91dfa30da4668d791c5d4824fc8e41354b89ec05795ab3"
+                              "bytes": "282e73a1d2927c371d85a38dcf68acbfe8864e8396e1ddd2be168203303e3037"
                             }
                           },
                           {
@@ -3821,7 +4286,7 @@
                   "u64": 1
                 },
                 {
-                  "bytes": "5f9a753613d87b8a17302373c4aee56faa310d3b24b6ae1862d673aa22e1790f"
+                  "bytes": "d2c5fc4dcfe04bc4b723ade83b92503a66e03f00449599fac112409f6a7e9e65"
                 },
                 {
                   "u64": 156
@@ -3964,7 +4429,7 @@
                               "symbol": "hashed_claim_code"
                             },
                             "val": {
-                              "bytes": "bcb15f821479b4d5772bd0ca866c00ad5f926e3580720659cc80d39c9d09802a"
+                              "bytes": "f048016fe6ecaa827481b3c6a35deb6ed84c0c30090ddecf166b35f461f69e7a"
                             }
                           },
                           {
@@ -3972,7 +4437,7 @@
                               "symbol": "hashed_email"
                             },
                             "val": {
-                              "bytes": "ab107f1bd632d3c3f5c724a99d024f7faa033f33c07696384b604bfe78ac352d"
+                              "bytes": "fc8a942d5e6ffccb36dcc2be4309f31486125e2dc4deaada25c7ca95c3f8453f"
                             }
                           },
                           {
@@ -3980,7 +4445,7 @@
                               "symbol": "hashed_full_name"
                             },
                             "val": {
-                              "bytes": "1f825aa2f0020ef7cf91dfa30da4668d791c5d4824fc8e41354b89ec05795ab3"
+                              "bytes": "79f0f3c62d63a402a13a8b2fd2898224561ab5f792e33c4b0d655e715f8a3710"
                             }
                           },
                           {
@@ -4024,7 +4489,7 @@
                               "symbol": "hashed_claim_code"
                             },
                             "val": {
-                              "bytes": "4cc8f4d609b717356701c57a03e737e5ac8fe885da8c7163d3de47e01849c635"
+                              "bytes": "b1c0e8cddced839aff4c804986bd215a480dca595da49710324120d7c2d43726"
                             }
                           },
                           {
@@ -4032,7 +4497,7 @@
                               "symbol": "hashed_email"
                             },
                             "val": {
-                              "bytes": "5f9a753613d87b8a17302373c4aee56faa310d3b24b6ae1862d673aa22e1790f"
+                              "bytes": "d2c5fc4dcfe04bc4b723ade83b92503a66e03f00449599fac112409f6a7e9e65"
                             }
                           },
                           {
@@ -4040,7 +4505,7 @@
                               "symbol": "hashed_full_name"
                             },
                             "val": {
-                              "bytes": "1f825aa2f0020ef7cf91dfa30da4668d791c5d4824fc8e41354b89ec05795ab3"
+                              "bytes": "282e73a1d2927c371d85a38dcf68acbfe8864e8396e1ddd2be168203303e3037"
                             }
                           },
                           {
