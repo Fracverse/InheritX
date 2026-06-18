@@ -504,6 +504,89 @@ export const notificationsHandlers = [
   }),
 ];
 
+// ─── AI Optimization ──────────────────────────────────────────────────────────
+
+const MOCK_AI_RECOMMENDATION = {
+  id: "rec_001",
+  planId: 1,
+  recommendedAllocations: [
+    {
+      assetSymbol: "XLM",
+      chain: "Stellar",
+      currentPercentage: 45,
+      recommendedPercentage: 30,
+      adjustmentReason: "Reduce concentration risk",
+      expectedImpact: "Lower volatility exposure",
+    },
+    {
+      assetSymbol: "USDC",
+      chain: "Stellar",
+      currentPercentage: 25,
+      recommendedPercentage: 35,
+      adjustmentReason: "Increase stable allocation",
+      expectedImpact: "Improved capital preservation",
+    },
+    {
+      assetSymbol: "BTC",
+      chain: "Bitcoin",
+      currentPercentage: 20,
+      recommendedPercentage: 22,
+      adjustmentReason: "Long-term store of value",
+      expectedImpact: "Enhanced 10-year value projection",
+    },
+    {
+      assetSymbol: "ETH",
+      chain: "Ethereum",
+      currentPercentage: 10,
+      recommendedPercentage: 13,
+      adjustmentReason: "DeFi yield-generating assets",
+      expectedImpact: "Additional yield ~4.2% APY",
+    },
+  ],
+  confidenceScore: 87,
+  expectedReturn: 14.3,
+  riskScore: 42,
+  reasoning: "AI-generated optimization based on historical volatility analysis.",
+  generatedAt: new Date().toISOString(),
+  projectedOutcomes: {
+    estimatedValue1Year: 114300,
+    estimatedValue5Year: 197600,
+    estimatedValue10Year: 389200,
+    riskMetrics: {
+      volatility: 18.4,
+      sharpeRatio: 1.34,
+      maxDrawdown: 28.7,
+      valueAtRisk: 8.2,
+    },
+  },
+};
+
+export const aiOptimizationHandlers = [
+  http.get("/api/ai/optimize/:planId", ({ params }) =>
+    HttpResponse.json({ ...MOCK_AI_RECOMMENDATION, planId: Number(params.planId) }),
+  ),
+
+  http.post("/api/ai/recommendations/:id/respond", async ({ params, request }) => {
+    const body = (await request.json()) as { action: string; reason?: string };
+    const status = body.action === "accept" ? "accepted" : "rejected";
+    return HttpResponse.json({
+      status,
+      reason: body.reason,
+      appliedAt: new Date().toISOString(),
+    });
+  }),
+
+  http.post("/api/ai/optimize/:planId/custom", async ({ params, request }) => {
+    const body = (await request.json()) as { allocations: unknown[] };
+    return HttpResponse.json({
+      allocations: body.allocations,
+      projectedOutcomes: MOCK_AI_RECOMMENDATION.projectedOutcomes,
+      expectedReturn: 12.1,
+      riskScore: 38,
+    });
+  }),
+];
+
 export const handlers = [
   ...plansHandlers,
   ...claimsHandlers,
@@ -512,4 +595,5 @@ export const handlers = [
   ...messagesHandlers,
   ...willDocumentsHandlers,
   ...notificationsHandlers,
+  ...aiOptimizationHandlers,
 ];
