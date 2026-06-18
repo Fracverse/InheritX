@@ -8,6 +8,11 @@ use soroban_sdk::{
 mod disputes;
 use disputes::{DisputeRecord, DisputeStatus};
 
+mod cross_chain;
+pub use cross_chain::{
+    BridgeProtocol, CrossChainAsset, CrossChainError, CrossChainInheritancePlan, SupportedChain,
+};
+
 /// Current contract version - bump this on each upgrade
 const CONTRACT_VERSION: u32 = 1;
 
