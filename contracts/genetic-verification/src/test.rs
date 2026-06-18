@@ -288,7 +288,8 @@ fn test_generate_dna_hash() {
     let salt = BytesN::from_array(&env, &[0xAA; 32]);
     let privacy_level = PrivacyLevel::Private;
 
-    let result = GeneticVerificationContract::generate_dna_hash(&env, dna_data, salt, privacy_level);
+    let result =
+        GeneticVerificationContract::generate_dna_hash(&env, dna_data, salt, privacy_level);
     assert!(result.is_ok());
 }
 
@@ -299,7 +300,8 @@ fn test_generate_dna_hash_empty_data() {
     let salt = BytesN::from_array(&env, &[0xAA; 32]);
     let privacy_level = PrivacyLevel::Private;
 
-    let result = GeneticVerificationContract::generate_dna_hash(&env, dna_data, salt, privacy_level);
+    let result =
+        GeneticVerificationContract::generate_dna_hash(&env, dna_data, salt, privacy_level);
     assert!(result.is_err());
     assert_eq!(result.unwrap_err(), GeneticVerificationError::InvalidInput);
 }
@@ -310,7 +312,8 @@ fn test_calculate_genetic_similarity() {
     let hash1 = BytesN::from_array(&env, &[0xAA; 32]);
     let hash2 = BytesN::from_array(&env, &[0xAA; 32]);
 
-    let similarity = GeneticVerificationContract::calculate_genetic_similarity(&env, hash1.clone(), hash2);
+    let similarity =
+        GeneticVerificationContract::calculate_genetic_similarity(&env, hash1.clone(), hash2);
     assert_eq!(similarity.unwrap(), 100);
 
     let hash3 = BytesN::from_array(&env, &[0xBB; 32]);
@@ -337,7 +340,10 @@ fn test_verify_dna_match_invalid_threshold() {
 
     let result = GeneticVerificationContract::verify_dna_match(&env, hash1, hash2, 101);
     assert!(result.is_err());
-    assert_eq!(result.unwrap_err(), GeneticVerificationError::InvalidSimilarityThreshold);
+    assert_eq!(
+        result.unwrap_err(),
+        GeneticVerificationError::InvalidSimilarityThreshold
+    );
 }
 
 #[test]

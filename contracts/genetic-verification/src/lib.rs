@@ -1,5 +1,7 @@
 #![no_std]
-use soroban_sdk::{contract, contracterror, contractimpl, contracttype, Address, Bytes, BytesN, Env, String, Vec};
+use soroban_sdk::{
+    contract, contracterror, contractimpl, contracttype, Address, Bytes, BytesN, Env, String, Vec,
+};
 
 // ─── Enums ──────────────────────────────────────────────────────────────────
 
@@ -45,10 +47,10 @@ pub enum GeneticTriggerType {
 #[contracttype]
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum PrivacyLevel {
-    Public, // Basic family verification only
+    Public,    // Basic family verification only
     Protected, // Health conditions hidden
-    Private, // Full genetic privacy
-    Medical, // Medical professional access only
+    Private,   // Full genetic privacy
+    Medical,   // Medical professional access only
 }
 
 /// Hashing algorithm used for DNA hashing.
@@ -64,8 +66,8 @@ pub enum HashAlgorithm {
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum GeneticMarker {
     IdentityMarker(String), // For lineage verification
-    HealthMarker(String), // For health condition detection
-    TraitMarker(String), // For trait verification
+    HealthMarker(String),   // For health condition detection
+    TraitMarker(String),    // For trait verification
     AncestryMarker(String), // For ancestry verification
 }
 
