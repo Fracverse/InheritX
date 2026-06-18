@@ -50,7 +50,6 @@ pub mod session;
 pub mod stellar;
 pub mod stress_testing;
 pub mod telemetry;
-pub mod token_metadata;
 pub mod validation;
 pub mod webhook;
 pub mod will_audit;

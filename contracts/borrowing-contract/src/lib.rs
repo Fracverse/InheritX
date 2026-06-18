@@ -21,6 +21,95 @@ pub struct Loan {
 }
 
 // ─────────────────────────────────────────────────
+// Decimal normalization (#632)
+//
+// Collateral and debt are denominated in tokens that may carry different
+// on-chain precision (e.g. a 6-decimal stablecoin against a 7-decimal SAC).
+// Comparing their raw integer amounts directly skews collateralization and
+// health-factor math. These pure helpers normalize amounts by their token
+// decimals before any cross-asset comparison.
+// ─────────────────────────────────────────────────
+
+/// Health factor is expressed in basis points; `10000` == `1.0x`.
+const BPS_DENOMINATOR: u128 = 10_000;
+
+/// Maximum decimal precision the contract will normalize against. Bounds the
+/// scaling factor so it cannot exhaust `u128` and matches the widest precision
+/// of common assets (e.g. 18-decimal wrapped tokens).
+pub const MAX_SUPPORTED_DECIMALS: u32 = 18;
+
+/// `10^exp` as a `u128`, or `None` if it overflows.
+fn pow10(exp: u32) -> Option<u128> {
+    10u128.checked_pow(exp)
+}
+
+/// Re-express `amount` (given at `from_decimals` precision) at `to_decimals`
+/// precision. Scaling up multiplies, scaling down divides (truncating). Returns
+/// `None` on overflow.
+pub fn scale_amount(amount: i128, from_decimals: u32, to_decimals: u32) -> Option<i128> {
+    use core::cmp::Ordering;
+    match to_decimals.cmp(&from_decimals) {
+        Ordering::Equal => Some(amount),
+        Ordering::Greater => {
+            let factor = pow10(to_decimals - from_decimals)? as i128;
+            amount.checked_mul(factor)
+        }
+        Ordering::Less => {
+            let factor = pow10(from_decimals - to_decimals)? as i128;
+            Some(amount / factor)
+        }
+    }
+}
+
+/// Collateral-to-debt health factor in basis points, normalizing for the
+/// (possibly different) decimal precision of the collateral and debt assets.
+///
+/// `real_collateral / real_debt = (collateral / debt) * 10^(debt_dec - coll_dec)`.
+/// Zero (or negative) debt is treated as maximally healthy (`10000`). Any
+/// intermediate overflow saturates to `0`, preserving the contract's existing
+/// "unhealthy on arithmetic failure" behavior rather than panicking.
+pub fn health_factor_bps(
+    collateral_amount: i128,
+    collateral_decimals: u32,
+    debt: i128,
+    debt_decimals: u32,
+) -> u32 {
+    if debt <= 0 {
+        return 10000;
+    }
+
+    let collateral = collateral_amount.max(0) as u128;
+    let debt = debt as u128;
+
+    let raw = if debt_decimals >= collateral_decimals {
+        // Scale the numerator up by the decimal delta.
+        pow10(debt_decimals - collateral_decimals)
+            .and_then(|factor| {
+                collateral
+                    .checked_mul(BPS_DENOMINATOR)
+                    .map(|num| (num, factor))
+            })
+            .and_then(|(num, factor)| num.checked_mul(factor))
+            .and_then(|num| num.checked_div(debt))
+    } else {
+        // Scale the denominator up by the decimal delta.
+        pow10(collateral_decimals - debt_decimals)
+            .and_then(|factor| debt.checked_mul(factor))
+            .and_then(|den| {
+                collateral
+                    .checked_mul(BPS_DENOMINATOR)
+                    .and_then(|num| num.checked_div(den))
+            })
+    };
+
+    match raw {
+        Some(v) if v <= u32::MAX as u128 => v as u32,
+        Some(_) => u32::MAX,
+        None => 0,
+    }
+}
+
+// ─────────────────────────────────────────────────
 // Events
 // ─────────────────────────────────────────────────
 
@@ -226,6 +315,7 @@ pub enum DataKey {
     OraclePriceTimestamp(Address),
     MaxOracleAge,
     VolatilityBufferBps(Address),
+    PrincipalDecimals,
 }
 
 #[contracterror]
@@ -248,6 +338,7 @@ pub enum BorrowingError {
     ReentrantCall = 15,
     ContractPaused = 16,
     OraclePriceStale = 17,
+    InvalidDecimals = 18,
 }
 
 #[contract]
@@ -293,6 +384,34 @@ impl BorrowingContract {
     fn require_admin(env: &Env, admin: &Address) -> Result<(), BorrowingError> {
         admin.require_auth();
         access_control::require_role(env, admin, Role::Admin, BorrowingError::Unauthorized)
+    }
+
+    /// Decimal precision of the asset the loan principal/debt is denominated in.
+    /// Defaults to the Stellar-standard 7 decimals when unset, which keeps
+    /// valuations unchanged for same-precision collateral.
+    fn principal_decimals(env: &Env) -> u32 {
+        env.storage()
+            .instance()
+            .get(&DataKey::PrincipalDecimals)
+            .unwrap_or(7)
+    }
+
+    /// Configure the decimal precision of the principal/debt asset so that
+    /// collateral valued in a different-precision token is normalized correctly.
+    /// Admin-only; rejects precisions above [`MAX_SUPPORTED_DECIMALS`].
+    pub fn set_principal_decimals(
+        env: Env,
+        admin: Address,
+        decimals: u32,
+    ) -> Result<(), BorrowingError> {
+        Self::require_admin(&env, &admin)?;
+        if decimals > MAX_SUPPORTED_DECIMALS {
+            return Err(BorrowingError::InvalidDecimals);
+        }
+        env.storage()
+            .instance()
+            .set(&DataKey::PrincipalDecimals, &decimals);
+        Ok(())
     }
 
     /// Assign a role to an address. Admin-only.
@@ -452,7 +571,16 @@ impl BorrowingContract {
             .get(&DataKey::VolatilityBufferBps(collateral_token.clone()))
             .unwrap_or(0);
         let effective_ratio = ratio.saturating_add(volatility_buffer);
-        let required_collateral = (principal as u128)
+
+        // Normalize the principal (denominated at `principal_decimals`) into the
+        // collateral token's precision before sizing the required collateral, so
+        // assets with different decimals are compared on the same scale (#632).
+        let collateral_decimals = token::Client::new(&env, &collateral_token).decimals();
+        let principal_decimals = Self::principal_decimals(&env);
+        let principal_in_collateral =
+            scale_amount(principal, principal_decimals, collateral_decimals)
+                .ok_or(BorrowingError::InvalidAmount)?;
+        let required_collateral = (principal_in_collateral as u128)
             .checked_mul(effective_ratio as u128)
             .and_then(|v| v.checked_div(10000))
             .unwrap_or(0) as i128;
@@ -682,15 +810,15 @@ impl BorrowingContract {
             return Err(BorrowingError::InvalidAmount);
         }
 
-        // Calculate health factor inline – avoids a redundant storage read from get_health_factor
-        let health_factor = if debt == 0 {
-            10000
-        } else {
-            (loan.collateral_amount as u128)
-                .checked_mul(10000)
-                .and_then(|v| v.checked_div(debt as u128))
-                .unwrap_or(0) as u32
-        };
+        // Calculate health factor inline – avoids a redundant storage read from get_health_factor.
+        // Normalizes for collateral/debt decimal precision differences (#632).
+        let collateral_decimals = token::Client::new(&env, &loan.collateral_token).decimals();
+        let health_factor = health_factor_bps(
+            loan.collateral_amount,
+            collateral_decimals,
+            debt,
+            Self::principal_decimals(&env),
+        );
 
         // Cache both threshold and bonus in a single pass over instance storage
         let liquidation_threshold: u32 = env
@@ -777,14 +905,13 @@ impl BorrowingContract {
             .ok_or(BorrowingError::LoanNotFound)?;
 
         let debt = loan.principal - loan.amount_repaid;
-        let health_factor = if debt == 0 {
-            10000
-        } else {
-            (loan.collateral_amount as u128)
-                .checked_mul(10000)
-                .and_then(|v| v.checked_div(debt as u128))
-                .unwrap_or(0) as u32
-        };
+        let collateral_decimals = token::Client::new(&env, &loan.collateral_token).decimals();
+        let health_factor = health_factor_bps(
+            loan.collateral_amount,
+            collateral_decimals,
+            debt,
+            Self::principal_decimals(&env),
+        );
 
         Ok(health_factor)
     }
@@ -821,15 +948,15 @@ impl BorrowingContract {
             return Err(BorrowingError::LoanNotActive);
         }
 
-        // Compute health factor inline (avoids second storage read via get_health_factor)
-        let health_factor = if debt == 0 {
-            10000u32
-        } else {
-            (loan.collateral_amount as u128)
-                .checked_mul(10000)
-                .and_then(|v| v.checked_div(debt as u128))
-                .unwrap_or(0) as u32
-        };
+        // Compute health factor inline (avoids second storage read via get_health_factor).
+        // Normalizes for collateral/debt decimal precision differences (#632).
+        let collateral_decimals = token::Client::new(&env, &loan.collateral_token).decimals();
+        let health_factor = health_factor_bps(
+            loan.collateral_amount,
+            collateral_decimals,
+            debt,
+            Self::principal_decimals(&env),
+        );
 
         let liquidation_threshold: u32 = env
             .storage()
@@ -1085,14 +1212,14 @@ impl BorrowingContract {
             .get(&DataKey::Loan(loan_id))
             .ok_or(BorrowingError::LoanNotFound)?;
         let debt = loan.principal - loan.amount_repaid;
-        let health_factor = if debt == 0 {
-            10000u32
-        } else {
-            (loan.collateral_amount as u128)
-                .checked_mul(10000)
-                .and_then(|v| v.checked_div(debt as u128))
-                .unwrap_or(0) as u32
-        };
+        // Normalizes for collateral/debt decimal precision differences (#632).
+        let collateral_decimals = token::Client::new(&env, &loan.collateral_token).decimals();
+        let health_factor = health_factor_bps(
+            loan.collateral_amount,
+            collateral_decimals,
+            debt,
+            Self::principal_decimals(&env),
+        );
         let liquidation_threshold: u32 = env
             .storage()
             .instance()
