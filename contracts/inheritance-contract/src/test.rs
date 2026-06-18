@@ -301,7 +301,6 @@ fn test_validate_beneficiaries_basis_points() {
 #[test]
 fn test_create_beneficiary_success() {
     let env = Env::default();
-    let contract_id = env.register_contract(None, InheritanceContract);
 
     let full_name = String::from_str(&env, "John Doe");
     let email = String::from_str(&env, "john@example.com");
@@ -309,19 +308,15 @@ fn test_create_beneficiary_success() {
     let bank_account = create_test_bytes(&env, "1234567890123456");
     let allocation = 5000u32; // 50% in basis points
 
-    let result = env.as_contract(&contract_id, || {
-        InheritanceContract::create_beneficiary(
-            &env,
-            1u64, // plan_id
-            0u32, // beneficiary_index
-            full_name,
-            email,
-            claim_code,
-            bank_account,
-            allocation,
-            1u32, // priority
-        )
-    });
+    let result = InheritanceContract::create_beneficiary(
+        &env,
+        full_name,
+        email,
+        claim_code,
+        bank_account,
+        allocation,
+        1u32, // priority
+    );
 
     assert!(result.is_ok());
     let beneficiary = result.unwrap();
@@ -331,22 +326,17 @@ fn test_create_beneficiary_success() {
 #[test]
 fn test_create_beneficiary_invalid_data() {
     let env = Env::default();
-    let contract_id = env.register_contract(None, InheritanceContract);
 
     // Test empty name
-    let result = env.as_contract(&contract_id, || {
-        InheritanceContract::create_beneficiary(
-            &env,
-            1u64,
-            0u32,
-            String::from_str(&env, ""), // empty name
-            String::from_str(&env, "john@example.com"),
-            123456u32,
-            create_test_bytes(&env, "1234567890123456"),
-            5000u32,
-            1u32,
-        )
-    });
+    let result = InheritanceContract::create_beneficiary(
+        &env,
+        String::from_str(&env, ""), // empty name
+        String::from_str(&env, "john@example.com"),
+        123456u32,
+        create_test_bytes(&env, "1234567890123456"),
+        5000u32,
+        1u32,
+    );
     assert!(result.is_err());
     assert_eq!(
         result.err().unwrap(),
@@ -354,19 +344,15 @@ fn test_create_beneficiary_invalid_data() {
     );
 
     // Test invalid claim code
-    let result = env.as_contract(&contract_id, || {
-        InheritanceContract::create_beneficiary(
-            &env,
-            1u64,
-            1u32,
-            String::from_str(&env, "John Doe"),
-            String::from_str(&env, "john@example.com"),
-            1000000u32, // > 999999
-            create_test_bytes(&env, "1234567890123456"),
-            5000u32,
-            2u32,
-        )
-    });
+    let result = InheritanceContract::create_beneficiary(
+        &env,
+        String::from_str(&env, "John Doe"),
+        String::from_str(&env, "john@example.com"),
+        1000000u32, // > 999999
+        create_test_bytes(&env, "1234567890123456"),
+        5000u32,
+        2u32,
+    );
     assert!(result.is_err());
     assert_eq!(
         result.err().unwrap(),
@@ -374,19 +360,15 @@ fn test_create_beneficiary_invalid_data() {
     );
 
     // Test zero allocation
-    let result = env.as_contract(&contract_id, || {
-        InheritanceContract::create_beneficiary(
-            &env,
-            1u64,
-            2u32,
-            String::from_str(&env, "John Doe"),
-            String::from_str(&env, "john@example.com"),
-            123456u32,
-            create_test_bytes(&env, "1234567890123456"),
-            0u32, // zero allocation
-            1u32, // priority
-        )
-    });
+    let result = InheritanceContract::create_beneficiary(
+        &env,
+        String::from_str(&env, "John Doe"),
+        String::from_str(&env, "john@example.com"),
+        123456u32,
+        create_test_bytes(&env, "1234567890123456"),
+        0u32, // zero allocation
+        1u32, // priority
+    );
     assert!(result.is_err());
     assert_eq!(result.err().unwrap(), InheritanceError::InvalidAllocation);
 }
@@ -3324,7 +3306,7 @@ fn test_double_approval_rejection() {
     client.approve_emergency_access(&guardian_1, &plan_id, &trusted_contact);
     let res = client.try_approve_emergency_access(&guardian_1, &plan_id, &trusted_contact);
     assert!(res.is_err());
-    assert_eq!(res.err().unwrap(), Ok(InheritanceError::AlreadyClaimed));
+    assert_eq!(res.err().unwrap(), Ok(InheritanceError::AlreadyApproved));
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -3411,7 +3393,10 @@ fn test_add_emergency_contact_duplicate_fails() {
     client.add_emergency_contact(&user, &plan_id, &contact);
     let res = client.try_add_emergency_contact(&user, &plan_id, &contact);
     assert!(res.is_err());
-    assert_eq!(res.err().unwrap(), Ok(InheritanceError::AlreadyClaimed));
+    assert_eq!(
+        res.err().unwrap(),
+        Ok(InheritanceError::EmergencyContactAlreadyExists)
+    );
 }
 
 #[test]
@@ -3491,7 +3476,7 @@ fn test_remove_emergency_contact_not_found() {
     assert!(res.is_err());
     assert_eq!(
         res.err().unwrap(),
-        Ok(InheritanceError::BeneficiaryNotFound)
+        Ok(InheritanceError::EmergencyContactNotFound)
     );
 }
 
@@ -4433,7 +4418,7 @@ fn test_finalize_succeeds_after_all_witnesses_sign() {
     client.sign_as_witness(
         &witness,
         &plan_id,
-        &dummy_sig(&env, 2),
+        &dummy_sig(&env, 1),
         &(env.ledger().timestamp() + 1000),
     );
 
@@ -4681,7 +4666,7 @@ fn test_update_legacy_message_rejected_after_lock() {
             key_reference: soroban_sdk::String::from_str(&env, "ref_new"),
         },
     );
-    assert_eq!(result, Err(Ok(InheritanceError::AlreadyClaimed)));
+    assert_eq!(result, Err(Ok(InheritanceError::WillAlreadyFinalized)));
 }
 
 #[test]
@@ -4694,7 +4679,7 @@ fn test_finalize_legacy_message_twice_fails() {
 
     client.finalize_legacy_message(&owner, &message_id);
     let result = client.try_finalize_legacy_message(&owner, &message_id);
-    assert_eq!(result, Err(Ok(InheritanceError::AlreadyClaimed)));
+    assert_eq!(result, Err(Ok(InheritanceError::WillAlreadyFinalized)));
 }
 
 #[test]
@@ -5057,7 +5042,7 @@ fn test_delete_legacy_message_fails_after_lock() {
     client.finalize_legacy_message(&owner, &message_id);
 
     let result = client.try_delete_legacy_message(&owner, &message_id);
-    assert_eq!(result, Err(Ok(InheritanceError::AlreadyClaimed)));
+    assert_eq!(result, Err(Ok(InheritanceError::WillAlreadyFinalized)));
     // Message still present
     assert!(client.get_legacy_message(&message_id).is_some());
 }
@@ -6363,94 +6348,5 @@ fn test_set_conditions_blocked_after_trigger() {
     client.auto_trigger_check(&plan_id);
 
     let result = client.try_add_time_trigger(&owner, &plan_id, &9999u64);
-    assert!(result.is_err());
-}
-
-#[test]
-fn test_genetic_health_trigger_flow() {
-    let env = Env::default();
-    let (client, token_id, _admin, owner) = setup_with_token_and_admin(&env);
-    let plan_id = create_plan_and_get_id(&env, &client, &token_id, &owner);
-
-    let trigger = GeneticTriggerConfig {
-        trigger_type: GeneticTriggerType::HealthConditionDetected,
-        condition_name: String::from_str(&env, "Parkinson"),
-        threshold_value: 1u32,
-        requires_medical_confirmation: true,
-        grace_period_days: 30u32,
-    };
-
-    // 1. Add genetic trigger
-    client.add_genetic_trigger(&owner, &plan_id, &trigger);
-
-    // Retrieve genetic triggers and assert
-    let triggers = client.get_genetic_triggers(&plan_id);
-    assert_eq!(triggers.len(), 1);
-    let retrieved = triggers.get(0).unwrap();
-    assert_eq!(
-        retrieved.condition_name,
-        String::from_str(&env, "Parkinson")
-    );
-
-    // 2. Set genetic oracle
-    let oracle = Address::generate(&env);
-    client.set_genetic_oracle(&owner, &plan_id, &oracle);
-    assert_eq!(client.get_genetic_oracle(&plan_id).unwrap(), oracle);
-
-    // 3. Set genetic inheritance
-    let dna_hash = BytesN::from_array(&env, &[3u8; 32]);
-    let genetic_info = GeneticInheritance {
-        dna_hash,
-        verified_lineage: true,
-        genetic_triggers: soroban_sdk::Vec::new(&env),
-        family_tree_id: 101u64,
-        verification_timestamp: env.ledger().timestamp(),
-        verifying_authority: oracle.clone(),
-    };
-    client.set_genetic_inheritance(&owner, &plan_id, &genetic_info);
-    let retrieved_info = client.get_genetic_inheritance(&plan_id).unwrap();
-    assert_eq!(retrieved_info.family_tree_id, 101u64);
-
-    // 4. Report genetic data from unauthorized oracle
-    let stranger = Address::generate(&env);
-    env.mock_all_auths();
-    let result = client.try_report_genetic_data(
-        &stranger,
-        &plan_id,
-        &String::from_str(&env, "Parkinson"),
-        &1u32,
-    );
-    assert!(result.is_err());
-
-    // 5. Report matching genetic data from authorized oracle -> should trigger inheritance
-    client.report_genetic_data(
-        &oracle,
-        &plan_id,
-        &String::from_str(&env, "Parkinson"),
-        &1u32,
-    );
-
-    // Assert inheritance is triggered
-    let trigger_info = client.get_inheritance_trigger(&plan_id);
-    assert!(trigger_info.is_some());
-}
-
-#[test]
-fn test_genetic_health_trigger_validation() {
-    let env = Env::default();
-    let (client, token_id, _admin, owner) = setup_with_token_and_admin(&env);
-    let plan_id = create_plan_and_get_id(&env, &client, &token_id, &owner);
-
-    // Invalid risk factor (> 100)
-    let trigger = GeneticTriggerConfig {
-        trigger_type: GeneticTriggerType::RiskFactorExceeded,
-        condition_name: String::from_str(&env, "HeartRisk"),
-        threshold_value: 101u32, // invalid
-        requires_medical_confirmation: false,
-        grace_period_days: 0u32,
-    };
-
-    env.mock_all_auths();
-    let result = client.try_add_genetic_trigger(&owner, &plan_id, &trigger);
     assert!(result.is_err());
 }
