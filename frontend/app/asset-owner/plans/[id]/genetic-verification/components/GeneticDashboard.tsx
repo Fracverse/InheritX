@@ -1,6 +1,11 @@
 "use client";
 
 import { GeneticInheritance } from "@/app/lib/api/geneticVerification";
+import InteractiveFamilyTree, {
+  FamilyMemberNode,
+  GeneticConnectionEdge,
+  InheritanceFlowEdge,
+} from "@/components/InteractiveFamilyTree";
 
 interface Props {
   geneticInheritance: GeneticInheritance | null;
@@ -37,6 +42,159 @@ export default function GeneticDashboard({ geneticInheritance }: Props) {
 
   const { dnaHash, verifiedLineage, geneticTriggers, verificationTimestamp } =
     geneticInheritance;
+  const trackedConditions = geneticTriggers
+    .map((condition) => conditionLabel(condition))
+    .slice(0, 2);
+
+  const familyMembers: FamilyMemberNode[] = [
+    {
+      id: "owner",
+      name: "Plan Owner",
+      relationshipLabel: "Self",
+      relationshipDegree: 0,
+      geneticSimilarity: 100,
+      verificationStatus: verifiedLineage ? "verified" : "pending",
+      confidenceLevel: verifiedLineage ? 95 : 62,
+      healthRiskScore: geneticTriggers.length > 0 ? 66 : 34,
+      healthConditions: trackedConditions,
+    },
+    {
+      id: "spouse",
+      name: "Spouse",
+      relationshipLabel: "Partner",
+      relationshipDegree: 1,
+      geneticSimilarity: 2,
+      verificationStatus: "verified",
+      confidenceLevel: 91,
+      healthRiskScore: 31,
+      healthConditions: [],
+    },
+    {
+      id: "child-1",
+      name: "Child A",
+      relationshipLabel: "First child",
+      relationshipDegree: 1,
+      geneticSimilarity: 50,
+      verificationStatus: "verified",
+      confidenceLevel: 88,
+      healthRiskScore: trackedConditions.length > 0 ? 52 : 27,
+      healthConditions: trackedConditions.slice(0, 1),
+    },
+    {
+      id: "child-2",
+      name: "Child B",
+      relationshipLabel: "Second child",
+      relationshipDegree: 1,
+      geneticSimilarity: 49,
+      verificationStatus: "partial_match",
+      confidenceLevel: 76,
+      healthRiskScore: 41,
+      healthConditions: [],
+    },
+    {
+      id: "parent",
+      name: "Parent",
+      relationshipLabel: "Parental lineage",
+      relationshipDegree: 1,
+      geneticSimilarity: 50,
+      verificationStatus: "verified",
+      confidenceLevel: 92,
+      healthRiskScore: trackedConditions.length > 0 ? 58 : 36,
+      healthConditions: trackedConditions.slice(0, 1),
+    },
+  ];
+
+  const geneticConnections: GeneticConnectionEdge[] = [
+    {
+      id: "g-1",
+      sourceId: "parent",
+      targetId: "owner",
+      relationshipType: "parent",
+      relationshipDegree: 1,
+      similarityStrength: 50,
+      confidenceLevel: 92,
+      verified: true,
+    },
+    {
+      id: "g-2",
+      sourceId: "owner",
+      targetId: "child-1",
+      relationshipType: "parent",
+      relationshipDegree: 1,
+      similarityStrength: 50,
+      confidenceLevel: 89,
+      verified: true,
+    },
+    {
+      id: "g-3",
+      sourceId: "owner",
+      targetId: "child-2",
+      relationshipType: "parent",
+      relationshipDegree: 1,
+      similarityStrength: 49,
+      confidenceLevel: 77,
+      verified: false,
+    },
+    {
+      id: "g-4",
+      sourceId: "child-1",
+      targetId: "child-2",
+      relationshipType: "sibling",
+      relationshipDegree: 2,
+      similarityStrength: 72,
+      confidenceLevel: 80,
+      verified: true,
+    },
+    {
+      id: "g-5",
+      sourceId: "owner",
+      targetId: "spouse",
+      relationshipType: "spouse",
+      relationshipDegree: 1,
+      similarityStrength: 5,
+      confidenceLevel: 95,
+      verified: true,
+    },
+  ];
+
+  const inheritanceFlows: InheritanceFlowEdge[] = [
+    {
+      id: "f-1",
+      sourceId: "owner",
+      targetId: "spouse",
+      assetType: "Emergency Liquidity",
+      amount: 25000,
+      currency: "USD",
+      status: "planned",
+    },
+    {
+      id: "f-2",
+      sourceId: "owner",
+      targetId: "child-1",
+      assetType: "Education Trust",
+      amount: 60000,
+      currency: "USD",
+      status: "active",
+    },
+    {
+      id: "f-3",
+      sourceId: "owner",
+      targetId: "child-2",
+      assetType: "Token Portfolio",
+      amount: 42000,
+      currency: "USD",
+      status: "planned",
+    },
+    {
+      id: "f-4",
+      sourceId: "owner",
+      targetId: "parent",
+      assetType: "Care Fund",
+      amount: 18000,
+      currency: "USD",
+      status: "distributed",
+    },
+  ];
 
   return (
     <div className="space-y-6">
@@ -99,6 +257,13 @@ export default function GeneticDashboard({ geneticInheritance }: Props) {
           </ul>
         )}
       </div>
+
+      <InteractiveFamilyTree
+        members={familyMembers}
+        geneticConnections={geneticConnections}
+        inheritanceFlows={inheritanceFlows}
+        defaultCenterMemberId="owner"
+      />
     </div>
   );
 }
