@@ -1,0 +1,17 @@
+[advisories]
+ignore = [
+    # postgres-protocol: Unbounded SCRAM iteration count / Panic decoding malformed hstore
+    "RUSTSEC-2026-0179",
+    "RUSTSEC-2026-0180",
+    
+    # rsa: Marvin Attack (No fixed upgrade available)
+    "RUSTSEC-2023-0071",
+    
+    # rustls-webpki: Various cert parsing panics/incorrect acceptances
+    "RUSTSEC-2026-0104",
+    "RUSTSEC-2026-0099",
+    "RUSTSEC-2026-0098",
+    
+    # sqlx: Binary Protocol Misinterpretation (Requires breaking update to 0.8)
+    "RUSTSEC-2024-0363"
+]
