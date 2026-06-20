@@ -28,6 +28,7 @@ jobs:
           docker build -f backend/Dockerfile -t inheritx/backend:${{ github.sha }} .
 
       - name: Run Trivy vulnerability scanner
+        id: trivy
         uses: aquasecurity/trivy-action@master
         with:
           image-ref: 'inheritx/backend:${{ github.sha }}'
@@ -37,8 +38,8 @@ jobs:
           exit-code: '1'
 
       - name: Upload Trivy scan results to GitHub Security tab
-        uses: github/codeql-action/upload-sarif@v3
-        if: always()
+        uses: github/codeql-action/upload-sarif@v4
+        if: steps.trivy.outcome == 'success' || steps.trivy.outcome == 'failure'
         with:
           sarif_file: 'trivy-results.sarif'
 
