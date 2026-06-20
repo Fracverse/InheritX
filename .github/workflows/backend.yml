@@ -61,10 +61,14 @@ jobs:
       - name: Check formatting
         run: cargo fmt --all -- --check
 
-      # Re-enable clippy to track progress on fixing warnings
       - name: Clippy
-        run: cargo clippy --all-targets --all-features
-        continue-on-error: true
+        run: cargo clippy --all-targets --all-features -- -D warnings
+
+      - name: Install cargo-audit
+        run: cargo install cargo-audit
+
+      - name: Security Audit
+        run: cargo audit
 
       - name: Run tests
         run: cargo test

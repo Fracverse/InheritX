@@ -31,10 +31,16 @@ jobs:
         uses: aquasecurity/trivy-action@master
         with:
           image-ref: 'inheritx/backend:${{ github.sha }}'
+          format: 'sarif'
+          output: 'trivy-results.sarif'
           severity: 'CRITICAL,HIGH'
           exit-code: '1'
 
-
+      - name: Upload Trivy scan results to GitHub Security tab
+        uses: github/codeql-action/upload-sarif@v3
+        if: always()
+        with:
+          sarif_file: 'trivy-results.sarif'
 
       - name: Install Cosign
         uses: sigstore/cosign-installer@v3.5.0
