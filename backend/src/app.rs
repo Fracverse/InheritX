@@ -3131,8 +3131,6 @@ async fn set_contingency_conditions(
     ))
 }
 
-/// Get contingency configuration for a plan.
-
 // ─────────────────────────────────────────────────────────────────────────────
 // Cross-Chain Asset Discovery Handlers (Issue #735)
 // ─────────────────────────────────────────────────────────────────────────────
