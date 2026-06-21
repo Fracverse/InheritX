@@ -11,6 +11,7 @@ pub mod collateral_management;
 pub mod compliance;
 pub mod config;
 pub mod contingent_beneficiary;
+pub mod cross_chain_asset_discovery;
 pub mod csrf;
 pub mod data_retention;
 pub mod db;
@@ -67,6 +68,10 @@ pub use app::create_app;
 pub use circuit_breaker::CircuitBreaker;
 pub use compliance::ComplianceEngine;
 pub use config::Config;
+pub use cross_chain_asset_discovery::{
+    ArbitrumClient, Asset, BitcoinClient, CrossChainAsset, CrossChainAssetDiscoveryService,
+    EthereumClient, PolygonClient, ServiceError,
+};
 pub use data_retention::DataRetentionService;
 pub use events::{EventService, EventType, LendingEvent};
 pub use genetic_analysis::{

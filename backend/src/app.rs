@@ -19,6 +19,7 @@ use tower_http::{
 };
 
 use crate::cache;
+use crate::cross_chain_asset_discovery::CrossChainAssetDiscoveryService;
 use crate::middleware::{
     cache_headers_middleware, enforce_max_request_size, request_id_middleware,
     request_logging_middleware, request_timeout_middleware, security_headers_middleware,
@@ -83,6 +84,7 @@ pub struct AppState {
     pub stress_testing_engine: Arc<StressTestingEngine>,
     pub insurance_fund_service: Arc<crate::insurance_fund::InsuranceFundService>,
     pub webhook_service: Arc<WebhookService>,
+    pub asset_discovery_service: Arc<CrossChainAssetDiscoveryService>,
 }
 
 pub async fn create_app(
@@ -119,6 +121,7 @@ pub async fn create_app(
 
     let webhook_service = Arc::new(WebhookService::new(db.clone()));
     let cache = Arc::new(crate::cache::CacheService::from_env().await);
+    let asset_discovery_service = Arc::new(CrossChainAssetDiscoveryService::from_env());
 
     let state = Arc::new(AppState {
         db: db.clone(),
@@ -128,6 +131,7 @@ pub async fn create_app(
         stress_testing_engine,
         insurance_fund_service,
         webhook_service,
+        asset_discovery_service,
     });
 
     let graphql_schema = crate::graphql::create_schema(db.clone(), config.clone());
@@ -321,6 +325,12 @@ pub async fn create_app(
             "/api/admin/loans/lifecycle/:id/liquidate",
             post(liquidate_lifecycle_loan),
         )
+        // ── Cross-Chain Asset Discovery (Issue #735) ─────────────────────────────
+        .route("/api/assets/discover/:address", get(discover_user_assets))
+        .route("/api/assets/ethereum/:address", get(get_ethereum_assets))
+        .route("/api/assets/polygon/:address", get(get_polygon_assets))
+        .route("/api/assets/arbitrum/:address", get(get_arbitrum_assets))
+        .route("/api/assets/bitcoin/:address", get(get_bitcoin_assets))
         .route(
             "/api/admin/loans/lifecycle/mark-overdue",
             post(mark_overdue_loans),
@@ -3119,6 +3129,92 @@ async fn set_contingency_conditions(
     Ok(Json(
         json!({ "status": "success", "message": "Contingency conditions set" }),
     ))
+}
+
+/// Get contingency configuration for a plan.
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Cross-Chain Asset Discovery Handlers (Issue #735)
+// ─────────────────────────────────────────────────────────────────────────────
+
+/// Discover all assets across all configured blockchains for a given address.
+///
+/// `GET /api/assets/discover/:address`
+async fn discover_user_assets(
+    State(state): State<Arc<AppState>>,
+    Path(address): Path<String>,
+    AuthenticatedUser(_user): AuthenticatedUser,
+) -> Result<Json<Value>, ApiError> {
+    let result = state
+        .asset_discovery_service
+        .discover_user_assets(&address)
+        .await
+        .map_err(|e| ApiError::ExternalService(format!("Asset discovery failed: {e}")))?;
+    Ok(Json(json!({ "status": "success", "data": result })))
+}
+
+/// Get Ethereum assets for a given address.
+///
+/// `GET /api/assets/ethereum/:address`
+async fn get_ethereum_assets(
+    State(state): State<Arc<AppState>>,
+    Path(address): Path<String>,
+    AuthenticatedUser(_user): AuthenticatedUser,
+) -> Result<Json<Value>, ApiError> {
+    let assets = state
+        .asset_discovery_service
+        .get_ethereum_assets(&address)
+        .await
+        .map_err(|e| ApiError::ExternalService(format!("Ethereum asset discovery failed: {e}")))?;
+    Ok(Json(json!({ "status": "success", "data": assets })))
+}
+
+/// Get Polygon assets for a given address.
+///
+/// `GET /api/assets/polygon/:address`
+async fn get_polygon_assets(
+    State(state): State<Arc<AppState>>,
+    Path(address): Path<String>,
+    AuthenticatedUser(_user): AuthenticatedUser,
+) -> Result<Json<Value>, ApiError> {
+    let assets = state
+        .asset_discovery_service
+        .get_polygon_assets(&address)
+        .await
+        .map_err(|e| ApiError::ExternalService(format!("Polygon asset discovery failed: {e}")))?;
+    Ok(Json(json!({ "status": "success", "data": assets })))
+}
+
+/// Get Arbitrum assets for a given address.
+///
+/// `GET /api/assets/arbitrum/:address`
+async fn get_arbitrum_assets(
+    State(state): State<Arc<AppState>>,
+    Path(address): Path<String>,
+    AuthenticatedUser(_user): AuthenticatedUser,
+) -> Result<Json<Value>, ApiError> {
+    let assets = state
+        .asset_discovery_service
+        .get_arbitrum_assets(&address)
+        .await
+        .map_err(|e| ApiError::ExternalService(format!("Arbitrum asset discovery failed: {e}")))?;
+    Ok(Json(json!({ "status": "success", "data": assets })))
+}
+
+/// Get Bitcoin assets for a given address.
+///
+/// `GET /api/assets/bitcoin/:address`
+async fn get_bitcoin_assets(
+    State(state): State<Arc<AppState>>,
+    Path(address): Path<String>,
+    AuthenticatedUser(_user): AuthenticatedUser,
+) -> Result<Json<Value>, ApiError> {
+    let assets = state
+        .asset_discovery_service
+        .get_bitcoin_assets(&address)
+        .await
+        .map_err(|e| ApiError::ExternalService(format!("Bitcoin asset discovery failed: {e}")))?;
+    Ok(Json(json!({ "status": "success", "data": assets })))
 }
 
 /// Get contingency configuration for a plan.
