@@ -587,6 +587,111 @@ export const aiOptimizationHandlers = [
   }),
 ];
 
+// ─── Compliance ──────────────────────────────────────────────────────────────
+
+export const complianceHandlers = [
+  http.get("/api/compliance/velocity-alerts", () => {
+    return HttpResponse.json({
+      status: "ok",
+      data: [
+        {
+          id: "alert_vel_1",
+          type: "velocity",
+          address: "GDRISK7W7YQF4LQRYR6D2AH6FZKBX6E5D3EXAMPLEADDRESS",
+          amount: 15,
+          asset_code: "XLM",
+          event_count: 12,
+          threshold: 5,
+          window_minutes: 10,
+          severity: "high",
+          status: "open",
+          reason: "High transaction velocity: 12 transfers in 10 minutes",
+          created_at: new Date().toISOString(),
+        },
+      ],
+    });
+  }),
+
+  http.get("/api/compliance/volume-alerts", () => {
+    return HttpResponse.json({
+      status: "ok",
+      data: [
+        {
+          id: "alert_vol_1",
+          type: "volume",
+          address: "GDRISK7W7YQF4LQRYR6D2AH6FZKBX6E5D3EXAMPLEADDRESS",
+          amount: 150000,
+          asset_code: "USDC",
+          threshold: 100000,
+          severity: "critical",
+          status: "open",
+          reason: "Large transfer volume: 150,000 USDC exceeds threshold of 100,000",
+          created_at: new Date().toISOString(),
+        },
+      ],
+    });
+  }),
+
+  http.get("/api/compliance/risk-score/:address", ({ params }) => {
+    const address = params.address as string;
+    const isHighRisk = address.includes("RISK");
+    return HttpResponse.json({
+      status: "ok",
+      data: {
+        address,
+        score: isHighRisk ? 85 : 15,
+        level: isHighRisk ? "critical" : "low",
+        factors: isHighRisk
+          ? [
+              {
+                label: "Sanctions Association",
+                impact: "negative",
+                score: 90,
+                description: "Direct interaction with flagged mixer smart contract.",
+              },
+            ]
+          : [],
+        last_evaluated_at: new Date().toISOString(),
+      },
+    });
+  }),
+
+  http.post("/api/compliance/risk-override", async ({ request }) => {
+    const body = (await request.json()) as { address: string; score: number; level: string; justification: string };
+    return HttpResponse.json({
+      status: "ok",
+      data: {
+        id: "override_1",
+        address: body.address,
+        score: body.score,
+        level: body.level,
+        justification: body.justification,
+        admin_id: "admin_123",
+        created_at: new Date().toISOString(),
+      },
+    });
+  }),
+
+  http.get("/api/compliance/sanctions-check/:address", ({ params }) => {
+    const address = params.address as string;
+    const isHighRisk = address.includes("RISK");
+    return HttpResponse.json({
+      status: "ok",
+      data: {
+        address,
+        is_flagged: isHighRisk,
+        status: isHighRisk ? "flagged" : "clear",
+        lists: isHighRisk ? ["OFAC SDN List", "EU Consolidated List"] : [],
+        match_score: isHighRisk ? 95 : 0,
+        checked_at: new Date().toISOString(),
+        recommendation: isHighRisk
+          ? "Reject transaction and freeze associated assets immediately."
+          : "No action required.",
+      },
+    });
+  }),
+];
+
 export const handlers = [
   ...plansHandlers,
   ...claimsHandlers,
@@ -596,4 +701,6 @@ export const handlers = [
   ...willDocumentsHandlers,
   ...notificationsHandlers,
   ...aiOptimizationHandlers,
+  ...complianceHandlers,
 ];
+

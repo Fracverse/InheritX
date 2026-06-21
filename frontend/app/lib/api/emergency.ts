@@ -121,7 +121,8 @@ export class EmergencyAPI {
    * List emergency contacts
    */
   async listContacts(planId: string): Promise<EmergencyContact[]> {
-    return this.request<EmergencyContact[]>(`/api/emergency/contacts/${planId}`);
+    const response = await this.request<{ status: string; data: EmergencyContact[] }>(`/api/emergency/contacts/${planId}`);
+    return response.data;
   }
 
   /**
@@ -158,10 +159,11 @@ export class EmergencyAPI {
    * Get audit logs
    */
   async getAuditLogs(planId: string): Promise<AuditLog[]> {
-    return this.request<AuditLog[]>("/api/emergency/audit-logs", {
+    const response = await this.request<{ status: string; data: AuditLog[] }>("/api/emergency/audit-logs", {
       // Typically we'd pass plan_id as query param or in body if POST
       // assuming query param for now or endpoint handles it
     });
+    return response.data;
   }
 }
 

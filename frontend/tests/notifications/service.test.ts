@@ -11,7 +11,7 @@ describe("Notification Service", () => {
       user_id: testUserId,
       email_enabled: true,
       sms_enabled: false,
-      push_enabled: true,
+      push_enabled: false,
       in_app_enabled: true,
       categories: {},
     });

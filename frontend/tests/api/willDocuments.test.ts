@@ -14,7 +14,7 @@ describe("WillDocumentsAPI", () => {
   describe("listDocuments", () => {
     it("returns documents for a plan", async () => {
       const docs = await api.listDocuments("plan_1");
-      expect(docs).toHaveLength(1);
+      expect(docs).toHaveLength(2);
       expect(docs[0].document_id).toBe("doc_1");
       expect(docs[0].version).toBe(1);
     });

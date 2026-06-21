@@ -33,15 +33,31 @@ export type {
   LendingTransaction,
 } from "./lending";
 
+import { ComplianceAPI } from "./compliance";
+export { ComplianceAPI, createComplianceAPI } from "./compliance";
+export type {
+  AlertStatus,
+  ComplianceAlert,
+  ComplianceSeverity,
+  RiskFactor,
+  RiskLevel,
+  RiskOverride,
+  RiskOverrideRequest,
+  RiskScore,
+  SanctionsCheck,
+} from "./compliance";
+
 // Create instances
 const adminAPI = new AdminAPI();
 const plansAPI = new PlansAPI();
+const complianceAPI = new ComplianceAPI();
 
 // Re-export commonly used services
 export const api = {
   admin: adminAPI,
   plans: plansAPI,
   lending: createLendingAPI(),
+  compliance: complianceAPI,
 };
 
 export default api;

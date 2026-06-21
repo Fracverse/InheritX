@@ -10,6 +10,7 @@ import {
     Users,
     FileText,
     Activity,
+    ShieldAlert,
     ArrowLeft,
     LogOut
 } from "lucide-react";
@@ -22,6 +23,7 @@ const navItems = [
     { name: "Users", icon: Users, href: "/admin/users", section: "ADMINISTRATION" },
     { name: "All Plans", icon: FileText, href: "/admin/all-plans", section: "ADMINISTRATION" },
     { name: "Activity Log", icon: Activity, href: "/admin/activity-log", section: "ADMINISTRATION" },
+    { name: "Compliance", icon: ShieldAlert, href: "/admin/compliance", section: "ADMINISTRATION" },
 ];
 
 const quickLinks = [

@@ -97,8 +97,13 @@ function buildTreeHierarchy(
     throw new Error("InteractiveFamilyTree requires at least one member");
   }
 
+  interface FamilyHierarchyNode {
+    node: FamilyMemberNode;
+    children: FamilyHierarchyNode[];
+  }
+
   const visited = new Set<string>();
-  const buildNode = (id: string): { node: FamilyMemberNode; children: unknown[] } => {
+  const buildNode = (id: string): FamilyHierarchyNode => {
     visited.add(id);
     const member = memberById.get(id);
     if (!member) {
@@ -125,9 +130,9 @@ function buildTreeHierarchy(
     }
   }
 
-  return d3.hierarchy(hierarchyRoot, (item) => item.children).each((node) => {
-    node.data = node.data.node;
-  }) as d3.HierarchyNode<FamilyMemberNode>;
+  return d3.hierarchy<FamilyHierarchyNode>(hierarchyRoot, (item) => item.children).each((node) => {
+    (node as any).data = (node.data as any).node;
+  }) as unknown as d3.HierarchyNode<FamilyMemberNode>;
 }
 
 function formatCurrency(amount: number, currency: string): string {
@@ -249,7 +254,7 @@ export default function InteractiveFamilyTree({
           "link",
           d3
             .forceLink(links)
-            .id((d) => d.id)
+            .id((d: any) => d.id)
             .distance(140),
         )
         .force("charge", d3.forceManyBody().strength(-320))

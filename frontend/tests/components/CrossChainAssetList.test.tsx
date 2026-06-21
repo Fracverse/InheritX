@@ -77,8 +77,8 @@ describe("CrossChainAssetList", () => {
 
     it("renders chain group headers after loading", async () => {
       render(<CrossChainAssetList userAddress={userAddress} />);
-      await waitFor(() => expect(screen.getByText("Stellar")).toBeInTheDocument());
-      expect(screen.getByText("Ethereum")).toBeInTheDocument();
+      await waitFor(() => expect(screen.getAllByText("Stellar")[0]).toBeInTheDocument());
+      expect(screen.getAllByText("Ethereum")[0]).toBeInTheDocument();
     });
 
     it("displays asset symbol and name", async () => {
@@ -99,7 +99,7 @@ describe("CrossChainAssetList", () => {
 
     it("groups assets by chain", async () => {
       render(<CrossChainAssetList userAddress={userAddress} />);
-      await waitFor(() => expect(screen.getByText("Stellar")).toBeInTheDocument());
+      await waitFor(() => expect(screen.getAllByText("Stellar")[0]).toBeInTheDocument());
       // Stellar group shows 2 assets, Ethereum shows 1
       expect(screen.getByText("(2)")).toBeInTheDocument();
       expect(screen.getByText("(1)")).toBeInTheDocument();
@@ -144,7 +144,7 @@ describe("CrossChainAssetList", () => {
       // Switch to success for the retry
       setupFetch(mockAssets);
       await user.click(screen.getByRole("button", { name: /retry/i }));
-      await waitFor(() => expect(screen.getByText("Stellar")).toBeInTheDocument());
+      await waitFor(() => expect(screen.getAllByText("Stellar")[0]).toBeInTheDocument());
     });
   });
 
@@ -173,7 +173,7 @@ describe("CrossChainAssetList", () => {
       await user.type(search, "ETH");
 
       await waitFor(() => expect(screen.queryByText("USDC")).not.toBeInTheDocument());
-      expect(screen.getByText("ETH")).toBeInTheDocument();
+      expect(screen.getAllByText("ETH")[0]).toBeInTheDocument();
     });
 
     it("filters assets by name", async () => {
@@ -211,13 +211,13 @@ describe("CrossChainAssetList", () => {
       setupFetch(mockAssets);
       const user = userEvent.setup();
       render(<CrossChainAssetList userAddress={userAddress} />);
-      await waitFor(() => expect(screen.getByText("Stellar")).toBeInTheDocument());
+      await waitFor(() => expect(screen.getAllByText("Stellar")[0]).toBeInTheDocument());
 
       // Click Stellar pill to filter to only Stellar
       const stellarPill = screen.getAllByRole("button", { name: /stellar/i })[0];
       await user.click(stellarPill);
 
-      await waitFor(() => expect(screen.queryByText("Ethereum")).not.toBeInTheDocument());
+      await waitFor(() => expect(screen.queryByText("ETH")).not.toBeInTheDocument());
       expect(screen.getByText("USDC")).toBeInTheDocument();
     });
 
@@ -225,13 +225,13 @@ describe("CrossChainAssetList", () => {
       setupFetch(mockAssets);
       const user = userEvent.setup();
       render(<CrossChainAssetList userAddress={userAddress} />);
-      await waitFor(() => expect(screen.getByText("Ethereum")).toBeInTheDocument());
+      await waitFor(() => expect(screen.getAllByText("Ethereum")[0]).toBeInTheDocument());
 
       const stellarPill = screen.getAllByRole("button", { name: /stellar/i })[0];
       await user.click(stellarPill); // filter on
       await user.click(stellarPill); // filter off
 
-      await waitFor(() => expect(screen.getByText("Ethereum")).toBeInTheDocument());
+      await waitFor(() => expect(screen.getAllByText("Ethereum")[0]).toBeInTheDocument());
     });
   });
 
@@ -329,7 +329,7 @@ describe("CrossChainAssetList", () => {
       await waitFor(() => expect(screen.getByText("USDC")).toBeInTheDocument());
 
       // Stellar group toggle button
-      const stellarToggle = screen.getByRole("button", { name: /stellar/i });
+      const stellarToggle = screen.getAllByRole("button", { name: /stellar/i })[1];
       await user.click(stellarToggle);
 
       await waitFor(() => expect(screen.queryByText("USDC")).not.toBeInTheDocument());
