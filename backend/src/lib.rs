@@ -23,6 +23,7 @@ pub mod event_handlers;
 pub mod events;
 pub mod external_integrations;
 pub mod external_price_fetcher;
+pub mod fitbit_integration;
 pub mod genetic_analysis;
 pub mod governance;
 pub mod graphql;
@@ -69,6 +70,10 @@ pub use compliance::ComplianceEngine;
 pub use config::Config;
 pub use data_retention::DataRetentionService;
 pub use events::{EventService, EventType, LendingEvent};
+pub use fitbit_integration::{
+    ActivityAnalyzer, FitbitIntegrationService, FitbitWebAPIClient, HeartRateAnalyzer,
+    SleepPatternAnalyzer, StressLevelMonitor,
+};
 pub use genetic_analysis::{
     GeneticAnalysisService, GeneticDatabaseClient, GeneticError, GeneticSimilarityCalculator,
     HealthConditionAnalyzer, PrivacyLevel, ProcessedDNAData, RiskAssessment,
