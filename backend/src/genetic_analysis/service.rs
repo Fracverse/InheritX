@@ -1,10 +1,12 @@
 use super::database::{CompositeGeneticDatabaseClient, GeneticDatabaseClient};
+use super::external_integrator::{GeneticDatabaseIntegrator, RelativeMatch, SharedGeneticPayload};
 use super::dna_processor::DNAProcessor;
 use super::errors::GeneticError;
 use super::health::HealthConditionAnalyzer;
 use super::privacy::GeneticPrivacyEngine;
 use super::similarity::GeneticSimilarityCalculator;
 use super::types::*;
+use std::collections::HashMap;
 use std::sync::Arc;
 
 /// Comprehensive genetic data processing and analysis service.
@@ -13,6 +15,7 @@ pub struct GeneticAnalysisService {
     pub health_analyzer: HealthConditionAnalyzer,
     pub similarity_calculator: GeneticSimilarityCalculator,
     pub external_db_client: Arc<dyn GeneticDatabaseClient>,
+    pub external_integrator: Option<GeneticDatabaseIntegrator>,
     pub privacy_engine: GeneticPrivacyEngine,
 }
 
@@ -29,6 +32,7 @@ impl GeneticAnalysisService {
             health_analyzer: HealthConditionAnalyzer::new(),
             similarity_calculator: GeneticSimilarityCalculator,
             external_db_client: Arc::new(CompositeGeneticDatabaseClient::new()),
+            external_integrator: GeneticDatabaseIntegrator::from_env(),
             privacy_engine: GeneticPrivacyEngine,
         }
     }
@@ -39,8 +43,52 @@ impl GeneticAnalysisService {
             health_analyzer: HealthConditionAnalyzer::new(),
             similarity_calculator: GeneticSimilarityCalculator,
             external_db_client: client,
+            external_integrator: GeneticDatabaseIntegrator::from_env(),
             privacy_engine: GeneticPrivacyEngine,
         }
+    }
+
+    /// Discover relatives using connected external genetic service tokens.
+    pub async fn discover_relatives(
+        &self,
+        service_tokens: &HashMap<String, String>,
+    ) -> Result<Vec<RelativeMatch>, GeneticError> {
+        let integrator = self
+            .external_integrator
+            .as_ref()
+            .ok_or_else(|| GeneticError::Database("External genetic integrator not configured".into()))?;
+
+        integrator
+            .collect_relative_matches(service_tokens)
+            .await
+            .map_err(|e| GeneticError::Database(e.to_string()))
+    }
+
+    /// Export the current genetic profile in a privacy-preserving format suitable for external sharing.
+    pub fn export_shared_profile(&self, processed: &ProcessedDNAData) -> SharedGeneticPayload {
+        SharedGeneticPayload {
+            profile_id: processed.profile_id.clone(),
+            snp_data: processed.snp_data.clone(),
+            ancestry_composition: processed.ancestry_composition.clone(),
+            privacy_level: processed.privacy_level,
+        }
+    }
+
+    /// Synchronize a privacy-preserving genetic payload to external services.
+    pub async fn sync_shared_profile(
+        &self,
+        service_tokens: &HashMap<String, String>,
+        payload: &SharedGeneticPayload,
+    ) -> Result<(), GeneticError> {
+        let integrator = self
+            .external_integrator
+            .as_ref()
+            .ok_or_else(|| GeneticError::Database("External genetic integrator not configured".into()))?;
+
+        integrator
+            .sync_genetic_payload(service_tokens, payload)
+            .await
+            .map_err(|e| GeneticError::Database(e.to_string()))
     }
 
     /// Process raw DNA data into a structured genetic profile.

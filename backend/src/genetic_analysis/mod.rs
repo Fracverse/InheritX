@@ -10,6 +10,7 @@ mod dna_processor;
 mod errors;
 mod health;
 pub mod health_monitoring;
+mod external_integrator;
 mod privacy;
 mod service;
 mod similarity;
@@ -18,6 +19,10 @@ mod types;
 pub use database::{
     ClinVarClient, CompositeGeneticDatabaseClient, DbSnpClient, GeneticDatabaseClient,
     GwasCatalogClient,
+};
+pub use external_integrator::{
+    AncestryDNAClient, FamilyTreeDNAClient, GeneticDatabaseIntegrator, MyHeritageClient,
+    OAuthToken, RelativeMatch, SharedGeneticPayload, TwentyThreeAndMeClient,
 };
 pub use dna_processor::DNAProcessor;
 pub use errors::{AnalysisError, DatabaseError, GeneticError};
