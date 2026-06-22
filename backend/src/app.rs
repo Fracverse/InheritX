@@ -19,6 +19,9 @@ use tower_http::{
 };
 
 use crate::cache;
+use crate::allbridge_service::{
+    AllbridgeService, BridgeFeeEstimate, BridgeTransfer, BridgeTransferRequest,
+};
 use crate::cross_chain_asset_discovery::CrossChainAssetDiscoveryService;
 use crate::middleware::{
     cache_headers_middleware, enforce_max_request_size, request_id_middleware,
@@ -85,6 +88,7 @@ pub struct AppState {
     pub insurance_fund_service: Arc<crate::insurance_fund::InsuranceFundService>,
     pub webhook_service: Arc<WebhookService>,
     pub asset_discovery_service: Arc<CrossChainAssetDiscoveryService>,
+    pub allbridge_service: Arc<AllbridgeService>,
 }
 
 pub async fn create_app(
@@ -122,6 +126,10 @@ pub async fn create_app(
     let webhook_service = Arc::new(WebhookService::new(db.clone()));
     let cache = Arc::new(crate::cache::CacheService::from_env().await);
     let asset_discovery_service = Arc::new(CrossChainAssetDiscoveryService::from_env());
+    let allbridge_service = Arc::new(
+        AllbridgeService::from_env()
+            .unwrap_or_else(|_| AllbridgeService::new("https://core.api.allbridgeapp.com")),
+    );
 
     let state = Arc::new(AppState {
         db: db.clone(),
@@ -132,6 +140,7 @@ pub async fn create_app(
         insurance_fund_service,
         webhook_service,
         asset_discovery_service,
+        allbridge_service,
     });
 
     let graphql_schema = crate::graphql::create_schema(db.clone(), config.clone());
@@ -331,6 +340,12 @@ pub async fn create_app(
         .route("/api/assets/polygon/:address", get(get_polygon_assets))
         .route("/api/assets/arbitrum/:address", get(get_arbitrum_assets))
         .route("/api/assets/bitcoin/:address", get(get_bitcoin_assets))
+        // ── Allbridge Core Bridge Integration (Issue #736) ───────────────────────
+        .route("/api/bridge/routes", get(get_bridge_routes))
+        .route("/api/bridge/tokens/:chain", get(get_bridge_tokens))
+        .route("/api/bridge/estimate", post(estimate_bridge_fee))
+        .route("/api/bridge/transfer", post(execute_bridge_transfer))
+        .route("/api/bridge/status/:tx_hash", get(get_bridge_transfer_status))
         .route(
             "/api/admin/loans/lifecycle/mark-overdue",
             post(mark_overdue_loans),
@@ -3213,6 +3228,99 @@ async fn get_bitcoin_assets(
         .await
         .map_err(|e| ApiError::ExternalService(format!("Bitcoin asset discovery failed: {e}")))?;
     Ok(Json(json!({ "status": "success", "data": assets })))
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Allbridge Core Bridge Handlers (Issue #736)
+// ─────────────────────────────────────────────────────────────────────────────
+
+/// Return all supported bridge routes.
+///
+/// `GET /api/bridge/routes`
+async fn get_bridge_routes(
+    State(state): State<Arc<AppState>>,
+    AuthenticatedUser(_user): AuthenticatedUser,
+) -> Result<Json<Value>, ApiError> {
+    let routes = state.allbridge_service.get_supported_routes();
+    let routes_json: Vec<Value> = routes
+        .into_iter()
+        .map(|(src, dst, tokens)| {
+            json!({
+                "source_chain": src,
+                "destination_chain": dst,
+                "supported_tokens": tokens,
+            })
+        })
+        .collect();
+    Ok(Json(json!({ "status": "success", "data": routes_json })))
+}
+
+/// Return supported tokens for a given chain.
+///
+/// `GET /api/bridge/tokens/:chain`
+async fn get_bridge_tokens(
+    State(state): State<Arc<AppState>>,
+    Path(chain): Path<String>,
+    AuthenticatedUser(_user): AuthenticatedUser,
+) -> Result<Json<Value>, ApiError> {
+    let tokens = state
+        .allbridge_service
+        .get_supported_tokens(&chain)
+        .await
+        .map_err(|e| ApiError::ExternalService(format!("Allbridge token query failed: {e}")))?;
+    Ok(Json(json!({ "status": "success", "data": tokens })))
+}
+
+/// Estimate the fee for a bridge transfer.
+///
+/// `POST /api/bridge/estimate`
+async fn estimate_bridge_fee(
+    State(state): State<Arc<AppState>>,
+    AuthenticatedUser(_user): AuthenticatedUser,
+    Json(req): Json<BridgeTransferRequest>,
+) -> Result<Json<Value>, ApiError> {
+    let estimate = state
+        .allbridge_service
+        .estimate_bridge_fee(req)
+        .await
+        .map_err(|e| ApiError::ExternalService(format!("Bridge fee estimation failed: {e}")))?;
+    Ok(Json(json!({ "status": "success", "data": estimate })))
+}
+
+/// Initiate a cross-chain bridge transfer.
+///
+/// `POST /api/bridge/transfer`
+async fn execute_bridge_transfer(
+    State(state): State<Arc<AppState>>,
+    AuthenticatedUser(_user): AuthenticatedUser,
+    Json(req): Json<BridgeTransfer>,
+) -> Result<Json<Value>, ApiError> {
+    let tx_hash = state
+        .allbridge_service
+        .execute_bridge_transfer(req)
+        .await
+        .map_err(|e| ApiError::ExternalService(format!("Bridge transfer failed: {e}")))?;
+    Ok(Json(
+        json!({ "status": "success", "data": { "tx_hash": tx_hash } }),
+    ))
+}
+
+/// Get the status of a bridge transfer by transaction hash.
+///
+/// `GET /api/bridge/status/:tx_hash`
+async fn get_bridge_transfer_status(
+    State(state): State<Arc<AppState>>,
+    Path(tx_hash): Path<String>,
+    AuthenticatedUser(_user): AuthenticatedUser,
+) -> Result<Json<Value>, ApiError> {
+    let status = state
+        .allbridge_service
+        .get_transfer_status(&tx_hash)
+        .await
+        .map_err(|e| ApiError::ExternalService(format!("Bridge status query failed: {e}")))?;
+    Ok(Json(
+        json!({ "status": "success", "data": { "tx_hash": tx_hash, "bridge_status": status.to_string() } }),
+    ))
 }
 
 /// Get contingency configuration for a plan.
