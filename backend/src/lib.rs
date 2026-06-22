@@ -1,4 +1,5 @@
 pub mod alert_provider;
+pub mod allbridge_service;
 pub mod analytics;
 pub mod api_error;
 pub mod api_versioning;
@@ -98,6 +99,10 @@ pub use secure_messages::{
 pub use stellar::{
     HorizonClient, SorobanRpcClient, StellarClient, StellarConfig, StellarHealthStatus,
     TransactionMonitor, TransactionStatus,
+};
+pub use allbridge_service::{
+    AllbridgeCoreClient, AllbridgeError, AllbridgeService, BridgeFeeEstimate, BridgeStatus,
+    BridgeTransfer, BridgeTransferRequest, ChainConfig, PoolInfo, TokenInfo,
 };
 pub use stress_testing::StressTestingEngine;
 pub use webhook::{event_types, WebhookService};
