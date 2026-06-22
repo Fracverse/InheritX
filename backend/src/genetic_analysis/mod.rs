@@ -9,6 +9,7 @@ mod database;
 mod dna_processor;
 mod errors;
 mod health;
+pub mod health_monitoring;
 mod privacy;
 mod service;
 mod similarity;
@@ -21,6 +22,7 @@ pub use database::{
 pub use dna_processor::DNAProcessor;
 pub use errors::{AnalysisError, DatabaseError, GeneticError};
 pub use health::HealthConditionAnalyzer;
+pub use health_monitoring::*;
 pub use privacy::GeneticPrivacyEngine;
 pub use service::GeneticAnalysisService;
 pub use similarity::GeneticSimilarityCalculator;
