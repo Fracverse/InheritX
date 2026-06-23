@@ -18,6 +18,13 @@ pub use cross_chain::{
     BridgeProtocol, CrossChainAsset, CrossChainError, CrossChainInheritancePlan, SupportedChain,
 };
 
+mod ai_optimizer;
+pub use ai_optimizer::{
+    AIEstateOptimizer, AssetAllocation, BeneficiaryProfile, FinancialSituation, MarketData,
+    NeedType, OptimizationGoal, OptimizationRecommendation, RebalancingFrequency, Requirement,
+    RiskLevel, RiskProfile,
+};
+
 /// Current contract version - bump this on each upgrade
 const CONTRACT_VERSION: u32 = 1;
 
@@ -78,6 +85,8 @@ pub struct InheritancePlan {
     pub is_lendable: bool,
     pub total_loaned: u64,
     pub waterfall_enabled: bool,
+    pub ai_optimization_enabled: bool, // Whether AI optimization is enabled for this plan
+    pub last_ai_recommendation_at: u64, // Timestamp of last AI recommendation (0 if none)
 }
 
 #[contracterror]
@@ -163,6 +172,9 @@ pub enum DataKey {
     // Various notification/acknowledgment keys consolidated into single pattern
     PlanMetadata(u64, u32), // Generic key for plan-specific metadata (plan_id, metadata_type)
     UserMetadata(Address, u32), // Generic key for user-specific metadata (user, metadata_type)
+    AIOptimizerConfig(u64), // plan_id -> AIEstateOptimizer config
+    AIRecommendations(u64), // plan_id -> Vec<OptimizationRecommendation>
+    BeneficiaryAIProfile(u64, u32), // (plan_id, beneficiary_index) -> BeneficiaryProfile
 }
 
 #[contracttype]
@@ -656,6 +668,7 @@ pub struct CreateInheritancePlanParams {
     pub distribution_method: DistributionMethod,
     pub beneficiaries_data: Vec<(String, String, u32, Bytes, u32, u32)>,
     pub is_lendable: bool,
+    pub ai_optimization_enabled: bool,
 }
 
 #[contracttype]
@@ -1725,6 +1738,7 @@ impl InheritanceContract {
             distribution_method,
             beneficiaries_data,
             is_lendable,
+            ai_optimization_enabled,
         } = params;
 
         // Require owner authorization
@@ -1850,6 +1864,8 @@ impl InheritanceContract {
             is_lendable,
             total_loaned: 0,
             waterfall_enabled: false,
+            ai_optimization_enabled,
+            last_ai_recommendation_at: 0,
         };
 
         // Store the plan

@@ -88,6 +88,7 @@ fn plan_params(
         distribution_method,
         beneficiaries_data: beneficiaries_data.clone(),
         is_lendable: true,
+        ai_optimization_enabled: false,
     }
 }
 
