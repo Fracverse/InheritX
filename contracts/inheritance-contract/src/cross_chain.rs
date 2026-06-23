@@ -18,6 +18,22 @@ pub const MAX_ASSET_SYMBOL_LEN: u32 = 12;
 /// Maximum number of distinct cross-chain assets allowed in a single plan.
 pub const MAX_CROSS_CHAIN_ASSETS: u32 = 20;
 
+/// Minimum length (in bytes) of an asset symbol when validated at contract
+/// entrypoints. Tightens [`MIN_ASSET_SYMBOL_LEN`] to match real-world tickers.
+pub const CONTRACT_MIN_SYMBOL_LEN: u32 = 3;
+
+/// Maximum length (in bytes) of an asset symbol when validated at contract
+/// entrypoints. Tightens [`MAX_ASSET_SYMBOL_LEN`] to match real-world tickers.
+pub const CONTRACT_MAX_SYMBOL_LEN: u32 = 10;
+
+/// Maximum number of cross-chain assets permitted in a single inheritance
+/// plan when validated at contract entrypoints.
+pub const CONTRACT_MAX_CROSS_CHAIN_ASSETS: u32 = 50;
+
+/// Maximum permissible asset amount. Set to `10^36`, leaving ~340x headroom
+/// against `u128::MAX` so multiplications during fee/share math cannot wrap.
+pub const MAX_ASSET_AMOUNT: u128 = 1_000_000_000_000_000_000_000_000_000_000_000_000u128;
+
 /// Blockchains supported for cross-chain inheritance.
 #[contracttype]
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -67,6 +83,28 @@ pub enum BridgeProtocol {
     Wormhole,
     LayerZero,
     ChainlinkCCIP,
+}
+
+impl BridgeProtocol {
+    /// Whether this bridge can route assets on a given chain. Bitcoin is not
+    /// natively routable by any supported bridge, and LayerZero / Chainlink CCIP
+    /// are EVM-only; Allbridge and Wormhole additionally serve Stellar.
+    pub fn supports_chain(&self, chain: &SupportedChain) -> bool {
+        match self {
+            BridgeProtocol::Allbridge | BridgeProtocol::Wormhole => matches!(
+                chain,
+                SupportedChain::Stellar
+                    | SupportedChain::Ethereum
+                    | SupportedChain::Polygon
+                    | SupportedChain::BinanceSmartChain
+                    | SupportedChain::Avalanche
+                    | SupportedChain::Arbitrum
+            ),
+            BridgeProtocol::LayerZero | BridgeProtocol::ChainlinkCCIP => {
+                chain.is_evm_compatible()
+            }
+        }
+    }
 }
 
 /// A single asset held on a specific chain and bridgeable via a given protocol.
@@ -205,6 +243,30 @@ mod tests {
     fn bridge_protocol_equality() {
         assert_eq!(BridgeProtocol::Wormhole, BridgeProtocol::Wormhole);
         assert_ne!(BridgeProtocol::Wormhole, BridgeProtocol::LayerZero);
+    }
+
+    #[test]
+    fn bridge_supports_chain_matrix() {
+        // Allbridge + Wormhole: Stellar and every EVM chain, but not Bitcoin.
+        for proto in [BridgeProtocol::Allbridge, BridgeProtocol::Wormhole].iter() {
+            assert!(proto.supports_chain(&SupportedChain::Stellar));
+            assert!(proto.supports_chain(&SupportedChain::Ethereum));
+            assert!(proto.supports_chain(&SupportedChain::Polygon));
+            assert!(proto.supports_chain(&SupportedChain::Arbitrum));
+            assert!(proto.supports_chain(&SupportedChain::Avalanche));
+            assert!(proto.supports_chain(&SupportedChain::BinanceSmartChain));
+            assert!(!proto.supports_chain(&SupportedChain::Bitcoin));
+        }
+        // LayerZero + ChainlinkCCIP: EVM chains only.
+        for proto in [BridgeProtocol::LayerZero, BridgeProtocol::ChainlinkCCIP].iter() {
+            assert!(proto.supports_chain(&SupportedChain::Ethereum));
+            assert!(proto.supports_chain(&SupportedChain::Polygon));
+            assert!(proto.supports_chain(&SupportedChain::Arbitrum));
+            assert!(proto.supports_chain(&SupportedChain::Avalanche));
+            assert!(proto.supports_chain(&SupportedChain::BinanceSmartChain));
+            assert!(!proto.supports_chain(&SupportedChain::Stellar));
+            assert!(!proto.supports_chain(&SupportedChain::Bitcoin));
+        }
     }
 
     // --- CrossChainAsset validation ---

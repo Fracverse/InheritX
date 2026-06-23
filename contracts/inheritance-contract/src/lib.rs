@@ -15,6 +15,8 @@ use disputes::{DisputeRecord, DisputeStatus};
 mod cross_chain;
 pub use cross_chain::{
     BridgeProtocol, CrossChainAsset, CrossChainError, CrossChainInheritancePlan, SupportedChain,
+    CONTRACT_MAX_CROSS_CHAIN_ASSETS, CONTRACT_MAX_SYMBOL_LEN, CONTRACT_MIN_SYMBOL_LEN,
+    MAX_ASSET_AMOUNT,
 };
 
 /// Current contract version - bump this on each upgrade
@@ -114,6 +116,13 @@ pub enum InheritanceError {
     NothingToClaim = 30,
     EmergencyAccessAlreadyActive = 31,
     InvalidGuardianThreshold = 32,
+    // Cross-chain validation errors
+    InvalidAssetAmount = 33,
+    InvalidAssetSymbol = 34,
+    InvalidContractAddress = 35,
+    InvalidBridgeProtocol = 36,
+    IncompatibleChains = 37,
+    TooManyCrossChainAssets = 38,
     // Consolidated errors to stay under Soroban limits
     // Additional specific errors can be handled with these generic ones:
     // - Use InvalidAllocation for DuplicatePriority, PriorityOutOfRange
@@ -1277,6 +1286,130 @@ impl InheritanceContract {
             return Err(InheritanceError::AllocationPercentageMismatch);
         }
 
+        Ok(())
+    }
+
+    /// Validate that an asset amount is non-zero and within
+    /// [`MAX_ASSET_AMOUNT`]. Bounding here keeps downstream multiplications
+    /// (fees, beneficiary shares) far away from `u128` overflow.
+    pub fn validate_asset_amount(amount: u128) -> Result<(), InheritanceError> {
+        if amount == 0 || amount > MAX_ASSET_AMOUNT {
+            return Err(InheritanceError::InvalidAssetAmount);
+        }
+        Ok(())
+    }
+
+    /// Validate a [`CrossChainAsset`]: amount bounds, symbol shape, address
+    /// shape for its chain, and that the chosen bridge protocol services that
+    /// chain.
+    pub fn validate_cross_chain_asset(
+        env: Env,
+        asset: CrossChainAsset,
+    ) -> Result<(), InheritanceError> {
+        Self::validate_asset_amount(asset.amount)?;
+        Self::validate_asset_symbol(&asset.asset_symbol)?;
+        Self::validate_contract_address(&asset.chain, &asset.contract_address)?;
+        Self::validate_bridge_protocol(env, asset.chain, asset.bridge_protocol)?;
+        Ok(())
+    }
+
+    /// Validate that `protocol` routes assets on `chain`.
+    pub fn validate_bridge_protocol(
+        _env: Env,
+        chain: SupportedChain,
+        protocol: BridgeProtocol,
+    ) -> Result<(), InheritanceError> {
+        if !protocol.supports_chain(&chain) {
+            return Err(InheritanceError::InvalidBridgeProtocol);
+        }
+        Ok(())
+    }
+
+    /// Validate that `protocol` can carry assets between `source_chain` and
+    /// `dest_chain`. The two chains must differ and both must be serviced by
+    /// the protocol.
+    pub fn validate_chain_compatibility(
+        env: Env,
+        source_chain: SupportedChain,
+        dest_chain: SupportedChain,
+        protocol: BridgeProtocol,
+    ) -> Result<(), InheritanceError> {
+        if source_chain == dest_chain {
+            return Err(InheritanceError::IncompatibleChains);
+        }
+        Self::validate_bridge_protocol(env.clone(), source_chain, protocol.clone())?;
+        Self::validate_bridge_protocol(env, dest_chain, protocol)?;
+        Ok(())
+    }
+
+    /// Validate a [`CrossChainInheritancePlan`]: at least one asset, no more
+    /// than [`CONTRACT_MAX_CROSS_CHAIN_ASSETS`], and every contained asset
+    /// passes [`Self::validate_cross_chain_asset`].
+    pub fn validate_cross_chain_plan(
+        env: Env,
+        plan: CrossChainInheritancePlan,
+    ) -> Result<(), InheritanceError> {
+        if plan.assets.is_empty() {
+            return Err(InheritanceError::MissingRequiredField);
+        }
+        if plan.assets.len() > CONTRACT_MAX_CROSS_CHAIN_ASSETS {
+            return Err(InheritanceError::TooManyCrossChainAssets);
+        }
+        for asset in plan.assets.iter() {
+            Self::validate_cross_chain_asset(env.clone(), asset)?;
+        }
+        Ok(())
+    }
+
+    /// Asset symbol must be `CONTRACT_MIN_SYMBOL_LEN`..=`CONTRACT_MAX_SYMBOL_LEN`
+    /// bytes and contain only ASCII alphanumerics — matches real-world tickers
+    /// (`"USDC"`, `"WBTC"`, `"stETH"`) while rejecting whitespace/punctuation
+    /// that could confuse off-chain indexers.
+    fn validate_asset_symbol(symbol: &String) -> Result<(), InheritanceError> {
+        let len = symbol.len();
+        if len < CONTRACT_MIN_SYMBOL_LEN || len > CONTRACT_MAX_SYMBOL_LEN {
+            return Err(InheritanceError::InvalidAssetSymbol);
+        }
+        let mut buf = [0u8; CONTRACT_MAX_SYMBOL_LEN as usize];
+        let slice = &mut buf[..len as usize];
+        symbol.copy_into_slice(slice);
+        for &b in slice.iter() {
+            let alpha = b.is_ascii_alphabetic();
+            let digit = b.is_ascii_digit();
+            if !alpha && !digit {
+                return Err(InheritanceError::InvalidAssetSymbol);
+            }
+        }
+        Ok(())
+    }
+
+    /// Contract address must be a well-formed Soroban [`Address`]. For Stellar
+    /// assets the string form must be the canonical 56-char `G…`/`C…` strkey;
+    /// for other chains we only require a non-empty representation, since the
+    /// on-chain `Address` is a Stellar-side proxy for the native asset.
+    fn validate_contract_address(
+        chain: &SupportedChain,
+        address: &Address,
+    ) -> Result<(), InheritanceError> {
+        let s = address.to_string();
+        let len = s.len();
+        match chain {
+            SupportedChain::Stellar => {
+                if len != 56 {
+                    return Err(InheritanceError::InvalidContractAddress);
+                }
+                let mut buf = [0u8; 56];
+                s.copy_into_slice(&mut buf);
+                if buf[0] != b'G' && buf[0] != b'C' {
+                    return Err(InheritanceError::InvalidContractAddress);
+                }
+            }
+            _ => {
+                if len == 0 {
+                    return Err(InheritanceError::InvalidContractAddress);
+                }
+            }
+        }
         Ok(())
     }
 

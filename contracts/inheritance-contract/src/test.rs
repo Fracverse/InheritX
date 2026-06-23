@@ -6350,3 +6350,343 @@ fn test_set_conditions_blocked_after_trigger() {
     let result = client.try_add_time_trigger(&owner, &plan_id, &9999u64);
     assert!(result.is_err());
 }
+
+// ---------------------------------------------------------------------------
+// Cross-chain asset / plan validation
+// ---------------------------------------------------------------------------
+
+fn cc_asset(
+    env: &Env,
+    chain: SupportedChain,
+    amount: u128,
+    symbol: &str,
+    protocol: BridgeProtocol,
+) -> CrossChainAsset {
+    CrossChainAsset {
+        chain,
+        contract_address: Address::generate(env),
+        amount,
+        asset_symbol: String::from_str(env, symbol),
+        bridge_protocol: protocol,
+    }
+}
+
+#[test]
+fn validate_asset_amount_accepts_in_range() {
+    assert!(InheritanceContract::validate_asset_amount(1).is_ok());
+    assert!(InheritanceContract::validate_asset_amount(1_000_000).is_ok());
+    assert!(InheritanceContract::validate_asset_amount(MAX_ASSET_AMOUNT).is_ok());
+}
+
+#[test]
+fn validate_asset_amount_rejects_zero_and_overflowing() {
+    assert_eq!(
+        InheritanceContract::validate_asset_amount(0).unwrap_err(),
+        InheritanceError::InvalidAssetAmount
+    );
+    assert_eq!(
+        InheritanceContract::validate_asset_amount(MAX_ASSET_AMOUNT + 1).unwrap_err(),
+        InheritanceError::InvalidAssetAmount
+    );
+    assert_eq!(
+        InheritanceContract::validate_asset_amount(u128::MAX).unwrap_err(),
+        InheritanceError::InvalidAssetAmount
+    );
+}
+
+#[test]
+fn validate_cross_chain_asset_accepts_valid() {
+    let env = Env::default();
+    let a = cc_asset(
+        &env,
+        SupportedChain::Ethereum,
+        1_000,
+        "USDC",
+        BridgeProtocol::Allbridge,
+    );
+    assert!(InheritanceContract::validate_cross_chain_asset(env.clone(), a).is_ok());
+}
+
+#[test]
+fn validate_cross_chain_asset_rejects_zero_amount() {
+    let env = Env::default();
+    let a = cc_asset(
+        &env,
+        SupportedChain::Ethereum,
+        0,
+        "USDC",
+        BridgeProtocol::Allbridge,
+    );
+    assert_eq!(
+        InheritanceContract::validate_cross_chain_asset(env.clone(), a).unwrap_err(),
+        InheritanceError::InvalidAssetAmount
+    );
+}
+
+#[test]
+fn validate_cross_chain_asset_rejects_short_symbol() {
+    let env = Env::default();
+    // 2 chars — below CONTRACT_MIN_SYMBOL_LEN (3).
+    let a = cc_asset(
+        &env,
+        SupportedChain::Ethereum,
+        100,
+        "AB",
+        BridgeProtocol::Allbridge,
+    );
+    assert_eq!(
+        InheritanceContract::validate_cross_chain_asset(env.clone(), a).unwrap_err(),
+        InheritanceError::InvalidAssetSymbol
+    );
+}
+
+#[test]
+fn validate_cross_chain_asset_rejects_long_symbol() {
+    let env = Env::default();
+    // 11 chars — above CONTRACT_MAX_SYMBOL_LEN (10).
+    let a = cc_asset(
+        &env,
+        SupportedChain::Ethereum,
+        100,
+        "ABCDEFGHIJK",
+        BridgeProtocol::Allbridge,
+    );
+    assert_eq!(
+        InheritanceContract::validate_cross_chain_asset(env.clone(), a).unwrap_err(),
+        InheritanceError::InvalidAssetSymbol
+    );
+}
+
+#[test]
+fn validate_cross_chain_asset_rejects_non_alphanumeric_symbol() {
+    let env = Env::default();
+    let a = cc_asset(
+        &env,
+        SupportedChain::Ethereum,
+        100,
+        "US-DC",
+        BridgeProtocol::Allbridge,
+    );
+    assert_eq!(
+        InheritanceContract::validate_cross_chain_asset(env.clone(), a).unwrap_err(),
+        InheritanceError::InvalidAssetSymbol
+    );
+}
+
+#[test]
+fn validate_cross_chain_asset_rejects_unsupported_bridge() {
+    let env = Env::default();
+    // LayerZero is EVM-only and Bitcoin is not EVM-compatible.
+    let a = cc_asset(
+        &env,
+        SupportedChain::Bitcoin,
+        100,
+        "BTC",
+        BridgeProtocol::LayerZero,
+    );
+    assert_eq!(
+        InheritanceContract::validate_cross_chain_asset(env.clone(), a).unwrap_err(),
+        InheritanceError::InvalidBridgeProtocol
+    );
+}
+
+#[test]
+fn validate_bridge_protocol_matrix() {
+    let env = Env::default();
+    // Allbridge supports Stellar.
+    assert!(InheritanceContract::validate_bridge_protocol(
+        env.clone(),
+        SupportedChain::Stellar,
+        BridgeProtocol::Allbridge,
+    )
+    .is_ok());
+    // ChainlinkCCIP is EVM-only — Stellar is not supported.
+    assert_eq!(
+        InheritanceContract::validate_bridge_protocol(
+            env.clone(),
+            SupportedChain::Stellar,
+            BridgeProtocol::ChainlinkCCIP,
+        )
+        .unwrap_err(),
+        InheritanceError::InvalidBridgeProtocol
+    );
+    // No bridge here routes Bitcoin natively.
+    for proto in [
+        BridgeProtocol::Allbridge,
+        BridgeProtocol::Wormhole,
+        BridgeProtocol::LayerZero,
+        BridgeProtocol::ChainlinkCCIP,
+    ]
+    .iter()
+    {
+        assert_eq!(
+            InheritanceContract::validate_bridge_protocol(
+                env.clone(),
+                SupportedChain::Bitcoin,
+                proto.clone(),
+            )
+            .unwrap_err(),
+            InheritanceError::InvalidBridgeProtocol
+        );
+    }
+}
+
+#[test]
+fn validate_chain_compatibility_accepts_valid_pair() {
+    let env = Env::default();
+    assert!(InheritanceContract::validate_chain_compatibility(
+        env.clone(),
+        SupportedChain::Stellar,
+        SupportedChain::Ethereum,
+        BridgeProtocol::Allbridge,
+    )
+    .is_ok());
+    assert!(InheritanceContract::validate_chain_compatibility(
+        env.clone(),
+        SupportedChain::Ethereum,
+        SupportedChain::Polygon,
+        BridgeProtocol::LayerZero,
+    )
+    .is_ok());
+}
+
+#[test]
+fn validate_chain_compatibility_rejects_same_chain() {
+    let env = Env::default();
+    assert_eq!(
+        InheritanceContract::validate_chain_compatibility(
+            env.clone(),
+            SupportedChain::Ethereum,
+            SupportedChain::Ethereum,
+            BridgeProtocol::Wormhole,
+        )
+        .unwrap_err(),
+        InheritanceError::IncompatibleChains
+    );
+}
+
+#[test]
+fn validate_chain_compatibility_rejects_unsupported_endpoints() {
+    let env = Env::default();
+    // LayerZero cannot serve Stellar even when the other end is EVM.
+    assert_eq!(
+        InheritanceContract::validate_chain_compatibility(
+            env.clone(),
+            SupportedChain::Stellar,
+            SupportedChain::Ethereum,
+            BridgeProtocol::LayerZero,
+        )
+        .unwrap_err(),
+        InheritanceError::InvalidBridgeProtocol
+    );
+    // Bitcoin not natively routable on Allbridge.
+    assert_eq!(
+        InheritanceContract::validate_chain_compatibility(
+            env.clone(),
+            SupportedChain::Stellar,
+            SupportedChain::Bitcoin,
+            BridgeProtocol::Allbridge,
+        )
+        .unwrap_err(),
+        InheritanceError::InvalidBridgeProtocol
+    );
+}
+
+fn cc_plan(env: &Env, assets: Vec<CrossChainAsset>) -> CrossChainInheritancePlan {
+    CrossChainInheritancePlan {
+        plan_id: 1,
+        owner: Address::generate(env),
+        primary_chain: SupportedChain::Stellar,
+        assets,
+        created_at: 0,
+        is_active: true,
+    }
+}
+
+#[test]
+fn validate_cross_chain_plan_accepts_valid_plan() {
+    let env = Env::default();
+    let mut assets = Vec::new(&env);
+    assets.push_back(cc_asset(
+        &env,
+        SupportedChain::Ethereum,
+        1_000,
+        "USDC",
+        BridgeProtocol::Allbridge,
+    ));
+    assets.push_back(cc_asset(
+        &env,
+        SupportedChain::Polygon,
+        500,
+        "WETH",
+        BridgeProtocol::Wormhole,
+    ));
+    let plan = cc_plan(&env, assets);
+    assert!(InheritanceContract::validate_cross_chain_plan(env.clone(), plan).is_ok());
+}
+
+#[test]
+fn validate_cross_chain_plan_rejects_empty() {
+    let env = Env::default();
+    let plan = cc_plan(&env, Vec::new(&env));
+    assert_eq!(
+        InheritanceContract::validate_cross_chain_plan(env.clone(), plan).unwrap_err(),
+        InheritanceError::MissingRequiredField
+    );
+}
+
+#[test]
+fn validate_cross_chain_plan_rejects_over_cap() {
+    let env = Env::default();
+    let mut assets = Vec::new(&env);
+    // CONTRACT_MAX_CROSS_CHAIN_ASSETS is 50; push 51 to trip the cap.
+    for _ in 0..(CONTRACT_MAX_CROSS_CHAIN_ASSETS + 1) {
+        assets.push_back(cc_asset(
+            &env,
+            SupportedChain::Ethereum,
+            1,
+            "USDC",
+            BridgeProtocol::Allbridge,
+        ));
+    }
+    let plan = cc_plan(&env, assets);
+    assert_eq!(
+        InheritanceContract::validate_cross_chain_plan(env.clone(), plan).unwrap_err(),
+        InheritanceError::TooManyCrossChainAssets
+    );
+}
+
+#[test]
+fn validate_cross_chain_plan_accepts_at_cap() {
+    let env = Env::default();
+    let mut assets = Vec::new(&env);
+    for _ in 0..CONTRACT_MAX_CROSS_CHAIN_ASSETS {
+        assets.push_back(cc_asset(
+            &env,
+            SupportedChain::Ethereum,
+            1,
+            "USDC",
+            BridgeProtocol::Allbridge,
+        ));
+    }
+    let plan = cc_plan(&env, assets);
+    assert!(InheritanceContract::validate_cross_chain_plan(env.clone(), plan).is_ok());
+}
+
+#[test]
+fn validate_cross_chain_plan_propagates_asset_error() {
+    let env = Env::default();
+    let mut assets = Vec::new(&env);
+    assets.push_back(cc_asset(
+        &env,
+        SupportedChain::Ethereum,
+        0,
+        "USDC",
+        BridgeProtocol::Allbridge,
+    ));
+    let plan = cc_plan(&env, assets);
+    assert_eq!(
+        InheritanceContract::validate_cross_chain_plan(env.clone(), plan).unwrap_err(),
+        InheritanceError::InvalidAssetAmount
+    );
+}
