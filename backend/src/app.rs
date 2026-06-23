@@ -191,8 +191,14 @@ pub async fn create_app(
     // Falls back to permissive any-origin in development.
     let cors_layer = {
         let allowed_origins_env = std::env::var("CORS_ALLOWED_ORIGINS").unwrap_or_default();
+        let expose_list = [
+            axum::http::HeaderName::from_static("x-ratelimit-limit"),
+            axum::http::HeaderName::from_static("x-ratelimit-remaining"),
+            axum::http::HeaderName::from_static("x-ratelimit-reset"),
+            axum::http::header::RETRY_AFTER,
+        ];
         if allowed_origins_env.is_empty() {
-            CorsLayer::permissive()
+            CorsLayer::permissive().expose_headers(expose_list)
         } else {
             let origins: Vec<axum::http::HeaderValue> = allowed_origins_env
                 .split(',')
@@ -202,6 +208,7 @@ pub async fn create_app(
                 .allow_origin(AllowOrigin::list(origins))
                 .allow_methods(AllowMethods::any())
                 .allow_headers(AllowHeaders::any())
+                .expose_headers(expose_list)
                 .allow_credentials(true)
         }
     };
@@ -214,6 +221,7 @@ pub async fn create_app(
     let timeout_duration = Duration::from_secs(timeout_secs);
 
     let app = Router::new()
+        .without_v07_checks()
         .route("/health", get(health_check))
         .route("/ready", get(ready_check))
         .route("/health/db", get(db_health_check))
@@ -711,6 +719,7 @@ pub async fn create_app(
         price_feed as Arc<dyn crate::price_feed::PriceFeedService>,
     );
     let price_routes = Router::new()
+        .without_v07_checks()
         .route(
             "/api/prices/:asset_code",
             get(crate::price_feed_handlers::get_price),
@@ -746,6 +755,7 @@ pub async fn create_app(
         .with_state(price_feed_state);
 
     let graphql_router = Router::new()
+        .without_v07_checks()
         .route("/api/graphql", post(crate::graphql::graphql_handler))
         .route(
             "/api/graphql/playground",
@@ -755,7 +765,7 @@ pub async fn create_app(
 
     Ok(app
         .merge(graphql_router)
-        .merge(crate::data_retention::retention_router().with_state(state))
+        .merge(crate::data_retention::retention_router().with_state(state.clone()))
         .merge(price_routes)
         .layer(axum::middleware::from_fn(
             crate::middleware::attach_correlation_id,
@@ -767,7 +777,11 @@ pub async fn create_app(
         .layer(
             GovernorLayer::new(governor_conf)
                 .error_handler(crate::middleware::rate_limit_error_response),
-        ))
+        )
+        .layer(axum::middleware::from_fn_with_state(
+            state,
+            crate::middleware::rate_limit_headers_middleware,
+        )))
 }
 
 async fn health_check() -> Json<Value> {

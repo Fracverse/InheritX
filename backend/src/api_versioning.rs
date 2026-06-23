@@ -63,7 +63,7 @@ pub fn known_versions() -> Vec<ApiVersionInfo> {
 /// Nest an existing router under the `/api/v{version}/` prefix.
 /// Pass `"v1"` and your route `Router` to produce `/api/v1/<routes>`.
 pub fn versioned(version: &str, router: Router) -> Router {
-    Router::new().nest(&format!("/api/{}/", version), router)
+    Router::new().without_v07_checks().nest(&format!("/api/{}/", version), router)
 }
 
 // ── Version discovery endpoint ────────────────────────────────────────────────

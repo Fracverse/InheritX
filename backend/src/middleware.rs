@@ -484,6 +484,126 @@ pub async fn cache_headers_middleware(req: Request, next: Next) -> Response {
     response
 }
 
+/// Intercepts all responses from the inner service to append/normalize rate limit headers.
+pub async fn rate_limit_headers_middleware(
+    axum::extract::State(state): axum::extract::State<Arc<crate::app::AppState>>,
+    req: Request<Body>,
+    next: Next,
+) -> Response {
+    let path = req.uri().path().to_string();
+    let config = state.config.clone();
+
+    let mut response = next.run(req).await;
+
+    // Check if tower_governor headers are present or if response is 429
+    let is_governed = response.headers().contains_key("x-ratelimit-limit")
+        || response.headers().contains_key("x-ratelimit-remaining")
+        || response.status() == StatusCode::TOO_MANY_REQUESTS;
+
+    if is_governed {
+        let limit_val = response
+            .headers()
+            .get("x-ratelimit-limit")
+            .cloned()
+            .or_else(|| {
+                let limit = if path == "/admin/login" {
+                    config.rate_limit.admin_login_limit().burst_size
+                } else if path.starts_with("/api/emergency/access/grants") {
+                    config.rate_limit.emergency_limit().burst_size
+                } else {
+                    config.rate_limit.default_limit().burst_size
+                };
+                HeaderValue::from_str(&limit.to_string()).ok()
+            });
+
+        let remaining_val = response
+            .headers()
+            .get("x-ratelimit-remaining")
+            .cloned()
+            .or_else(|| {
+                if response.status() == StatusCode::TOO_MANY_REQUESTS {
+                    Some(HeaderValue::from_static("0"))
+                } else {
+                    None
+                }
+            });
+
+        let wait_secs = response
+            .headers()
+            .get("x-ratelimit-after")
+            .or_else(|| response.headers().get("retry-after"))
+            .and_then(|v| v.to_str().ok())
+            .and_then(|s| s.parse::<u64>().ok());
+
+        let reset_timestamp = if let Some(secs) = wait_secs {
+            let now = std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_secs();
+            Some(now + secs)
+        } else if let (Some(limit_hdr), Some(rem_hdr)) = (&limit_val, &remaining_val) {
+            if let (Ok(limit), Ok(remaining)) = (
+                limit_hdr.to_str().unwrap_or("").parse::<u64>(),
+                rem_hdr.to_str().unwrap_or("").parse::<u64>(),
+            ) {
+                if remaining < limit {
+                    let per_second = if path == "/admin/login" {
+                        config.rate_limit.admin_login_limit().per_second
+                    } else if path.starts_with("/api/emergency/access/grants") {
+                        config.rate_limit.emergency_limit().per_second
+                    } else {
+                        config.rate_limit.default_limit().per_second
+                    };
+                    let per_second = if per_second == 0 { 1 } else { per_second };
+                    let replenish_secs = (limit - remaining + per_second - 1) / per_second;
+                    let now = std::time::SystemTime::now()
+                        .duration_since(std::time::UNIX_EPOCH)
+                        .unwrap()
+                        .as_secs();
+                    Some(now + replenish_secs)
+                } else {
+                    let now = std::time::SystemTime::now()
+                        .duration_since(std::time::UNIX_EPOCH)
+                        .unwrap()
+                        .as_secs();
+                    Some(now)
+                }
+            } else {
+                None
+            }
+        } else {
+            None
+        };
+
+        let status = response.status();
+        let headers = response.headers_mut();
+
+        if let Some(limit) = limit_val {
+            headers.insert(HeaderName::from_static("x-ratelimit-limit"), limit);
+        }
+
+        if let Some(remaining) = remaining_val {
+            headers.insert(HeaderName::from_static("x-ratelimit-remaining"), remaining);
+        }
+
+        if let Some(reset) = reset_timestamp {
+            if let Ok(reset_val) = HeaderValue::from_str(&reset.to_string()) {
+                headers.insert(HeaderName::from_static("x-ratelimit-reset"), reset_val);
+            }
+        }
+
+        if status == StatusCode::TOO_MANY_REQUESTS {
+            if let Some(secs) = wait_secs {
+                if let Ok(retry_val) = HeaderValue::from_str(&secs.to_string()) {
+                    headers.insert(axum::http::header::RETRY_AFTER, retry_val);
+                }
+            }
+        }
+    }
+
+    response
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

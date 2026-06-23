@@ -351,6 +351,7 @@ async fn get_plan_metrics_legacy(
 
 pub fn analytics_router() -> Router<Arc<AppState>> {
     Router::new()
+        .without_v07_checks()
         // New canonical API routes
         .route("/api/admin/analytics/dashboard", get(get_dashboard))
         .route("/api/admin/analytics/overview", get(get_overview))

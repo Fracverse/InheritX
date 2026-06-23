@@ -92,6 +92,17 @@ cargo run --bin migrate
 - Compliance checks are performed on all transactions
 - Audit logs are immutable and comprehensive
 
+## Rate Limiting
+
+The backend enforces rate limiting on all API endpoints. Standard headers are returned in HTTP responses to allow clients to monitor their usage limits and implement backoff strategies:
+
+* **`x-ratelimit-limit`**: The maximum number of requests allowed in the rate limit burst/window.
+* **`x-ratelimit-remaining`**: The number of requests remaining in the current window.
+* **`x-ratelimit-reset`**: The Unix epoch timestamp (in seconds) when the rate limit quota resets / fully replenishes.
+* **`retry-after`**: The number of seconds the client must wait before retrying (returned only on `429 Too Many Requests` responses).
+
+These headers are exposed via CORS configuration to browser-based clients (`Access-Control-Expose-Headers`).
+
 ## Deployment
 
 The backend is designed to be deployed as a single binary:

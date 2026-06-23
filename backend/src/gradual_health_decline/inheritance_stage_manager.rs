@@ -19,7 +19,7 @@ impl InheritanceStageManager {
         let mut stages = Vec::new();
         let total_percentage = plan_preferences.total_allocation_percentage;
         let stage_count = affected_count.min(4).max(1);
-        let stage_percentage = total_percentage / stage_count;
+        let stage_percentage = total_percentage / stage_count as f64;
 
         let mut current_threshold = 100.0;
         for i in 1..=stage_count {

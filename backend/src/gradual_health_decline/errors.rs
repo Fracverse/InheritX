@@ -266,3 +266,12 @@ pub enum QualityOfLifeError {
     #[error("Insufficient data for calculation")]
     InsufficientData,
 }
+
+#[derive(Debug, Error)]
+pub enum EstimationError {
+    #[error("Timeline estimation failed: {0}")]
+    EstimationFailed(String),
+
+    #[error("Invalid timeline criteria")]
+    InvalidCriteria,
+}

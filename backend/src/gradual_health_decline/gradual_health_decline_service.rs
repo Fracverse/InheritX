@@ -1,7 +1,7 @@
 use super::errors::*;
 use super::types::*;
-use crate::genetic_analysis::health_monitoring::types::MedicalRecord as HealthMedicalRecord;
-use crate::fitbit_integration::types::{ActivityData, HeartRateReading};
+use crate::genetic_analysis::health_monitoring::MedicalRecord as HealthMedicalRecord;
+use crate::fitbit_integration::{ActivityData, HeartRateReading};
 use chrono::Utc;
 use serde_json;
 
@@ -10,7 +10,8 @@ use super::health_trend_predictor::HealthTrendPredictor;
 use super::inheritance_stage_manager::InheritanceStageManager;
 use super::medical_integrator::MedicalDataIntegrator;
 use super::quality_of_life_assessor::QualityOfLifeAssessor;
-use super::types::{HealthBaselineCalculator, HealthInterventionAdvisor, UserActivityData};
+use super::{HealthBaselineCalculator, HealthInterventionAdvisor};
+use super::types::UserActivityData;
 
 // ─── Gradual Health Decline Service ──────────────────────────────────────────
 
@@ -33,7 +34,7 @@ impl GradualHealthDeclineService {
             return Err(BaselineError::InvalidPeriod(monitoring_period_days));
         }
 
-        let data_points = Vec::new();
+        let data_points: Vec<HealthDataPoint> = Vec::new();
 
         self.baseline_calculator
             .calculate_comprehensive_baseline(user_id, &data_points, monitoring_period_days)
@@ -184,10 +185,11 @@ impl GradualHealthDeclineService {
             .await
             .map_err(|e| StagingError::DesignFailed(e.to_string()))?;
 
+        let total_stages = design.designed_stages.len() as u32;
         Ok(InheritanceStages {
             plan_id,
             stages: design.designed_stages,
-            total_stages: design.designed_stages.len() as u32,
+            total_stages,
             estimated_completion_date: design
                 .projected_release_dates
                 .last()

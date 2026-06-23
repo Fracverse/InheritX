@@ -320,6 +320,7 @@ async fn delete_my_data(
 
 pub fn retention_router() -> Router<Arc<AppState>> {
     Router::new()
+        .without_v07_checks()
         .route("/api/admin/data-retention/policies", get(get_policies))
         .route(
             "/api/admin/data-retention/archive/run",

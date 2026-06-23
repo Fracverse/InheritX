@@ -1,6 +1,6 @@
 use super::errors::*;
 use super::types::*;
-use crate::genetic_analysis::health_monitoring::types::{LabResult, MedicalRecord as HealthMedicalRecord};
+use crate::genetic_analysis::health_monitoring::{LabResult, MedicalRecord as HealthMedicalRecord};
 use chrono::Utc;
 use std::collections::HashMap;
 

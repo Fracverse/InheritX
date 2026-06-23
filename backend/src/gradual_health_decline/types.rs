@@ -55,7 +55,7 @@ pub enum Difficulty {
     Complex,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum TriggerCondition {
     HealthScoreBelow(f64),
@@ -564,12 +564,21 @@ pub struct DomainScore {
 
 // ─── Shared Data Types (from existing modules) ────────────────────────────────
 
-pub use crate::genetic_analysis::health_monitoring::types::{
+pub use crate::genetic_analysis::health_monitoring::{
     MedicalRecord, LabResult, VitalSigns, ProviderInfo, GeneticProfile, LifestyleFactors,
     EnvironmentalFactors, ConditionStatus, MedicalDataType, RecordType, ProgressionMarker,
     ProgressionTrend, UrgencyLevel, Evidence, TimeFrame,
 };
 
-pub use crate::fitbit_integration::types::{
+pub use crate::fitbit_integration::{
     HeartRateReading, ActivityData, SleepSession, SeverityLevel as FitbitSeverityLevel,
 };
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct InheritancePreferences {
+    pub plan_id: u64,
+    pub primary_beneficiary: String,
+    pub total_allocation_percentage: f64,
+    pub auto_release_enabled: bool,
+    pub medical_verification_required: bool,
+}
