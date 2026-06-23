@@ -21,7 +21,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             Some(pool)
         }
         Err(e) => {
-            warn!("Could not connect to PostgreSQL ({}): {:?}. Running with db_pool = None", config.database_url, e);
+            warn!(
+                "Could not connect to PostgreSQL ({}): {:?}. Running with db_pool = None",
+                config.database_url, e
+            );
             None
         }
     };
@@ -44,4 +47,3 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     Ok(())
 }
-

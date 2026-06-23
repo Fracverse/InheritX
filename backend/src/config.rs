@@ -14,4 +14,3 @@ impl Config {
         Ok(Config { port, database_url })
     }
 }
-
