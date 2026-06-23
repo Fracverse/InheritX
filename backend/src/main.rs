@@ -18,20 +18,20 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let db_pool = match DbManager::create_pool(&config.database_url).await {
         Ok(pool) => {
             info!("Successfully connected to PostgreSQL database.");
-    
+
             if let Err(e) = DbManager::run_migrations(&pool).await {
                 warn!("Failed to run database migrations: {:?}", e);
             }
-    
+
             pool
         }
-    
+
         Err(e) => {
             error!(
                 "Failed to connect to PostgreSQL database ({}): {:?}",
                 config.database_url, e
             );
-    
+
             std::process::exit(1);
         }
     };

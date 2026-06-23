@@ -1,10 +1,7 @@
 use sqlx::postgres::PgPoolOptions;
 use sqlx::PgPool;
 
-use std::{
-    env,
-    time::Duration,
-};
+use std::{env, time::Duration};
 
 pub struct DbManager;
 
