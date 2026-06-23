@@ -1,12 +1,17 @@
 use inheritx_backend::{create_router, AppState};
+use sqlx::postgres::PgPoolOptions;
 use std::sync::Arc;
 
-#[test]
-fn test_router_compiles() {
+#[tokio::test]
+async fn test_router_compiles() {
     let state = Arc::new(AppState {
         anchor: Arc::new(inheritx_backend::stellar_anchor::AnchorRegistry::new()),
-        db_pool: None,
+        db_pool: PgPoolOptions::new()
+            .connect_lazy("postgres://postgres:password@localhost/test")
+            .unwrap(),
     });
+
     let _app = create_router(state);
+
     // Router created successfully!
 }

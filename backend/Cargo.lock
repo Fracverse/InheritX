@@ -895,6 +895,7 @@ dependencies = [
  "anyhow",
  "axum",
  "chrono",
+ "dotenvy",
  "rand",
  "rust_decimal",
  "serde",
