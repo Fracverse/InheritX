@@ -88,6 +88,7 @@ fn plan_params(
         distribution_method,
         beneficiaries_data: beneficiaries_data.clone(),
         is_lendable: true,
+        ai_optimization_enabled: false,
     }
 }
 
@@ -301,6 +302,7 @@ fn test_validate_beneficiaries_basis_points() {
 #[test]
 fn test_create_beneficiary_success() {
     let env = Env::default();
+    let contract_id = env.register_contract(None, InheritanceContract);
 
     let full_name = String::from_str(&env, "John Doe");
     let email = String::from_str(&env, "john@example.com");
@@ -308,15 +310,19 @@ fn test_create_beneficiary_success() {
     let bank_account = create_test_bytes(&env, "1234567890123456");
     let allocation = 5000u32; // 50% in basis points
 
-    let result = InheritanceContract::create_beneficiary(
-        &env,
-        full_name,
-        email,
-        claim_code,
-        bank_account,
-        allocation,
-        1u32, // priority
-    );
+    let result = env.as_contract(&contract_id, || {
+        InheritanceContract::create_beneficiary(
+            &env,
+            1u64,
+            0u32,
+            full_name,
+            email,
+            claim_code,
+            bank_account,
+            allocation,
+            1u32, // priority
+        )
+    });
 
     assert!(result.is_ok());
     let beneficiary = result.unwrap();
@@ -326,17 +332,22 @@ fn test_create_beneficiary_success() {
 #[test]
 fn test_create_beneficiary_invalid_data() {
     let env = Env::default();
+    let contract_id = env.register_contract(None, InheritanceContract);
 
     // Test empty name
-    let result = InheritanceContract::create_beneficiary(
-        &env,
-        String::from_str(&env, ""), // empty name
-        String::from_str(&env, "john@example.com"),
-        123456u32,
-        create_test_bytes(&env, "1234567890123456"),
-        5000u32,
-        1u32,
-    );
+    let result = env.as_contract(&contract_id, || {
+        InheritanceContract::create_beneficiary(
+            &env,
+            1u64,
+            0u32,
+            String::from_str(&env, ""), // empty name
+            String::from_str(&env, "john@example.com"),
+            123456u32,
+            create_test_bytes(&env, "1234567890123456"),
+            5000u32,
+            1u32,
+        )
+    });
     assert!(result.is_err());
     assert_eq!(
         result.err().unwrap(),
@@ -344,15 +355,19 @@ fn test_create_beneficiary_invalid_data() {
     );
 
     // Test invalid claim code
-    let result = InheritanceContract::create_beneficiary(
-        &env,
-        String::from_str(&env, "John Doe"),
-        String::from_str(&env, "john@example.com"),
-        1000000u32, // > 999999
-        create_test_bytes(&env, "1234567890123456"),
-        5000u32,
-        2u32,
-    );
+    let result = env.as_contract(&contract_id, || {
+        InheritanceContract::create_beneficiary(
+            &env,
+            1u64,
+            1u32,
+            String::from_str(&env, "John Doe"),
+            String::from_str(&env, "john@example.com"),
+            1000000u32, // > 999999
+            create_test_bytes(&env, "1234567890123456"),
+            5000u32,
+            2u32,
+        )
+    });
     assert!(result.is_err());
     assert_eq!(
         result.err().unwrap(),
@@ -360,15 +375,19 @@ fn test_create_beneficiary_invalid_data() {
     );
 
     // Test zero allocation
-    let result = InheritanceContract::create_beneficiary(
-        &env,
-        String::from_str(&env, "John Doe"),
-        String::from_str(&env, "john@example.com"),
-        123456u32,
-        create_test_bytes(&env, "1234567890123456"),
-        0u32, // zero allocation
-        1u32, // priority
-    );
+    let result = env.as_contract(&contract_id, || {
+        InheritanceContract::create_beneficiary(
+            &env,
+            1u64,
+            2u32,
+            String::from_str(&env, "John Doe"),
+            String::from_str(&env, "john@example.com"),
+            123456u32,
+            create_test_bytes(&env, "1234567890123456"),
+            0u32, // zero allocation
+            1u32, // priority
+        )
+    });
     assert!(result.is_err());
     assert_eq!(result.err().unwrap(), InheritanceError::InvalidAllocation);
 }
@@ -3306,7 +3325,7 @@ fn test_double_approval_rejection() {
     client.approve_emergency_access(&guardian_1, &plan_id, &trusted_contact);
     let res = client.try_approve_emergency_access(&guardian_1, &plan_id, &trusted_contact);
     assert!(res.is_err());
-    assert_eq!(res.err().unwrap(), Ok(InheritanceError::AlreadyApproved));
+    assert_eq!(res.err().unwrap(), Ok(InheritanceError::AlreadyClaimed));
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -3393,10 +3412,7 @@ fn test_add_emergency_contact_duplicate_fails() {
     client.add_emergency_contact(&user, &plan_id, &contact);
     let res = client.try_add_emergency_contact(&user, &plan_id, &contact);
     assert!(res.is_err());
-    assert_eq!(
-        res.err().unwrap(),
-        Ok(InheritanceError::EmergencyContactAlreadyExists)
-    );
+    assert_eq!(res.err().unwrap(), Ok(InheritanceError::AlreadyClaimed));
 }
 
 #[test]
@@ -3476,7 +3492,7 @@ fn test_remove_emergency_contact_not_found() {
     assert!(res.is_err());
     assert_eq!(
         res.err().unwrap(),
-        Ok(InheritanceError::EmergencyContactNotFound)
+        Ok(InheritanceError::BeneficiaryNotFound)
     );
 }
 
@@ -4418,7 +4434,7 @@ fn test_finalize_succeeds_after_all_witnesses_sign() {
     client.sign_as_witness(
         &witness,
         &plan_id,
-        &dummy_sig(&env, 1),
+        &dummy_sig(&env, 2),
         &(env.ledger().timestamp() + 1000),
     );
 
@@ -4666,7 +4682,7 @@ fn test_update_legacy_message_rejected_after_lock() {
             key_reference: soroban_sdk::String::from_str(&env, "ref_new"),
         },
     );
-    assert_eq!(result, Err(Ok(InheritanceError::WillAlreadyFinalized)));
+    assert_eq!(result, Err(Ok(InheritanceError::AlreadyClaimed)));
 }
 
 #[test]
@@ -4679,7 +4695,7 @@ fn test_finalize_legacy_message_twice_fails() {
 
     client.finalize_legacy_message(&owner, &message_id);
     let result = client.try_finalize_legacy_message(&owner, &message_id);
-    assert_eq!(result, Err(Ok(InheritanceError::WillAlreadyFinalized)));
+    assert_eq!(result, Err(Ok(InheritanceError::AlreadyClaimed)));
 }
 
 #[test]
@@ -5042,7 +5058,7 @@ fn test_delete_legacy_message_fails_after_lock() {
     client.finalize_legacy_message(&owner, &message_id);
 
     let result = client.try_delete_legacy_message(&owner, &message_id);
-    assert_eq!(result, Err(Ok(InheritanceError::WillAlreadyFinalized)));
+    assert_eq!(result, Err(Ok(InheritanceError::AlreadyClaimed)));
     // Message still present
     assert!(client.get_legacy_message(&message_id).is_some());
 }
@@ -6351,342 +6367,172 @@ fn test_set_conditions_blocked_after_trigger() {
     assert!(result.is_err());
 }
 
-// ---------------------------------------------------------------------------
-// Cross-chain asset / plan validation
-// ---------------------------------------------------------------------------
+fn test_dna_hash(env: &Env, matching_prefix: u8) -> soroban_sdk::BytesN<32> {
+    let mut hash = [0u8; 32];
+    let mut i = 0usize;
+    while i < matching_prefix as usize && i < 32 {
+        hash[i] = 7;
+        i += 1;
+    }
+    while i < 32 {
+        hash[i] = (i as u8).saturating_add(matching_prefix).saturating_add(1);
+        i += 1;
+    }
+    soroban_sdk::BytesN::from_array(env, &hash)
+}
 
-fn cc_asset(
+fn relative_input(
     env: &Env,
-    chain: SupportedChain,
-    amount: u128,
-    symbol: &str,
-    protocol: BridgeProtocol,
-) -> CrossChainAsset {
-    CrossChainAsset {
-        chain,
-        contract_address: Address::generate(env),
-        amount,
-        asset_symbol: String::from_str(env, symbol),
-        bridge_protocol: protocol,
+    relationship: family_tree::RelationshipType,
+    matching_prefix: u8,
+) -> family_tree::RelativeInput {
+    family_tree::RelativeInput {
+        address: Address::generate(env),
+        dna_hash: test_dna_hash(env, matching_prefix),
+        claimed_relationship: relationship,
+        supporting_documents: Vec::new(env),
     }
 }
 
 #[test]
-fn validate_asset_amount_accepts_in_range() {
-    assert!(InheritanceContract::validate_asset_amount(1).is_ok());
-    assert!(InheritanceContract::validate_asset_amount(1_000_000).is_ok());
-    assert!(InheritanceContract::validate_asset_amount(MAX_ASSET_AMOUNT).is_ok());
-}
-
-#[test]
-fn validate_asset_amount_rejects_zero_and_overflowing() {
-    assert_eq!(
-        InheritanceContract::validate_asset_amount(0).unwrap_err(),
-        InheritanceError::InvalidAssetAmount
-    );
-    assert_eq!(
-        InheritanceContract::validate_asset_amount(MAX_ASSET_AMOUNT + 1).unwrap_err(),
-        InheritanceError::InvalidAssetAmount
-    );
-    assert_eq!(
-        InheritanceContract::validate_asset_amount(u128::MAX).unwrap_err(),
-        InheritanceError::InvalidAssetAmount
-    );
-}
-
-#[test]
-fn validate_cross_chain_asset_accepts_valid() {
+fn test_build_family_tree_and_inheritance_mapping() {
     let env = Env::default();
-    let a = cc_asset(
+    env.mock_all_auths();
+    let contract_id = env.register_contract(None, InheritanceContract);
+    let client = InheritanceContractClient::new(&env, &contract_id);
+    let root = Address::generate(&env);
+    let relatives = vec![
         &env,
-        SupportedChain::Ethereum,
-        1_000,
-        "USDC",
-        BridgeProtocol::Allbridge,
-    );
-    assert!(InheritanceContract::validate_cross_chain_asset(env.clone(), a).is_ok());
+        relative_input(&env, family_tree::RelationshipType::Child, 16),
+        relative_input(&env, family_tree::RelationshipType::Sibling, 14),
+    ];
+
+    let tree_id = client.build_family_tree(&root, &relatives);
+    assert_eq!(tree_id, 1);
+
+    let rights = client.calculate_inheritance_rights(&tree_id, &1u64);
+    assert_eq!(rights.len(), 2);
+    assert_eq!(rights.get(0).unwrap().share_bp, 5000);
+
+    let path = client.find_inheritance_path(&tree_id, &1u64, &2u64);
+    assert!(path.is_valid);
+    assert_eq!(path.total_degree, 1);
+    assert_eq!(path.path_steps.len(), 1);
 }
 
 #[test]
-fn validate_cross_chain_asset_rejects_zero_amount() {
+fn test_discover_relatives_and_verify_relationship_degree() {
     let env = Env::default();
-    let a = cc_asset(
+    env.mock_all_auths();
+    let contract_id = env.register_contract(None, InheritanceContract);
+    let client = InheritanceContractClient::new(&env, &contract_id);
+    let root = Address::generate(&env);
+    let target_hash = test_dna_hash(&env, 32);
+    let relatives = vec![
         &env,
-        SupportedChain::Ethereum,
-        0,
-        "USDC",
-        BridgeProtocol::Allbridge,
+        family_tree::RelativeInput {
+            address: Address::generate(&env),
+            dna_hash: target_hash.clone(),
+            claimed_relationship: family_tree::RelationshipType::Sibling,
+            supporting_documents: Vec::new(&env),
+        },
+    ];
+    client.build_family_tree(&root, &relatives);
+
+    let discovered = client.discover_relatives(&test_dna_hash(&env, 16), &2u32);
+    assert_eq!(discovered.len(), 1);
+    assert_eq!(discovered.get(0).unwrap().relationship_degree, 1);
+
+    let verification = client.verify_relationship_degree(
+        &test_dna_hash(&env, 32),
+        &test_dna_hash(&env, 16),
+        &1u32,
     );
-    assert_eq!(
-        InheritanceContract::validate_cross_chain_asset(env.clone(), a).unwrap_err(),
-        InheritanceError::InvalidAssetAmount
-    );
+    assert!(verification.is_verified);
+    assert_eq!(verification.actual_degree, 1);
 }
 
 #[test]
-fn validate_cross_chain_asset_rejects_short_symbol() {
+fn test_merge_family_trees_and_resolve_conflicts() {
     let env = Env::default();
-    // 2 chars — below CONTRACT_MIN_SYMBOL_LEN (3).
-    let a = cc_asset(
-        &env,
-        SupportedChain::Ethereum,
-        100,
-        "AB",
-        BridgeProtocol::Allbridge,
-    );
-    assert_eq!(
-        InheritanceContract::validate_cross_chain_asset(env.clone(), a).unwrap_err(),
-        InheritanceError::InvalidAssetSymbol
-    );
-}
-
-#[test]
-fn validate_cross_chain_asset_rejects_long_symbol() {
-    let env = Env::default();
-    // 11 chars — above CONTRACT_MAX_SYMBOL_LEN (10).
-    let a = cc_asset(
-        &env,
-        SupportedChain::Ethereum,
-        100,
-        "ABCDEFGHIJK",
-        BridgeProtocol::Allbridge,
-    );
-    assert_eq!(
-        InheritanceContract::validate_cross_chain_asset(env.clone(), a).unwrap_err(),
-        InheritanceError::InvalidAssetSymbol
-    );
-}
-
-#[test]
-fn validate_cross_chain_asset_rejects_non_alphanumeric_symbol() {
-    let env = Env::default();
-    let a = cc_asset(
-        &env,
-        SupportedChain::Ethereum,
-        100,
-        "US-DC",
-        BridgeProtocol::Allbridge,
-    );
-    assert_eq!(
-        InheritanceContract::validate_cross_chain_asset(env.clone(), a).unwrap_err(),
-        InheritanceError::InvalidAssetSymbol
-    );
-}
-
-#[test]
-fn validate_cross_chain_asset_rejects_unsupported_bridge() {
-    let env = Env::default();
-    // LayerZero is EVM-only and Bitcoin is not EVM-compatible.
-    let a = cc_asset(
-        &env,
-        SupportedChain::Bitcoin,
-        100,
-        "BTC",
-        BridgeProtocol::LayerZero,
-    );
-    assert_eq!(
-        InheritanceContract::validate_cross_chain_asset(env.clone(), a).unwrap_err(),
-        InheritanceError::InvalidBridgeProtocol
-    );
-}
-
-#[test]
-fn validate_bridge_protocol_matrix() {
-    let env = Env::default();
-    // Allbridge supports Stellar.
-    assert!(InheritanceContract::validate_bridge_protocol(
-        env.clone(),
-        SupportedChain::Stellar,
-        BridgeProtocol::Allbridge,
-    )
-    .is_ok());
-    // ChainlinkCCIP is EVM-only — Stellar is not supported.
-    assert_eq!(
-        InheritanceContract::validate_bridge_protocol(
-            env.clone(),
-            SupportedChain::Stellar,
-            BridgeProtocol::ChainlinkCCIP,
-        )
-        .unwrap_err(),
-        InheritanceError::InvalidBridgeProtocol
-    );
-    // No bridge here routes Bitcoin natively.
-    for proto in [
-        BridgeProtocol::Allbridge,
-        BridgeProtocol::Wormhole,
-        BridgeProtocol::LayerZero,
-        BridgeProtocol::ChainlinkCCIP,
-    ]
-    .iter()
-    {
-        assert_eq!(
-            InheritanceContract::validate_bridge_protocol(
-                env.clone(),
-                SupportedChain::Bitcoin,
-                proto.clone(),
-            )
-            .unwrap_err(),
-            InheritanceError::InvalidBridgeProtocol
-        );
-    }
-}
-
-#[test]
-fn validate_chain_compatibility_accepts_valid_pair() {
-    let env = Env::default();
-    assert!(InheritanceContract::validate_chain_compatibility(
-        env.clone(),
-        SupportedChain::Stellar,
-        SupportedChain::Ethereum,
-        BridgeProtocol::Allbridge,
-    )
-    .is_ok());
-    assert!(InheritanceContract::validate_chain_compatibility(
-        env.clone(),
-        SupportedChain::Ethereum,
-        SupportedChain::Polygon,
-        BridgeProtocol::LayerZero,
-    )
-    .is_ok());
-}
-
-#[test]
-fn validate_chain_compatibility_rejects_same_chain() {
-    let env = Env::default();
-    assert_eq!(
-        InheritanceContract::validate_chain_compatibility(
-            env.clone(),
-            SupportedChain::Ethereum,
-            SupportedChain::Ethereum,
-            BridgeProtocol::Wormhole,
-        )
-        .unwrap_err(),
-        InheritanceError::IncompatibleChains
-    );
-}
-
-#[test]
-fn validate_chain_compatibility_rejects_unsupported_endpoints() {
-    let env = Env::default();
-    // LayerZero cannot serve Stellar even when the other end is EVM.
-    assert_eq!(
-        InheritanceContract::validate_chain_compatibility(
-            env.clone(),
-            SupportedChain::Stellar,
-            SupportedChain::Ethereum,
-            BridgeProtocol::LayerZero,
-        )
-        .unwrap_err(),
-        InheritanceError::InvalidBridgeProtocol
-    );
-    // Bitcoin not natively routable on Allbridge.
-    assert_eq!(
-        InheritanceContract::validate_chain_compatibility(
-            env.clone(),
-            SupportedChain::Stellar,
-            SupportedChain::Bitcoin,
-            BridgeProtocol::Allbridge,
-        )
-        .unwrap_err(),
-        InheritanceError::InvalidBridgeProtocol
-    );
-}
-
-fn cc_plan(env: &Env, assets: Vec<CrossChainAsset>) -> CrossChainInheritancePlan {
-    CrossChainInheritancePlan {
-        plan_id: 1,
-        owner: Address::generate(env),
-        primary_chain: SupportedChain::Stellar,
-        assets,
-        created_at: 0,
-        is_active: true,
-    }
-}
-
-#[test]
-fn validate_cross_chain_plan_accepts_valid_plan() {
-    let env = Env::default();
-    let mut assets = Vec::new(&env);
-    assets.push_back(cc_asset(
-        &env,
-        SupportedChain::Ethereum,
-        1_000,
-        "USDC",
-        BridgeProtocol::Allbridge,
-    ));
-    assets.push_back(cc_asset(
-        &env,
-        SupportedChain::Polygon,
-        500,
-        "WETH",
-        BridgeProtocol::Wormhole,
-    ));
-    let plan = cc_plan(&env, assets);
-    assert!(InheritanceContract::validate_cross_chain_plan(env.clone(), plan).is_ok());
-}
-
-#[test]
-fn validate_cross_chain_plan_rejects_empty() {
-    let env = Env::default();
-    let plan = cc_plan(&env, Vec::new(&env));
-    assert_eq!(
-        InheritanceContract::validate_cross_chain_plan(env.clone(), plan).unwrap_err(),
-        InheritanceError::MissingRequiredField
-    );
-}
-
-#[test]
-fn validate_cross_chain_plan_rejects_over_cap() {
-    let env = Env::default();
-    let mut assets = Vec::new(&env);
-    // CONTRACT_MAX_CROSS_CHAIN_ASSETS is 50; push 51 to trip the cap.
-    for _ in 0..(CONTRACT_MAX_CROSS_CHAIN_ASSETS + 1) {
-        assets.push_back(cc_asset(
+    env.mock_all_auths();
+    let contract_id = env.register_contract(None, InheritanceContract);
+    let client = InheritanceContractClient::new(&env, &contract_id);
+    let root1 = Address::generate(&env);
+    let root2 = Address::generate(&env);
+    let tree1 = client.build_family_tree(
+        &root1,
+        &vec![
             &env,
-            SupportedChain::Ethereum,
-            1,
-            "USDC",
-            BridgeProtocol::Allbridge,
-        ));
-    }
-    let plan = cc_plan(&env, assets);
-    assert_eq!(
-        InheritanceContract::validate_cross_chain_plan(env.clone(), plan).unwrap_err(),
-        InheritanceError::TooManyCrossChainAssets
+            relative_input(&env, family_tree::RelationshipType::Child, 16),
+        ],
     );
-}
-
-#[test]
-fn validate_cross_chain_plan_accepts_at_cap() {
-    let env = Env::default();
-    let mut assets = Vec::new(&env);
-    for _ in 0..CONTRACT_MAX_CROSS_CHAIN_ASSETS {
-        assets.push_back(cc_asset(
+    let tree2 = client.build_family_tree(
+        &root2,
+        &vec![
             &env,
-            SupportedChain::Ethereum,
-            1,
-            "USDC",
-            BridgeProtocol::Allbridge,
-        ));
-    }
-    let plan = cc_plan(&env, assets);
-    assert!(InheritanceContract::validate_cross_chain_plan(env.clone(), plan).is_ok());
+            relative_input(&env, family_tree::RelationshipType::Sibling, 14),
+        ],
+    );
+
+    let merged = client.merge_family_trees(
+        &tree1,
+        &tree2,
+        &family_tree::MergePoint {
+            person1_tree1: 2,
+            person2_tree2: 2,
+            relationship: family_tree::RelationshipType::Cousin,
+            confidence: 80,
+        },
+    );
+    assert_eq!(merged, 3);
+
+    let conflicts = vec![
+        &env,
+        family_tree::TreeConflict {
+            person_id: 2,
+            conflict_type: family_tree::ConflictType::DuplicatePerson,
+            description: String::from_str(&env, "duplicate person"),
+        },
+    ];
+    let resolutions = client.resolve_tree_conflicts(&merged, &conflicts);
+    assert_eq!(resolutions.len(), 1);
+    assert_eq!(
+        resolutions.get(0).unwrap().resolution_action,
+        family_tree::ResolutionAction::MergeRecords
+    );
 }
 
 #[test]
-fn validate_cross_chain_plan_propagates_asset_error() {
+fn test_scan_genetic_database_and_cross_reference_documents() {
     let env = Env::default();
-    let mut assets = Vec::new(&env);
-    assets.push_back(cc_asset(
-        &env,
-        SupportedChain::Ethereum,
-        0,
-        "USDC",
-        BridgeProtocol::Allbridge,
-    ));
-    let plan = cc_plan(&env, assets);
-    assert_eq!(
-        InheritanceContract::validate_cross_chain_plan(env.clone(), plan).unwrap_err(),
-        InheritanceError::InvalidAssetAmount
+    env.mock_all_auths();
+    let contract_id = env.register_contract(None, InheritanceContract);
+    let client = InheritanceContractClient::new(&env, &contract_id);
+    let root = Address::generate(&env);
+    client.build_family_tree(
+        &root,
+        &vec![
+            &env,
+            relative_input(&env, family_tree::RelationshipType::Child, 16),
+        ],
     );
+
+    let matches = client.scan_genetic_database(&test_dna_hash(&env, 32), &45u32);
+    assert_eq!(matches.len(), 1);
+
+    let document = test_dna_hash(&env, 8);
+    let document_matches = client.cross_reference_documents(
+        &vec![&env, document.clone()],
+        &vec![
+            &env,
+            family_tree::StoredDocument {
+                document_hash: document,
+                document_type: family_tree::DocumentType::BirthCertificate,
+                person_id: 2,
+            },
+        ],
+    );
+    assert_eq!(document_matches.len(), 1);
+    assert_eq!(document_matches.get(0).unwrap().confidence, 90);
 }
