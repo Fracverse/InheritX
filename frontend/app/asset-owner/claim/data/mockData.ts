@@ -3,8 +3,17 @@ import { Claim, Activity, PlanSummaryData } from "../types";
 export const MOCK_CLAIMS: Claim[] = [
   {
     id: "001",
-    planName: "Plan Name",
-    uniqueId: "Unique ID",
+    planName: "Testnet testing",
+    uniqueId: "GP-001",
+    assets: "15,000 XLM & 4,500 USDC",
+    beneficiaryCount: 2,
+    trigger: "TRIGGERED (ON-CHAIN BYPASS)",
+    status: "CLAIMABLE",
+  },
+  {
+    id: "002",
+    planName: "Family Trust Plan",
+    uniqueId: "GP-002",
     assets: "2 ETH",
     beneficiaryCount: 3,
     trigger: "INACTIVITY (6 MONTHS)",
@@ -15,32 +24,32 @@ export const MOCK_CLAIMS: Claim[] = [
 export const MOCK_ACTIVITIES: Activity[] = [
   {
     id: 1,
-    description: "Plan #001 Created (3 Beneficiaries, Inactivity Trigger Set)",
+    description: "Plan #001 Created (2 Beneficiaries, Inactivity Trigger Set)",
     timestamp: "12th August, 2025",
   },
   {
     id: 2,
-    description: "Guardian Added To Plan #002",
-    timestamp: "12th August, 2025",
+    description: "Inheritance Trigger Authorized by Admin/Guardian",
+    timestamp: "23rd June, 2026",
   },
   {
     id: 3,
-    description: "Plan #001 Status Changed To Active",
-    timestamp: "12th August, 2025",
+    description: "Outstanding Soroban Loans Frozen and Recalled",
+    timestamp: "23rd June, 2026",
   },
   {
     id: 4,
-    description: "1 NFC Converted",
-    timestamp: "12th August, 2025",
+    description: "Collateral Settlement Completed & Bypassed Time Locks",
+    timestamp: "23rd June, 2026",
   },
 ];
 
 export const MOCK_PLAN_SUMMARY: PlanSummaryData = {
-  planName: "My first daughter",
-  description: "This is an inheritance for my babygirl. My first daughter",
-  beneficiary: "John Johnson",
-  beneficiaryEmail: "jjohnson@gmail.com",
-  walletAddress: "0xajoer....apro",
-  executeOn: "16/04/2027",
-  assets: ["Tokens", "NFTs", "Real-World Assets"],
+  planName: "Testnet testing",
+  description: "Secure asset distribution plan with soroban pool integrations",
+  beneficiary: "John Doe",
+  beneficiaryEmail: "john@doe.com",
+  walletAddress: "GDE2KZQ4QGJZ5Z5QW2Y4B7Y6Q5D3P9V8N7M6L5K4J3H2G1FTEST",
+  executeOn: "Bypassed (Inheritance Trigger Active)",
+  assets: ["Tokens: 15,000 XLM & 4,500 USDC", "Soroban Collateral Reserves"],
 };

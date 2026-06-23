@@ -2,15 +2,35 @@
 
 import { useState } from 'react';
 import { Search, AlertTriangle } from 'lucide-react';
+import { useRouter } from 'next/navigation';
 
 export default function AllPlansPageContent() {
+    const router = useRouter();
     const [activeTab, setActiveTab] = useState('All');
     const [searchQuery, setSearchQuery] = useState('');
 
     // Simulated wallet connection status
     const [isWalletConnected, setIsWalletConnected] = useState(false);
 
-    const tabs = ['All', 'Active', 'Paused', 'Executed', 'Cancelled'];
+    const tabs = ['All', 'Active', 'Paused', 'Executed', 'Cancelled', 'Triggered', 'Claimable'];
+
+    const getStatusBadgeStyle = (status: string) => {
+        switch (status.toUpperCase()) {
+            case 'ACTIVE':
+                return 'bg-cyan-500/10 text-cyan-400 border-cyan-500/20 hover:bg-cyan-500/20 hover:border-cyan-500/40';
+            case 'TRIGGERED':
+                return 'bg-amber-500/10 text-amber-400 border-amber-500/20 hover:bg-amber-500/20 hover:border-amber-500/40 animate-pulse';
+            case 'CLAIMABLE':
+            case 'EXECUTED':
+                return 'bg-emerald-500/10 text-emerald-400 border-emerald-500/20 hover:bg-emerald-500/20 hover:border-emerald-500/40';
+            case 'PAUSED':
+                return 'bg-yellow-500/10 text-yellow-400 border-yellow-500/20 hover:bg-yellow-500/20 hover:border-yellow-500/40';
+            case 'CANCELLED':
+                return 'bg-rose-500/10 text-rose-400 border-rose-500/20 hover:bg-rose-500/20 hover:border-rose-500/40';
+            default:
+                return 'bg-purple-500/10 text-purple-400 border-purple-500/20 hover:bg-purple-500/20 hover:border-purple-500/40';
+        }
+    };
 
     const allPlans = [
         {
@@ -182,7 +202,7 @@ export default function AllPlansPageContent() {
                                             <tr
                                                 key={plan.id}
                                                 className="hover:bg-gray-900/40 transition-all duration-200 cursor-pointer group"
-
+                                                onClick={() => router.push(`/admin/all-plans/${plan.id}`)}
                                             >
                                                 {/* Plan */}
                                                 <td className="px-4 py-3 md:px-6 md:py-3.5">
@@ -216,7 +236,7 @@ export default function AllPlansPageContent() {
 
                                                 {/* Status */}
                                                 <td className="px-4 py-3 md:px-6 md:py-3.5">
-                                                    <span className="inline-block px-3 py-1 rounded-md text-xs font-semibold bg-purple-500/20 text-purple-400 border border-purple-500/30 transition-all duration-200 group-hover:bg-purple-500/30 group-hover:border-purple-500/50 whitespace-nowrap">
+                                                    <span className={`inline-block px-3 py-1 rounded-md text-xs font-semibold border transition-all duration-200 whitespace-nowrap ${getStatusBadgeStyle(plan.status)}`}>
                                                         {plan.status}
                                                     </span>
                                                 </td>

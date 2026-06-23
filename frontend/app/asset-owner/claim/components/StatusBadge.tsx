@@ -16,6 +16,9 @@ export default function StatusBadge({ status, type = "status" }: StatusBadgeProp
     switch (status) {
       case "ACTIVE":
         return "bg-[#33C5E014] border border-[#33C5E03D] text-[#33C5E0]";
+      case "CLAIMABLE":
+      case "TRIGGERED":
+        return "bg-emerald-500/10 border border-emerald-500/20 text-emerald-400 font-semibold";
       case "COMPLETED":
         return "bg-transparent border border-[#D4A017] text-[#D4A017]";
       case "PENDING":

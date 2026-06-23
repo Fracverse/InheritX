@@ -49,7 +49,93 @@ export const plansHandlers = [
       data: mockPlans.find((p) => p.id === params.id) || null,
     })
   ),
+
+  http.post("/api/plans/:id/trigger", ({ params }) => {
+    const id = params.id as string;
+    const plan = mockPlans.find(p => p.id === id);
+    if (plan) {
+      plan.status = "triggered";
+    }
+    triggerStates.set(id, {
+      timestamp: new Date().toISOString(),
+      freeze_status: "PENDING",
+      recall_progress: 0,
+      settlement_status: "PENDING",
+      outstanding_loans: [
+        { pool: "Soroban USDC-LEND", amount: "4,500 USDC", status: "Active" },
+        { pool: "Soroban XLM-POOL", amount: "15,000 XLM", status: "Active" }
+      ]
+    });
+    return HttpResponse.json({ status: "ok", message: "Inheritance triggered successfully" });
+  }),
+
+  http.post("/api/plans/:id/freeze-loans", ({ params }) => {
+    const id = params.id as string;
+    const state = triggerStates.get(id) || {
+      timestamp: new Date().toISOString(),
+      freeze_status: "PENDING",
+      recall_progress: 0,
+      settlement_status: "PENDING",
+      outstanding_loans: [
+        { pool: "Soroban USDC-LEND", amount: "4,500 USDC", status: "Active" },
+        { pool: "Soroban XLM-POOL", amount: "15,000 XLM", status: "Active" }
+      ]
+    };
+    state.freeze_status = "FROZEN";
+    state.outstanding_loans = state.outstanding_loans.map(l => ({ ...l, status: "Frozen" }));
+    triggerStates.set(id, state);
+    return HttpResponse.json({ status: "ok", message: "Loans frozen successfully" });
+  }),
+
+  http.post("/api/plans/:id/recall-loans", ({ params }) => {
+    const id = params.id as string;
+    const state = triggerStates.get(id);
+    if (state) {
+      state.recall_progress = 100;
+      state.outstanding_loans = state.outstanding_loans.map(l => ({ ...l, status: "Recalled" }));
+      triggerStates.set(id, state);
+    }
+    return HttpResponse.json({ status: "ok", message: "Loans recalled successfully" });
+  }),
+
+  http.post("/api/plans/:id/liquidate-settle", ({ params }) => {
+    const id = params.id as string;
+    const state = triggerStates.get(id);
+    if (state) {
+      state.settlement_status = "SETTLED";
+      const plan = mockPlans.find(p => p.id === id);
+      if (plan) {
+        plan.status = "claimable";
+      }
+      triggerStates.set(id, state);
+    }
+    return HttpResponse.json({ status: "ok", message: "Collateral liquidated and plan settled successfully" });
+  }),
+
+  http.get("/api/plans/:id/trigger-info", ({ params }) => {
+    const id = params.id as string;
+    const state = triggerStates.get(id) || {
+      timestamp: null,
+      freeze_status: "PENDING",
+      recall_progress: 0,
+      settlement_status: "PENDING",
+      outstanding_loans: [
+        { pool: "Soroban USDC-LEND", amount: "4,500 USDC", status: "Active" },
+        { pool: "Soroban XLM-POOL", amount: "15,000 XLM", status: "Active" }
+      ]
+    };
+    return HttpResponse.json({ status: "ok", data: state });
+  }),
 ];
+
+// Keep track of trigger states in memory
+const triggerStates = new Map<string, {
+  timestamp: string | null;
+  freeze_status: "PENDING" | "PROCESSING" | "FROZEN";
+  recall_progress: number;
+  settlement_status: "PENDING" | "PROCESSING" | "LIQUIDATED" | "SETTLED";
+  outstanding_loans: Array<{ pool: string; amount: string; status: string }>;
+}>();
 
 // ─── Claims ───────────────────────────────────────────────────────────────────
 

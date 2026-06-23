@@ -130,6 +130,41 @@ export class PlansAPI {
     );
     return response.data!;
   }
+
+  /**
+   * Trigger inheritance execution
+   */
+  async triggerPlan(planId: string): Promise<any> {
+    return apiClient.post(`/api/plans/${planId}/trigger`);
+  }
+
+  /**
+   * Freeze outstanding loans
+   */
+  async freezeLoans(planId: string): Promise<any> {
+    return apiClient.post(`/api/plans/${planId}/freeze-loans`);
+  }
+
+  /**
+   * Recall loans from lending pool
+   */
+  async recallLoans(planId: string): Promise<any> {
+    return apiClient.post(`/api/plans/${planId}/recall-loans`);
+  }
+
+  /**
+   * Liquidate collateral if loans can't be recalled
+   */
+  async liquidateAndSettle(planId: string): Promise<any> {
+    return apiClient.post(`/api/plans/${planId}/liquidate-settle`);
+  }
+
+  /**
+   * Get trigger status and progress
+   */
+  async getTriggerInfo(planId: string): Promise<any> {
+    return apiClient.get(`/api/plans/${planId}/trigger-info`);
+  }
 }
 
 export const plansAPI = new PlansAPI();
