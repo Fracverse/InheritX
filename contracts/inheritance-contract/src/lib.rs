@@ -89,6 +89,7 @@ pub struct InheritancePlan {
     pub waterfall_enabled: bool,
     pub ai_optimization_enabled: bool, // Whether AI optimization is enabled for this plan
     pub last_ai_recommendation_at: u64, // Timestamp of last AI recommendation (0 if none)
+    pub is_cross_chain: bool,          // Whether this plan includes cross-chain assets
 }
 
 #[contracterror]
@@ -184,6 +185,8 @@ pub enum DataKey {
     AIOptimizerConfig(u64), // plan_id -> AIEstateOptimizer config
     AIRecommendations(u64), // plan_id -> Vec<OptimizationRecommendation>
     BeneficiaryAIProfile(u64, u32), // (plan_id, beneficiary_index) -> BeneficiaryProfile
+    CrossChainAssets(u64), // plan_id -> Vec<CrossChainAsset>
+    CrossChainPlanIds,     // -> Vec<u64> of all cross-chain plan IDs
 }
 
 #[contracttype]
@@ -763,6 +766,15 @@ pub struct BeneficiaryAcknowledgment {
     pub beneficiary_index: u32,
     pub notification_sent_at: u64,
     pub acknowledged_at: u64,
+}
+
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct CrossChainPlanCreatedEvent {
+    pub plan_id: u64,
+    pub owner: Address,
+    pub asset_count: u32,
+    pub created_at: u64,
 }
 
 #[contract]
@@ -1999,6 +2011,7 @@ impl InheritanceContract {
             waterfall_enabled: false,
             ai_optimization_enabled,
             last_ai_recommendation_at: 0,
+            is_cross_chain: false,
         };
 
         // Store the plan
@@ -6252,6 +6265,188 @@ impl InheritanceContract {
     ) -> Result<Vec<family_tree::DocumentMatch>, InheritanceError> {
         Self::check_not_paused(&env);
         family_tree::cross_reference_documents(&env, person_documents, database_documents)
+    }
+
+    /// Create a cross-chain inheritance plan that spans assets on multiple blockchains.
+    ///
+    /// Unlike `create_inheritance_plan`, no on-chain token transfer occurs here because
+    /// assets live on external chains. The base `InheritancePlan` record tracks beneficiaries
+    /// and metadata; actual asset balances are stored separately under `DataKey::CrossChainAssets`.
+    ///
+    /// # Arguments
+    /// * `owner` - Plan owner (must have approved KYC and authorize this call)
+    /// * `plan_name` - Human-readable plan name (required, non-empty)
+    /// * `description` - Plan description (max 500 characters)
+    /// * `cross_chain_assets` - Assets on remote chains (1..CONTRACT_MAX_CROSS_CHAIN_ASSETS)
+    /// * `beneficiaries_data` - Beneficiary inputs; allocations must sum to 10 000 bp
+    /// * `distribution_method` - How proceeds are distributed when the plan triggers
+    /// * `trigger_config` - Conditions that activate inheritance distribution
+    ///
+    /// # Returns
+    /// The newly assigned plan ID.
+    pub fn create_xchain_inheritance_plan(
+        env: Env,
+        owner: Address,
+        plan_name: String,
+        description: String,
+        cross_chain_assets: Vec<CrossChainAsset>,
+        beneficiaries_data: Vec<BeneficiaryInput>,
+        distribution_method: DistributionMethod,
+        trigger_config: TriggerConfig,
+    ) -> Result<u64, InheritanceError> {
+        owner.require_auth();
+        Self::check_not_paused(&env);
+        Self::enter_guard(&env);
+
+        Self::check_kyc_approved(&env, &owner)?;
+
+        // Basic plan field validation (no USDC-specific asset check for cross-chain plans)
+        if plan_name.is_empty() {
+            return Err(InheritanceError::MissingRequiredField);
+        }
+        if description.len() > 500 {
+            return Err(InheritanceError::DescriptionTooLong);
+        }
+
+        // Validate cross-chain assets
+        if cross_chain_assets.is_empty() {
+            return Err(InheritanceError::MissingRequiredField);
+        }
+        if cross_chain_assets.len() > CONTRACT_MAX_CROSS_CHAIN_ASSETS {
+            return Err(InheritanceError::TooManyCrossChainAssets);
+        }
+        for asset in cross_chain_assets.iter() {
+            Self::validate_cross_chain_asset(env.clone(), asset)?;
+        }
+
+        // Validate beneficiaries
+        if beneficiaries_data.is_empty() {
+            return Err(InheritanceError::MissingRequiredField);
+        }
+        if beneficiaries_data.len() > MAX_BENEFICIARIES {
+            return Err(InheritanceError::TooManyBeneficiaries);
+        }
+
+        let mut total_allocation_bp: u32 = 0;
+        let mut seen_priorities: Vec<u32> = Vec::new(&env);
+        for b in beneficiaries_data.iter() {
+            if b.allocation_bp == 0 {
+                return Err(InheritanceError::InvalidAllocation);
+            }
+            if b.priority == 0 {
+                return Err(InheritanceError::InvalidAllocation);
+            }
+            if seen_priorities.contains(b.priority) {
+                return Err(InheritanceError::InvalidAllocation);
+            }
+            seen_priorities.push_back(b.priority);
+            total_allocation_bp = total_allocation_bp
+                .checked_add(b.allocation_bp)
+                .ok_or(InheritanceError::AllocationPercentageMismatch)?;
+        }
+        if total_allocation_bp != 10000 {
+            return Err(InheritanceError::AllocationPercentageMismatch);
+        }
+
+        // Reserve a plan ID early so beneficiary salts can be keyed by (plan_id, index).
+        let plan_id = Self::increment_plan_id(&env);
+
+        // Build hashed beneficiary records
+        let mut beneficiaries: Vec<Beneficiary> = Vec::new(&env);
+        let mut idx: u32 = 0;
+        for b in beneficiaries_data.iter() {
+            let beneficiary = Self::create_beneficiary(
+                &env,
+                plan_id,
+                idx,
+                b.name.clone(),
+                b.email.clone(),
+                b.claim_code,
+                b.bank_account.clone(),
+                b.allocation_bp,
+                b.priority,
+            )?;
+            beneficiaries.push_back(beneficiary);
+            idx = idx.saturating_add(1);
+        }
+
+        let now = env.ledger().timestamp();
+
+        // Base plan record — total_amount is 0 because asset values are tracked
+        // per-chain under CrossChainAssets; asset_type signals the cross-chain kind.
+        let plan = InheritancePlan {
+            plan_name,
+            description,
+            asset_type: Symbol::new(&env, "XCHAIN"),
+            total_amount: 0,
+            distribution_method,
+            beneficiaries,
+            total_allocation_bp,
+            owner: owner.clone(),
+            created_at: now,
+            is_active: true,
+            is_lendable: false,
+            total_loaned: 0,
+            waterfall_enabled: false,
+            ai_optimization_enabled: false,
+            last_ai_recommendation_at: 0,
+            is_cross_chain: true,
+        };
+
+        Self::store_plan(&env, plan_id, &plan);
+
+        // Store cross-chain assets under their own key for efficient querying
+        env.storage()
+            .persistent()
+            .set(&DataKey::CrossChainAssets(plan_id), &cross_chain_assets);
+
+        // Persist the caller-supplied trigger configuration
+        Self::save_trigger_config(&env, plan_id, &trigger_config);
+
+        // Maintain a global index of all cross-chain plan IDs
+        let mut cc_ids: Vec<u64> = env
+            .storage()
+            .persistent()
+            .get(&DataKey::CrossChainPlanIds)
+            .unwrap_or(Vec::new(&env));
+        cc_ids.push_back(plan_id);
+        env.storage()
+            .persistent()
+            .set(&DataKey::CrossChainPlanIds, &cc_ids);
+
+        Self::add_plan_to_user(&env, owner.clone(), plan_id);
+        access_control::assign_role(&env, &owner, Role::Owner);
+
+        env.events().publish(
+            (symbol_short!("XCHAIN"), symbol_short!("CREATE")),
+            CrossChainPlanCreatedEvent {
+                plan_id,
+                owner: owner.clone(),
+                asset_count: cross_chain_assets.len(),
+                created_at: now,
+            },
+        );
+
+        log!(&env, "Cross-chain inheritance plan created with ID: {}", plan_id);
+
+        Self::exit_guard(&env);
+        Ok(plan_id)
+    }
+
+    /// Return the cross-chain assets stored for a plan, or an empty vec if none.
+    pub fn get_cross_chain_assets(env: Env, plan_id: u64) -> Vec<CrossChainAsset> {
+        env.storage()
+            .persistent()
+            .get(&DataKey::CrossChainAssets(plan_id))
+            .unwrap_or(Vec::new(&env))
+    }
+
+    /// Return all plan IDs that were created as cross-chain plans.
+    pub fn get_cross_chain_plan_ids(env: Env) -> Vec<u64> {
+        env.storage()
+            .persistent()
+            .get(&DataKey::CrossChainPlanIds)
+            .unwrap_or(Vec::new(&env))
     }
 }
 
