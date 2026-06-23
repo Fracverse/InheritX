@@ -8,6 +8,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // Initialize tracing logging
     telemetry::init_tracing()?;
 
+    //loading the .env
+    dotenvy::dotenv().ok();
+
     // Load configuration
     let config = Config::load()?;
 
