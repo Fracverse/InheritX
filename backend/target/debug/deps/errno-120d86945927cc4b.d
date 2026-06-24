@@ -1,8 +1,0 @@
-/Users/mac/Desktop/codes/drips_network/inheritx/backend/target/debug/deps/errno-120d86945927cc4b.d: /Users/mac/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/errno-0.3.14/src/lib.rs /Users/mac/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/errno-0.3.14/src/unix.rs
-
-/Users/mac/Desktop/codes/drips_network/inheritx/backend/target/debug/deps/liberrno-120d86945927cc4b.rlib: /Users/mac/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/errno-0.3.14/src/lib.rs /Users/mac/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/errno-0.3.14/src/unix.rs
-
-/Users/mac/Desktop/codes/drips_network/inheritx/backend/target/debug/deps/liberrno-120d86945927cc4b.rmeta: /Users/mac/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/errno-0.3.14/src/lib.rs /Users/mac/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/errno-0.3.14/src/unix.rs
-
-/Users/mac/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/errno-0.3.14/src/lib.rs:
-/Users/mac/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/errno-0.3.14/src/unix.rs:
