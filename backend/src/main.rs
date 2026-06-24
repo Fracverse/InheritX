@@ -1,4 +1,7 @@
-use inheritx_backend::{create_router, telemetry, AppState, Config, DbManager};
+use inheritx_backend::{
+    create_router, telemetry, AppState, Config, DbManager, InactivityWatchdogConfig,
+    InactivityWatchdogService,
+};
 use std::net::SocketAddr;
 use std::sync::Arc;
 use tracing::{error, info, warn};
@@ -39,8 +42,14 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // Initialize state skeleton
     let state = Arc::new(AppState {
         anchor: Arc::new(inheritx_backend::stellar_anchor::AnchorRegistry::new()),
-        db_pool,
+        db_pool: db_pool.clone(),
     });
+
+    let inactivity_watchdog = Arc::new(InactivityWatchdogService::new(
+        db_pool.clone(),
+        InactivityWatchdogConfig::from_env(),
+    ));
+    inactivity_watchdog.start();
 
     // Create Axum application
     let app = create_router(state);
