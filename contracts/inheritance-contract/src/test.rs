@@ -61,7 +61,10 @@ fn test_create_plan_success() {
     assert_eq!(plan.yield_rate_bps, 500);
     assert_eq!(plan.is_active, true);
     assert_eq!(plan.beneficiaries.len(), 1);
-    assert_eq!(plan.beneficiaries.get(0).unwrap().address, beneficiary_address);
+    assert_eq!(
+        plan.beneficiaries.get(0).unwrap().address,
+        beneficiary_address
+    );
     assert_eq!(plan.beneficiaries.get(0).unwrap().allocation_bps, 10000);
 }
 
