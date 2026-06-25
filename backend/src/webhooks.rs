@@ -2,7 +2,7 @@ use hmac::{Hmac, Mac};
 use reqwest::Client;
 use serde_json::Value;
 use sha2::Sha256;
-use sqlx::{PgPool, Row, Postgres, Transaction};
+use sqlx::{PgPool, Postgres, Row, Transaction};
 use std::sync::Arc;
 use std::time::Duration;
 use tokio::time::sleep;
@@ -62,7 +62,8 @@ impl WebhookDispatcherService {
 
             // compute HMAC-SHA256 signature
             let key = secret.unwrap_or_default();
-            let mut mac = HmacSha256::new_from_slice(key.as_bytes()).expect("HMAC can take key of any size");
+            let mut mac =
+                HmacSha256::new_from_slice(key.as_bytes()).expect("HMAC can take key of any size");
             mac.update(&body);
             let signature = hex::encode(mac.finalize().into_bytes());
 
@@ -86,8 +87,17 @@ impl WebhookDispatcherService {
                 Ok(mut resp) => {
                     let status = resp.status().as_u16();
                     let text = resp.text().await.unwrap_or_default();
-                    warn!("Webhook dispatch {} returned status {}: {}", id, status, text);
-                    Self::handle_failure(&mut tx, id, attempts, Some(format!("status {}: {}", status, text))).await?;
+                    warn!(
+                        "Webhook dispatch {} returned status {}: {}",
+                        id, status, text
+                    );
+                    Self::handle_failure(
+                        &mut tx,
+                        id,
+                        attempts,
+                        Some(format!("status {}: {}", status, text)),
+                    )
+                    .await?;
                 }
                 Err(e) => {
                     warn!("Webhook dispatch {} request error: {}", id, e);
@@ -100,12 +110,18 @@ impl WebhookDispatcherService {
         Ok(())
     }
 
-    async fn handle_failure(tx: &mut Transaction<'_, Postgres>, id: uuid::Uuid, attempts: i32, last_error: Option<String>) -> Result<(), sqlx::Error> {
+    async fn handle_failure(
+        tx: &mut Transaction<'_, Postgres>,
+        id: uuid::Uuid,
+        attempts: i32,
+        last_error: Option<String>,
+    ) -> Result<(), sqlx::Error> {
         let next_attempts = attempts + 1;
-        let max_attempts_row = sqlx::query("SELECT max_attempts FROM webhook_dispatches WHERE id = $1")
-            .bind(id)
-            .fetch_optional(&mut *tx)
-            .await?;
+        let max_attempts_row =
+            sqlx::query("SELECT max_attempts FROM webhook_dispatches WHERE id = $1")
+                .bind(id)
+                .fetch_optional(&mut *tx)
+                .await?;
 
         let max_attempts: i32 = if let Some(row) = max_attempts_row {
             row.get::<Option<i32>, _>("max_attempts").unwrap_or(5)
@@ -136,9 +152,15 @@ impl WebhookDispatcherService {
     }
 
     // Enqueue a payload for all active endpoints
-    pub async fn enqueue_event(db: &PgPool, event_type: &str, payload: &Value) -> Result<(), sqlx::Error> {
+    pub async fn enqueue_event(
+        db: &PgPool,
+        event_type: &str,
+        payload: &Value,
+    ) -> Result<(), sqlx::Error> {
         let mut tx = db.begin().await?;
-        let endpoints = sqlx::query("SELECT id FROM webhook_endpoints WHERE is_active = true").fetch_all(&mut tx).await?;
+        let endpoints = sqlx::query("SELECT id FROM webhook_endpoints WHERE is_active = true")
+            .fetch_all(&mut tx)
+            .await?;
         for ep in endpoints {
             let endpoint_id: uuid::Uuid = ep.get("id");
             sqlx::query("INSERT INTO webhook_dispatches (endpoint_id, event_type, payload) VALUES ($1, $2, $3)")
@@ -160,6 +182,8 @@ mod tests {
     use super::*;
     #[test]
     fn smoke() {
-        let _ = WebhookDispatcherService::new(sqlx::PgPool::connect_lazy("postgres://localhost").unwrap());
+        let _ = WebhookDispatcherService::new(
+            sqlx::PgPool::connect_lazy("postgres://localhost").unwrap(),
+        );
     }
 }

@@ -87,7 +87,13 @@ async fn create_plan(
 ) -> impl IntoResponse {
     // enqueue webhook event for plan.created
     let payload_value = serde_json::to_value(&payload).unwrap_or(serde_json::json!({}));
-    if let Err(e) = inheritx_backend::WebhookDispatcherService::enqueue_event(&_state.db_pool, "plan.created", &payload_value).await {
+    if let Err(e) = inheritx_backend::WebhookDispatcherService::enqueue_event(
+        &_state.db_pool,
+        "plan.created",
+        &payload_value,
+    )
+    .await
+    {
         tracing::warn!("Failed to enqueue webhook for plan.created: {:?}", e);
     }
 
@@ -112,7 +118,13 @@ async fn ping_plan(
 ) -> impl IntoResponse {
     // enqueue webhook event for plan.pinged
     let payload_value = serde_json::to_value(&_payload).unwrap_or(serde_json::json!({}));
-    if let Err(e) = inheritx_backend::WebhookDispatcherService::enqueue_event(&_state.db_pool, "plan.pinged", &payload_value).await {
+    if let Err(e) = inheritx_backend::WebhookDispatcherService::enqueue_event(
+        &_state.db_pool,
+        "plan.pinged",
+        &payload_value,
+    )
+    .await
+    {
         tracing::warn!("Failed to enqueue webhook for plan.pinged: {:?}", e);
     }
 

@@ -55,7 +55,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     inactivity_watchdog.start();
 
     // Start webhook dispatcher
-    let webhook_dispatcher = Arc::new(inheritx_backend::WebhookDispatcherService::new(db_pool.clone()));
+    let webhook_dispatcher = Arc::new(inheritx_backend::WebhookDispatcherService::new(
+        db_pool.clone(),
+    ));
     webhook_dispatcher.start();
 
     // Create Axum application
