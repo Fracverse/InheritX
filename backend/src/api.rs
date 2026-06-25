@@ -9,8 +9,10 @@ use serde::{Deserialize, Serialize};
 use std::sync::Arc;
 use tower_http::cors::{Any, CorsLayer};
 
+use crate::kyc_webhook::kyc_webhook_handler;
 use crate::stellar_anchor::{AnchorPayout, AnchorRegistry};
 use crate::WebhookDispatcherService;
+use crate::ws::{ws_handler, KycUpdateEvent};
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct PlanBeneficiary {
@@ -36,6 +38,8 @@ pub struct Plan {
 pub struct AppState {
     pub anchor: Arc<AnchorRegistry>,
     pub db_pool: sqlx::PgPool,
+    pub kyc_tx: tokio::sync::broadcast::Sender<KycUpdateEvent>,
+    pub kyc_webhook_secret: Option<String>,
 }
 
 #[derive(Deserialize)]
@@ -69,6 +73,8 @@ pub fn create_router(state: Arc<AppState>) -> Router {
         .route("/api/plans/ping", post(ping_plan))
         .route("/api/plans/payout", post(trigger_payout))
         .route("/api/anchor/payout-status", get(get_anchor_payouts))
+        .route("/api/kyc/webhook", post(kyc_webhook_handler))
+        .route("/ws/kyc", get(ws_handler))
         .layer(cors)
         .with_state(state)
 }

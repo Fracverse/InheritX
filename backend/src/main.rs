@@ -40,9 +40,12 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     };
 
     // Initialize state skeleton
+    let (kyc_tx, _) = tokio::sync::broadcast::channel(100);
     let state = Arc::new(AppState {
         anchor: Arc::new(inheritx_backend::stellar_anchor::AnchorRegistry::new()),
         db_pool: db_pool.clone(),
+        kyc_tx,
+        kyc_webhook_secret: std::env::var("KYC_WEBHOOK_SECRET").ok(),
     });
 
     let inactivity_watchdog = Arc::new(InactivityWatchdogService::new(
