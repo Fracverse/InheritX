@@ -10,6 +10,7 @@ use std::sync::Arc;
 use tower_http::cors::{Any, CorsLayer};
 
 use crate::stellar_anchor::{AnchorPayout, AnchorRegistry};
+use crate::WebhookDispatcherService;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct PlanBeneficiary {
@@ -42,7 +43,7 @@ pub struct PlanQuery {
     pub owner: Option<String>,
 }
 
-#[derive(Deserialize)]
+#[derive(Deserialize, serde::Serialize)]
 pub struct PingRequest {
     pub owner: String,
 }
@@ -78,6 +79,12 @@ async fn create_plan(
     State(_state): State<Arc<AppState>>,
     Json(payload): Json<Plan>,
 ) -> impl IntoResponse {
+    // enqueue webhook event for plan.created
+    let payload_value = serde_json::to_value(&payload).unwrap_or(serde_json::json!({}));
+    if let Err(e) = inheritx_backend::WebhookDispatcherService::enqueue_event(&_state.db_pool, "plan.created", &payload_value).await {
+        tracing::warn!("Failed to enqueue webhook for plan.created: {:?}", e);
+    }
+
     (StatusCode::CREATED, Json(payload))
 }
 
@@ -97,7 +104,13 @@ async fn ping_plan(
     State(_state): State<Arc<AppState>>,
     Json(_payload): Json<PingRequest>,
 ) -> impl IntoResponse {
-    (StatusCode::NOT_IMPLEMENTED, "Ping logic not implemented")
+    // enqueue webhook event for plan.pinged
+    let payload_value = serde_json::to_value(&_payload).unwrap_or(serde_json::json!({}));
+    if let Err(e) = inheritx_backend::WebhookDispatcherService::enqueue_event(&_state.db_pool, "plan.pinged", &payload_value).await {
+        tracing::warn!("Failed to enqueue webhook for plan.pinged: {:?}", e);
+    }
+
+    (StatusCode::OK, "Ping accepted")
 }
 
 // Handler: Trigger Payout
