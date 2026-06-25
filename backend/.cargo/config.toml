@@ -1,0 +1,4 @@
+[target.x86_64-pc-windows-gnu]
+rustflags = [
+    "-L", "C:\\Users\\USER\\Documents\\Codes\\Stellar\\inheritx\\backend\\.cargo\\lib",
+]
