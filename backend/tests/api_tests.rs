@@ -10,6 +10,7 @@ async fn test_router_compiles() {
         db_pool: PgPoolOptions::new()
             .connect_lazy("postgres://postgres:password@localhost/test")
             .unwrap(),
+        kyc_webhook_secret: None,
     });
 
     let _app = create_router(state);

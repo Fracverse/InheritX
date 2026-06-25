@@ -9,8 +9,8 @@ use serde::{Deserialize, Serialize};
 use std::sync::Arc;
 use tower_http::cors::{Any, CorsLayer};
 
-use crate::stellar_anchor::{AnchorPayout, AnchorRegistry};
 use crate::kyc_webhook::kyc_webhook_handler;
+use crate::stellar_anchor::{AnchorPayout, AnchorRegistry};
 use crate::ws::{ws_handler, KycUpdateEvent};
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -38,6 +38,7 @@ pub struct AppState {
     pub anchor: Arc<AnchorRegistry>,
     pub db_pool: sqlx::PgPool,
     pub kyc_tx: tokio::sync::broadcast::Sender<KycUpdateEvent>,
+    pub kyc_webhook_secret: Option<String>,
 }
 
 #[derive(Deserialize)]

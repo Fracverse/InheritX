@@ -68,7 +68,7 @@ pub async fn kyc_webhook_handler(
     headers: HeaderMap,
     body: Bytes,
 ) -> impl IntoResponse {
-    let secret = std::env::var("KYC_WEBHOOK_SECRET").unwrap_or_default();
+    let secret = state.kyc_webhook_secret.as_deref().unwrap_or("");
     let signature = headers
         .get("x-kyc-signature")
         .and_then(|v| v.to_str().ok())
@@ -109,8 +109,8 @@ pub async fn kyc_webhook_handler(
     );
 
     let kyc_status_str = payload.status.as_db_str();
-    let raw_payload = serde_json::from_slice::<serde_json::Value>(&body)
-        .unwrap_or(serde_json::Value::Null);
+    let raw_payload =
+        serde_json::from_slice::<serde_json::Value>(&body).unwrap_or(serde_json::Value::Null);
 
     let update_result = sqlx::query(
         r#"

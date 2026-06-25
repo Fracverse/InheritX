@@ -18,23 +18,25 @@ fn valid_payload() -> &'static str {
     r#"{"wallet_address":"GDTEST123","status":"approved","event_type":"kyc.status_update","provider_reference":"ref-001"}"#
 }
 
-fn test_state() -> std::sync::Arc<inheritx_backend::AppState> {
+fn test_state(secret: Option<&str>) -> std::sync::Arc<inheritx_backend::AppState> {
     use inheritx_backend::stellar_anchor::AnchorRegistry;
-    let pool = sqlx::PgPool::connect_lazy(
-        "postgres://postgres:postgres@localhost:5432/inheritx_test"
-    ).unwrap();
+
+    let pool =
+        sqlx::PgPool::connect_lazy("postgres://postgres:postgres@localhost:5432/inheritx_test")
+            .unwrap();
+
     let (kyc_tx, _) = tokio::sync::broadcast::channel(16);
+
     std::sync::Arc::new(inheritx_backend::AppState {
         anchor: std::sync::Arc::new(AnchorRegistry::new()),
         db_pool: pool,
         kyc_tx,
+        kyc_webhook_secret: secret.map(str::to_string),
     })
 }
-
 #[tokio::test]
 async fn test_webhook_rejects_invalid_signature() {
-    std::env::set_var("KYC_WEBHOOK_SECRET", "test-secret");
-    let app = inheritx_backend::create_router(test_state());
+    let app = inheritx_backend::create_router(test_state(Some("test-secret")));
     let response = app
         .oneshot(
             Request::builder()
@@ -49,14 +51,12 @@ async fn test_webhook_rejects_invalid_signature() {
         .unwrap();
 
     assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
-    std::env::remove_var("KYC_WEBHOOK_SECRET");
 }
 
 #[tokio::test]
 async fn test_webhook_rejects_invalid_json() {
     // No secret set — signature check skipped, parse check runs
-    std::env::remove_var("KYC_WEBHOOK_SECRET");
-    let app = inheritx_backend::create_router(test_state());
+    let app = inheritx_backend::create_router(test_state(None));
     let response = app
         .oneshot(
             Request::builder()
@@ -78,8 +78,7 @@ async fn test_valid_signature_accepted() {
     let body = valid_payload();
     let sig = sign_payload(secret, body.as_bytes());
 
-    std::env::set_var("KYC_WEBHOOK_SECRET", secret);
-    let app = inheritx_backend::create_router(test_state());
+    let app = inheritx_backend::create_router(test_state(Some(secret)));
     let response = app
         .oneshot(
             Request::builder()
@@ -100,8 +99,7 @@ async fn test_valid_signature_accepted() {
 
 #[tokio::test]
 async fn test_webhook_no_secret_skips_signature_check() {
-    std::env::remove_var("KYC_WEBHOOK_SECRET");
-    let app = inheritx_backend::create_router(test_state());
+    let app = inheritx_backend::create_router(test_state(None));
     let response = app
         .oneshot(
             Request::builder()
