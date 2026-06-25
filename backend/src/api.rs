@@ -294,14 +294,20 @@ async fn create_plan(
         )
             .into_response();
     }
-    let mut total_bps = 0;
+let mut total_bps = 0;
     for b in &payload.beneficiaries {
         if b.address.trim().is_empty() {
             return (
                 StatusCode::BAD_REQUEST,
                 Json(serde_json::json!({ "error": "Beneficiary address cannot be empty" })),
             )
-                .into_response();
+            .into_response();
+        }
+        if b.allocation_bps == 0 {
+            return (
+                StatusCode::BAD_REQUEST,
+                Json(serde_json::json!({ "error": "Beneficiary allocation_bps cannot be zero" })),
+            ).into_response();
         }
         if b.allocation_bps > 10000 {
             return (
@@ -314,9 +320,7 @@ async fn create_plan(
     if total_bps != 10000 {
         return (
             StatusCode::BAD_REQUEST,
-            Json(serde_json::json!({
-                "error": format!("Total allocation_bps must be exactly 10000 (100%), got {}", total_bps)
-            })),
+            Json(serde_json::json!({ "error": "Total allocation_bps must be exactly 10000 (100%)" })),
         ).into_response();
     }
 

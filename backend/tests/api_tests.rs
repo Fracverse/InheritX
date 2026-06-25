@@ -133,6 +133,45 @@ async fn test_create_plan_validation_invalid_bps() {
 }
 
 #[tokio::test]
+async fn test_create_plan_validation_zero_allocation() {
+    let app = setup_app();
+
+    let response = app
+        .oneshot(
+            Request::builder()
+                .method(http::Method::POST)
+                .uri("/api/plans")
+                .header(http::header::CONTENT_TYPE, "application/json")
+                .body(Body::from(
+                    json!({
+                        "owner": "owner_address",
+                        "token": "USDC",
+                        "amount": 100.0,
+                        "grace_period": 3600,
+                        "earn_yield": false,
+                        "yield_rate_bps": 0,
+                        "last_ping": 0,
+                        "is_active": true,
+                        "beneficiaries": [
+                            {
+                                "address": "beneficiary_1",
+                                "name": "B1",
+                                "allocation_bps": 0,
+                                "fiat_anchor_info": ""
+                            }
+                        ]
+                    })
+                    .to_string(),
+                ))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+}
+
+#[tokio::test]
 async fn test_create_plan_validation_negative_amount() {
     let app = setup_app();
 
