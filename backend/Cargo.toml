@@ -5,7 +5,7 @@ edition = "2021"
 
 [dependencies]
 tokio = { version = "1.0", features = ["full"] }
-axum = { version = "0.8", features = ["json", "multipart", "macros"] }
+axum = { version = "0.8", features = ["json", "multipart", "macros", "ws"] }
 tower = { version = "0.5", features = ["util"] }
 tower-http = { version = "0.6", features = ["cors", "trace", "request-id", "util"] }
 serde = { version = "1.0", features = ["derive"] }
@@ -20,3 +20,7 @@ rand = "0.8"
 sqlx = { version = "0.7", features = ["runtime-tokio-rustls", "postgres", "chrono", "uuid", "macros", "migrate"] }
 rust_decimal = { version = "1.33", features = ["serde-float"] }
 dotenvy = "0.15"
+hmac = "0.12"
+sha2 = "0.10"
+hex = "0.4"
+tokio-tungstenite = "0.21"

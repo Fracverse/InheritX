@@ -5,6 +5,8 @@ pub mod inactivity_watchdog;
 pub mod stellar_anchor;
 pub mod telemetry;
 pub mod yield_calculator;
+pub mod kyc_webhook;
+pub mod ws;
 
 pub use api::{create_router, AppState};
 pub use config::Config;

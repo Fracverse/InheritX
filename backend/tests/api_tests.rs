@@ -6,6 +6,7 @@ use std::sync::Arc;
 async fn test_router_compiles() {
     let state = Arc::new(AppState {
         anchor: Arc::new(inheritx_backend::stellar_anchor::AnchorRegistry::new()),
+        kyc_tx: tokio::sync::broadcast::channel(16).0,
         db_pool: PgPoolOptions::new()
             .connect_lazy("postgres://postgres:password@localhost/test")
             .unwrap(),
