@@ -74,7 +74,7 @@ pub async fn kyc_webhook_handler(
         .and_then(|v| v.to_str().ok())
         .unwrap_or("");
 
-    if !secret.is_empty() && !verify_signature(&secret, &body, signature) {
+    if !secret.is_empty() && !verify_signature(secret, &body, signature) {
         warn!(signature = %signature, "KYC webhook rejected: invalid signature");
         return (
             StatusCode::UNAUTHORIZED,
