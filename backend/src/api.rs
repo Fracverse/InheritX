@@ -132,31 +132,36 @@ async fn create_plan(
         return (
             StatusCode::BAD_REQUEST,
             Json(serde_json::json!({ "error": "Owner address cannot be empty" })),
-        ).into_response();
+        )
+            .into_response();
     }
     if payload.token.trim().is_empty() {
         return (
             StatusCode::BAD_REQUEST,
             Json(serde_json::json!({ "error": "Token address cannot be empty" })),
-        ).into_response();
+        )
+            .into_response();
     }
     if payload.amount < 0.0 {
         return (
             StatusCode::BAD_REQUEST,
             Json(serde_json::json!({ "error": "Amount must be non-negative" })),
-        ).into_response();
+        )
+            .into_response();
     }
     if payload.grace_period == 0 {
         return (
             StatusCode::BAD_REQUEST,
             Json(serde_json::json!({ "error": "Grace period must be greater than zero" })),
-        ).into_response();
+        )
+            .into_response();
     }
     if payload.beneficiaries.is_empty() {
         return (
             StatusCode::BAD_REQUEST,
             Json(serde_json::json!({ "error": "Plan must have at least one beneficiary" })),
-        ).into_response();
+        )
+            .into_response();
     }
     let mut total_bps = 0;
     for b in &payload.beneficiaries {
@@ -164,7 +169,8 @@ async fn create_plan(
             return (
                 StatusCode::BAD_REQUEST,
                 Json(serde_json::json!({ "error": "Beneficiary address cannot be empty" })),
-            ).into_response();
+            )
+                .into_response();
         }
         if b.allocation_bps > 10000 {
             return (
@@ -186,10 +192,13 @@ async fn create_plan(
     // Convert amount to rust_decimal::Decimal
     let amount_dec = match rust_decimal::Decimal::from_f64_retain(payload.amount) {
         Some(d) => d.normalize(),
-        None => return (
-            StatusCode::BAD_REQUEST,
-            Json(serde_json::json!({ "error": "Invalid amount representation" })),
-        ).into_response(),
+        None => {
+            return (
+                StatusCode::BAD_REQUEST,
+                Json(serde_json::json!({ "error": "Invalid amount representation" })),
+            )
+                .into_response()
+        }
     };
 
     // 2. Transaction Execution
@@ -248,14 +257,15 @@ async fn create_plan(
                 fiat_anchor_info
             ) VALUES ($1, $2, $3, $4)
             RETURNING id, plan_id, wallet_address, allocation_bps, fiat_anchor_info
-            "#
+            "#,
         )
         .bind(plan_row.id)
         .bind(&b.address)
         .bind(b.allocation_bps as i32)
         .bind(&b.fiat_anchor_info)
         .fetch_one(&mut *tx)
-        .await {
+        .await
+        {
             Ok(row) => row,
             Err(e) => {
                 return (

@@ -1,12 +1,12 @@
-use inheritx_backend::{create_router, AppState};
-use sqlx::postgres::PgPoolOptions;
-use std::sync::Arc;
 use axum::{
     body::Body,
     http::{self, Request, StatusCode},
 };
-use tower::ServiceExt; // for oneshot
+use inheritx_backend::{create_router, AppState};
 use serde_json::json;
+use sqlx::postgres::PgPoolOptions;
+use std::sync::Arc;
+use tower::ServiceExt; // for oneshot
 
 fn setup_app() -> axum::Router {
     let state = Arc::new(AppState {
@@ -140,4 +140,3 @@ async fn test_create_plan_validation_negative_amount() {
 
     assert_eq!(response.status(), StatusCode::BAD_REQUEST);
 }
-
