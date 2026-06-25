@@ -1,7 +1,5 @@
 #![no_std]
-use soroban_sdk::{
-    contract, contracterror, contractimpl, contracttype, Address, Env, String, Vec,
-};
+use soroban_sdk::{contract, contracterror, contractimpl, contracttype, Address, Env, String, Vec};
 
 const MAX_BENEFICIARIES: u32 = 100;
 const PLAN_TTL_THRESHOLD: u32 = 500;
@@ -123,15 +121,15 @@ impl InheritanceContract {
     /// Contributors: Recalculate and accrue yield, update last ping timestamp.
     pub fn ping(env: Env, owner: Address) -> Result<(), Error> {
         owner.require_auth();
-        
+
         let key = DataKey::Plan(owner.clone());
         if !env.storage().persistent().has(&key) {
             return Err(Error::PlanNotFound);
         }
-        
+
         let mut plan: Plan = env.storage().persistent().get(&key).unwrap();
         plan.last_ping = env.ledger().timestamp();
-        
+
         env.storage().persistent().set(&key, &plan);
         Self::extend_plan_ttl(&env, &key);
 
@@ -146,18 +144,18 @@ impl InheritanceContract {
         if !env.storage().persistent().has(&key) {
             return Err(Error::PlanNotFound);
         }
-        
+
         let plan: Plan = env.storage().persistent().get(&key).unwrap();
-        
+
         if plan.is_active {
             return Err(Error::InactivityPeriodNotMet);
         }
-        
+
         let current_time = env.ledger().timestamp();
         if current_time < plan.last_ping + plan.grace_period {
             return Err(Error::InactivityPeriodNotMet);
         }
-        
+
         let claim_key = DataKey::ClaimStatus(owner.clone());
         env.storage().temporary().set(&claim_key, &true);
         Self::extend_temp_ttl(&env, &claim_key);
@@ -172,7 +170,7 @@ impl InheritanceContract {
         if !env.storage().persistent().has(&key) {
             return Err(Error::PlanNotFound);
         }
-        
+
         let plan: Plan = env.storage().persistent().get(&key).unwrap();
         Self::extend_plan_ttl(&env, &key);
 
@@ -183,15 +181,15 @@ impl InheritanceContract {
     /// Contributors: Reclaim assets and transfer principal + yield back to the owner.
     pub fn close_plan(env: Env, owner: Address) -> Result<(), Error> {
         owner.require_auth();
-        
+
         let key = DataKey::Plan(owner.clone());
         if !env.storage().persistent().has(&key) {
             return Err(Error::PlanNotFound);
         }
-        
+
         let mut plan: Plan = env.storage().persistent().get(&key).unwrap();
         plan.is_active = false;
-        
+
         env.storage().persistent().set(&key, &plan);
         Self::extend_plan_ttl(&env, &key);
 
