@@ -11,9 +11,11 @@ use tower::ServiceExt; // for oneshot
 fn setup_app() -> axum::Router {
     let state = Arc::new(AppState {
         anchor: Arc::new(inheritx_backend::stellar_anchor::AnchorRegistry::new()),
+        kyc_tx: tokio::sync::broadcast::channel(16).0,
         db_pool: PgPoolOptions::new()
             .connect_lazy("postgres://postgres:password@localhost/test")
             .unwrap(),
+        kyc_webhook_secret: None,
     });
     create_router(state)
 }
