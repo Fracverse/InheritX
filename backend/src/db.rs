@@ -38,10 +38,7 @@ impl DbManager {
     }
 
     /// Runs database migrations
-    pub async fn run_migrations(_pool: &PgPool) -> Result<(), sqlx::Error> {
-        // Future implementation:
-        // sqlx::migrate!().run(pool).await?;
-
-        Ok(())
+    pub async fn run_migrations(pool: &PgPool) -> Result<(), sqlx::migrate::MigrateError> {
+        sqlx::migrate!().run(pool).await
     }
 }
