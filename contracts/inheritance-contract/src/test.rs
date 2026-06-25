@@ -57,9 +57,9 @@ fn test_create_plan_success() {
     assert_eq!(plan.token, token_id);
     assert_eq!(plan.amount, 1500);
     assert_eq!(plan.grace_period, 3600);
-    assert_eq!(plan.earn_yield, true);
+    assert!(plan.earn_yield);
     assert_eq!(plan.yield_rate_bps, 500);
-    assert_eq!(plan.is_active, true);
+    assert!(plan.is_active);
     assert_eq!(plan.beneficiaries.len(), 1);
     assert_eq!(
         plan.beneficiaries.get(0).unwrap().address,
