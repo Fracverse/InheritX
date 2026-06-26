@@ -9,7 +9,12 @@ use axum::{
 use rust_decimal::Decimal;
 use serde::{Deserialize, Serialize};
 use std::sync::Arc;
-use tower_http::cors::{Any, CorsLayer};
+use tower_http::cors::CorsLayer;
+use axum::http::{Method, HeaderValue};
+use crate::middleware::{
+    rate_limit_middleware, RateLimitConfig, RateLimitStore,
+    hsts_layer, csp_layer, x_frame_options_layer, x_content_type_options_layer, referrer_policy_layer,
+};
 
 use crate::auth::signature_auth_middleware;
 use crate::kyc_webhook::kyc_webhook_handler;
@@ -80,10 +85,19 @@ pub struct AnchorQuery {
 }
 
 pub fn create_router(state: Arc<AppState>) -> Router {
+    // Strict CORS: only allow specific origins, methods, and headers
     let cors = CorsLayer::new()
-        .allow_origin(Any)
-        .allow_methods(Any)
-        .allow_headers(Any);
+        .allow_origin("https://inheritx.vercel.app".parse::<HeaderValue>().unwrap())
+        .allow_methods([Method::GET, Method::POST, Method::OPTIONS])
+        .allow_headers([
+            axum::http::header::CONTENT_TYPE,
+            axum::http::header::AUTHORIZATION,
+        ])
+        .max_age(std::time::Duration::from_secs(3600));
+
+    // Rate limiter: 100 requests per IP per 60 seconds
+    let store = RateLimitStore::new();
+    let config = Arc::new(RateLimitConfig::default());
 
     // User routes requiring signature verification
     let user_routes = Router::new()
@@ -102,6 +116,14 @@ pub fn create_router(state: Arc<AppState>) -> Router {
     Router::new()
         .merge(user_routes)
         .merge(public_routes)
+        .layer(axum::middleware::from_fn(move |req, next| {
+            rate_limit_middleware(req, next, store.clone(), config.clone())
+        }))
+        .layer(referrer_policy_layer())
+        .layer(x_content_type_options_layer())
+        .layer(x_frame_options_layer())
+        .layer(csp_layer())
+        .layer(hsts_layer())
         .layer(cors)
         .with_state(state)
 }
@@ -702,3 +724,4 @@ async fn get_anchor_payouts(
     let empty_list: Vec<AnchorPayout> = Vec::new();
     (StatusCode::OK, Json(empty_list))
 }
+
