@@ -5,12 +5,15 @@ use axum::{
     routing::{get, post},
     Json, Router,
 };
+use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use std::sync::Arc;
 use tower_http::cors::{Any, CorsLayer};
+use tracing::error;
+use uuid::Uuid;
 
 use crate::kyc_webhook::kyc_webhook_handler;
-use crate::stellar_anchor::{AnchorPayout, AnchorRegistry};
+use crate::stellar_anchor::AnchorRegistry;
 use crate::ws::{ws_handler, KycUpdateEvent};
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -59,6 +62,32 @@ pub struct PayoutRequest {
 #[derive(Deserialize)]
 pub struct AnchorQuery {
     pub beneficiary_address: Option<String>,
+    pub page: Option<i64>,
+    pub page_size: Option<i64>,
+}
+
+#[derive(Debug, Serialize, sqlx::FromRow)]
+pub struct PayoutRow {
+    pub id: Uuid,
+    pub plan_id: Uuid,
+    pub beneficiary_address: String,
+    pub amount: String,
+    pub payout_type: String,
+    pub status: String,
+    pub created_at: DateTime<Utc>,
+}
+
+#[derive(Serialize)]
+pub struct PayoutStatusResponse {
+    pub data: Vec<PayoutRow>,
+    pub page: i64,
+    pub page_size: i64,
+    pub total: i64,
+}
+
+#[derive(Serialize)]
+struct ApiError {
+    error: String,
 }
 
 pub fn create_router(state: Arc<AppState>) -> Router {
@@ -120,11 +149,79 @@ async fn trigger_payout(
 }
 
 // Handler: Get Anchor Payouts
-// Contributors: List payouts from AnchorRegistry
+// Queries the payouts table filtered by beneficiary_address with pagination.
 async fn get_anchor_payouts(
-    State(_state): State<Arc<AppState>>,
-    Query(_query): Query<AnchorQuery>,
+    State(state): State<Arc<AppState>>,
+    Query(query): Query<AnchorQuery>,
 ) -> impl IntoResponse {
-    let empty_list: Vec<AnchorPayout> = Vec::new();
-    (StatusCode::OK, Json(empty_list))
+    let page = query.page.unwrap_or(1).max(1);
+    let page_size = query.page_size.unwrap_or(20).clamp(1, 100);
+    let offset = (page - 1) * page_size;
+    let address = query.beneficiary_address.as_deref();
+
+    let total: i64 = match sqlx::query_scalar(
+        r#"SELECT COUNT(*) FROM payouts WHERE ($1::text IS NULL OR beneficiary_address = $1)"#,
+    )
+    .bind(address)
+    .fetch_one(&state.db_pool)
+    .await
+    {
+        Ok(count) => count,
+        Err(e) => {
+            error!(error = %e, "Failed to count payouts");
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(ApiError {
+                    error: "Database query failed".to_string(),
+                }),
+            )
+                .into_response();
+        }
+    };
+
+    let rows: Vec<PayoutRow> = match sqlx::query_as::<_, PayoutRow>(
+        r#"
+        SELECT
+            id,
+            plan_id,
+            beneficiary_address,
+            amount::text      AS amount,
+            payout_type::text AS payout_type,
+            status::text      AS status,
+            created_at
+        FROM payouts
+        WHERE ($1::text IS NULL OR beneficiary_address = $1)
+        ORDER BY created_at DESC
+        LIMIT $2 OFFSET $3
+        "#,
+    )
+    .bind(address)
+    .bind(page_size)
+    .bind(offset)
+    .fetch_all(&state.db_pool)
+    .await
+    {
+        Ok(rows) => rows,
+        Err(e) => {
+            error!(error = %e, "Failed to query payouts");
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(ApiError {
+                    error: "Database query failed".to_string(),
+                }),
+            )
+                .into_response();
+        }
+    };
+
+    (
+        StatusCode::OK,
+        Json(PayoutStatusResponse {
+            data: rows,
+            page,
+            page_size,
+            total,
+        }),
+    )
+        .into_response()
 }
