@@ -2,7 +2,7 @@ use axum::{
     body::Body,
     http::{self, Request, StatusCode},
 };
-use inheritx_backend::{create_router, AppState};
+use inheritx_backend::{create_router, AppState, PlanResponse};
 use serde_json::json;
 use sqlx::postgres::PgPoolOptions;
 use std::sync::Arc;
