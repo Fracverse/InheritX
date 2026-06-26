@@ -1,6 +1,7 @@
 use axum::{
     extract::{Query, State},
     http::StatusCode,
+    middleware::from_fn,
     response::IntoResponse,
     routing::{get, post},
     Json, Router,
@@ -10,6 +11,7 @@ use serde::{Deserialize, Serialize};
 use std::sync::Arc;
 use tower_http::cors::{Any, CorsLayer};
 
+use crate::auth::signature_auth_middleware;
 use crate::kyc_webhook::kyc_webhook_handler;
 use crate::stellar_anchor::{AnchorPayout, AnchorRegistry};
 use crate::ws::{ws_handler, KycUpdateEvent};
@@ -70,13 +72,23 @@ pub fn create_router(state: Arc<AppState>) -> Router {
         .allow_methods(Any)
         .allow_headers(Any);
 
-    Router::new()
-        .route("/api/plans", post(create_plan).get(get_plans))
+    // User routes requiring signature verification
+    let user_routes = Router::new()
+        .route("/api/plans", post(create_plan))
         .route("/api/plans/ping", post(ping_plan))
         .route("/api/plans/payout", post(trigger_payout))
+        .route_layer(from_fn(signature_auth_middleware));
+
+    // Public or admin routes
+    let public_routes = Router::new()
+        .route("/api/plans", get(get_plans))
         .route("/api/anchor/payout-status", get(get_anchor_payouts))
         .route("/api/kyc/webhook", post(kyc_webhook_handler))
-        .route("/ws/kyc", get(ws_handler))
+        .route("/ws/kyc", get(ws_handler));
+
+    Router::new()
+        .merge(user_routes)
+        .merge(public_routes)
         .layer(cors)
         .with_state(state)
 }
