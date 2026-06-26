@@ -1,6 +1,7 @@
 use axum::{
     extract::{Query, State},
     http::StatusCode,
+    middleware::from_fn,
     response::IntoResponse,
     routing::{get, post},
     Json, Router,
@@ -10,6 +11,7 @@ use serde::{Deserialize, Serialize};
 use std::sync::Arc;
 use tower_http::cors::{Any, CorsLayer};
 
+use crate::auth::signature_auth_middleware;
 use crate::kyc_webhook::kyc_webhook_handler;
 use crate::stellar_anchor::{AnchorPayout, AnchorRegistry};
 use crate::ws::{ws_handler, KycUpdateEvent};
@@ -41,6 +43,7 @@ pub struct AppState {
     pub db_pool: sqlx::PgPool,
     pub kyc_tx: tokio::sync::broadcast::Sender<KycUpdateEvent>,
     pub kyc_webhook_secret: Option<String>,
+    pub apy_config: yield_calculator::ApyConfig,
 }
 
 #[derive(Deserialize)]
@@ -52,6 +55,15 @@ pub struct PlanQuery {
 #[derive(Deserialize)]
 pub struct PingRequest {
     pub owner: String,
+    pub signature: String,
+    pub message: String,
+}
+
+#[derive(Serialize)]
+pub struct PingResponse {
+    pub owner: String,
+    pub status: String,
+    pub virtual_balance: rust_decimal::Decimal,
 }
 
 #[derive(Deserialize)]
@@ -70,13 +82,23 @@ pub fn create_router(state: Arc<AppState>) -> Router {
         .allow_methods(Any)
         .allow_headers(Any);
 
-    Router::new()
-        .route("/api/plans", post(create_plan).get(get_plans))
+    // User routes requiring signature verification
+    let user_routes = Router::new()
+        .route("/api/plans", post(create_plan))
         .route("/api/plans/ping", post(ping_plan))
         .route("/api/plans/payout", post(trigger_payout))
+        .route_layer(from_fn(signature_auth_middleware));
+
+    // Public or admin routes
+    let public_routes = Router::new()
+        .route("/api/plans", get(get_plans))
         .route("/api/anchor/payout-status", get(get_anchor_payouts))
         .route("/api/kyc/webhook", post(kyc_webhook_handler))
-        .route("/ws/kyc", get(ws_handler))
+        .route("/ws/kyc", get(ws_handler));
+
+    Router::new()
+        .merge(user_routes)
+        .merge(public_routes)
         .layer(cors)
         .with_state(state)
 }
@@ -298,6 +320,8 @@ async fn create_plan(
             grace_period,
             grace_period_seconds,
             earn_yield,
+            yield_rate_bps,
+            accrued_yield,
             last_ping,
             is_active,
             status,
@@ -312,6 +336,8 @@ async fn create_plan(
     .bind(payload.grace_period as i64)
     .bind(payload.grace_period as i64)
     .bind(payload.earn_yield)
+    .bind(payload.yield_rate_bps as i32)
+    .bind(rust_decimal::Decimal::ZERO)
     .bind(payload.last_ping)
     .bind(payload.is_active)
     .bind("ACTIVE")
@@ -538,10 +564,88 @@ async fn get_plans(
 // Handler: Ping Plan
 // Contributors: Implement resetting last_ping timestamp and calculating accrued yield up to the ping time
 async fn ping_plan(
-    State(_state): State<Arc<AppState>>,
-    Json(_payload): Json<PingRequest>,
+    State(state): State<Arc<AppState>>,
+    Json(payload): Json<PingRequest>,
 ) -> impl IntoResponse {
-    (StatusCode::NOT_IMPLEMENTED, "Ping logic not implemented")
+    // 1. Verify signature
+    if !verify_ping_signature(&payload.owner, &payload.signature, &payload.message) {
+        return (
+            StatusCode::UNAUTHORIZED,
+            Json(serde_json::json!({ "error": "Invalid signature" })),
+        )
+            .into_response();
+    }
+
+    // 2. Fetch the active plan from DB
+    let plan = match sqlx::query_as::<_, PlanRow>(
+        "SELECT * FROM plans WHERE owner_address = $1 AND is_active = true",
+    )
+    .bind(&payload.owner)
+    .fetch_optional(&state.db_pool)
+    .await
+    {
+        Ok(Some(p)) => p,
+        Ok(None) => {
+            return (
+                StatusCode::NOT_FOUND,
+                Json(serde_json::json!({ "error": "Active plan not found" })),
+            )
+                .into_response();
+        }
+        Err(e) => {
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(serde_json::json!({ "error": format!("Database error: {}", e) })),
+            )
+                .into_response();
+        }
+    };
+
+    // 3. Calculate accumulated yield
+    let current_time = chrono::Utc::now().timestamp();
+    let elapsed = if current_time > plan.last_ping {
+        (current_time - plan.last_ping) as u64
+    } else {
+        0
+    };
+
+    let mut new_accrued_yield = plan.accrued_yield;
+    if plan.earn_yield && elapsed > 0 {
+        let yield_val = yield_calculator::calculate_yield(
+            plan.amount,
+            plan.yield_rate_bps as u32,
+            elapsed,
+            &state.apy_config,
+        );
+        new_accrued_yield += yield_val.normalize();
+    }
+
+    // 4. Update plans in PostgreSQL
+    if let Err(e) = sqlx::query("UPDATE plans SET last_ping = $1, accrued_yield = $2 WHERE id = $3")
+        .bind(current_time)
+        .bind(new_accrued_yield)
+        .bind(plan.id)
+        .execute(&state.db_pool)
+        .await
+    {
+        return (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(serde_json::json!({ "error": format!("Failed to update plan: {}", e) })),
+        )
+            .into_response();
+    }
+
+    // 5. Return updated plan status and virtual balance
+    let virtual_balance = plan.amount + new_accrued_yield;
+    (
+        StatusCode::OK,
+        Json(PingResponse {
+            owner: plan.owner_address,
+            status: plan.status,
+            virtual_balance,
+        }),
+    )
+        .into_response()
 }
 
 // Handler: Trigger Payout

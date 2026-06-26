@@ -199,6 +199,54 @@ impl InheritanceContract {
         Ok(plan)
     }
 
+    /// Trigger payout to all beneficiaries once the plan is claimable.
+    /// Iterates over beneficiaries, computes pro-rata token allocations
+    /// using the stored basis points, and transfers tokens safely.
+    /// Remaining dust from integer division is allocated to the last beneficiary.
+    /// Aborts the entire transaction if any single transfer fails.
+    pub fn trigger_payout(env: Env, owner: Address) -> Result<(), Error> {
+        let key = DataKey::Plan(owner.clone());
+        let plan: Plan = env
+            .storage()
+            .persistent()
+            .get(&key)
+            .ok_or(Error::PlanNotFound)?;
+
+        if plan.is_active {
+            return Err(Error::InactivityPeriodNotMet);
+        }
+
+        let current_time = env.ledger().timestamp();
+        if current_time < plan.last_ping + plan.grace_period {
+            return Err(Error::InactivityPeriodNotMet);
+        }
+
+        // Checks-effects-interactions: remove plan before transfers
+        // to prevent double payout and guard against re-entrancy
+        env.storage().persistent().remove(&key);
+
+        let token_client = soroban_sdk::token::Client::new(&env, &plan.token);
+        let n = plan.beneficiaries.len();
+        let mut remaining = plan.amount;
+
+        for (i, beneficiary) in plan.beneficiaries.iter().enumerate() {
+            let share = if i == (n - 1) as usize {
+                remaining
+            } else {
+                let amount = plan.amount * (beneficiary.allocation_bps as i128) / 10000;
+                remaining -= amount;
+                amount
+            };
+            token_client.transfer(
+                &env.current_contract_address(),
+                &beneficiary.address,
+                &share,
+            );
+        }
+
+        Ok(())
+    }
+
     /// Deactivate the plan and withdraw all remaining assets.
     /// Contributors: Reclaim assets and transfer principal + yield back to the owner.
     pub fn close_plan(env: Env, owner: Address) -> Result<(), Error> {
