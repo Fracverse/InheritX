@@ -8,25 +8,23 @@ use sqlx::postgres::PgPoolOptions;
 use std::sync::Arc;
 use tower::ServiceExt; // for oneshot
 
-use ed25519_dalek::{Signer, SigningKey, VerifyingKey};
-use hex;
+use ed25519_dalek::{Signer, SigningKey};
 
 fn generate_valid_signature(body: &str, _public_key_hex: &str) -> (String, String) {
     // Use a fixed test keypair for deterministic testing
     let secret_bytes: [u8; 32] = [
-        0x9d, 0x61, 0xb8, 0xbb, 0xd0, 0xa3, 0x0a, 0x78,
-        0x23, 0x34, 0x56, 0x78, 0x9a, 0xbc, 0xde, 0xf0,
-        0x12, 0x34, 0x56, 0x78, 0x9a, 0xbc, 0xde, 0xf0,
-        0x12, 0x34, 0x56, 0x78, 0x9a, 0xbc, 0xde, 0xf0,
+        0x9d, 0x61, 0xb8, 0xbb, 0xd0, 0xa3, 0x0a, 0x78, 0x23, 0x34, 0x56, 0x78, 0x9a, 0xbc, 0xde,
+        0xf0, 0x12, 0x34, 0x56, 0x78, 0x9a, 0xbc, 0xde, 0xf0, 0x12, 0x34, 0x56, 0x78, 0x9a, 0xbc,
+        0xde, 0xf0,
     ];
-    
+
     let signing_key = SigningKey::from_bytes(&secret_bytes);
     let verifying_key = signing_key.verifying_key();
     let public_key_hex = format!("0x{}", hex::encode(verifying_key.to_bytes()));
-    
+
     let signature = signing_key.sign(body.as_bytes());
     let signature_hex = hex::encode(signature.to_bytes());
-    
+
     (public_key_hex, signature_hex)
 }
 
@@ -168,7 +166,7 @@ async fn test_create_plan_validation_negative_amount() {
 #[tokio::test]
 async fn test_create_plan_with_valid_signature() {
     let app = setup_app();
-    
+
     let body = json!({
         "owner": "owner_address",
         "token": "USDC",
@@ -186,9 +184,13 @@ async fn test_create_plan_with_valid_signature() {
                 "fiat_anchor_info": ""
             }
         ]
-    }).to_string();
+    })
+    .to_string();
 
-    let (public_key, signature) = generate_valid_signature(&body, "0x1234567890abcdef1234567890abcdef1234567890abcdef1234567890abcdef");
+    let (public_key, signature) = generate_valid_signature(
+        &body,
+        "0x1234567890abcdef1234567890abcdef1234567890abcdef1234567890abcdef",
+    );
 
     let response = app
         .oneshot(

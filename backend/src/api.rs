@@ -191,10 +191,7 @@ async fn load_beneficiaries(
 }
 
 // Helper: convert PlanRow + beneficiaries into PlanResponse with yield
-fn plan_row_to_response(
-    row: PlanRow,
-    beneficiaries: Vec<BeneficiaryResponse>,
-) -> PlanResponse {
+fn plan_row_to_response(row: PlanRow, beneficiaries: Vec<BeneficiaryResponse>) -> PlanResponse {
     let accrued_yield = compute_accrued_yield(&row.amount, row.yield_rate_bps, row.last_ping);
 
     PlanResponse {
@@ -435,7 +432,9 @@ async fn get_plans(
                 Err(e) => {
                     return (
                         StatusCode::INTERNAL_SERVER_ERROR,
-                        Json(serde_json::json!({ "error": format!("Database query failed: {}", e) })),
+                        Json(
+                            serde_json::json!({ "error": format!("Database query failed: {}", e) }),
+                        ),
                     )
                         .into_response();
                 }
@@ -462,7 +461,9 @@ async fn get_plans(
                 Err(e) => {
                     return (
                         StatusCode::INTERNAL_SERVER_ERROR,
-                        Json(serde_json::json!({ "error": format!("Database query failed: {}", e) })),
+                        Json(
+                            serde_json::json!({ "error": format!("Database query failed: {}", e) }),
+                        ),
                     )
                         .into_response();
                 }
@@ -490,7 +491,9 @@ async fn get_plans(
                 Err(e) => {
                     return (
                         StatusCode::INTERNAL_SERVER_ERROR,
-                        Json(serde_json::json!({ "error": format!("Database query failed: {}", e) })),
+                        Json(
+                            serde_json::json!({ "error": format!("Database query failed: {}", e) }),
+                        ),
                     )
                         .into_response();
                 }
@@ -514,7 +517,9 @@ async fn get_plans(
                 Err(e) => {
                     return (
                         StatusCode::INTERNAL_SERVER_ERROR,
-                        Json(serde_json::json!({ "error": format!("Database query failed: {}", e) })),
+                        Json(
+                            serde_json::json!({ "error": format!("Database query failed: {}", e) }),
+                        ),
                     )
                         .into_response();
                 }

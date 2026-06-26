@@ -5,11 +5,9 @@ use axum::{
     response::{IntoResponse, Response},
     Json,
 };
-use ed25519_dalek::{Verifier, VerifyingKey, Signature};
-use jsonwebtoken::{decode, DecodingKey, Validation, Algorithm};
+use ed25519_dalek::{Signature, Verifier, VerifyingKey};
+use jsonwebtoken::{decode, Algorithm, DecodingKey, Validation};
 use serde::{Deserialize, Serialize};
-use std::future::Future;
-use std::pin::Pin;
 use thiserror::Error;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -31,11 +29,9 @@ impl axum::extract::FromRequestParts<()> for UserContext {
     fn from_request_parts(
         parts: &mut axum::http::request::Parts,
         _state: &(),
-    ) -> Pin<Box<dyn Future<Output = Result<Self, Self::Rejection>> + Send>> {
+    ) -> impl std::future::Future<Output = Result<Self, Self::Rejection>> + Send {
         let ctx = parts.extensions.get::<UserContext>().cloned();
-        Box::pin(async move {
-            ctx.ok_or(StatusCode::INTERNAL_SERVER_ERROR)
-        })
+        Box::pin(async move { ctx.ok_or(StatusCode::INTERNAL_SERVER_ERROR) })
     }
 }
 
@@ -72,12 +68,15 @@ pub async fn jwt_auth_middleware(
     mut req: Request<Body>,
     next: Next,
 ) -> Result<Response, AuthError> {
-    let auth_header = req.headers()
+    let auth_header = req
+        .headers()
         .get("Authorization")
         .ok_or(AuthError::MissingHeader)?;
 
-    let auth_str = auth_header.to_str().map_err(|_| AuthError::InvalidHeaderFormat)?;
-    
+    let auth_str = auth_header
+        .to_str()
+        .map_err(|_| AuthError::InvalidHeaderFormat)?;
+
     if !auth_str.starts_with("Bearer ") {
         return Err(AuthError::InvalidHeaderFormat);
     }
@@ -87,15 +86,15 @@ pub async fn jwt_auth_middleware(
         return Err(AuthError::MissingToken);
     }
 
-    let secret = std::env::var("JWT_SECRET")
-        .map_err(|_| AuthError::InvalidToken)?;
+    let secret = std::env::var("JWT_SECRET").map_err(|_| AuthError::InvalidToken)?;
 
     let validation = Validation::new(Algorithm::HS256);
     let token_data = decode::<Claims>(
         token,
         &DecodingKey::from_secret(secret.as_ref()),
         &validation,
-    ).map_err(|_| AuthError::InvalidToken)?;
+    )
+    .map_err(|_| AuthError::InvalidToken)?;
 
     if token_data.claims.role != "admin" {
         return Err(AuthError::Unauthorized);
@@ -112,18 +111,20 @@ pub async fn jwt_auth_middleware(
 }
 
 pub async fn signature_auth_middleware(
-    mut req: Request<Body>,
+    req: Request<Body>,
     next: Next,
 ) -> Result<Response, AuthError> {
     let (parts, body) = req.into_parts();
 
-    let public_key_hex = parts.headers
+    let public_key_hex = parts
+        .headers
         .get("X-Public-Key")
         .ok_or(AuthError::MissingHeader)?
         .to_str()
         .map_err(|_| AuthError::InvalidHeaderFormat)?;
 
-    let signature_hex = parts.headers
+    let signature_hex = parts
+        .headers
         .get("X-Signature")
         .ok_or(AuthError::MissingHeader)?
         .to_str()
@@ -131,7 +132,7 @@ pub async fn signature_auth_middleware(
 
     let public_key_bytes = hex::decode(public_key_hex.trim_start_matches("0x"))
         .map_err(|_| AuthError::InvalidSignature)?;
-    
+
     let signature_bytes = hex::decode(signature_hex.trim_start_matches("0x"))
         .map_err(|_| AuthError::InvalidSignature)?;
 
@@ -142,9 +143,9 @@ pub async fn signature_auth_middleware(
     let public_key_array: [u8; 32] = public_key_bytes
         .try_into()
         .map_err(|_| AuthError::InvalidSignature)?;
-    
-    let verifying_key = VerifyingKey::from_bytes(&public_key_array)
-        .map_err(|_| AuthError::InvalidSignature)?;
+
+    let verifying_key =
+        VerifyingKey::from_bytes(&public_key_array).map_err(|_| AuthError::InvalidSignature)?;
 
     let signature = Signature::from_slice(signature_bytes.as_slice())
         .map_err(|_| AuthError::InvalidSignature)?;
@@ -153,10 +154,11 @@ pub async fn signature_auth_middleware(
         .await
         .map_err(|_| AuthError::InvalidSignature)?;
 
-    let body_str = String::from_utf8(body_bytes.to_vec())
-        .map_err(|_| AuthError::InvalidSignature)?;
+    let body_str =
+        String::from_utf8(body_bytes.to_vec()).map_err(|_| AuthError::InvalidSignature)?;
 
-    verifying_key.verify(body_str.as_bytes(), &signature)
+    verifying_key
+        .verify(body_str.as_bytes(), &signature)
         .map_err(|_| AuthError::InvalidSignature)?;
 
     let user_context = UserContext {
