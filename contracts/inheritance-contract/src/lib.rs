@@ -206,7 +206,11 @@ impl InheritanceContract {
     /// Aborts the entire transaction if any single transfer fails.
     pub fn trigger_payout(env: Env, owner: Address) -> Result<(), Error> {
         let key = DataKey::Plan(owner.clone());
-        let plan: Plan = env.storage().persistent().get(&key).ok_or(Error::PlanNotFound)?;
+        let plan: Plan = env
+            .storage()
+            .persistent()
+            .get(&key)
+            .ok_or(Error::PlanNotFound)?;
 
         if plan.is_active {
             return Err(Error::InactivityPeriodNotMet);
@@ -233,7 +237,11 @@ impl InheritanceContract {
                 remaining -= amount;
                 amount
             };
-            token_client.transfer(&env.current_contract_address(), &beneficiary.address, &share);
+            token_client.transfer(
+                &env.current_contract_address(),
+                &beneficiary.address,
+                &share,
+            );
         }
 
         Ok(())
