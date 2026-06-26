@@ -1,8 +1,9 @@
 use axum::{
-    extract::{Query, State},
-    http::StatusCode,
+    body::Body,
+    extract::{Path, Query, State},
+    http::{header, StatusCode},
     middleware::from_fn,
-    response::IntoResponse,
+    response::{IntoResponse, Response},
     routing::{get, post},
     Json, Router,
 };
@@ -11,7 +12,7 @@ use serde::{Deserialize, Serialize};
 use std::sync::Arc;
 use tower_http::cors::{Any, CorsLayer};
 
-use crate::auth::signature_auth_middleware;
+use crate::auth::{jwt_auth_middleware, signature_auth_middleware};
 use crate::kyc_webhook::kyc_webhook_handler;
 use crate::stellar_anchor::{AnchorPayout, AnchorRegistry};
 use crate::ws::{ws_handler, KycUpdateEvent};
@@ -91,6 +92,11 @@ pub fn create_router(state: Arc<AppState>) -> Router {
         .route("/api/plans/payout", post(trigger_payout))
         .route_layer(from_fn(signature_auth_middleware));
 
+    // Admin routes requiring JWT authentication
+    let admin_routes = Router::new()
+        .route("/api/plans/:id/report", get(get_plan_report))
+        .route_layer(from_fn(jwt_auth_middleware));
+
     // Public or admin routes
     let public_routes = Router::new()
         .route("/api/plans", get(get_plans))
@@ -100,6 +106,7 @@ pub fn create_router(state: Arc<AppState>) -> Router {
 
     Router::new()
         .merge(user_routes)
+        .merge(admin_routes)
         .merge(public_routes)
         .layer(cors)
         .with_state(state)
@@ -129,6 +136,12 @@ pub struct BeneficiaryRow {
     pub wallet_address: String,
     pub allocation_bps: i32,
     pub fiat_anchor_info: String,
+}
+
+#[derive(Debug, Clone, sqlx::FromRow)]
+pub struct PingLogRow {
+    pub pinged_at: chrono::DateTime<chrono::Utc>,
+    pub accrued_yield_snapshot: rust_decimal::Decimal,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -692,4 +705,142 @@ async fn get_anchor_payouts(
 ) -> impl IntoResponse {
     let empty_list: Vec<AnchorPayout> = Vec::new();
     (StatusCode::OK, Json(empty_list))
+}
+
+/// Handler: GET /api/plans/:id/report
+/// Generates a PDF audit report for the given plan.
+/// Requires a valid JWT (role = admin) via Bearer token.
+pub async fn get_plan_report(
+    State(state): State<Arc<AppState>>,
+    Path(plan_id): Path<uuid::Uuid>,
+) -> Response {
+    // 1. Fetch the plan
+    let plan = match sqlx::query_as::<_, PlanRow>(
+        r#"
+        SELECT id, owner_address, token_address, amount, grace_period,
+               grace_period_seconds, earn_yield, last_ping, is_active,
+               status, yield_rate_bps, accrued_yield, created_at
+        FROM plans
+        WHERE id = $1
+        "#,
+    )
+    .bind(plan_id)
+    .fetch_optional(&state.db_pool)
+    .await
+    {
+        Ok(Some(p)) => p,
+        Ok(None) => {
+            return (
+                StatusCode::NOT_FOUND,
+                Json(serde_json::json!({ "error": "Plan not found" })),
+            )
+                .into_response()
+        }
+        Err(e) => {
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(serde_json::json!({ "error": format!("Database error: {}", e) })),
+            )
+                .into_response()
+        }
+    };
+
+    // 2. Fetch beneficiaries
+    let beneficiary_rows = match sqlx::query_as::<_, BeneficiaryRow>(
+        "SELECT id, plan_id, wallet_address, allocation_bps, fiat_anchor_info FROM beneficiaries WHERE plan_id = $1 ORDER BY allocation_bps DESC",
+    )
+    .bind(plan_id)
+    .fetch_all(&state.db_pool)
+    .await
+    {
+        Ok(rows) => rows,
+        Err(e) => {
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(serde_json::json!({ "error": format!("Failed to load beneficiaries: {}", e) })),
+            )
+                .into_response()
+        }
+    };
+
+    // 3. Fetch ping logs
+    let ping_rows = match sqlx::query_as::<_, PingLogRow>(
+        "SELECT pinged_at, accrued_yield_snapshot FROM ping_logs WHERE plan_id = $1 ORDER BY pinged_at ASC",
+    )
+    .bind(plan_id)
+    .fetch_all(&state.db_pool)
+    .await
+    {
+        Ok(rows) => rows,
+        Err(e) => {
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(serde_json::json!({ "error": format!("Failed to load ping logs: {}", e) })),
+            )
+                .into_response()
+        }
+    };
+
+    // 4. Build PDF data structs (owned, so they can cross thread boundary)
+    let report_data = crate::pdf::PlanReportData {
+        plan_id: plan.id.to_string(),
+        owner_address: plan.owner_address.clone(),
+        token_address: plan.token_address.clone(),
+        amount: plan.amount.to_string(),
+        status: plan.status.clone(),
+        earn_yield: plan.earn_yield,
+        yield_rate_bps: plan.yield_rate_bps,
+        accrued_yield: plan.accrued_yield.to_string(),
+        created_at: plan.created_at.to_rfc3339(),
+        grace_period_seconds: plan.grace_period_seconds,
+        beneficiaries: beneficiary_rows
+            .into_iter()
+            .map(|b| crate::pdf::BeneficiaryData {
+                wallet_address: b.wallet_address,
+                allocation_bps: b.allocation_bps,
+                fiat_anchor_info: b.fiat_anchor_info,
+            })
+            .collect(),
+        ping_logs: ping_rows
+            .into_iter()
+            .map(|p| crate::pdf::PingLogData {
+                pinged_at: p.pinged_at.to_rfc3339(),
+                accrued_yield_snapshot: p.accrued_yield_snapshot.to_string(),
+            })
+            .collect(),
+    };
+
+    // 5. Generate PDF in a blocking thread (printpdf is !Send/!Sync)
+    let pdf_bytes = match tokio::task::spawn_blocking(move || crate::pdf::generate(report_data)).await {
+        Ok(Ok(bytes)) => bytes,
+        Ok(Err(e)) => {
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(serde_json::json!({ "error": format!("PDF generation failed: {}", e) })),
+            )
+                .into_response()
+        }
+        Err(e) => {
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(serde_json::json!({ "error": format!("PDF task panicked: {}", e) })),
+            )
+                .into_response()
+        }
+    };
+
+    // 6. Return PDF as downloadable attachment
+    let filename = format!("plan-{}-report.pdf", plan_id);
+    (
+        StatusCode::OK,
+        [
+            (header::CONTENT_TYPE, "application/pdf".to_string()),
+            (
+                header::CONTENT_DISPOSITION,
+                format!("attachment; filename=\"{}\"", filename),
+            ),
+        ],
+        Body::from(pdf_bytes),
+    )
+        .into_response()
 }
