@@ -327,7 +327,6 @@ async fn create_plan(
 
     (StatusCode::CREATED, Json(response)).into_response()
 }
-}
 
 // Handler: Get Plans
 // Contributors: Implement plan retrieval, filtering by owner, and apply on-the-fly yield accumulation
