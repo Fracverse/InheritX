@@ -42,8 +42,10 @@ impl DbManager {
         let _ = sqlx::query(
             "CREATE OR REPLACE FUNCTION bigint_add_interval(epoch_secs BIGINT, val INTERVAL) \
              RETURNS TIMESTAMP WITH TIME ZONE LANGUAGE sql IMMUTABLE AS $$ \
-             SELECT to_timestamp(epoch_secs::double precision) + val; $$;"
-        ).execute(pool).await;
+             SELECT to_timestamp(epoch_secs::double precision) + val; $$;",
+        )
+        .execute(pool)
+        .await;
 
         let _ = sqlx::query(
             "DO $$ BEGIN \

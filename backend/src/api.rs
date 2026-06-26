@@ -600,7 +600,7 @@ async fn ping_plan(
 
     // 2. Fetch the active plan from DB
     let plan = match sqlx::query_as::<_, PlanRow>(
-        "SELECT * FROM plans WHERE owner_address = $1 AND is_active = true"
+        "SELECT * FROM plans WHERE owner_address = $1 AND is_active = true",
     )
     .bind(&payload.owner)
     .fetch_optional(&state.db_pool)
@@ -644,14 +644,12 @@ async fn ping_plan(
     }
 
     // 4. Update plans in PostgreSQL
-    if let Err(e) = sqlx::query(
-        "UPDATE plans SET last_ping = $1, accrued_yield = $2 WHERE id = $3"
-    )
-    .bind(current_time)
-    .bind(new_accrued_yield)
-    .bind(plan.id)
-    .execute(&state.db_pool)
-    .await
+    if let Err(e) = sqlx::query("UPDATE plans SET last_ping = $1, accrued_yield = $2 WHERE id = $3")
+        .bind(current_time)
+        .bind(new_accrued_yield)
+        .bind(plan.id)
+        .execute(&state.db_pool)
+        .await
     {
         return (
             StatusCode::INTERNAL_SERVER_ERROR,

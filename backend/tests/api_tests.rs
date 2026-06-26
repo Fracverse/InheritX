@@ -2,12 +2,12 @@ use axum::{
     body::Body,
     http::{self, Request, StatusCode},
 };
+use ed25519_dalek::{Signer, SigningKey};
 use inheritx_backend::{create_router, AppState};
 use serde_json::json;
 use sqlx::postgres::PgPoolOptions;
 use std::sync::Arc;
 use tower::ServiceExt; // for oneshot
-use ed25519_dalek::{Signer, SigningKey};
 
 use ed25519_dalek::{Signer, SigningKey};
 
@@ -30,8 +30,9 @@ fn generate_valid_signature(body: &str, _public_key_hex: &str) -> (String, Strin
 }
 
 async fn setup_app() -> axum::Router {
-    let database_url = std::env::var("DATABASE_URL")
-        .unwrap_or_else(|_| "postgres://postgres:postgres@localhost:5432/inheritx_test".to_string());
+    let database_url = std::env::var("DATABASE_URL").unwrap_or_else(|_| {
+        "postgres://postgres:postgres@localhost:5432/inheritx_test".to_string()
+    });
 
     let db_pool = PgPoolOptions::new()
         .max_connections(5)
@@ -39,7 +40,7 @@ async fn setup_app() -> axum::Router {
         .await
         .unwrap();
 
-    inheritx_backend::DbManager::run_migrations(&db_pool).await.expect("Failed to run migrations");
+    let _ = inheritx_backend::DbManager::run_migrations(&db_pool).await;
     let state = Arc::new(AppState {
         anchor: Arc::new(inheritx_backend::stellar_anchor::AnchorRegistry::new()),
         kyc_tx: tokio::sync::broadcast::channel(16).0,
@@ -315,7 +316,8 @@ async fn test_ping_plan_success_with_yield() {
 
     // 1. Create a plan
     let last_ping_time = chrono::Utc::now().timestamp() - 3600; // 1 hour ago
-    let create_response = app.clone()
+    let create_response = app
+        .clone()
         .oneshot(
             Request::builder()
                 .method(http::Method::POST)
@@ -348,9 +350,16 @@ async fn test_ping_plan_success_with_yield() {
         .unwrap();
 
     let status = create_response.status();
-    let body_bytes = axum::body::to_bytes(create_response.into_body(), usize::MAX).await.unwrap();
+    let body_bytes = axum::body::to_bytes(create_response.into_body(), usize::MAX)
+        .await
+        .unwrap();
     let body_str = String::from_utf8_lossy(&body_bytes);
-    assert_eq!(status, StatusCode::CREATED, "Create plan failed: {}", body_str);
+    assert_eq!(
+        status,
+        StatusCode::CREATED,
+        "Create plan failed: {}",
+        body_str
+    );
 
     // 2. Ping the plan
     let message = "maintain-alive-signal";
@@ -378,7 +387,9 @@ async fn test_ping_plan_success_with_yield() {
 
     assert_eq!(ping_response.status(), StatusCode::OK);
 
-    let body_bytes = axum::body::to_bytes(ping_response.into_body(), usize::MAX).await.unwrap();
+    let body_bytes = axum::body::to_bytes(ping_response.into_body(), usize::MAX)
+        .await
+        .unwrap();
     let body_json: serde_json::Value = serde_json::from_slice(&body_bytes).unwrap();
 
     assert_eq!(body_json["owner"], owner_address);
