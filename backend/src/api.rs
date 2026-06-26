@@ -17,6 +17,9 @@ use crate::stellar_anchor::{AnchorPayout, AnchorRegistry};
 use crate::ws::{ws_handler, KycUpdateEvent};
 use crate::yield_calculator;
 
+use ed25519_dalek::{Signature, Verifier, VerifyingKey};
+use stellar_strkey::ed25519::PublicKey as StellarPublicKey;
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct PlanBeneficiary {
     pub address: String,
@@ -54,6 +57,15 @@ pub struct PlanQuery {
 #[derive(Deserialize)]
 pub struct PingRequest {
     pub owner: String,
+    pub signature: String,
+    pub message: String,
+}
+
+#[derive(Serialize)]
+pub struct PingResponse {
+    pub owner: String,
+    pub status: String,
+    pub virtual_balance: rust_decimal::Decimal,
 }
 
 #[derive(Deserialize)]
@@ -106,6 +118,7 @@ pub struct PlanRow {
     pub is_active: bool,
     pub status: String,
     pub yield_rate_bps: i32,
+    pub accrued_yield: rust_decimal::Decimal,
     pub created_at: chrono::DateTime<chrono::Utc>,
 }
 
@@ -131,7 +144,7 @@ pub struct PlanResponse {
     pub is_active: bool,
     pub status: String,
     pub yield_rate_bps: i32,
-    pub accrued_yield: f64,
+    pub accrued_yield: rust_decimal::Decimal,
     pub created_at: chrono::DateTime<chrono::Utc>,
     pub beneficiaries: Vec<BeneficiaryResponse>,
 }
@@ -310,12 +323,13 @@ async fn create_plan(
             grace_period,
             grace_period_seconds,
             earn_yield,
+            yield_rate_bps,
+            accrued_yield,
             last_ping,
             is_active,
-            status,
-            yield_rate_bps
-        ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
-        RETURNING id, owner_address, token_address, amount, grace_period, grace_period_seconds, earn_yield, last_ping, is_active, status, yield_rate_bps, created_at
+            status
+        ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
+        RETURNING id, owner_address, token_address, amount, grace_period, grace_period_seconds, earn_yield, yield_rate_bps, accrued_yield, last_ping, is_active, status, created_at
         "#
     )
     .bind(&payload.owner)
@@ -324,6 +338,8 @@ async fn create_plan(
     .bind(payload.grace_period as i64)
     .bind(payload.grace_period as i64)
     .bind(payload.earn_yield)
+    .bind(payload.yield_rate_bps as i32)
+    .bind(rust_decimal::Decimal::ZERO)
     .bind(payload.last_ping)
     .bind(payload.is_active)
     .bind("ACTIVE")
@@ -396,7 +412,7 @@ async fn create_plan(
         is_active: plan_row.is_active,
         status: plan_row.status,
         yield_rate_bps: plan_row.yield_rate_bps,
-        accrued_yield: 0.0, // No yield accrued at creation
+        accrued_yield: plan_row.accrued_yield,
         created_at: plan_row.created_at,
         beneficiaries: inserted_beneficiaries,
     };
@@ -547,13 +563,114 @@ async fn get_plans(
     (StatusCode::OK, Json(responses)).into_response()
 }
 
+fn verify_ping_signature(owner: &str, signature: &str, message: &str) -> bool {
+    let public_key_bytes = match StellarPublicKey::from_string(owner) {
+        Ok(pk) => pk.0,
+        Err(_) => return false,
+    };
+    let verifying_key = match VerifyingKey::from_bytes(&public_key_bytes) {
+        Ok(key) => key,
+        Err(_) => return false,
+    };
+    let sig_bytes = match hex::decode(signature) {
+        Ok(bytes) => bytes,
+        Err(_) => return false,
+    };
+    let sig = match Signature::from_slice(&sig_bytes) {
+        Ok(s) => s,
+        Err(_) => return false,
+    };
+    verifying_key.verify(message.as_bytes(), &sig).is_ok()
+}
+
 // Handler: Ping Plan
 // Contributors: Implement resetting last_ping timestamp and calculating accrued yield up to the ping time
 async fn ping_plan(
-    State(_state): State<Arc<AppState>>,
-    Json(_payload): Json<PingRequest>,
+    State(state): State<Arc<AppState>>,
+    Json(payload): Json<PingRequest>,
 ) -> impl IntoResponse {
-    (StatusCode::NOT_IMPLEMENTED, "Ping logic not implemented")
+    // 1. Verify signature
+    if !verify_ping_signature(&payload.owner, &payload.signature, &payload.message) {
+        return (
+            StatusCode::UNAUTHORIZED,
+            Json(serde_json::json!({ "error": "Invalid signature" })),
+        )
+            .into_response();
+    }
+
+    // 2. Fetch the active plan from DB
+    let plan = match sqlx::query_as::<_, PlanRow>(
+        "SELECT * FROM plans WHERE owner_address = $1 AND is_active = true"
+    )
+    .bind(&payload.owner)
+    .fetch_optional(&state.db_pool)
+    .await
+    {
+        Ok(Some(p)) => p,
+        Ok(None) => {
+            return (
+                StatusCode::NOT_FOUND,
+                Json(serde_json::json!({ "error": "Active plan not found" })),
+            )
+                .into_response();
+        }
+        Err(e) => {
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(serde_json::json!({ "error": format!("Database error: {}", e) })),
+            )
+                .into_response();
+        }
+    };
+
+    // 3. Calculate accumulated yield
+    let current_time = chrono::Utc::now().timestamp();
+    let elapsed = if current_time > plan.last_ping {
+        (current_time - plan.last_ping) as u64
+    } else {
+        0
+    };
+
+    let mut new_accrued_yield = plan.accrued_yield;
+    if plan.earn_yield && elapsed > 0 {
+        let yield_val = crate::yield_calculator::calculate_yield(
+            rust_decimal::prelude::ToPrimitive::to_f64(&plan.amount).unwrap_or(0.0),
+            plan.yield_rate_bps as u32,
+            elapsed,
+        );
+        if let Some(dec_yield) = rust_decimal::Decimal::from_f64_retain(yield_val) {
+            new_accrued_yield += dec_yield.normalize();
+        }
+    }
+
+    // 4. Update plans in PostgreSQL
+    if let Err(e) = sqlx::query(
+        "UPDATE plans SET last_ping = $1, accrued_yield = $2 WHERE id = $3"
+    )
+    .bind(current_time)
+    .bind(new_accrued_yield)
+    .bind(plan.id)
+    .execute(&state.db_pool)
+    .await
+    {
+        return (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(serde_json::json!({ "error": format!("Failed to update plan: {}", e) })),
+        )
+            .into_response();
+    }
+
+    // 5. Return updated plan status and virtual balance
+    let virtual_balance = plan.amount + new_accrued_yield;
+    (
+        StatusCode::OK,
+        Json(PingResponse {
+            owner: plan.owner_address,
+            status: plan.status,
+            virtual_balance,
+        }),
+    )
+        .into_response()
 }
 
 // Handler: Trigger Payout

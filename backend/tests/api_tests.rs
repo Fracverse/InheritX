@@ -7,6 +7,7 @@ use serde_json::json;
 use sqlx::postgres::PgPoolOptions;
 use std::sync::Arc;
 use tower::ServiceExt; // for oneshot
+use ed25519_dalek::{Signer, SigningKey};
 
 use ed25519_dalek::{Signer, SigningKey};
 
@@ -28,13 +29,21 @@ fn generate_valid_signature(body: &str, _public_key_hex: &str) -> (String, Strin
     (public_key_hex, signature_hex)
 }
 
-fn setup_app() -> axum::Router {
+async fn setup_app() -> axum::Router {
+    let database_url = std::env::var("DATABASE_URL")
+        .unwrap_or_else(|_| "postgres://postgres:postgres@localhost:5432/inheritx_test".to_string());
+
+    let db_pool = PgPoolOptions::new()
+        .max_connections(5)
+        .connect(&database_url)
+        .await
+        .unwrap();
+
+    inheritx_backend::DbManager::run_migrations(&db_pool).await.expect("Failed to run migrations");
     let state = Arc::new(AppState {
         anchor: Arc::new(inheritx_backend::stellar_anchor::AnchorRegistry::new()),
         kyc_tx: tokio::sync::broadcast::channel(16).0,
-        db_pool: PgPoolOptions::new()
-            .connect_lazy("postgres://postgres:password@localhost/test")
-            .unwrap(),
+        db_pool,
         kyc_webhook_secret: None,
     });
     create_router(state)
@@ -42,12 +51,12 @@ fn setup_app() -> axum::Router {
 
 #[tokio::test]
 async fn test_router_compiles() {
-    let _app = setup_app();
+    let _app = setup_app().await;
 }
 
 #[tokio::test]
 async fn test_create_plan_validation_empty_owner() {
-    let app = setup_app();
+    let app = setup_app().await;
 
     let response = app
         .oneshot(
@@ -86,7 +95,7 @@ async fn test_create_plan_validation_empty_owner() {
 
 #[tokio::test]
 async fn test_create_plan_validation_invalid_bps() {
-    let app = setup_app();
+    let app = setup_app().await;
 
     // Sum is 9000, not 10000
     let response = app
@@ -126,7 +135,7 @@ async fn test_create_plan_validation_invalid_bps() {
 
 #[tokio::test]
 async fn test_create_plan_validation_negative_amount() {
-    let app = setup_app();
+    let app = setup_app().await;
 
     let response = app
         .oneshot(
@@ -227,4 +236,158 @@ async fn test_get_plans_is_public() {
 
     // Should not require auth
     assert_ne!(response.status(), StatusCode::UNAUTHORIZED);
+}
+
+#[tokio::test]
+async fn test_ping_plan_invalid_signature() {
+    let app = setup_app().await;
+
+    // Sign with some key, but use different owner
+    let mut rng = rand::thread_rng();
+    let signing_key = SigningKey::generate(&mut rng);
+    let signature = signing_key.sign(b"ping");
+    let signature_hex = hex::encode(signature.to_bytes());
+
+    let response = app
+        .oneshot(
+            Request::builder()
+                .method(http::Method::POST)
+                .uri("/api/plans/ping")
+                .header(http::header::CONTENT_TYPE, "application/json")
+                .body(Body::from(
+                    json!({
+                        "owner": "GDIW7P2XUXC4XZB452Y5Z774N4V27PUDHWTKWTQZ3KHYUGB743WEXG7T", // random owner
+                        "signature": signature_hex,
+                        "message": "ping"
+                    })
+                    .to_string(),
+                ))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
+}
+
+#[tokio::test]
+async fn test_ping_plan_not_found() {
+    let app = setup_app().await;
+
+    let mut rng = rand::thread_rng();
+    let signing_key = SigningKey::generate(&mut rng);
+    let verifying_key = signing_key.verifying_key();
+    let owner_address = stellar_strkey::ed25519::PublicKey(verifying_key.to_bytes()).to_string();
+
+    let signature = signing_key.sign(b"ping");
+    let signature_hex = hex::encode(signature.to_bytes());
+
+    let response = app
+        .oneshot(
+            Request::builder()
+                .method(http::Method::POST)
+                .uri("/api/plans/ping")
+                .header(http::header::CONTENT_TYPE, "application/json")
+                .body(Body::from(
+                    json!({
+                        "owner": owner_address,
+                        "signature": signature_hex,
+                        "message": "ping"
+                    })
+                    .to_string(),
+                ))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(response.status(), StatusCode::NOT_FOUND);
+}
+
+#[tokio::test]
+async fn test_ping_plan_success_with_yield() {
+    let app = setup_app().await;
+
+    let mut rng = rand::thread_rng();
+    let signing_key = SigningKey::generate(&mut rng);
+    let verifying_key = signing_key.verifying_key();
+    let owner_address = stellar_strkey::ed25519::PublicKey(verifying_key.to_bytes()).to_string();
+
+    // 1. Create a plan
+    let last_ping_time = chrono::Utc::now().timestamp() - 3600; // 1 hour ago
+    let create_response = app.clone()
+        .oneshot(
+            Request::builder()
+                .method(http::Method::POST)
+                .uri("/api/plans")
+                .header(http::header::CONTENT_TYPE, "application/json")
+                .body(Body::from(
+                    json!({
+                        "owner": owner_address,
+                        "token": "USDC",
+                        "amount": 100.0,
+                        "grace_period": 3600,
+                        "earn_yield": true,
+                        "yield_rate_bps": 500, // 5%
+                        "last_ping": last_ping_time,
+                        "is_active": true,
+                        "beneficiaries": [
+                            {
+                                "address": "beneficiary_1",
+                                "name": "B1",
+                                "allocation_bps": 10000,
+                                "fiat_anchor_info": ""
+                            }
+                        ]
+                    })
+                    .to_string(),
+                ))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+
+    let status = create_response.status();
+    let body_bytes = axum::body::to_bytes(create_response.into_body(), usize::MAX).await.unwrap();
+    let body_str = String::from_utf8_lossy(&body_bytes);
+    assert_eq!(status, StatusCode::CREATED, "Create plan failed: {}", body_str);
+
+    // 2. Ping the plan
+    let message = "maintain-alive-signal";
+    let signature = signing_key.sign(message.as_bytes());
+    let signature_hex = hex::encode(signature.to_bytes());
+
+    let ping_response = app
+        .oneshot(
+            Request::builder()
+                .method(http::Method::POST)
+                .uri("/api/plans/ping")
+                .header(http::header::CONTENT_TYPE, "application/json")
+                .body(Body::from(
+                    json!({
+                        "owner": owner_address,
+                        "signature": signature_hex,
+                        "message": message
+                    })
+                    .to_string(),
+                ))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(ping_response.status(), StatusCode::OK);
+
+    let body_bytes = axum::body::to_bytes(ping_response.into_body(), usize::MAX).await.unwrap();
+    let body_json: serde_json::Value = serde_json::from_slice(&body_bytes).unwrap();
+
+    assert_eq!(body_json["owner"], owner_address);
+    assert_eq!(body_json["status"], "ACTIVE");
+
+    // Amount = 100.0. Yield rate = 5%. Elapsed = 3600s.
+    // yield = 100.0 * 0.05 * (3600.0 / 31536000.0) = 0.000570776
+    // virtual_balance should be approx 100.0006
+    let virtual_balance: f64 = body_json["virtual_balance"].as_f64().unwrap();
+    assert!(virtual_balance > 100.0);
+    assert!(virtual_balance < 100.01);
 }
