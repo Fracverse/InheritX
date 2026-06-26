@@ -28,9 +28,8 @@ fn generate_valid_signature(body: &str, _public_key_hex: &str) -> (String, Strin
 }
 
 async fn setup_app() -> axum::Router {
-    let database_url = std::env::var("DATABASE_URL").unwrap_or_else(|_| {
-        "postgres://postgres:password@localhost:5432/test".to_string()
-    });
+    let database_url = std::env::var("DATABASE_URL")
+        .unwrap_or_else(|_| "postgres://postgres:password@localhost:5432/test".to_string());
 
     let db_pool = PgPoolOptions::new()
         .max_connections(5)
