@@ -53,6 +53,10 @@ mod tests {
         let one_year_secs = (365.25 * 24.0 * 3600.0) as u64;
         let yield_amount = calculate_yield(1_000_000.0, 200, one_year_secs);
         // 2% of 1,000,000 = 20,000
-        assert!((yield_amount - 20_000.0).abs() < 1.0);
+        assert!(
+            (yield_amount - 20_000.0).abs() < 1.0,
+            "Unexpected yield_amount = {:.6}; expected ≈ 20000.0",
+            yield_amount
+        );
     }
 }
