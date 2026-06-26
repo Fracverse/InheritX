@@ -31,7 +31,7 @@ fn generate_valid_signature(body: &str, _public_key_hex: &str) -> (String, Strin
 
 async fn setup_app() -> axum::Router {
     let database_url = std::env::var("DATABASE_URL").unwrap_or_else(|_| {
-        "postgres://postgres:postgres@localhost:5432/inheritx_test".to_string()
+        "postgres://postgres:password@localhost:5432/test".to_string()
     });
 
     let db_pool = PgPoolOptions::new()
@@ -44,9 +44,7 @@ async fn setup_app() -> axum::Router {
     let state = Arc::new(AppState {
         anchor: Arc::new(inheritx_backend::stellar_anchor::AnchorRegistry::new()),
         kyc_tx: tokio::sync::broadcast::channel(16).0,
-        db_pool: PgPoolOptions::new()
-            .connect_lazy("postgres://postgres:password@localhost/test")
-            .unwrap(),
+        db_pool,
         kyc_webhook_secret: None,
     });
     create_router(state)
@@ -54,12 +52,12 @@ async fn setup_app() -> axum::Router {
 
 #[tokio::test]
 async fn test_router_compiles() {
-    let _app = setup_app();
+    let _app = setup_app().await;
 }
 
 #[tokio::test]
 async fn test_create_plan_validation_empty_owner() {
-    let app = setup_app();
+    let app = setup_app().await;
 
     let response = app
         .oneshot(
@@ -98,7 +96,7 @@ async fn test_create_plan_validation_empty_owner() {
 
 #[tokio::test]
 async fn test_create_plan_validation_invalid_bps() {
-    let app = setup_app();
+    let app = setup_app().await;
 
     // Sum is 9000, not 10000
     let response = app
@@ -138,7 +136,7 @@ async fn test_create_plan_validation_invalid_bps() {
 
 #[tokio::test]
 async fn test_create_plan_validation_negative_amount() {
-    let app = setup_app();
+    let app = setup_app().await;
 
     let response = app
         .oneshot(
@@ -243,7 +241,7 @@ async fn test_get_plans_is_public() {
 
 #[tokio::test]
 async fn test_ping_plan_invalid_signature() {
-    let app = setup_app();
+    let app = setup_app().await;
 
     // Sign with some key, but use different owner
     let mut rng = rand::thread_rng();
@@ -275,7 +273,7 @@ async fn test_ping_plan_invalid_signature() {
 
 #[tokio::test]
 async fn test_ping_plan_not_found() {
-    let app = setup_app();
+    let app = setup_app().await;
 
     let mut rng = rand::thread_rng();
     let signing_key = SigningKey::generate(&mut rng);
@@ -309,7 +307,7 @@ async fn test_ping_plan_not_found() {
 
 #[tokio::test]
 async fn test_ping_plan_success_with_yield() {
-    let app = setup_app();
+    let app = setup_app().await;
 
     let mut rng = rand::thread_rng();
     let signing_key = SigningKey::generate(&mut rng);
