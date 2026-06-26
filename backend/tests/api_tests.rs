@@ -5,8 +5,8 @@ use axum::{
 use ed25519_dalek::{Signer, SigningKey};
 use inheritx_backend::{create_router, AppState};
 use serde_json::json;
-use sqlx::postgres::PgPoolOptions;
 use std::sync::Arc;
+use std::time::Duration;
 use tower::ServiceExt; // for oneshot
 
 fn generate_valid_signature(body: &str, _public_key_hex: &str) -> (String, String) {
@@ -27,35 +27,35 @@ fn generate_valid_signature(body: &str, _public_key_hex: &str) -> (String, Strin
     (public_key_hex, signature_hex)
 }
 
-async fn setup_app() -> axum::Router {
+fn setup_app() -> axum::Router {
     let database_url = std::env::var("DATABASE_URL")
         .unwrap_or_else(|_| "postgres://postgres:password@localhost:5432/test".to_string());
 
-    let db_pool = PgPoolOptions::new()
-        .max_connections(5)
-        .connect(&database_url)
-        .await
+    // Lazy pool: no connection at setup time; these tests assert auth/validation
+    // before most handlers touch the database.
+    let db_pool = sqlx::postgres::PgPoolOptions::new()
+        .acquire_timeout(Duration::from_secs(1))
+        .connect_lazy(&database_url)
         .unwrap();
-
-    let _ = inheritx_backend::DbManager::run_migrations(&db_pool).await;
 
     let state = Arc::new(AppState {
         anchor: Arc::new(inheritx_backend::stellar_anchor::AnchorRegistry::new()),
         kyc_tx: tokio::sync::broadcast::channel(16).0,
         db_pool,
         kyc_webhook_secret: None,
+        apy_config: inheritx_backend::yield_calculator::ApyConfig::default(),
     });
     create_router(state)
 }
 
 #[tokio::test]
 async fn test_router_compiles() {
-    let _app = setup_app().await;
+    let _app = setup_app();
 }
 
 #[tokio::test]
 async fn test_create_plan_validation_empty_owner() {
-    let app = setup_app().await;
+    let app = setup_app();
 
     let response = app
         .oneshot(
@@ -94,7 +94,7 @@ async fn test_create_plan_validation_empty_owner() {
 
 #[tokio::test]
 async fn test_create_plan_validation_invalid_bps() {
-    let app = setup_app().await;
+    let app = setup_app();
 
     // Sum is 9000, not 10000
     let response = app
@@ -134,7 +134,7 @@ async fn test_create_plan_validation_invalid_bps() {
 
 #[tokio::test]
 async fn test_create_plan_validation_negative_amount() {
-    let app = setup_app().await;
+    let app = setup_app();
 
     let response = app
         .oneshot(
@@ -173,7 +173,7 @@ async fn test_create_plan_validation_negative_amount() {
 
 #[tokio::test]
 async fn test_create_plan_with_valid_signature() {
-    let app = setup_app().await;
+    let app = setup_app();
 
     let body = json!({
         "owner": "owner_address",
@@ -220,7 +220,7 @@ async fn test_create_plan_with_valid_signature() {
 
 #[tokio::test]
 async fn test_get_plans_is_public() {
-    let app = setup_app().await;
+    let app = setup_app();
 
     let response = app
         .oneshot(
@@ -239,7 +239,7 @@ async fn test_get_plans_is_public() {
 
 #[tokio::test]
 async fn test_ping_plan_invalid_signature() {
-    let app = setup_app().await;
+    let app = setup_app();
 
     // Sign with some key, but use different owner
     let mut rng = rand::thread_rng();

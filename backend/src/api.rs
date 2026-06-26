@@ -46,6 +46,7 @@ pub struct AppState {
     pub db_pool: sqlx::PgPool,
     pub kyc_tx: tokio::sync::broadcast::Sender<KycUpdateEvent>,
     pub kyc_webhook_secret: Option<String>,
+    pub apy_config: yield_calculator::ApyConfig,
 }
 
 #[derive(Deserialize)]
@@ -159,9 +160,14 @@ pub struct BeneficiaryResponse {
 }
 
 /// Compute the accrued yield for a plan based on elapsed time since last_ping.
-fn compute_accrued_yield(amount: &Decimal, yield_rate_bps: i32, last_ping: i64) -> f64 {
+fn compute_accrued_yield(
+    amount: &Decimal,
+    yield_rate_bps: i32,
+    last_ping: i64,
+    config: &yield_calculator::ApyConfig,
+) -> Decimal {
     if yield_rate_bps == 0 || last_ping == 0 {
-        return 0.0;
+        return Decimal::ZERO;
     }
 
     let now = std::time::SystemTime::now()
@@ -170,9 +176,8 @@ fn compute_accrued_yield(amount: &Decimal, yield_rate_bps: i32, last_ping: i64) 
         .as_secs() as i64;
 
     let elapsed_secs = (now - last_ping).max(0) as u64;
-    let amount_f64 = amount.to_string().parse::<f64>().unwrap_or(0.0);
 
-    yield_calculator::calculate_yield(amount_f64, yield_rate_bps as u32, elapsed_secs)
+    yield_calculator::calculate_yield(*amount, yield_rate_bps as u32, elapsed_secs, config)
 }
 
 /// Load beneficiaries for a given plan.
@@ -204,8 +209,13 @@ async fn load_beneficiaries(
 }
 
 // Helper: convert PlanRow + beneficiaries into PlanResponse with yield
-fn plan_row_to_response(row: PlanRow, beneficiaries: Vec<BeneficiaryResponse>) -> PlanResponse {
-    let _accrued_yield = compute_accrued_yield(&row.amount, row.yield_rate_bps, row.last_ping);
+fn plan_row_to_response(
+    row: PlanRow,
+    beneficiaries: Vec<BeneficiaryResponse>,
+    config: &yield_calculator::ApyConfig,
+) -> PlanResponse {
+    let _accrued_yield =
+        compute_accrued_yield(&row.amount, row.yield_rate_bps, row.last_ping, config);
 
     PlanResponse {
         id: row.id,
@@ -557,7 +567,7 @@ async fn get_plans(
             }
         };
 
-        responses.push(plan_row_to_response(row, beneficiaries));
+        responses.push(plan_row_to_response(row, beneficiaries, &state.apy_config));
     }
 
     (StatusCode::OK, Json(responses)).into_response()
@@ -633,14 +643,13 @@ async fn ping_plan(
 
     let mut new_accrued_yield = plan.accrued_yield;
     if plan.earn_yield && elapsed > 0 {
-        let yield_val = crate::yield_calculator::calculate_yield(
-            rust_decimal::prelude::ToPrimitive::to_f64(&plan.amount).unwrap_or(0.0),
+        let yield_val = yield_calculator::calculate_yield(
+            plan.amount,
             plan.yield_rate_bps as u32,
             elapsed,
+            &state.apy_config,
         );
-        if let Some(dec_yield) = rust_decimal::Decimal::from_f64_retain(yield_val) {
-            new_accrued_yield += dec_yield.normalize();
-        }
+        new_accrued_yield += yield_val.normalize();
     }
 
     // 4. Update plans in PostgreSQL

@@ -46,6 +46,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         db_pool: db_pool.clone(),
         kyc_tx,
         kyc_webhook_secret: std::env::var("KYC_WEBHOOK_SECRET").ok(),
+        apy_config: inheritx_backend::yield_calculator::ApyConfig::from_env(),
     });
 
     let inactivity_watchdog = Arc::new(InactivityWatchdogService::new(
