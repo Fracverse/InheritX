@@ -24,4 +24,8 @@ reqwest = { version = "0.11", features = ["json", "rustls-tls"] }
 hmac = "0.12"
 sha2 = "0.10"
 hex = "0.4"
+base64 = "0.21"
+ed25519-dalek = { version = "2.1", features = ["pkcs8", "rand_core"] }
+jsonwebtoken = "9.0"
+stellar-strkey = "0.0.8"
 tokio-tungstenite = "0.21"
