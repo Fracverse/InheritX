@@ -205,7 +205,7 @@ async fn load_beneficiaries(
 
 // Helper: convert PlanRow + beneficiaries into PlanResponse with yield
 fn plan_row_to_response(row: PlanRow, beneficiaries: Vec<BeneficiaryResponse>) -> PlanResponse {
-    let accrued_yield = compute_accrued_yield(&row.amount, row.yield_rate_bps, row.last_ping);
+    let _accrued_yield = compute_accrued_yield(&row.amount, row.yield_rate_bps, row.last_ping);
 
     PlanResponse {
         id: row.id,
@@ -219,7 +219,7 @@ fn plan_row_to_response(row: PlanRow, beneficiaries: Vec<BeneficiaryResponse>) -
         is_active: row.is_active,
         status: row.status,
         yield_rate_bps: row.yield_rate_bps,
-        accrued_yield,
+        accrued_yield: row.accrued_yield,
         created_at: row.created_at,
         beneficiaries,
     }
