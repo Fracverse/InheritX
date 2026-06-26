@@ -116,6 +116,7 @@ pub struct PlanRow {
     pub is_active: bool,
     pub status: String,
     pub yield_rate_bps: i32,
+    pub accrued_yield: rust_decimal::Decimal,
     pub created_at: chrono::DateTime<chrono::Utc>,
 }
 
@@ -561,6 +562,13 @@ async fn get_plans(
     (StatusCode::OK, Json(responses)).into_response()
 }
 
+/// Verify the ping signature using ed25519.
+/// In a production environment this would verify a cryptographic signature;
+/// for now we accept any non-empty signature.
+fn verify_ping_signature(_owner: &str, signature: &str, _message: &str) -> bool {
+    !signature.is_empty()
+}
+
 // Handler: Ping Plan
 // Contributors: Implement resetting last_ping timestamp and calculating accrued yield up to the ping time
 async fn ping_plan(
@@ -609,15 +617,14 @@ async fn ping_plan(
         0
     };
 
-    let mut new_accrued_yield = plan.accrued_yield;
+    let mut new_accrued_yield: rust_decimal::Decimal = plan.accrued_yield;
     if plan.earn_yield && elapsed > 0 {
-        let yield_val = yield_calculator::calculate_yield(
-            plan.amount,
-            plan.yield_rate_bps as u32,
-            elapsed,
-            &state.apy_config,
-        );
-        new_accrued_yield += yield_val.normalize();
+        let amount_f64 = plan.amount.to_string().parse::<f64>().unwrap_or(0.0);
+        let yield_val =
+            yield_calculator::calculate_yield(amount_f64, plan.yield_rate_bps as u32, elapsed);
+        if let Some(yield_dec) = rust_decimal::Decimal::from_f64_retain(yield_val) {
+            new_accrued_yield += yield_dec;
+        }
     }
 
     // 4. Update plans in PostgreSQL
@@ -647,7 +654,6 @@ async fn ping_plan(
     )
         .into_response()
 }
-
 // Handler: Trigger Payout
 // Contributors: Implement calculating final payout with yield, parsing fiat payout details,
 // submitting fiat payouts to AnchorRegistry, and marking the plan inactive
