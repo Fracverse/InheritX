@@ -8,8 +8,11 @@ pub mod stellar_anchor;
 pub mod telemetry;
 pub mod ws;
 pub mod yield_calculator;
+pub mod allbridge;
+pub mod allbridge_verifier;
 
 pub use api::{create_router, AppState, PlanResponse};
 pub use config::Config;
 pub use db::DbManager;
 pub use inactivity_watchdog::{InactivityWatchdogConfig, InactivityWatchdogService};
+pub use allbridge_verifier::{AllbridgeVerifierConfig, AllbridgeVerifierService};
