@@ -423,7 +423,10 @@ async fn get_plans(
                 Err(e) => {
                     return (
                         StatusCode::INTERNAL_SERVER_ERROR,
-                        Json(serde_json::json!({ "error": format!("Database query failed: {}", e) })),
+                        Json(
+                            serde_json::json!({ "error": format!("Database query failed: {}", e) }),
+                        ),
+
                     )
                         .into_response();
                 }
@@ -450,8 +453,9 @@ async fn get_plans(
                 Err(e) => {
                     return (
                         StatusCode::INTERNAL_SERVER_ERROR,
-                        Json(serde_json::json!({ "error": format!("Database query failed: {}", e) })),
-                    )
+                        Json(
+                            serde_json::json!({ "error": format!("Database query failed: {}", e) }),
+                        ),
                         .into_response();
                 }
             }
@@ -478,7 +482,9 @@ async fn get_plans(
                 Err(e) => {
                     return (
                         StatusCode::INTERNAL_SERVER_ERROR,
-                        Json(serde_json::json!({ "error": format!("Database query failed: {}", e) })),
+                        Json(
+                            serde_json::json!({ "error": format!("Database query failed: {}", e) }),
+                        ),
                     )
                         .into_response();
                 }
@@ -502,7 +508,9 @@ async fn get_plans(
                 Err(e) => {
                     return (
                         StatusCode::INTERNAL_SERVER_ERROR,
-                        Json(serde_json::json!({ "error": format!("Database query failed: {}", e) })),
+                        Json(
+                            serde_json::json!({ "error": format!("Database query failed: {}", e) }),
+                        ),
                     )
                         .into_response();
                 }
@@ -551,7 +559,7 @@ async fn trigger_payout(
         "Payout trigger logic not implemented",
     )
 }
-
+//
 // Handler: Get Anchor Payouts
 // Contributors: List payouts from AnchorRegistry
 async fn get_anchor_payouts(
