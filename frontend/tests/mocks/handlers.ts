@@ -778,6 +778,44 @@ export const complianceHandlers = [
   }),
 ];
 
+// ─── Commitments Validate ─────────────────────────────────────────────────────
+
+const SUPPORTED_CURRENCIES = ["XLM", "USDC", "EURC", "NGN", "KES", "BRL", "PHP", "EUR", "USD"];
+
+export const commitmentsHandlers = [
+  http.post("/api/commitments/validate", async ({ request }) => {
+    const body = (await request.json()) as Record<string, unknown>;
+    const errors: Array<{ field: string; message: string }> = [];
+
+    if (!body.title || String(body.title).trim().length < 3)
+      errors.push({ field: "title", message: "Title must be at least 3 characters." });
+
+    const amount = Number(body.net_amount);
+    if (!body.net_amount || isNaN(amount) || amount <= 0)
+      errors.push({ field: "net_amount", message: "Amount must be a positive number." });
+
+    if (!body.currency_preference || !SUPPORTED_CURRENCIES.includes(String(body.currency_preference).toUpperCase()))
+      errors.push({ field: "currency_preference", message: `Currency must be one of: ${SUPPORTED_CURRENCIES.join(", ")}.` });
+
+    if (!body.beneficiary_name || String(body.beneficiary_name).trim().length < 2)
+      errors.push({ field: "beneficiary_name", message: "Beneficiary name must be at least 2 characters." });
+
+    if (!body.bank_account_number || !/^\d{6,20}$/.test(String(body.bank_account_number).trim()))
+      errors.push({ field: "bank_account_number", message: "Bank account number must be 6–20 digits." });
+
+    if (!body.bank_name || String(body.bank_name).trim().length < 2)
+      errors.push({ field: "bank_name", message: "Bank name must be at least 2 characters." });
+
+    if (body.inactivity_days !== undefined && body.inactivity_days !== "") {
+      const days = Number(body.inactivity_days);
+      if (isNaN(days) || days < 30 || days > 3650)
+        errors.push({ field: "inactivity_days", message: "Inactivity period must be between 30 and 3650 days." });
+    }
+
+    return HttpResponse.json({ valid: errors.length === 0, errors });
+  }),
+];
+
 export const handlers = [
   ...plansHandlers,
   ...claimsHandlers,
@@ -788,5 +826,6 @@ export const handlers = [
   ...notificationsHandlers,
   ...aiOptimizationHandlers,
   ...complianceHandlers,
+  ...commitmentsHandlers,
 ];
 
