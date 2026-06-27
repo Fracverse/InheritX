@@ -539,3 +539,183 @@ fn test_trigger_payout_no_plan() {
     let result = client.try_trigger_payout(&owner);
     assert_eq!(result, Err(Ok(Error::PlanNotFound)));
 }
+
+#[test]
+fn test_trigger_payout_emits_anchor_event_for_fiat_beneficiary() {
+    use soroban_sdk::testutils::Events;
+
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let contract_id = env.register_contract(None, InheritanceContract);
+    let client = InheritanceContractClient::new(&env, &contract_id);
+
+    let token_id = env.register_contract(None, mock_token::MockToken);
+    let token_client = mock_token::MockTokenClient::new(&env, &token_id);
+
+    let owner = Address::generate(&env);
+    let beneficiary = Address::generate(&env);
+
+    token_client.mint(&owner, &1000);
+
+    let b = Beneficiary {
+        address: beneficiary.clone(),
+        allocation_bps: 10000,
+        fiat_anchor_info: String::from_str(&env, "NGN_BANK:0123456789"),
+    };
+
+    env.ledger().set_timestamp(1_000_000);
+    client.create_plan(
+        &owner,
+        &token_id,
+        &1000,
+        &Vec::from_array(&env, [b]),
+        &3600,
+        &false,
+        &0,
+    );
+    client.close_plan(&owner);
+    env.ledger().set_timestamp(1_000_000 + 4000);
+    client.trigger_payout(&owner);
+
+    let payout_sym: soroban_sdk::Val = soroban_sdk::symbol_short!("payout").into();
+    let anchor_sym: soroban_sdk::Val = soroban_sdk::symbol_short!("anchor_pay").into();
+
+    let mut has_payout = false;
+    let mut has_anchor = false;
+
+    for (contract, topics, _data) in env.events().all().iter() {
+        if contract != contract_id {
+            continue;
+        }
+        if let Some(topic0) = topics.get(0) {
+            if topic0 == payout_sym {
+                has_payout = true;
+            }
+            if topic0 == anchor_sym {
+                has_anchor = true;
+            }
+        }
+    }
+
+    assert!(has_payout, "expected payout event");
+    assert!(has_anchor, "expected anchor_pay event for fiat beneficiary");
+}
+
+#[test]
+fn test_trigger_payout_no_anchor_event_for_non_fiat_beneficiary() {
+    use soroban_sdk::testutils::Events;
+
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let contract_id = env.register_contract(None, InheritanceContract);
+    let client = InheritanceContractClient::new(&env, &contract_id);
+
+    let token_id = env.register_contract(None, mock_token::MockToken);
+    let token_client = mock_token::MockTokenClient::new(&env, &token_id);
+
+    let owner = Address::generate(&env);
+    let beneficiary = Address::generate(&env);
+
+    token_client.mint(&owner, &1000);
+
+    // Empty fiat_anchor_info → no anchor event should be emitted
+    let b = Beneficiary {
+        address: beneficiary.clone(),
+        allocation_bps: 10000,
+        fiat_anchor_info: String::from_str(&env, ""),
+    };
+
+    env.ledger().set_timestamp(1_000_000);
+    client.create_plan(
+        &owner,
+        &token_id,
+        &1000,
+        &Vec::from_array(&env, [b]),
+        &3600,
+        &false,
+        &0,
+    );
+    client.close_plan(&owner);
+    env.ledger().set_timestamp(1_000_000 + 4000);
+    client.trigger_payout(&owner);
+
+    let anchor_sym: soroban_sdk::Val = soroban_sdk::symbol_short!("anchor_pay").into();
+    let mut has_anchor = false;
+
+    for (contract, topics, _data) in env.events().all().iter() {
+        if contract != contract_id {
+            continue;
+        }
+        if topics.get(0).map(|v| v == anchor_sym).unwrap_or(false) {
+            has_anchor = true;
+        }
+    }
+
+    assert!(!has_anchor, "should not emit anchor_pay for empty fiat_anchor_info");
+}
+
+#[test]
+fn test_trigger_payout_mixed_fiat_and_non_fiat_beneficiaries() {
+    use soroban_sdk::testutils::Events;
+
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let contract_id = env.register_contract(None, InheritanceContract);
+    let client = InheritanceContractClient::new(&env, &contract_id);
+
+    let token_id = env.register_contract(None, mock_token::MockToken);
+    let token_client = mock_token::MockTokenClient::new(&env, &token_id);
+
+    let owner = Address::generate(&env);
+    let alice = Address::generate(&env); // fiat
+    let bob = Address::generate(&env);   // crypto-only
+
+    token_client.mint(&owner, &1000);
+
+    let alice_bene = Beneficiary {
+        address: alice.clone(),
+        allocation_bps: 6000,
+        fiat_anchor_info: String::from_str(&env, "KES_MPESA:0700000000"),
+    };
+    let bob_bene = Beneficiary {
+        address: bob.clone(),
+        allocation_bps: 4000,
+        fiat_anchor_info: String::from_str(&env, ""),
+    };
+
+    env.ledger().set_timestamp(1_000_000);
+    client.create_plan(
+        &owner,
+        &token_id,
+        &1000,
+        &Vec::from_array(&env, [alice_bene, bob_bene]),
+        &3600,
+        &false,
+        &0,
+    );
+    client.close_plan(&owner);
+    env.ledger().set_timestamp(1_000_000 + 4000);
+    client.trigger_payout(&owner);
+
+    let anchor_sym: soroban_sdk::Val = soroban_sdk::symbol_short!("anchor_pay").into();
+    let mut anchor_count = 0u32;
+
+    for (contract, topics, _data) in env.events().all().iter() {
+        if contract != contract_id {
+            continue;
+        }
+        if topics.get(0).map(|v| v == anchor_sym).unwrap_or(false) {
+            anchor_count += 1;
+        }
+    }
+
+    // Only one anchor event (for Alice), not two
+    assert_eq!(anchor_count, 1, "expected exactly one anchor_pay event");
+
+    // Balances still correct
+    assert_eq!(token_client.balance(&alice), 600);
+    assert_eq!(token_client.balance(&bob), 400);
+}
