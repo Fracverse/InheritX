@@ -18,18 +18,15 @@ fn test_create_plan_success() {
     let env = Env::default();
     env.mock_all_auths();
 
-    // Register our contract
     let contract_id = env.register_contract(None, InheritanceContract);
     let client = InheritanceContractClient::new(&env, &contract_id);
 
-    // Register mock token contract
     let token_id = env.register_contract(None, mock_token::MockToken);
     let token_client = mock_token::MockTokenClient::new(&env, &token_id);
 
     let owner = Address::generate(&env);
     let beneficiary_address = Address::generate(&env);
 
-    // Mint tokens to owner
     token_client.mint(&owner, &2000);
 
     let beneficiary = Beneficiary {
@@ -46,13 +43,13 @@ fn test_create_plan_success() {
         &3600,
         &true,
         &500,
+        &Vec::new(&env),
+        &0,
     );
 
-    // Verify balances
     assert_eq!(token_client.balance(&owner), 500);
     assert_eq!(token_client.balance(&contract_id), 1500);
 
-    // Verify stored plan
     let plan = client.get_plan(&owner);
     assert_eq!(plan.owner, owner);
     assert_eq!(plan.token, token_id);
@@ -89,7 +86,6 @@ fn test_create_plan_insufficient_balance() {
         fiat_anchor_info: String::from_str(&env, "NGN_BANK"),
     };
 
-    // Attempting to create plan for 1500 (owner only has 1000)
     let result = client.try_create_plan(
         &owner,
         &token_id,
@@ -98,6 +94,8 @@ fn test_create_plan_insufficient_balance() {
         &3600,
         &true,
         &500,
+        &Vec::new(&env),
+        &0,
     );
 
     assert_eq!(result, Err(Ok(Error::InsufficientBalance)));
@@ -123,7 +121,6 @@ fn test_create_plan_negative_or_zero_amount() {
         fiat_anchor_info: String::from_str(&env, "NGN_BANK"),
     };
 
-    // Amount = 0
     let result_zero = client.try_create_plan(
         &owner,
         &token_id,
@@ -132,10 +129,11 @@ fn test_create_plan_negative_or_zero_amount() {
         &3600,
         &true,
         &500,
+        &Vec::new(&env),
+        &0,
     );
     assert_eq!(result_zero, Err(Ok(Error::NegativeAmount)));
 
-    // Amount = -10
     let result_neg = client.try_create_plan(
         &owner,
         &token_id,
@@ -144,6 +142,8 @@ fn test_create_plan_negative_or_zero_amount() {
         &3600,
         &true,
         &500,
+        &Vec::new(&env),
+        &0,
     );
     assert_eq!(result_neg, Err(Ok(Error::NegativeAmount)));
 }
@@ -170,7 +170,7 @@ fn test_create_plan_invalid_basis_points() {
 
     let beneficiary2 = Beneficiary {
         address: Address::generate(&env),
-        allocation_bps: 5000, // Total = 9000 BPS (less than 10000)
+        allocation_bps: 5000,
         fiat_anchor_info: String::from_str(&env, "NGN_BANK"),
     };
 
@@ -182,6 +182,8 @@ fn test_create_plan_invalid_basis_points() {
         &3600,
         &true,
         &500,
+        &Vec::new(&env),
+        &0,
     );
 
     assert_eq!(result, Err(Ok(Error::InvalidBasisPoints)));
@@ -207,7 +209,6 @@ fn test_create_plan_already_exists() {
         fiat_anchor_info: String::from_str(&env, "NGN_BANK"),
     };
 
-    // First creation
     client.create_plan(
         &owner,
         &token_id,
@@ -216,9 +217,10 @@ fn test_create_plan_already_exists() {
         &3600,
         &true,
         &500,
+        &Vec::new(&env),
+        &0,
     );
 
-    // Second creation on same owner
     let result2 = client.try_create_plan(
         &owner,
         &token_id,
@@ -227,6 +229,8 @@ fn test_create_plan_already_exists() {
         &3600,
         &true,
         &500,
+        &Vec::new(&env),
+        &0,
     );
     assert_eq!(result2, Err(Ok(Error::PlanAlreadyExists)));
 }
@@ -264,22 +268,18 @@ fn test_trigger_payout_single_beneficiary() {
         &3600,
         &true,
         &500,
+        &Vec::new(&env),
+        &0,
     );
 
-    // Deactivate plan
     client.close_plan(&owner);
-
-    // Jump past grace period
     env.ledger().set_timestamp(start + 4000);
 
-    // Trigger payout
     client.trigger_payout(&owner);
 
-    // Beneficiary receives full amount, contract emptied
     assert_eq!(token_client.balance(&beneficiary), 1500);
     assert_eq!(token_client.balance(&contract_id), 0);
 
-    // Plan removed from storage
     let result = client.try_get_plan(&owner);
     assert_eq!(result, Err(Ok(Error::PlanNotFound)));
 }
@@ -328,6 +328,8 @@ fn test_trigger_payout_multiple_beneficiaries() {
         &3600,
         &true,
         &500,
+        &Vec::new(&env),
+        &0,
     );
 
     client.close_plan(&owner);
@@ -335,11 +337,8 @@ fn test_trigger_payout_multiple_beneficiaries() {
 
     client.trigger_payout(&owner);
 
-    // Alice: 1000 * 5000 / 10000 = 500
     assert_eq!(token_client.balance(&alice), 500);
-    // Bob: 1000 * 3000 / 10000 = 300
     assert_eq!(token_client.balance(&bob), 300);
-    // Charlie: remaining = 1000 - 500 - 300 = 200
     assert_eq!(token_client.balance(&charlie), 200);
     assert_eq!(token_client.balance(&contract_id), 0);
 }
@@ -382,6 +381,8 @@ fn test_trigger_payout_dust_goes_to_last_beneficiary() {
         &3600,
         &false,
         &0,
+        &Vec::new(&env),
+        &0,
     );
 
     client.close_plan(&owner);
@@ -389,9 +390,7 @@ fn test_trigger_payout_dust_goes_to_last_beneficiary() {
 
     client.trigger_payout(&owner);
 
-    // A: 100 * 3333 / 10000 = 33 (integer truncation)
     assert_eq!(token_client.balance(&a), 33);
-    // B: remaining = 100 - 33 = 67 (not 66, so dust is captured)
     assert_eq!(token_client.balance(&b), 67);
     assert_eq!(token_client.balance(&contract_id), 0);
 }
@@ -428,9 +427,10 @@ fn test_trigger_payout_plan_still_active() {
         &3600,
         &false,
         &0,
+        &Vec::new(&env),
+        &0,
     );
 
-    // Plan is still active — close_plan was never called
     env.ledger().set_timestamp(1_000_000 + 4000);
 
     let result = client.try_trigger_payout(&owner);
@@ -469,11 +469,11 @@ fn test_trigger_payout_grace_period_not_met() {
         &3600,
         &false,
         &0,
+        &Vec::new(&env),
+        &0,
     );
 
     client.close_plan(&owner);
-
-    // Only 1000 seconds passed — need 3600
     env.ledger().set_timestamp(1_000_000 + 1000);
 
     let result = client.try_trigger_payout(&owner);
@@ -512,16 +512,16 @@ fn test_trigger_payout_double_payout_prevented() {
         &3600,
         &false,
         &0,
+        &Vec::new(&env),
+        &0,
     );
 
     client.close_plan(&owner);
     env.ledger().set_timestamp(1_000_000 + 4000);
 
-    // First payout succeeds
     client.trigger_payout(&owner);
     assert_eq!(token_client.balance(&beneficiary), 500);
 
-    // Second payout fails — plan already removed
     let result = client.try_trigger_payout(&owner);
     assert_eq!(result, Err(Ok(Error::PlanNotFound)));
 }
@@ -538,4 +538,193 @@ fn test_trigger_payout_no_plan() {
 
     let result = client.try_trigger_payout(&owner);
     assert_eq!(result, Err(Ok(Error::PlanNotFound)));
+}
+
+// ── Guardian multi-sig tests ──────────────────────────────────────────────────
+
+#[test]
+fn test_guardian_approve_and_trigger_payout() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let contract_id = env.register_contract(None, InheritanceContract);
+    let client = InheritanceContractClient::new(&env, &contract_id);
+
+    let token_id = env.register_contract(None, mock_token::MockToken);
+    let token_client = mock_token::MockTokenClient::new(&env, &token_id);
+
+    let owner = Address::generate(&env);
+    let beneficiary = Address::generate(&env);
+    let guardian1 = Address::generate(&env);
+    let guardian2 = Address::generate(&env);
+    let guardian3 = Address::generate(&env);
+
+    token_client.mint(&owner, &1000);
+
+    let b = Beneficiary {
+        address: beneficiary.clone(),
+        allocation_bps: 10000,
+        fiat_anchor_info: String::from_str(&env, "USD_BANK"),
+    };
+
+    env.ledger().set_timestamp(1_000_000);
+
+    // 2-of-3 guardian threshold
+    client.create_plan(
+        &owner,
+        &token_id,
+        &1000,
+        &Vec::from_array(&env, [b]),
+        &3600,
+        &false,
+        &0,
+        &Vec::from_array(&env, [guardian1.clone(), guardian2.clone(), guardian3.clone()]),
+        &2,
+    );
+
+    client.close_plan(&owner);
+    env.ledger().set_timestamp(1_000_000 + 4000);
+
+    // Only 1 approval — payout should fail
+    client.approve_payout(&guardian1, &owner);
+    let result = client.try_trigger_payout(&owner);
+    assert_eq!(result, Err(Ok(Error::GuardianThresholdNotMet)));
+
+    // Second approval — threshold met, payout succeeds
+    client.approve_payout(&guardian2, &owner);
+    client.trigger_payout(&owner);
+
+    assert_eq!(token_client.balance(&beneficiary), 1000);
+    assert_eq!(token_client.balance(&contract_id), 0);
+}
+
+#[test]
+fn test_guardian_duplicate_approval_rejected() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let contract_id = env.register_contract(None, InheritanceContract);
+    let client = InheritanceContractClient::new(&env, &contract_id);
+
+    let token_id = env.register_contract(None, mock_token::MockToken);
+    let token_client = mock_token::MockTokenClient::new(&env, &token_id);
+
+    let owner = Address::generate(&env);
+    let beneficiary = Address::generate(&env);
+    let guardian = Address::generate(&env);
+
+    token_client.mint(&owner, &500);
+
+    let b = Beneficiary {
+        address: beneficiary.clone(),
+        allocation_bps: 10000,
+        fiat_anchor_info: String::from_str(&env, ""),
+    };
+
+    env.ledger().set_timestamp(1_000_000);
+
+    client.create_plan(
+        &owner,
+        &token_id,
+        &500,
+        &Vec::from_array(&env, [b]),
+        &3600,
+        &false,
+        &0,
+        &Vec::from_array(&env, [guardian.clone()]),
+        &1,
+    );
+
+    client.approve_payout(&guardian, &owner);
+
+    // Second approval by same guardian should fail
+    let result = client.try_approve_payout(&guardian, &owner);
+    assert_eq!(result, Err(Ok(Error::AlreadyApproved)));
+}
+
+#[test]
+fn test_non_guardian_approval_rejected() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let contract_id = env.register_contract(None, InheritanceContract);
+    let client = InheritanceContractClient::new(&env, &contract_id);
+
+    let token_id = env.register_contract(None, mock_token::MockToken);
+    let token_client = mock_token::MockTokenClient::new(&env, &token_id);
+
+    let owner = Address::generate(&env);
+    let beneficiary = Address::generate(&env);
+    let guardian = Address::generate(&env);
+    let stranger = Address::generate(&env);
+
+    token_client.mint(&owner, &500);
+
+    let b = Beneficiary {
+        address: beneficiary.clone(),
+        allocation_bps: 10000,
+        fiat_anchor_info: String::from_str(&env, ""),
+    };
+
+    env.ledger().set_timestamp(1_000_000);
+
+    client.create_plan(
+        &owner,
+        &token_id,
+        &500,
+        &Vec::from_array(&env, [b]),
+        &3600,
+        &false,
+        &0,
+        &Vec::from_array(&env, [guardian.clone()]),
+        &1,
+    );
+
+    let result = client.try_approve_payout(&stranger, &owner);
+    assert_eq!(result, Err(Ok(Error::NotAGuardian)));
+}
+
+#[test]
+fn test_no_guardians_payout_skips_threshold_check() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let contract_id = env.register_contract(None, InheritanceContract);
+    let client = InheritanceContractClient::new(&env, &contract_id);
+
+    let token_id = env.register_contract(None, mock_token::MockToken);
+    let token_client = mock_token::MockTokenClient::new(&env, &token_id);
+
+    let owner = Address::generate(&env);
+    let beneficiary = Address::generate(&env);
+
+    token_client.mint(&owner, &500);
+
+    let b = Beneficiary {
+        address: beneficiary.clone(),
+        allocation_bps: 10000,
+        fiat_anchor_info: String::from_str(&env, ""),
+    };
+
+    env.ledger().set_timestamp(1_000_000);
+
+    // No guardians, threshold = 0
+    client.create_plan(
+        &owner,
+        &token_id,
+        &500,
+        &Vec::from_array(&env, [b]),
+        &3600,
+        &false,
+        &0,
+        &Vec::new(&env),
+        &0,
+    );
+
+    client.close_plan(&owner);
+    env.ledger().set_timestamp(1_000_000 + 4000);
+
+    // Should succeed without any guardian approvals
+    client.trigger_payout(&owner);
+    assert_eq!(token_client.balance(&beneficiary), 500);
 }

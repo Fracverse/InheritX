@@ -1,5 +1,5 @@
 #![no_std]
-use soroban_sdk::{contract, contracterror, contractimpl, contracttype, Address, Env, String, Vec};
+use soroban_sdk::{contract, contracterror, contractimpl, contracttype, symbol_short, Address, Env, String, Vec};
 
 const MAX_BENEFICIARIES: u32 = 100;
 const PLAN_TTL_THRESHOLD: u32 = 500;
@@ -18,6 +18,9 @@ pub enum Error {
     NegativeAmount = 6,
     InsufficientBalance = 7,
     TooManyBeneficiaries = 8,
+    GuardianThresholdNotMet = 9,
+    AlreadyApproved = 10,
+    NotAGuardian = 11,
 }
 
 #[contracttype]
@@ -40,6 +43,8 @@ pub struct Plan {
     pub earn_yield: bool,
     pub yield_rate_bps: u32,
     pub is_active: bool,
+    pub guardians: Vec<Address>,
+    pub guardian_threshold: u32,
 }
 
 pub type InheritancePlan = Plan;
@@ -49,6 +54,7 @@ pub type InheritancePlan = Plan;
 pub enum DataKey {
     Plan(Address),
     ClaimStatus(Address),
+    GuardianApprovals(Address),
 }
 
 #[contracttype]
@@ -89,6 +95,8 @@ impl InheritanceContract {
         grace_period: u64,
         earn_yield: bool,
         yield_rate_bps: u32,
+        guardians: Vec<Address>,
+        guardian_threshold: u32,
     ) -> Result<(), Error> {
         owner.require_auth();
 
@@ -131,6 +139,8 @@ impl InheritanceContract {
             earn_yield,
             yield_rate_bps,
             is_active: true,
+            guardians,
+            guardian_threshold,
         };
 
         env.storage().persistent().set(&key, &plan);
@@ -185,6 +195,57 @@ impl InheritanceContract {
         Ok(())
     }
 
+    /// Guardian approves the payout for a plan. Once the threshold is reached,
+    /// trigger_payout can proceed. Emits a guardian_approved event on each approval.
+    pub fn approve_payout(env: Env, guardian: Address, owner: Address) -> Result<(), Error> {
+        guardian.require_auth();
+
+        let plan_key = DataKey::Plan(owner.clone());
+        let plan: Plan = env
+            .storage()
+            .persistent()
+            .get(&plan_key)
+            .ok_or(Error::PlanNotFound)?;
+
+        // Verify caller is a listed guardian
+        let mut is_guardian = false;
+        for g in plan.guardians.iter() {
+            if g == guardian {
+                is_guardian = true;
+                break;
+            }
+        }
+        if !is_guardian {
+            return Err(Error::NotAGuardian);
+        }
+
+        let approvals_key = DataKey::GuardianApprovals(owner.clone());
+        let mut approvals: Vec<Address> = env
+            .storage()
+            .persistent()
+            .get(&approvals_key)
+            .unwrap_or_else(|| Vec::new(&env));
+
+        // Prevent duplicate approvals
+        for a in approvals.iter() {
+            if a == guardian {
+                return Err(Error::AlreadyApproved);
+            }
+        }
+
+        approvals.push_back(guardian.clone());
+        env.storage().persistent().set(&approvals_key, &approvals);
+        Self::extend_plan_ttl(&env, &approvals_key);
+
+        // Emit guardian approval event
+        env.events().publish(
+            (symbol_short!("guardian"), symbol_short!("approved")),
+            (owner.clone(), guardian.clone(), approvals.len()),
+        );
+
+        Ok(())
+    }
+
     /// Retrieve the current inheritance plan data.
     /// Contributors: Query plan storage, dynamically projects the accumulated yield.
     pub fn get_plan(env: Env, owner: Address) -> Result<InheritancePlan, Error> {
@@ -200,6 +261,7 @@ impl InheritanceContract {
     }
 
     /// Trigger payout to all beneficiaries once the plan is claimable.
+    /// Requires guardian threshold to be met if guardians are configured.
     /// Iterates over beneficiaries, computes pro-rata token allocations
     /// using the stored basis points, and transfers tokens safely.
     /// Remaining dust from integer division is allocated to the last beneficiary.
@@ -219,6 +281,23 @@ impl InheritanceContract {
         let current_time = env.ledger().timestamp();
         if current_time < plan.last_ping + plan.grace_period {
             return Err(Error::InactivityPeriodNotMet);
+        }
+
+        // Validate guardian threshold if guardians are set
+        if plan.guardian_threshold > 0 {
+            let approvals_key = DataKey::GuardianApprovals(owner.clone());
+            let approvals: Vec<Address> = env
+                .storage()
+                .persistent()
+                .get(&approvals_key)
+                .unwrap_or_else(|| Vec::new(&env));
+
+            if approvals.len() < plan.guardian_threshold {
+                return Err(Error::GuardianThresholdNotMet);
+            }
+
+            // Clean up approvals storage
+            env.storage().persistent().remove(&approvals_key);
         }
 
         // Checks-effects-interactions: remove plan before transfers
