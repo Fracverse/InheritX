@@ -3,7 +3,7 @@
 use super::*;
 use soroban_sdk::testutils::Address as _;
 use soroban_sdk::testutils::Ledger;
-use soroban_sdk::{Address, Env, String, Vec};
+use soroban_sdk::{symbol_short, vec, Address, Env, IntoVal, String, Vec};
 
 #[test]
 fn test_contract_compilation() {
@@ -538,4 +538,312 @@ fn test_trigger_payout_no_plan() {
 
     let result = client.try_trigger_payout(&owner);
     assert_eq!(result, Err(Ok(Error::PlanNotFound)));
+}
+
+// ---------------------------------------------------------------------------
+// Admin / governance configuration tests
+// ---------------------------------------------------------------------------
+
+#[test]
+fn test_initialize_sets_admin() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let contract_id = env.register_contract(None, InheritanceContract);
+    let client = InheritanceContractClient::new(&env, &contract_id);
+
+    let admin = Address::generate(&env);
+    client.initialize(&admin);
+
+    assert_eq!(client.get_admin(), admin.clone());
+    assert_eq!(
+        env.events().all(),
+        vec![
+            &env,
+            (
+                contract_id,
+                (symbol_short!("init"), admin.clone()).into_val(&env),
+                admin.into_val(&env)
+            )
+        ]
+    );
+}
+
+#[test]
+fn test_initialize_only_once() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let contract_id = env.register_contract(None, InheritanceContract);
+    let client = InheritanceContractClient::new(&env, &contract_id);
+
+    let admin = Address::generate(&env);
+    client.initialize(&admin);
+
+    let result = client.try_initialize(&Address::generate(&env));
+    assert_eq!(result, Err(Ok(Error::AlreadyInitialized)));
+}
+
+#[test]
+fn test_set_global_yield_rate_success() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let contract_id = env.register_contract(None, InheritanceContract);
+    let client = InheritanceContractClient::new(&env, &contract_id);
+
+    let admin = Address::generate(&env);
+    client.initialize(&admin);
+
+    // Default is 0 before being set.
+    assert_eq!(client.get_global_yield_rate(), 0);
+
+    client.set_global_yield_rate(&750);
+    assert_eq!(client.get_global_yield_rate(), 750);
+
+    // Can be updated again.
+    client.set_global_yield_rate(&1200);
+    assert_eq!(client.get_global_yield_rate(), 1200);
+
+    assert_eq!(
+        env.events().all(),
+        vec![
+            &env,
+            (
+                contract_id.clone(),
+                (symbol_short!("init"), admin.clone()).into_val(&env),
+                admin.into_val(&env)
+            ),
+            (
+                contract_id.clone(),
+                (symbol_short!("yield_set"),).into_val(&env),
+                750_u32.into_val(&env)
+            ),
+            (
+                contract_id,
+                (symbol_short!("yield_set"),).into_val(&env),
+                1200_u32.into_val(&env)
+            )
+        ]
+    );
+}
+
+#[test]
+fn test_set_global_yield_rate_invalid() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let contract_id = env.register_contract(None, InheritanceContract);
+    let client = InheritanceContractClient::new(&env, &contract_id);
+
+    let admin = Address::generate(&env);
+    client.initialize(&admin);
+
+    // 10001 bps > 100% is rejected.
+    let result = client.try_set_global_yield_rate(&10001);
+    assert_eq!(result, Err(Ok(Error::InvalidYieldRate)));
+
+    // Boundary value 10000 (100%) is accepted.
+    client.set_global_yield_rate(&10000);
+    assert_eq!(client.get_global_yield_rate(), 10000);
+}
+
+#[test]
+fn test_set_global_yield_rate_requires_admin() {
+    let env = Env::default();
+
+    let contract_id = env.register_contract(None, InheritanceContract);
+    let client = InheritanceContractClient::new(&env, &contract_id);
+
+    let admin = Address::generate(&env);
+
+    env.mock_all_auths();
+    client.initialize(&admin);
+
+    // No mocked auth: admin signature is required and missing.
+    env.set_auths(&[]);
+    let result = client.try_set_global_yield_rate(&500);
+    assert!(result.is_err());
+}
+
+#[test]
+fn test_set_global_yield_rate_uninitialized() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let contract_id = env.register_contract(None, InheritanceContract);
+    let client = InheritanceContractClient::new(&env, &contract_id);
+
+    let result = client.try_set_global_yield_rate(&500);
+    assert_eq!(result, Err(Ok(Error::AdminNotSet)));
+}
+
+#[test]
+fn test_add_and_remove_supported_token() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let contract_id = env.register_contract(None, InheritanceContract);
+    let client = InheritanceContractClient::new(&env, &contract_id);
+
+    let admin = Address::generate(&env);
+    client.initialize(&admin);
+
+    let usdc = Address::generate(&env);
+    let xlm = Address::generate(&env);
+
+    assert!(!client.is_supported_token(&usdc));
+
+    client.add_supported_token(&usdc);
+    client.add_supported_token(&xlm);
+
+    assert!(client.is_supported_token(&usdc));
+    assert!(client.is_supported_token(&xlm));
+
+    client.remove_supported_token(&usdc);
+    assert!(!client.is_supported_token(&usdc));
+    assert!(client.is_supported_token(&xlm));
+
+    assert_eq!(
+        env.events().all(),
+        vec![
+            &env,
+            (
+                contract_id.clone(),
+                (symbol_short!("init"), admin.clone()).into_val(&env),
+                admin.into_val(&env)
+            ),
+            (
+                contract_id.clone(),
+                (symbol_short!("tkn_add"), usdc.clone()).into_val(&env),
+                usdc.clone().into_val(&env)
+            ),
+            (
+                contract_id.clone(),
+                (symbol_short!("tkn_add"), xlm.clone()).into_val(&env),
+                xlm.into_val(&env)
+            ),
+            (
+                contract_id,
+                (symbol_short!("tkn_rm"), usdc.clone()).into_val(&env),
+                usdc.into_val(&env)
+            )
+        ]
+    );
+}
+
+#[test]
+fn test_add_supported_token_duplicate() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let contract_id = env.register_contract(None, InheritanceContract);
+    let client = InheritanceContractClient::new(&env, &contract_id);
+
+    let admin = Address::generate(&env);
+    client.initialize(&admin);
+
+    let usdc = Address::generate(&env);
+    client.add_supported_token(&usdc);
+
+    let result = client.try_add_supported_token(&usdc);
+    assert_eq!(result, Err(Ok(Error::TokenAlreadySupported)));
+}
+
+#[test]
+fn test_remove_supported_token_not_registered() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let contract_id = env.register_contract(None, InheritanceContract);
+    let client = InheritanceContractClient::new(&env, &contract_id);
+
+    let admin = Address::generate(&env);
+    client.initialize(&admin);
+
+    let result = client.try_remove_supported_token(&Address::generate(&env));
+    assert_eq!(result, Err(Ok(Error::TokenNotSupported)));
+}
+
+#[test]
+fn test_add_supported_token_requires_admin() {
+    let env = Env::default();
+
+    let contract_id = env.register_contract(None, InheritanceContract);
+    let client = InheritanceContractClient::new(&env, &contract_id);
+
+    let admin = Address::generate(&env);
+
+    env.mock_all_auths();
+    client.initialize(&admin);
+
+    env.set_auths(&[]);
+    let result = client.try_add_supported_token(&Address::generate(&env));
+    assert!(result.is_err());
+}
+
+#[test]
+fn test_set_admin_transfers_control() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let contract_id = env.register_contract(None, InheritanceContract);
+    let client = InheritanceContractClient::new(&env, &contract_id);
+
+    let admin = Address::generate(&env);
+    let new_admin = Address::generate(&env);
+    client.initialize(&admin);
+
+    client.set_admin(&new_admin);
+    assert_eq!(client.get_admin(), new_admin.clone());
+
+    assert_eq!(
+        env.events().all(),
+        vec![
+            &env,
+            (
+                contract_id.clone(),
+                (symbol_short!("init"), admin.clone()).into_val(&env),
+                admin.clone().into_val(&env)
+            ),
+            (
+                contract_id,
+                (symbol_short!("admin_set"), admin).into_val(&env),
+                new_admin.clone().into_val(&env)
+            )
+        ]
+    );
+
+    // The new admin can perform governance operations.
+    client.set_global_yield_rate(&300);
+    assert_eq!(client.get_global_yield_rate(), 300);
+}
+
+#[test]
+fn test_set_admin_requires_admin() {
+    let env = Env::default();
+
+    let contract_id = env.register_contract(None, InheritanceContract);
+    let client = InheritanceContractClient::new(&env, &contract_id);
+
+    let admin = Address::generate(&env);
+
+    env.mock_all_auths();
+    client.initialize(&admin);
+
+    env.set_auths(&[]);
+    let result = client.try_set_admin(&Address::generate(&env));
+    assert!(result.is_err());
+}
+
+#[test]
+fn test_get_admin_uninitialized() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let contract_id = env.register_contract(None, InheritanceContract);
+    let client = InheritanceContractClient::new(&env, &contract_id);
+
+    let result = client.try_get_admin();
+    assert_eq!(result, Err(Ok(Error::AdminNotSet)));
 }
