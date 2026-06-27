@@ -539,3 +539,397 @@ fn test_trigger_payout_no_plan() {
     let result = client.try_trigger_payout(&owner);
     assert_eq!(result, Err(Ok(Error::PlanNotFound)));
 }
+
+#[test]
+fn test_is_plan_timed_out_before_grace_period() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let contract_id = env.register_contract(None, InheritanceContract);
+    let client = InheritanceContractClient::new(&env, &contract_id);
+
+    let token_id = env.register_contract(None, mock_token::MockToken);
+    let token_client = mock_token::MockTokenClient::new(&env, &token_id);
+
+    let owner = Address::generate(&env);
+    let beneficiary = Address::generate(&env);
+
+    token_client.mint(&owner, &2000);
+
+    let b = Beneficiary {
+        address: beneficiary.clone(),
+        allocation_bps: 10000,
+        fiat_anchor_info: String::from_str(&env, ""),
+    };
+
+    let start = 1_000_000;
+    env.ledger().set_timestamp(start);
+
+    client.create_plan(
+        &owner,
+        &token_id,
+        &500,
+        &Vec::from_array(&env, [b]),
+        &3600,
+        &false,
+        &0,
+    );
+
+    // Only 1000 seconds have passed, grace period is 3600
+    env.ledger().set_timestamp(start + 1000);
+
+    let is_timed_out = client.is_plan_timed_out(&owner);
+    assert_eq!(is_timed_out, false);
+}
+
+#[test]
+fn test_is_plan_timed_out_exactly_at_deadline() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let contract_id = env.register_contract(None, InheritanceContract);
+    let client = InheritanceContractClient::new(&env, &contract_id);
+
+    let token_id = env.register_contract(None, mock_token::MockToken);
+    let token_client = mock_token::MockTokenClient::new(&env, &token_id);
+
+    let owner = Address::generate(&env);
+    let beneficiary = Address::generate(&env);
+
+    token_client.mint(&owner, &2000);
+
+    let b = Beneficiary {
+        address: beneficiary.clone(),
+        allocation_bps: 10000,
+        fiat_anchor_info: String::from_str(&env, ""),
+    };
+
+    let start = 1_000_000;
+    env.ledger().set_timestamp(start);
+
+    client.create_plan(
+        &owner,
+        &token_id,
+        &500,
+        &Vec::from_array(&env, [b]),
+        &3600,
+        &false,
+        &0,
+    );
+
+    // Exactly at grace period deadline
+    env.ledger().set_timestamp(start + 3600);
+
+    let is_timed_out = client.is_plan_timed_out(&owner);
+    assert_eq!(is_timed_out, true);
+}
+
+#[test]
+fn test_is_plan_timed_out_after_grace_period() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let contract_id = env.register_contract(None, InheritanceContract);
+    let client = InheritanceContractClient::new(&env, &contract_id);
+
+    let token_id = env.register_contract(None, mock_token::MockToken);
+    let token_client = mock_token::MockTokenClient::new(&env, &token_id);
+
+    let owner = Address::generate(&env);
+    let beneficiary = Address::generate(&env);
+
+    token_client.mint(&owner, &2000);
+
+    let b = Beneficiary {
+        address: beneficiary.clone(),
+        allocation_bps: 10000,
+        fiat_anchor_info: String::from_str(&env, ""),
+    };
+
+    let start = 1_000_000;
+    env.ledger().set_timestamp(start);
+
+    client.create_plan(
+        &owner,
+        &token_id,
+        &500,
+        &Vec::from_array(&env, [b]),
+        &3600,
+        &false,
+        &0,
+    );
+
+    // Well past grace period
+    env.ledger().set_timestamp(start + 10000);
+
+    let is_timed_out = client.is_plan_timed_out(&owner);
+    assert_eq!(is_timed_out, true);
+}
+
+#[test]
+fn test_is_plan_timed_out_after_ping() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let contract_id = env.register_contract(None, InheritanceContract);
+    let client = InheritanceContractClient::new(&env, &contract_id);
+
+    let token_id = env.register_contract(None, mock_token::MockToken);
+    let token_client = mock_token::MockTokenClient::new(&env, &token_id);
+
+    let owner = Address::generate(&env);
+    let beneficiary = Address::generate(&env);
+
+    token_client.mint(&owner, &2000);
+
+    let b = Beneficiary {
+        address: beneficiary.clone(),
+        allocation_bps: 10000,
+        fiat_anchor_info: String::from_str(&env, ""),
+    };
+
+    let start = 1_000_000;
+    env.ledger().set_timestamp(start);
+
+    client.create_plan(
+        &owner,
+        &token_id,
+        &500,
+        &Vec::from_array(&env, [b]),
+        &3600,
+        &false,
+        &0,
+    );
+
+    // Move forward 2000 seconds and ping
+    env.ledger().set_timestamp(start + 2000);
+    client.ping(&owner);
+
+    // Move forward another 2000 seconds (total 4000 from start, but only 2000 from last ping)
+    env.ledger().set_timestamp(start + 4000);
+
+    // Should NOT be timed out because last_ping was reset
+    let is_timed_out = client.is_plan_timed_out(&owner);
+    assert_eq!(is_timed_out, false);
+
+    // Move to exactly 3600 seconds after ping
+    env.ledger().set_timestamp(start + 2000 + 3600);
+    let is_timed_out_after_grace = client.is_plan_timed_out(&owner);
+    assert_eq!(is_timed_out_after_grace, true);
+}
+
+#[test]
+fn test_is_plan_timed_out_no_plan() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let contract_id = env.register_contract(None, InheritanceContract);
+    let client = InheritanceContractClient::new(&env, &contract_id);
+
+    let owner = Address::generate(&env);
+
+    let result = client.try_is_plan_timed_out(&owner);
+    assert_eq!(result, Err(Ok(Error::PlanNotFound)));
+}
+
+#[test]
+fn test_get_timeout_deadline() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let contract_id = env.register_contract(None, InheritanceContract);
+    let client = InheritanceContractClient::new(&env, &contract_id);
+
+    let token_id = env.register_contract(None, mock_token::MockToken);
+    let token_client = mock_token::MockTokenClient::new(&env, &token_id);
+
+    let owner = Address::generate(&env);
+    let beneficiary = Address::generate(&env);
+
+    token_client.mint(&owner, &2000);
+
+    let b = Beneficiary {
+        address: beneficiary.clone(),
+        allocation_bps: 10000,
+        fiat_anchor_info: String::from_str(&env, ""),
+    };
+
+    let start = 1_000_000;
+    let grace = 3600;
+    env.ledger().set_timestamp(start);
+
+    client.create_plan(
+        &owner,
+        &token_id,
+        &500,
+        &Vec::from_array(&env, [b]),
+        &grace,
+        &false,
+        &0,
+    );
+
+    let deadline = client.get_timeout_deadline(&owner);
+    assert_eq!(deadline, start + grace);
+}
+
+#[test]
+fn test_get_timeout_deadline_after_ping() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let contract_id = env.register_contract(None, InheritanceContract);
+    let client = InheritanceContractClient::new(&env, &contract_id);
+
+    let token_id = env.register_contract(None, mock_token::MockToken);
+    let token_client = mock_token::MockTokenClient::new(&env, &token_id);
+
+    let owner = Address::generate(&env);
+    let beneficiary = Address::generate(&env);
+
+    token_client.mint(&owner, &2000);
+
+    let b = Beneficiary {
+        address: beneficiary.clone(),
+        allocation_bps: 10000,
+        fiat_anchor_info: String::from_str(&env, ""),
+    };
+
+    let start = 1_000_000;
+    let grace = 3600;
+    env.ledger().set_timestamp(start);
+
+    client.create_plan(
+        &owner,
+        &token_id,
+        &500,
+        &Vec::from_array(&env, [b]),
+        &grace,
+        &false,
+        &0,
+    );
+
+    // Original deadline
+    let original_deadline = client.get_timeout_deadline(&owner);
+    assert_eq!(original_deadline, start + grace);
+
+    // Ping at start + 2000
+    let ping_time = start + 2000;
+    env.ledger().set_timestamp(ping_time);
+    client.ping(&owner);
+
+    // New deadline should be ping_time + grace
+    let new_deadline = client.get_timeout_deadline(&owner);
+    assert_eq!(new_deadline, ping_time + grace);
+}
+
+#[test]
+fn test_get_timeout_deadline_no_plan() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let contract_id = env.register_contract(None, InheritanceContract);
+    let client = InheritanceContractClient::new(&env, &contract_id);
+
+    let owner = Address::generate(&env);
+
+    let result = client.try_get_timeout_deadline(&owner);
+    assert_eq!(result, Err(Ok(Error::PlanNotFound)));
+}
+
+#[test]
+fn test_claim_rejects_before_timeout() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let contract_id = env.register_contract(None, InheritanceContract);
+    let client = InheritanceContractClient::new(&env, &contract_id);
+
+    let token_id = env.register_contract(None, mock_token::MockToken);
+    let token_client = mock_token::MockTokenClient::new(&env, &token_id);
+
+    let owner = Address::generate(&env);
+    let beneficiary = Address::generate(&env);
+
+    token_client.mint(&owner, &2000);
+
+    let b = Beneficiary {
+        address: beneficiary.clone(),
+        allocation_bps: 10000,
+        fiat_anchor_info: String::from_str(&env, ""),
+    };
+
+    let start = 1_000_000;
+    env.ledger().set_timestamp(start);
+
+    client.create_plan(
+        &owner,
+        &token_id,
+        &500,
+        &Vec::from_array(&env, [b]),
+        &3600,
+        &false,
+        &0,
+    );
+
+    // Deactivate plan
+    client.close_plan(&owner);
+
+    // Only 1000 seconds passed, grace period is 3600
+    env.ledger().set_timestamp(start + 1000);
+
+    // Verify plan is not timed out
+    assert_eq!(client.is_plan_timed_out(&owner), false);
+
+    // Claim should fail
+    let result = client.try_claim(&owner);
+    assert_eq!(result, Err(Ok(Error::InactivityPeriodNotMet)));
+}
+
+#[test]
+fn test_claim_accepts_after_timeout() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let contract_id = env.register_contract(None, InheritanceContract);
+    let client = InheritanceContractClient::new(&env, &contract_id);
+
+    let token_id = env.register_contract(None, mock_token::MockToken);
+    let token_client = mock_token::MockTokenClient::new(&env, &token_id);
+
+    let owner = Address::generate(&env);
+    let beneficiary = Address::generate(&env);
+
+    token_client.mint(&owner, &2000);
+
+    let b = Beneficiary {
+        address: beneficiary.clone(),
+        allocation_bps: 10000,
+        fiat_anchor_info: String::from_str(&env, ""),
+    };
+
+    let start = 1_000_000;
+    env.ledger().set_timestamp(start);
+
+    client.create_plan(
+        &owner,
+        &token_id,
+        &500,
+        &Vec::from_array(&env, [b]),
+        &3600,
+        &false,
+        &0,
+    );
+
+    // Deactivate plan
+    client.close_plan(&owner);
+
+    // Move past grace period
+    env.ledger().set_timestamp(start + 4000);
+
+    // Verify plan is timed out
+    assert_eq!(client.is_plan_timed_out(&owner), true);
+
+    // Claim should succeed
+    client.claim(&owner);
+}
+

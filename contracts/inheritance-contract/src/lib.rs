@@ -185,6 +185,39 @@ impl InheritanceContract {
         Ok(())
     }
 
+    /// Check if a plan has timed out (grace period elapsed).
+    /// Returns true if current_time >= last_ping + grace_period, false otherwise.
+    /// This is a read-only query method that does not modify state.
+    pub fn is_plan_timed_out(env: Env, owner: Address) -> Result<bool, Error> {
+        let key = DataKey::Plan(owner.clone());
+        if !env.storage().persistent().has(&key) {
+            return Err(Error::PlanNotFound);
+        }
+
+        let plan: Plan = env.storage().persistent().get(&key).unwrap();
+        Self::extend_plan_ttl(&env, &key);
+
+        let current_time = env.ledger().timestamp();
+        let timeout_deadline = plan.last_ping + plan.grace_period;
+
+        Ok(current_time >= timeout_deadline)
+    }
+
+    /// Get the timeout deadline timestamp for a plan.
+    /// Returns the timestamp when the grace period expires (last_ping + grace_period).
+    /// This is a read-only query method for external monitoring.
+    pub fn get_timeout_deadline(env: Env, owner: Address) -> Result<u64, Error> {
+        let key = DataKey::Plan(owner.clone());
+        if !env.storage().persistent().has(&key) {
+            return Err(Error::PlanNotFound);
+        }
+
+        let plan: Plan = env.storage().persistent().get(&key).unwrap();
+        Self::extend_plan_ttl(&env, &key);
+
+        Ok(plan.last_ping + plan.grace_period)
+    }
+
     /// Retrieve the current inheritance plan data.
     /// Contributors: Query plan storage, dynamically projects the accumulated yield.
     pub fn get_plan(env: Env, owner: Address) -> Result<InheritancePlan, Error> {
