@@ -204,6 +204,9 @@ impl InheritanceContract {
     /// using the stored basis points, and transfers tokens safely.
     /// Remaining dust from integer division is allocated to the last beneficiary.
     /// Aborts the entire transaction if any single transfer fails.
+    /// Emits a `payout` event per beneficiary and, when `fiat_anchor_info` is
+    /// non-empty, an additional `anchor_payout` event for the backend to pick up
+    /// and execute a Stellar Anchor SEP off-ramp flow.
     pub fn trigger_payout(env: Env, owner: Address) -> Result<(), Error> {
         let key = DataKey::Plan(owner.clone());
         let plan: Plan = env
@@ -237,11 +240,26 @@ impl InheritanceContract {
                 remaining -= amount;
                 amount
             };
+
             token_client.transfer(
                 &env.current_contract_address(),
                 &beneficiary.address,
                 &share,
             );
+
+            // Emit general payout event
+            env.events().publish(
+                (soroban_sdk::symbol_short!("payout"), owner.clone(), beneficiary.address.clone()),
+                share,
+            );
+
+            // Emit fiat anchor off-ramp event when beneficiary has routing info
+            if beneficiary.fiat_anchor_info.len() > 0 {
+                env.events().publish(
+                    (soroban_sdk::symbol_short!("anchor_pay"), owner.clone(), beneficiary.address.clone()),
+                    (share, beneficiary.fiat_anchor_info.clone()),
+                );
+            }
         }
 
         Ok(())
