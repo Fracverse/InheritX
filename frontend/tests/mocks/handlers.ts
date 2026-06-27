@@ -168,6 +168,16 @@ export const plansHandlers = [
     })
   ),
 
+  http.put("/api/plans/:id", async ({ params, request }) => {
+    const body = (await request.json()) as Record<string, unknown>;
+    const plan = mockPlans.find((p) => p.id === params.id);
+    if (!plan) {
+      return HttpResponse.json({ status: "error", message: "Plan not found" }, { status: 404 });
+    }
+    const updated = { ...plan, ...body, updated_at: new Date().toISOString() };
+    return HttpResponse.json({ status: "ok", data: updated });
+  }),
+
   http.post("/api/plans/:id/trigger", ({ params }) => {
     const id = params.id as string;
     const plan = mockPlans.find(p => p.id === id);

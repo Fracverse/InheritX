@@ -27,6 +27,13 @@ export interface Plan {
   updated_at: string;
 }
 
+export interface Beneficiary {
+  id?: string;
+  wallet_address: string;
+  name: string;
+  allocation_percentage: number;
+}
+
 export interface CreatePlanRequest {
   title: string;
   description?: string;
@@ -37,6 +44,15 @@ export interface CreatePlanRequest {
   bank_name?: string;
   currency_preference: string;
   two_fa_code: string;
+}
+
+export interface UpdatePlanRequest {
+  title?: string;
+  description?: string;
+  beneficiaries?: Beneficiary[];
+  inactivity_period_days?: number;
+  yield_harvesting_enabled?: boolean;
+  signed_transaction?: string;
 }
 
 export interface ClaimPlanRequest {
@@ -117,6 +133,17 @@ export class PlansAPI {
   async getPlanStatistics(): Promise<PlanStatistics> {
     const response = await apiClient.get<ApiResponse<PlanStatistics>>(
       "/api/analytics/plan-statistics"
+    );
+    return response.data!;
+  }
+
+  /**
+   * Update an existing plan
+   */
+  async updatePlan(planId: string, request: UpdatePlanRequest): Promise<Plan> {
+    const response = await apiClient.put<ApiResponse<Plan>>(
+      `/api/plans/${planId}`,
+      request
     );
     return response.data!;
   }
