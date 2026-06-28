@@ -120,6 +120,8 @@ pub fn create_router(state: Arc<AppState>) -> Router {
 
     // Public or admin routes
     let public_routes = Router::new()
+        .route("/api/allbridge/tokens", get(allbridge_tokens))
+        .route("/api/allbridge/quote", post(allbridge_quote))
         .route("/api/plans", get(get_plans))
         .route("/api/anchor/payout-status", get(get_anchor_payouts))
         .route("/api/kyc/webhook", post(kyc_webhook_handler))
@@ -130,6 +132,76 @@ pub fn create_router(state: Arc<AppState>) -> Router {
         .merge(public_routes)
         .layer(cors)
         .with_state(state)
+}
+
+// Allbridge endpoints
+#[derive(Serialize)]
+struct TokensResponse {
+    chains: Vec<crate::allbridge::ChainInfo>,
+    tokens: Vec<crate::allbridge::TokenInfo>,
+    routes: Vec<crate::allbridge::BridgeRoute>,
+}
+
+async fn allbridge_tokens(State(state): State<Arc<AppState>>) -> impl IntoResponse {
+    let client = reqwest::Client::new();
+    match crate::allbridge::get_cached_tokens(&client).await {
+        Ok(data) => (StatusCode::OK, Json(TokensResponse { chains: data.chains, tokens: data.tokens, routes: data.routes })).into_response(),
+        Err(e) => (
+            StatusCode::BAD_GATEWAY,
+            Json(serde_json::json!({ "error": format!("Failed to fetch allbridge tokens: {}", e) })),
+        ).into_response(),
+    }
+}
+
+#[derive(Deserialize)]
+struct QuotePayload {
+    origin_chain: String,
+    origin_token: String,
+    target_chain: String,
+    target_token: String,
+    amount: String,
+    origin_tx_hash: Option<String>,
+}
+
+async fn allbridge_quote(
+    State(state): State<Arc<AppState>>,
+    Json(payload): Json<QuotePayload>,
+) -> impl IntoResponse {
+    // compute dummy fees and target amount
+    let (fees, slippage, target_amount) = crate::allbridge::calculate_dummy_fees(&payload.amount);
+
+    // persist transfer record if origin_tx_hash provided
+    if let Some(tx_hash) = &payload.origin_tx_hash {
+        if let Err(e) = crate::allbridge::persist_transfer(
+            &state.db_pool,
+            tx_hash,
+            &payload.origin_chain,
+            &payload.origin_token,
+            &payload.target_chain,
+            &payload.target_token,
+            &payload.amount,
+            &target_amount,
+            &fees,
+        ).await {
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(serde_json::json!({ "error": format!("Failed to persist transfer: {}", e) })),
+            ).into_response();
+        }
+    }
+
+    let resp = crate::allbridge::QuoteResponse {
+        origin_chain: payload.origin_chain,
+        origin_token: payload.origin_token,
+        target_chain: payload.target_chain,
+        target_token: payload.target_token,
+        amount: payload.amount,
+        fees,
+        slippage,
+        target_amount,
+    };
+
+    (StatusCode::OK, Json(resp)).into_response()
 }
 
 #[derive(Debug, Clone, Serialize, sqlx::FromRow)]

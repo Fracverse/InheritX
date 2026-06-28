@@ -55,6 +55,13 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     ));
     inactivity_watchdog.start();
 
+    // Start Allbridge verifier background service
+    let verifier = Arc::new(inheritx_backend::AllbridgeVerifierService::new(
+        db_pool.clone(),
+        inheritx_backend::AllbridgeVerifierConfig::from_env(),
+    ));
+    verifier.start();
+
     // Create Axum application
     let app = create_router(state);
 
