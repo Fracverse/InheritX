@@ -779,7 +779,7 @@ async fn get_anchor_payouts(
         .into_response()
 }
 
-// ─── KYC Endpoints ────────────────────────────────────────────────────────────
+// --- KYC Endpoints ---
 
 #[derive(Debug, Serialize, Deserialize)]
 pub struct KYCStatusResponse {
