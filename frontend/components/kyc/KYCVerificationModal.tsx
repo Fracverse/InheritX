@@ -15,6 +15,14 @@ import {
   Trash2,
 } from "lucide-react";
 import { useKYC } from "@/context/KYCContext";
+import { PersonalInfoStep } from "./steps/PersonalInfoStep";
+import { IdentityStep } from "./steps/IdentityStep";
+import { AddressStep } from "./steps/AddressStep";
+import { DocumentsStep } from "./steps/DocumentsStep";
+import { ReviewStep } from "./steps/ReviewStep";
+import { VerificationApprovedView } from "./VerificationApprovedView";
+import { VerificationRejectedView } from "./VerificationRejectedView";
+import { VerificationPendingView } from "./VerificationPendingView";
 
 type FormStep = "personal" | "identity" | "address" | "documents" | "review";
 
@@ -345,15 +353,5 @@ function VerificationFormView({
     </div>
   );
 }
-
-// Import the step components
-import { PersonalInfoStep } from "./steps/PersonalInfoStep";
-import { IdentityStep } from "./steps/IdentityStep";
-import { AddressStep } from "./steps/AddressStep";
-import { DocumentsStep } from "./steps/DocumentsStep";
-import { ReviewStep } from "./steps/ReviewStep";
-import { VerificationApprovedView } from "./VerificationApprovedView";
-import { VerificationRejectedView } from "./VerificationRejectedView";
-import { VerificationPendingView } from "./VerificationPendingView";
 
 export default KYCVerificationModal;
