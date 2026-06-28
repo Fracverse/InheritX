@@ -13,6 +13,10 @@ impl Config {
         let database_url = std::env::var("DATABASE_URL")
             .unwrap_or_else(|_| "postgres://postgres:postgres@localhost:5432/inheritx".to_string());
         let sentry_dsn = std::env::var("SENTRY_DSN").ok();
-        Ok(Config { port, database_url, sentry_dsn })
+        Ok(Config {
+            port,
+            database_url,
+            sentry_dsn,
+        })
     }
 }
