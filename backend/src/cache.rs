@@ -181,7 +181,7 @@ impl PlanCache {
                     keys_to_delete.extend(members);
                 }
 
-                keys_to_delete.extend(index_keys.into_iter());
+                keys_to_delete.extend(index_keys);
 
                 for key in keys_to_delete {
                     let _: usize = conn.del(key).await?;
