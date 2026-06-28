@@ -123,6 +123,11 @@ pub fn create_router(state: Arc<AppState>) -> Router {
         .route("/api/plans", get(get_plans))
         .route("/api/anchor/payout-status", get(get_anchor_payouts))
         .route("/api/kyc/webhook", post(kyc_webhook_handler))
+        .route("/api/kyc/status", get(get_kyc_status))
+        .route("/api/kyc/submit", post(submit_kyc))
+        .route("/api/kyc/upload", post(upload_kyc_document))
+        .route("/api/kyc/required", get(is_kyc_required))
+        .route("/api/kyc/requirements", get(get_kyc_requirements))
         .route("/ws/kyc", get(ws_handler));
 
     Router::new()
@@ -772,4 +777,145 @@ async fn get_anchor_payouts(
         }),
     )
         .into_response()
+}
+
+// --- KYC Endpoints ---
+
+#[derive(Debug, Serialize, Deserialize)]
+pub struct KYCStatusResponse {
+    pub wallet_address: String,
+    pub kyc_status: String,
+    pub submitted_at: Option<DateTime<Utc>>,
+    pub approved_at: Option<DateTime<Utc>>,
+    pub rejected_at: Option<DateTime<Utc>>,
+    pub rejection_reason: Option<String>,
+    pub provider_reference: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct KYCSubmitRequest {
+    pub full_name: String,
+    pub email: String,
+    pub date_of_birth: String,
+    pub nationality: String,
+    pub id_type: String,
+    pub id_number: String,
+    pub expiry_date: String,
+    pub street_address: String,
+    pub city: String,
+    pub country: String,
+    pub postal_code: String,
+    pub document_id: Option<String>,
+}
+
+#[derive(Debug, Serialize)]
+pub struct KYCDocumentResponse {
+    pub document_id: String,
+    pub url: String,
+}
+
+#[derive(Debug, Serialize)]
+pub struct KYCRequirementsResponse {
+    pub requires_id: bool,
+    pub requires_address_proof: bool,
+    pub requires_selfie: bool,
+    pub supported_id_types: Vec<String>,
+    pub supported_countries: Vec<String>,
+}
+
+// Get user's KYC status
+async fn get_kyc_status() -> impl IntoResponse {
+    // In a real implementation, this would get the user from authentication context
+    // For now, return a mock response
+    let response = KYCStatusResponse {
+        wallet_address: "GDTEST123".to_string(),
+        kyc_status: "pending".to_string(),
+        submitted_at: None,
+        approved_at: None,
+        rejected_at: None,
+        rejection_reason: None,
+        provider_reference: None,
+    };
+
+    (StatusCode::OK, Json(response))
+}
+
+// Submit KYC verification data
+async fn submit_kyc(Json(_payload): Json<KYCSubmitRequest>) -> impl IntoResponse {
+    // In a real implementation, this would:
+    // 1. Validate the request
+    // 2. Submit to third-party KYC provider
+    // 3. Store in database
+    // 4. Return reference ID
+
+    let response = KYCStatusResponse {
+        wallet_address: "GDTEST123".to_string(),
+        kyc_status: "submitted".to_string(),
+        submitted_at: Some(Utc::now()),
+        approved_at: None,
+        rejected_at: None,
+        rejection_reason: None,
+        provider_reference: Some("ref-001".to_string()),
+    };
+
+    (StatusCode::OK, Json(response))
+}
+
+// Upload KYC document
+async fn upload_kyc_document() -> impl IntoResponse {
+    // In a real implementation, this would:
+    // 1. Receive multipart form data with file and document_type
+    // 2. Validate file (size, type)
+    // 3. Upload to cloud storage (S3, etc.)
+    // 4. Store metadata in database
+    // 5. Return document_id and URL
+
+    let response = KYCDocumentResponse {
+        document_id: Uuid::new_v4().to_string(),
+        url: "https://example.com/documents/doc-001".to_string(),
+    };
+
+    (StatusCode::OK, Json(response))
+}
+
+// Check if KYC is required
+async fn is_kyc_required() -> impl IntoResponse {
+    #[derive(Debug, Serialize)]
+    struct RequiredResponse {
+        required: bool,
+        reason: Option<String>,
+    }
+
+    let response = RequiredResponse {
+        required: true,
+        reason: Some("All users must complete KYC to create plans".to_string()),
+    };
+
+    (StatusCode::OK, Json(response))
+}
+
+// Get KYC requirements
+async fn get_kyc_requirements() -> impl IntoResponse {
+    let response = KYCRequirementsResponse {
+        requires_id: true,
+        requires_address_proof: true,
+        requires_selfie: false,
+        supported_id_types: vec![
+            "international_passport".to_string(),
+            "national_id".to_string(),
+            "drivers_license".to_string(),
+        ],
+        supported_countries: vec![
+            "US".to_string(),
+            "UK".to_string(),
+            "DE".to_string(),
+            "FR".to_string(),
+            "CA".to_string(),
+            "AU".to_string(),
+            "JP".to_string(),
+            "SG".to_string(),
+        ],
+    };
+
+    (StatusCode::OK, Json(response))
 }
