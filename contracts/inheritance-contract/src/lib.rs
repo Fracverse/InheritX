@@ -4,8 +4,6 @@ use soroban_sdk::{contract, contracterror, contractimpl, contracttype, Address, 
 const MAX_BENEFICIARIES: u32 = 100;
 const PLAN_TTL_THRESHOLD: u32 = 500;
 const PLAN_TTL_LEEWAY: u32 = 100;
-const TEMP_TTL_THRESHOLD: u32 = 100;
-const TEMP_TTL_LEEWAY: u32 = 50;
 
 #[contracterror]
 #[derive(Copy, Clone, Debug, Eq, PartialEq)]
@@ -18,6 +16,8 @@ pub enum Error {
     NegativeAmount = 6,
     InsufficientBalance = 7,
     TooManyBeneficiaries = 8,
+    TimelockNotExpired = 9,
+    PayoutNotTriggered = 10,
 }
 
 #[contracttype]
@@ -40,6 +40,7 @@ pub struct Plan {
     pub earn_yield: bool,
     pub yield_rate_bps: u32,
     pub is_active: bool,
+    pub timelock_duration: u64,
 }
 
 pub type InheritancePlan = Plan;
@@ -66,12 +67,6 @@ impl InheritanceContract {
             .persistent()
             .extend_ttl(key, PLAN_TTL_LEEWAY, PLAN_TTL_THRESHOLD);
     }
-
-    fn extend_temp_ttl(env: &Env, key: &DataKey) {
-        env.storage()
-            .temporary()
-            .extend_ttl(key, TEMP_TTL_LEEWAY, TEMP_TTL_THRESHOLD);
-    }
 }
 
 #[contractimpl]
@@ -89,6 +84,7 @@ impl InheritanceContract {
         grace_period: u64,
         earn_yield: bool,
         yield_rate_bps: u32,
+        timelock_duration: u64,
     ) -> Result<(), Error> {
         owner.require_auth();
 
@@ -131,6 +127,7 @@ impl InheritanceContract {
             earn_yield,
             yield_rate_bps,
             is_active: true,
+            timelock_duration,
         };
 
         env.storage().persistent().set(&key, &plan);
@@ -163,11 +160,11 @@ impl InheritanceContract {
     /// emit payout events, and trigger anchor event emissions for fiat recipients.
     pub fn claim(env: Env, owner: Address) -> Result<(), Error> {
         let key = DataKey::Plan(owner.clone());
-        if !env.storage().persistent().has(&key) {
-            return Err(Error::PlanNotFound);
-        }
-
-        let plan: Plan = env.storage().persistent().get(&key).unwrap();
+        let plan: Plan = env
+            .storage()
+            .persistent()
+            .get(&key)
+            .ok_or(Error::PlanNotFound)?;
 
         if plan.is_active {
             return Err(Error::InactivityPeriodNotMet);
@@ -179,10 +176,73 @@ impl InheritanceContract {
         }
 
         let claim_key = DataKey::ClaimStatus(owner.clone());
-        env.storage().temporary().set(&claim_key, &true);
-        Self::extend_temp_ttl(&env, &claim_key);
+        if env.storage().persistent().has(&claim_key) {
+            return Ok(()); // Already claimed
+        }
+
+        env.storage().persistent().set(&claim_key, &current_time);
+        Self::extend_plan_ttl(&env, &claim_key);
 
         Ok(())
+    }
+
+    /// Cancel a triggered payout during the timelock window.
+    pub fn cancel_claim(env: Env, owner: Address) -> Result<(), Error> {
+        owner.require_auth();
+
+        let key = DataKey::Plan(owner.clone());
+        let mut plan: Plan = env
+            .storage()
+            .persistent()
+            .get(&key)
+            .ok_or(Error::PlanNotFound)?;
+
+        let claim_key = DataKey::ClaimStatus(owner.clone());
+        if !env.storage().persistent().has(&claim_key) {
+            return Err(Error::PayoutNotTriggered);
+        }
+
+        env.storage().persistent().remove(&claim_key);
+
+        plan.is_active = true;
+        plan.last_ping = env.ledger().timestamp();
+        env.storage().persistent().set(&key, &plan);
+        Self::extend_plan_ttl(&env, &key);
+
+        Ok(())
+    }
+
+    /// Check if a plan has timed out (grace period elapsed).
+    /// Returns true if current_time >= last_ping + grace_period, false otherwise.
+    /// This is a read-only query method that does not modify state.
+    pub fn is_plan_timed_out(env: Env, owner: Address) -> Result<bool, Error> {
+        let key = DataKey::Plan(owner.clone());
+        if !env.storage().persistent().has(&key) {
+            return Err(Error::PlanNotFound);
+        }
+
+        let plan: Plan = env.storage().persistent().get(&key).unwrap();
+        Self::extend_plan_ttl(&env, &key);
+
+        let current_time = env.ledger().timestamp();
+        let timeout_deadline = plan.last_ping + plan.grace_period;
+
+        Ok(current_time >= timeout_deadline)
+    }
+
+    /// Get the timeout deadline timestamp for a plan.
+    /// Returns the timestamp when the grace period expires (last_ping + grace_period).
+    /// This is a read-only query method for external monitoring.
+    pub fn get_timeout_deadline(env: Env, owner: Address) -> Result<u64, Error> {
+        let key = DataKey::Plan(owner.clone());
+        if !env.storage().persistent().has(&key) {
+            return Err(Error::PlanNotFound);
+        }
+
+        let plan: Plan = env.storage().persistent().get(&key).unwrap();
+        Self::extend_plan_ttl(&env, &key);
+
+        Ok(plan.last_ping + plan.grace_period)
     }
 
     /// Retrieve the current inheritance plan data.
@@ -212,18 +272,22 @@ impl InheritanceContract {
             .get(&key)
             .ok_or(Error::PlanNotFound)?;
 
-        if plan.is_active {
-            return Err(Error::InactivityPeriodNotMet);
-        }
+        let claim_key = DataKey::ClaimStatus(owner.clone());
+        let claim_time: u64 = env
+            .storage()
+            .persistent()
+            .get(&claim_key)
+            .ok_or(Error::PayoutNotTriggered)?;
 
         let current_time = env.ledger().timestamp();
-        if current_time < plan.last_ping + plan.grace_period {
-            return Err(Error::InactivityPeriodNotMet);
+        if current_time < claim_time + plan.timelock_duration {
+            return Err(Error::TimelockNotExpired);
         }
 
         // Checks-effects-interactions: remove plan before transfers
         // to prevent double payout and guard against re-entrancy
         env.storage().persistent().remove(&key);
+        env.storage().persistent().remove(&claim_key);
 
         let token_client = soroban_sdk::token::Client::new(&env, &plan.token);
         let n = plan.beneficiaries.len();
@@ -262,6 +326,30 @@ impl InheritanceContract {
 
         env.storage().persistent().set(&key, &plan);
         Self::extend_plan_ttl(&env, &key);
+
+        Ok(())
+    }
+
+    /// Reclaim the locked assets and delete the plan.
+    pub fn reclaim(env: Env, owner: Address) -> Result<(), Error> {
+        owner.require_auth();
+
+        let key = DataKey::Plan(owner.clone());
+        let plan: Plan = env
+            .storage()
+            .persistent()
+            .get(&key)
+            .ok_or(Error::PlanNotFound)?;
+
+        let claim_key = DataKey::ClaimStatus(owner.clone());
+        if env.storage().persistent().has(&claim_key) {
+            env.storage().persistent().remove(&claim_key);
+        }
+
+        env.storage().persistent().remove(&key);
+
+        let token_client = soroban_sdk::token::Client::new(&env, &plan.token);
+        token_client.transfer(&env.current_contract_address(), &owner, &plan.amount);
 
         Ok(())
     }

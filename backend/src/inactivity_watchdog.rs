@@ -6,6 +6,8 @@ use tokio::time::MissedTickBehavior;
 use tracing::{error, info, warn};
 use uuid::Uuid;
 
+use crate::cache::PlanCache;
+
 const DEFAULT_INTERVAL_SECS: u64 = 60 * 60;
 const DEFAULT_BATCH_SIZE: i64 = 500;
 const WATCHDOG_LOCK_KEY: i64 = 820;
@@ -33,6 +35,7 @@ impl InactivityWatchdogConfig {
 #[derive(Debug, sqlx::FromRow)]
 struct ExpiredPlan {
     id: Uuid,
+    owner_address: String,
     user_id: Uuid,
     title: String,
     inactivity_deadline_at: DateTime<Utc>,
@@ -40,12 +43,17 @@ struct ExpiredPlan {
 
 pub struct InactivityWatchdogService {
     db: PgPool,
+    plan_cache: PlanCache,
     config: InactivityWatchdogConfig,
 }
 
 impl InactivityWatchdogService {
-    pub fn new(db: PgPool, config: InactivityWatchdogConfig) -> Self {
-        Self { db, config }
+    pub fn new(db: PgPool, plan_cache: PlanCache, config: InactivityWatchdogConfig) -> Self {
+        Self {
+            db,
+            plan_cache,
+            config,
+        }
     }
 
     pub fn start(self: Arc<Self>) {
@@ -97,13 +105,38 @@ impl InactivityWatchdogService {
                 LIMIT $2
                 FOR UPDATE SKIP LOCKED
             )
-            RETURNING id, user_id, title, inactivity_deadline_at
+            RETURNING id, owner_address, user_id, title, inactivity_deadline_at
             "#,
         )
         .bind(CLAIMABLE_STATUS)
         .bind(self.config.batch_size)
         .fetch_all(&mut *tx)
         .await?;
+
+        for plan in &expired_plans {
+            let beneficiary_addresses: Vec<String> = sqlx::query_scalar(
+                r#"
+                SELECT wallet_address
+                FROM beneficiaries
+                WHERE plan_id = $1
+                "#,
+            )
+            .bind(plan.id)
+            .fetch_all(&mut *tx)
+            .await?;
+
+            if let Err(err) = self
+                .plan_cache
+                .invalidate_queries(&plan.owner_address, &beneficiary_addresses)
+                .await
+            {
+                warn!(
+                    plan_id = %plan.id,
+                    error = %err,
+                    "Failed to invalidate Redis plan cache for claimable plan"
+                );
+            }
+        }
 
         for plan in &expired_plans {
             warn!(

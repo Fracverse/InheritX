@@ -192,6 +192,40 @@ export class PlansAPI {
   async getTriggerInfo(planId: string): Promise<any> {
     return apiClient.get(`/api/plans/${planId}/trigger-info`);
   }
+
+  /**
+   * Keep-alive ping to reset inactivity timer
+   */
+  async pingKeepAlive(
+    planId: string,
+    signedTransaction?: string
+  ): Promise<Plan> {
+    const response = await apiClient.post<ApiResponse<Plan>>(
+      `/api/plans/${planId}/keep-alive`,
+      { signed_transaction: signedTransaction }
+    );
+    return response.data!;
+  }
+
+  /**
+   * Get plan inactivity status
+   */
+  async getInactivityStatus(planId: string): Promise<{
+    last_ping_timestamp: number;
+    inactivity_period_days: number;
+    days_until_claimable: number;
+    is_claimable: boolean;
+  }> {
+    const response = await apiClient.get<
+      ApiResponse<{
+        last_ping_timestamp: number;
+        inactivity_period_days: number;
+        days_until_claimable: number;
+        is_claimable: boolean;
+      }>
+    >(`/api/plans/${planId}/inactivity-status`);
+    return response.data!;
+  }
 }
 
 export const plansAPI = new PlansAPI();
