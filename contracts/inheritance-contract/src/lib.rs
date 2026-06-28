@@ -1,5 +1,7 @@
 #![no_std]
-use soroban_sdk::{contract, contracterror, contractimpl, contracttype, Address, Env, String, Vec};
+use soroban_sdk::{
+    contract, contracterror, contractimpl, contracttype, symbol_short, Address, Env, String, Vec,
+};
 
 const MAX_BENEFICIARIES: u32 = 100;
 const PLAN_TTL_THRESHOLD: u32 = 500;
@@ -18,6 +20,11 @@ pub enum Error {
     NegativeAmount = 6,
     InsufficientBalance = 7,
     TooManyBeneficiaries = 8,
+    AlreadyInitialized = 9,
+    AdminNotSet = 10,
+    InvalidYieldRate = 11,
+    TokenAlreadySupported = 12,
+    TokenNotSupported = 13,
 }
 
 #[contracttype]
@@ -55,6 +62,8 @@ pub enum DataKey {
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum InstanceDataKey {
     Admin,
+    GlobalYieldRate,
+    SupportedToken(Address),
 }
 
 #[contract]
@@ -71,6 +80,27 @@ impl InheritanceContract {
         env.storage()
             .temporary()
             .extend_ttl(key, TEMP_TTL_LEEWAY, TEMP_TTL_THRESHOLD);
+    }
+
+    fn extend_instance_ttl(env: &Env) {
+        env.storage()
+            .instance()
+            .extend_ttl(PLAN_TTL_LEEWAY, PLAN_TTL_THRESHOLD);
+    }
+
+    /// Read the configured admin address, or error if the contract is uninitialized.
+    fn read_admin(env: &Env) -> Result<Address, Error> {
+        env.storage()
+            .instance()
+            .get(&InstanceDataKey::Admin)
+            .ok_or(Error::AdminNotSet)
+    }
+
+    /// Require the stored admin's signature for governance operations.
+    fn require_admin(env: &Env) -> Result<Address, Error> {
+        let admin = Self::read_admin(env)?;
+        admin.require_auth();
+        Ok(admin)
     }
 }
 
@@ -264,6 +294,118 @@ impl InheritanceContract {
         Self::extend_plan_ttl(&env, &key);
 
         Ok(())
+    }
+
+    /// Initialize the contract with the governing admin address.
+    /// Can only be called once; subsequent calls return `AlreadyInitialized`.
+    pub fn initialize(env: Env, admin: Address) -> Result<(), Error> {
+        if env.storage().instance().has(&InstanceDataKey::Admin) {
+            return Err(Error::AlreadyInitialized);
+        }
+
+        env.storage()
+            .instance()
+            .set(&InstanceDataKey::Admin, &admin);
+        Self::extend_instance_ttl(&env);
+
+        env.events()
+            .publish((symbol_short!("init"), admin.clone()), admin);
+
+        Ok(())
+    }
+
+    /// Update the global base yield rate (in basis points).
+    /// Restricted to the admin signature. Rate must be <= 10000 bps (100%).
+    pub fn set_global_yield_rate(env: Env, rate_bps: u32) -> Result<(), Error> {
+        Self::require_admin(&env)?;
+
+        if rate_bps > 10000 {
+            return Err(Error::InvalidYieldRate);
+        }
+
+        env.storage()
+            .instance()
+            .set(&InstanceDataKey::GlobalYieldRate, &rate_bps);
+        Self::extend_instance_ttl(&env);
+
+        env.events()
+            .publish((symbol_short!("yield_set"),), rate_bps);
+
+        Ok(())
+    }
+
+    /// Retrieve the global base yield rate in basis points (defaults to 0 if unset).
+    pub fn get_global_yield_rate(env: Env) -> u32 {
+        env.storage()
+            .instance()
+            .get(&InstanceDataKey::GlobalYieldRate)
+            .unwrap_or(0)
+    }
+
+    /// Register a supported asset (USDC, XLM, etc.) in the token registry.
+    /// Restricted to the admin signature.
+    pub fn add_supported_token(env: Env, token: Address) -> Result<(), Error> {
+        Self::require_admin(&env)?;
+
+        let key = InstanceDataKey::SupportedToken(token.clone());
+        if env.storage().instance().has(&key) {
+            return Err(Error::TokenAlreadySupported);
+        }
+
+        env.storage().instance().set(&key, &true);
+        Self::extend_instance_ttl(&env);
+
+        env.events()
+            .publish((symbol_short!("tkn_add"), token.clone()), token);
+
+        Ok(())
+    }
+
+    /// Remove an asset from the supported token registry.
+    /// Restricted to the admin signature.
+    pub fn remove_supported_token(env: Env, token: Address) -> Result<(), Error> {
+        Self::require_admin(&env)?;
+
+        let key = InstanceDataKey::SupportedToken(token.clone());
+        if !env.storage().instance().has(&key) {
+            return Err(Error::TokenNotSupported);
+        }
+
+        env.storage().instance().remove(&key);
+        Self::extend_instance_ttl(&env);
+
+        env.events()
+            .publish((symbol_short!("tkn_rm"), token.clone()), token);
+
+        Ok(())
+    }
+
+    /// Check whether a token is registered as a supported asset.
+    pub fn is_supported_token(env: Env, token: Address) -> bool {
+        env.storage()
+            .instance()
+            .has(&InstanceDataKey::SupportedToken(token))
+    }
+
+    /// Transfer admin/governance control to a new address.
+    /// Restricted to the current admin signature.
+    pub fn set_admin(env: Env, new_admin: Address) -> Result<(), Error> {
+        let previous_admin = Self::require_admin(&env)?;
+
+        env.storage()
+            .instance()
+            .set(&InstanceDataKey::Admin, &new_admin);
+        Self::extend_instance_ttl(&env);
+
+        env.events()
+            .publish((symbol_short!("admin_set"), previous_admin), new_admin);
+
+        Ok(())
+    }
+
+    /// Retrieve the current admin address.
+    pub fn get_admin(env: Env) -> Result<Address, Error> {
+        Self::read_admin(&env)
     }
 }
 
