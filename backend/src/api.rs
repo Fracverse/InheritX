@@ -1,6 +1,7 @@
 use axum::{
     extract::{Query, State},
     http::StatusCode,
+    http::{header::HeaderName, HeaderValue},
     middleware::from_fn,
     response::IntoResponse,
     routing::{get, post},
@@ -15,6 +16,7 @@ use tracing::error;
 use uuid::Uuid;
 
 use crate::auth::signature_auth_middleware;
+use crate::cache::PlanCache;
 use crate::kyc_webhook::kyc_webhook_handler;
 use crate::stellar_anchor::AnchorRegistry;
 use crate::ws::{ws_handler, KycUpdateEvent};
@@ -47,9 +49,10 @@ pub struct AppState {
     pub kyc_tx: tokio::sync::broadcast::Sender<KycUpdateEvent>,
     pub kyc_webhook_secret: Option<String>,
     pub apy_config: yield_calculator::ApyConfig,
+    pub plan_cache: PlanCache,
 }
 
-#[derive(Deserialize)]
+#[derive(Debug, Clone, Deserialize)]
 pub struct PlanQuery {
     pub owner: Option<String>,
     pub beneficiary: Option<String>,
@@ -158,7 +161,7 @@ pub struct BeneficiaryRow {
     pub fiat_anchor_info: String,
 }
 
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct PlanResponse {
     pub id: uuid::Uuid,
     pub owner_address: String,
@@ -176,7 +179,7 @@ pub struct PlanResponse {
     pub beneficiaries: Vec<BeneficiaryResponse>,
 }
 
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct BeneficiaryResponse {
     pub id: uuid::Uuid,
     pub plan_id: uuid::Uuid,
@@ -200,6 +203,16 @@ fn compute_accrued_yield(amount: &Decimal, yield_rate_bps: i32, last_ping: i64) 
     let amount_f64 = amount.to_string().parse::<f64>().unwrap_or(0.0);
 
     yield_calculator::calculate_yield(amount_f64, yield_rate_bps as u32, elapsed_secs)
+}
+
+fn compute_projected_accrued_yield(row: &PlanRow) -> f64 {
+    let persisted = row.accrued_yield.to_string().parse::<f64>().unwrap_or(0.0);
+
+    if !row.earn_yield {
+        return persisted;
+    }
+
+    persisted + compute_accrued_yield(&row.amount, row.yield_rate_bps, row.last_ping)
 }
 
 /// Load beneficiaries for a given plan.
@@ -232,7 +245,7 @@ async fn load_beneficiaries(
 
 // Helper: convert PlanRow + beneficiaries into PlanResponse with yield
 fn plan_row_to_response(row: PlanRow, beneficiaries: Vec<BeneficiaryResponse>) -> PlanResponse {
-    let accrued_yield = compute_accrued_yield(&row.amount, row.yield_rate_bps, row.last_ping);
+    let accrued_yield = compute_projected_accrued_yield(&row);
 
     PlanResponse {
         id: row.id,
@@ -249,6 +262,83 @@ fn plan_row_to_response(row: PlanRow, beneficiaries: Vec<BeneficiaryResponse>) -
         accrued_yield,
         created_at: row.created_at,
         beneficiaries,
+    }
+}
+
+async fn load_beneficiary_addresses(
+    pool: &sqlx::PgPool,
+    plan_id: uuid::Uuid,
+) -> Result<Vec<String>, sqlx::Error> {
+    sqlx::query_scalar(
+        r#"
+        SELECT wallet_address
+        FROM beneficiaries
+        WHERE plan_id = $1
+        "#,
+    )
+    .bind(plan_id)
+    .fetch_all(pool)
+    .await
+}
+
+#[derive(Clone, Copy)]
+enum PlanCacheStatus {
+    Hit,
+    Miss,
+    Bypass,
+    ErrorFallback,
+}
+
+impl PlanCacheStatus {
+    fn as_header_value(self) -> &'static str {
+        match self {
+            Self::Hit => "hit",
+            Self::Miss => "miss",
+            Self::Bypass => "bypass",
+            Self::ErrorFallback => "error-fallback",
+        }
+    }
+}
+
+fn add_plan_cache_headers(
+    response: &mut axum::response::Response,
+    cache_status: PlanCacheStatus,
+    cache_lookup_ms: u128,
+    db_query_ms: u128,
+    total_ms: u128,
+) {
+    response.headers_mut().insert(
+        HeaderName::from_static("x-plan-cache-status"),
+        HeaderValue::from_static(cache_status.as_header_value()),
+    );
+
+    for (name, value) in [
+        ("x-plan-cache-lookup-ms", cache_lookup_ms),
+        ("x-plan-db-query-ms", db_query_ms),
+        ("x-plan-total-latency-ms", total_ms),
+    ] {
+        if let Ok(value) = HeaderValue::from_str(&value.to_string()) {
+            response
+                .headers_mut()
+                .insert(HeaderName::from_static(name), value);
+        }
+    }
+}
+
+async fn invalidate_plan_cache(
+    cache: &PlanCache,
+    owner_address: &str,
+    beneficiary_addresses: &[String],
+) {
+    if let Err(err) = cache
+        .invalidate_queries(owner_address, beneficiary_addresses)
+        .await
+    {
+        error!(
+            owner_address = %owner_address,
+            error = %err,
+            "Failed to invalidate plan cache"
+        );
     }
 }
 
@@ -354,10 +444,9 @@ async fn create_plan(
             accrued_yield,
             last_ping,
             is_active,
-            status,
-            yield_rate_bps
-        ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
-        RETURNING id, owner_address, token_address, amount, grace_period, grace_period_seconds, earn_yield, last_ping, is_active, status, yield_rate_bps, created_at
+            status
+        ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
+        RETURNING id, owner_address, token_address, amount, grace_period, grace_period_seconds, earn_yield, last_ping, is_active, status, yield_rate_bps, accrued_yield, created_at
         "#
     )
     .bind(&payload.owner)
@@ -371,7 +460,6 @@ async fn create_plan(
     .bind(payload.last_ping)
     .bind(payload.is_active)
     .bind("ACTIVE")
-    .bind(payload.yield_rate_bps as i32)
     .fetch_one(&mut *tx)
     .await {
         Ok(row) => row,
@@ -428,6 +516,12 @@ async fn create_plan(
         ).into_response();
     }
 
+    let beneficiary_addresses: Vec<String> = inserted_beneficiaries
+        .iter()
+        .map(|beneficiary| beneficiary.wallet_address.clone())
+        .collect();
+    invalidate_plan_cache(&state.plan_cache, &payload.owner, &beneficiary_addresses).await;
+
     let response = PlanResponse {
         id: plan_row.id,
         owner_address: plan_row.owner_address,
@@ -454,6 +548,38 @@ async fn get_plans(
     State(state): State<Arc<AppState>>,
     Query(query): Query<PlanQuery>,
 ) -> impl IntoResponse {
+    let total_started = std::time::Instant::now();
+    let cache_lookup_started = std::time::Instant::now();
+    let mut cache_status = if state.plan_cache.is_enabled() {
+        PlanCacheStatus::Miss
+    } else {
+        PlanCacheStatus::Bypass
+    };
+
+    if state.plan_cache.is_enabled() {
+        match state.plan_cache.get_plans(&query).await {
+            Ok(Some(plans)) => {
+                let mut response = (StatusCode::OK, Json(plans)).into_response();
+                add_plan_cache_headers(
+                    &mut response,
+                    PlanCacheStatus::Hit,
+                    cache_lookup_started.elapsed().as_millis(),
+                    0,
+                    total_started.elapsed().as_millis(),
+                );
+                return response;
+            }
+            Ok(None) => {}
+            Err(err) => {
+                error!(error = %err, "Plan cache lookup failed, falling back to PostgreSQL");
+                cache_status = PlanCacheStatus::ErrorFallback;
+            }
+        }
+    }
+
+    let cache_lookup_ms = cache_lookup_started.elapsed().as_millis();
+    let db_query_started = std::time::Instant::now();
+
     // Build the query dynamically based on filters
     let rows: Vec<PlanRow> = match (&query.owner, &query.beneficiary) {
         (Some(owner), None) => {
@@ -462,7 +588,7 @@ async fn get_plans(
                 r#"
                 SELECT id, owner_address, token_address, amount, grace_period,
                        grace_period_seconds, earn_yield, last_ping, is_active,
-                       status, yield_rate_bps, created_at
+                       status, yield_rate_bps, accrued_yield, created_at
                 FROM plans
                 WHERE owner_address = $1
                 ORDER BY created_at DESC
@@ -490,7 +616,7 @@ async fn get_plans(
                 r#"
                 SELECT DISTINCT p.id, p.owner_address, p.token_address, p.amount,
                        p.grace_period, p.grace_period_seconds, p.earn_yield,
-                       p.last_ping, p.is_active, p.status, p.yield_rate_bps, p.created_at
+                       p.last_ping, p.is_active, p.status, p.yield_rate_bps, p.accrued_yield, p.created_at
                 FROM plans p
                 INNER JOIN beneficiaries b ON b.plan_id = p.id
                 WHERE b.wallet_address = $1
@@ -519,7 +645,7 @@ async fn get_plans(
                 r#"
                 SELECT DISTINCT p.id, p.owner_address, p.token_address, p.amount,
                        p.grace_period, p.grace_period_seconds, p.earn_yield,
-                       p.last_ping, p.is_active, p.status, p.yield_rate_bps, p.created_at
+                       p.last_ping, p.is_active, p.status, p.yield_rate_bps, p.accrued_yield, p.created_at
                 FROM plans p
                 INNER JOIN beneficiaries b ON b.plan_id = p.id
                 WHERE p.owner_address = $1 AND b.wallet_address = $2
@@ -549,7 +675,7 @@ async fn get_plans(
                 r#"
                 SELECT id, owner_address, token_address, amount, grace_period,
                        grace_period_seconds, earn_yield, last_ping, is_active,
-                       status, yield_rate_bps, created_at
+                       status, yield_rate_bps, accrued_yield, created_at
                 FROM plans
                 ORDER BY created_at DESC
                 "#,
@@ -588,7 +714,23 @@ async fn get_plans(
         responses.push(plan_row_to_response(row, beneficiaries));
     }
 
-    (StatusCode::OK, Json(responses)).into_response()
+    let db_query_ms = db_query_started.elapsed().as_millis();
+
+    if state.plan_cache.is_enabled() && responses.iter().any(|plan| plan.is_active) {
+        if let Err(err) = state.plan_cache.set_plans(&query, &responses).await {
+            error!(error = %err, "Failed to populate plan cache");
+        }
+    }
+
+    let mut response = (StatusCode::OK, Json(responses)).into_response();
+    add_plan_cache_headers(
+        &mut response,
+        cache_status,
+        cache_lookup_ms,
+        db_query_ms,
+        total_started.elapsed().as_millis(),
+    );
+    response
 }
 
 /// Verify the ping signature using ed25519.
@@ -670,6 +812,24 @@ async fn ping_plan(
         )
             .into_response();
     }
+
+    let beneficiary_addresses = match load_beneficiary_addresses(&state.db_pool, plan.id).await {
+        Ok(addresses) => addresses,
+        Err(err) => {
+            error!(
+                plan_id = %plan.id,
+                error = %err,
+                "Failed to load beneficiaries for plan cache invalidation"
+            );
+            Vec::new()
+        }
+    };
+    invalidate_plan_cache(
+        &state.plan_cache,
+        &plan.owner_address,
+        &beneficiary_addresses,
+    )
+    .await;
 
     // 5. Return updated plan status and virtual balance
     let virtual_balance = plan.amount + new_accrued_yield;

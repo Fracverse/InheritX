@@ -3,7 +3,7 @@ use axum::{
     http::{self, Request, StatusCode},
 };
 use ed25519_dalek::{Signer, SigningKey};
-use inheritx_backend::{create_router, AppState};
+use inheritx_backend::{create_router, AppState, PlanCache, PlanResponse};
 use serde_json::json;
 use std::sync::Arc;
 use std::time::Duration;
@@ -28,6 +28,10 @@ fn generate_valid_signature(body: &str, _public_key_hex: &str) -> (String, Strin
 }
 
 fn setup_app() -> axum::Router {
+    setup_app_with_cache(PlanCache::disabled())
+}
+
+fn setup_app_with_cache(plan_cache: PlanCache) -> axum::Router {
     let database_url = std::env::var("DATABASE_URL")
         .unwrap_or_else(|_| "postgres://postgres:password@localhost:5432/test".to_string());
 
@@ -44,6 +48,7 @@ fn setup_app() -> axum::Router {
         db_pool,
         kyc_webhook_secret: None,
         apy_config: inheritx_backend::yield_calculator::ApyConfig::default(),
+        plan_cache,
     });
     create_router(state)
 }
@@ -235,6 +240,51 @@ async fn test_get_plans_is_public() {
 
     // Should not require auth
     assert_ne!(response.status(), StatusCode::UNAUTHORIZED);
+}
+
+#[tokio::test]
+async fn test_get_plans_returns_cached_response_without_db_access() {
+    let cache = PlanCache::memory();
+    let query = inheritx_backend::api::PlanQuery {
+        owner: Some("GOWNER123".to_string()),
+        beneficiary: None,
+    };
+    let cached_plans = vec![PlanResponse {
+        id: uuid::Uuid::new_v4(),
+        owner_address: "GOWNER123".to_string(),
+        token_address: "USDC".to_string(),
+        amount: rust_decimal::Decimal::from(1000),
+        grace_period: 3600,
+        grace_period_seconds: 3600,
+        earn_yield: true,
+        last_ping: 1_718_000_000,
+        is_active: true,
+        status: "ACTIVE".to_string(),
+        yield_rate_bps: 500,
+        accrued_yield: 25.5,
+        created_at: chrono::Utc::now(),
+        beneficiaries: vec![],
+    }];
+    cache.set_plans(&query, &cached_plans).await.unwrap();
+
+    let app = setup_app_with_cache(cache);
+
+    let response = app
+        .oneshot(
+            Request::builder()
+                .method(http::Method::GET)
+                .uri("/api/plans?owner=GOWNER123")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(response.status(), StatusCode::OK);
+    assert_eq!(
+        response.headers().get("x-plan-cache-status").unwrap(),
+        "hit"
+    );
 }
 
 #[tokio::test]

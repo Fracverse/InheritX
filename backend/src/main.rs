@@ -16,6 +16,14 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     // Load configuration
     let config = Config::load()?;
+    let plan_cache = inheritx_backend::PlanCache::from_redis_url(
+        config.redis_url.as_deref(),
+        config.plan_cache_ttl_secs,
+    )
+    .unwrap_or_else(|error| {
+        warn!("Redis cache disabled due to invalid configuration: {error}");
+        inheritx_backend::PlanCache::disabled()
+    });
 
     // Attempt to connect to PostgreSQL stub/real
     let db_pool = match DbManager::create_pool(&config.database_url).await {
@@ -47,10 +55,12 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         kyc_tx,
         kyc_webhook_secret: std::env::var("KYC_WEBHOOK_SECRET").ok(),
         apy_config: inheritx_backend::yield_calculator::ApyConfig::from_env(),
+        plan_cache: plan_cache.clone(),
     });
 
     let inactivity_watchdog = Arc::new(InactivityWatchdogService::new(
         db_pool.clone(),
+        plan_cache,
         InactivityWatchdogConfig::from_env(),
     ));
     inactivity_watchdog.start();
