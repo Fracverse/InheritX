@@ -128,6 +128,8 @@ pub fn create_router(state: Arc<AppState>) -> Router {
     Router::new()
         .merge(user_routes)
         .merge(public_routes)
+        .layer(sentry_tower::NewSentryLayer::new_from_top())
+        .layer(sentry_tower::SentryHttpLayer::with_transaction())
         .layer(cors)
         .with_state(state)
 }
