@@ -226,7 +226,7 @@ fn test_create_plan_invalid_allocation_shares_total() {
         &500,
     );
 
-    assert_eq!(result, Err(Ok(Error::InvalidAllocationShares)));
+    assert_eq!(result, Err(Ok(Error::InvalidBasisPoints)));
 }
 
 #[test]

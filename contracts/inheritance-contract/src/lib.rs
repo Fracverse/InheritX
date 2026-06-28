@@ -110,7 +110,7 @@ impl InheritanceContract {
             total_bps += beneficiary.allocation_bps;
         }
         if total_bps != 10000 {
-            return Err(Error::InvalidAllocationShares);
+            return Err(Error::InvalidBasisPoints);
         }
 
         let token_client = soroban_sdk::token::Client::new(&env, &token);
