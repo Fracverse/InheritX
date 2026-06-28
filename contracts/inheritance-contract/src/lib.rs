@@ -4,8 +4,6 @@ use soroban_sdk::{contract, contracterror, contractimpl, contracttype, Address, 
 const MAX_BENEFICIARIES: u32 = 100;
 const PLAN_TTL_THRESHOLD: u32 = 500;
 const PLAN_TTL_LEEWAY: u32 = 100;
-const TEMP_TTL_THRESHOLD: u32 = 100;
-const TEMP_TTL_LEEWAY: u32 = 50;
 
 #[contracterror]
 #[derive(Copy, Clone, Debug, Eq, PartialEq)]
@@ -68,12 +66,6 @@ impl InheritanceContract {
         env.storage()
             .persistent()
             .extend_ttl(key, PLAN_TTL_LEEWAY, PLAN_TTL_THRESHOLD);
-    }
-
-    fn extend_temp_ttl(env: &Env, key: &DataKey) {
-        env.storage()
-            .temporary()
-            .extend_ttl(key, TEMP_TTL_LEEWAY, TEMP_TTL_THRESHOLD);
     }
 }
 
@@ -168,7 +160,11 @@ impl InheritanceContract {
     /// emit payout events, and trigger anchor event emissions for fiat recipients.
     pub fn claim(env: Env, owner: Address) -> Result<(), Error> {
         let key = DataKey::Plan(owner.clone());
-        let plan: Plan = env.storage().persistent().get(&key).ok_or(Error::PlanNotFound)?;
+        let plan: Plan = env
+            .storage()
+            .persistent()
+            .get(&key)
+            .ok_or(Error::PlanNotFound)?;
 
         if plan.is_active {
             return Err(Error::InactivityPeriodNotMet);
@@ -195,7 +191,11 @@ impl InheritanceContract {
         owner.require_auth();
 
         let key = DataKey::Plan(owner.clone());
-        let mut plan: Plan = env.storage().persistent().get(&key).ok_or(Error::PlanNotFound)?;
+        let mut plan: Plan = env
+            .storage()
+            .persistent()
+            .get(&key)
+            .ok_or(Error::PlanNotFound)?;
 
         let claim_key = DataKey::ClaimStatus(owner.clone());
         if !env.storage().persistent().has(&claim_key) {
@@ -302,7 +302,11 @@ impl InheritanceContract {
         owner.require_auth();
 
         let key = DataKey::Plan(owner.clone());
-        let plan: Plan = env.storage().persistent().get(&key).ok_or(Error::PlanNotFound)?;
+        let plan: Plan = env
+            .storage()
+            .persistent()
+            .get(&key)
+            .ok_or(Error::PlanNotFound)?;
 
         let claim_key = DataKey::ClaimStatus(owner.clone());
         if env.storage().persistent().has(&claim_key) {
@@ -312,11 +316,7 @@ impl InheritanceContract {
         env.storage().persistent().remove(&key);
 
         let token_client = soroban_sdk::token::Client::new(&env, &plan.token);
-        token_client.transfer(
-            &env.current_contract_address(),
-            &owner,
-            &plan.amount,
-        );
+        token_client.transfer(&env.current_contract_address(), &owner, &plan.amount);
 
         Ok(())
     }
