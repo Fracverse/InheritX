@@ -85,11 +85,14 @@ export function KYCVerificationModal() {
   if (!isKYCModalOpen) return null;
 
   const idDoc = uploadedDocuments.find((d) => d.type === "id");
-  const canProceed = {
-    personal:
-      formData.fullName && formData.email && formData.dateOfBirth && formData.nationality,
-    identity: formData.idType && formData.idNumber && formData.expiryDate && idDoc,
-    address: formData.streetAddress && formData.city && formData.country && formData.postalCode,
+  const canProceed: Record<FormStep, boolean> = {
+    personal: !!(
+      formData.fullName && formData.email && formData.dateOfBirth && formData.nationality
+    ),
+    identity: !!(formData.idType && formData.idNumber && formData.expiryDate && idDoc),
+    address: !!(
+      formData.streetAddress && formData.city && formData.country && formData.postalCode
+    ),
     documents: uploadedDocuments.length >= 1,
     review: true,
   };
