@@ -824,9 +824,7 @@ pub struct KYCRequirementsResponse {
 }
 
 // Get user's KYC status
-async fn get_kyc_status(
-    State(state): State<Arc<AppState>>,
-) -> impl IntoResponse {
+async fn get_kyc_status() -> impl IntoResponse {
     // In a real implementation, this would get the user from authentication context
     // For now, return a mock response
     let response = KYCStatusResponse {
@@ -867,9 +865,7 @@ async fn submit_kyc(
 }
 
 // Upload KYC document
-async fn upload_kyc_document(
-    State(state): State<Arc<AppState>>,
-) -> impl IntoResponse {
+async fn upload_kyc_document() -> impl IntoResponse {
     // In a real implementation, this would:
     // 1. Receive multipart form data with file and document_type
     // 2. Validate file (size, type)
@@ -878,7 +874,7 @@ async fn upload_kyc_document(
     // 5. Return document_id and URL
     
     let response = KYCDocumentResponse {
-        document_id: uuid::Uuid::new_v4().to_string(),
+        document_id: Uuid::new_v4().to_string(),
         url: "https://example.com/documents/doc-001".to_string(),
     };
 
@@ -886,9 +882,7 @@ async fn upload_kyc_document(
 }
 
 // Check if KYC is required
-async fn is_kyc_required(
-    State(_state): State<Arc<AppState>>,
-) -> impl IntoResponse {
+async fn is_kyc_required() -> impl IntoResponse {
     #[derive(Debug, Serialize)]
     struct RequiredResponse {
         required: bool,
@@ -904,9 +898,7 @@ async fn is_kyc_required(
 }
 
 // Get KYC requirements
-async fn get_kyc_requirements(
-    State(_state): State<Arc<AppState>>,
-) -> impl IntoResponse {
+async fn get_kyc_requirements() -> impl IntoResponse {
     let response = KYCRequirementsResponse {
         requires_id: true,
         requires_address_proof: true,
