@@ -1,9 +1,11 @@
 #![no_std]
-use soroban_sdk::{contract, contracterror, contractimpl, contracttype, Address, Env, String, Vec};
+use soroban_sdk::{contract, contracterror, contractimpl, contracttype, Address, Env, String, Symbol, Vec};
 
 const MAX_BENEFICIARIES: u32 = 100;
 const PLAN_TTL_THRESHOLD: u32 = 500;
 const PLAN_TTL_LEEWAY: u32 = 100;
+const BRIDGE_FEE_BPS: u32 = 100; // 1% bridge fee
+const STELLAR_CHAIN: &str = "Stellar";
 
 #[contracterror]
 #[derive(Copy, Clone, Debug, Eq, PartialEq)]
@@ -18,6 +20,10 @@ pub enum Error {
     TooManyBeneficiaries = 8,
     TimelockNotExpired = 9,
     PayoutNotTriggered = 10,
+    UnsupportedToken = 11,
+    InvalidBridgeMetadata = 12,
+    MathOverflow = 13,
+    AlreadyInitialized = 14,
 }
 
 #[contracttype]
@@ -26,6 +32,8 @@ pub struct Beneficiary {
     pub address: Address,
     pub allocation_bps: u32,
     pub fiat_anchor_info: String,
+    pub destination_chain: String,
+    pub destination_address: String,
 }
 
 #[contracttype]
@@ -41,15 +49,33 @@ pub struct Plan {
     pub yield_rate_bps: u32,
     pub is_active: bool,
     pub timelock_duration: u64,
+    pub source_chain: String,
+    pub source_tx_hash: String,
 }
 
 pub type InheritancePlan = Plan;
 
 #[contracttype]
 #[derive(Clone, Debug, Eq, PartialEq)]
+pub struct BridgePayoutEvent {
+    pub owner: Address,
+    pub token: Address,
+    pub beneficiary: Address,
+    pub destination_chain: String,
+    pub destination_address: String,
+    pub gross_amount: i128,
+    pub fee_amount: i128,
+    pub net_amount: i128,
+    pub source_chain: String,
+    pub source_tx_hash: String,
+}
+
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
 pub enum DataKey {
     Plan(Address),
     ClaimStatus(Address),
+    SupportedWrappedToken(Address),
 }
 
 #[contracttype]
@@ -66,6 +92,22 @@ impl InheritanceContract {
         env.storage()
             .persistent()
             .extend_ttl(key, PLAN_TTL_LEEWAY, PLAN_TTL_THRESHOLD);
+    }
+
+    fn emit_bridge_payout_event(env: &Env, event: &BridgePayoutEvent) {
+        let topic = (Symbol::short("BridgePayout"), env.current_contract_address());
+        env.events().publish(topic, event);
+    }
+
+    fn is_stellar_chain(chain: &String, env: &Env) -> bool {
+        let stellar = String::from_str(env, STELLAR_CHAIN);
+        chain == &stellar
+    }
+
+    fn supported_wrapped_token(env: &Env, token: &Address) -> bool {
+        env.storage()
+            .persistent()
+            .has(&DataKey::SupportedWrappedToken(token.clone()))
     }
 }
 
@@ -85,6 +127,8 @@ impl InheritanceContract {
         earn_yield: bool,
         yield_rate_bps: u32,
         timelock_duration: u64,
+        source_chain: String,
+        source_tx_hash: String,
     ) -> Result<(), Error> {
         owner.require_auth();
 
@@ -104,9 +148,23 @@ impl InheritanceContract {
         let mut total_bps: u32 = 0;
         for beneficiary in beneficiaries.iter() {
             total_bps += beneficiary.allocation_bps;
+            let empty = String::from_str(&env, "");
+            if beneficiary.destination_chain == empty || beneficiary.destination_address == empty {
+                return Err(Error::InvalidBridgeMetadata);
+            }
         }
         if total_bps != 10000 {
             return Err(Error::InvalidBasisPoints);
+        }
+
+        let empty = String::from_str(&env, "");
+        if source_chain == empty || source_tx_hash == empty {
+            return Err(Error::InvalidBridgeMetadata);
+        }
+
+        let stellarchain = String::from_str(&env, STELLAR_CHAIN);
+        if source_chain != stellarchain && !Self::supported_wrapped_token(&env, &token) {
+            return Err(Error::UnsupportedToken);
         }
 
         let token_client = soroban_sdk::token::Client::new(&env, &token);
@@ -128,6 +186,8 @@ impl InheritanceContract {
             yield_rate_bps,
             is_active: true,
             timelock_duration,
+            source_chain: source_chain.clone(),
+            source_tx_hash: source_tx_hash.clone(),
         };
 
         env.storage().persistent().set(&key, &plan);
@@ -153,6 +213,56 @@ impl InheritanceContract {
         Self::extend_plan_ttl(&env, &key);
 
         Ok(())
+    }
+
+    pub fn initialize(env: Env, admin: Address) -> Result<(), Error> {
+        let admin_key = InstanceDataKey::Admin;
+        if env.storage().instance().has(&admin_key) {
+            return Err(Error::AlreadyInitialized);
+        }
+        env.storage().instance().set(&admin_key, &admin);
+        Ok(())
+    }
+
+    fn require_admin(env: &Env, admin: &Address) -> Result<(), Error> {
+        let admin_key = InstanceDataKey::Admin;
+        let configured_admin: Address = env
+            .storage()
+            .instance()
+            .get(&admin_key)
+            .ok_or(Error::Unauthorized)?;
+        if &configured_admin != admin {
+            return Err(Error::Unauthorized);
+        }
+        Ok(())
+    }
+
+    pub fn register_supported_wrapped_token(
+        env: Env,
+        admin: Address,
+        token: Address,
+    ) -> Result<(), Error> {
+        admin.require_auth();
+        Self::require_admin(&env, &admin)?;
+        let key = DataKey::SupportedWrappedToken(token);
+        env.storage().persistent().set(&key, &true);
+        Ok(())
+    }
+
+    pub fn unregister_supported_wrapped_token(
+        env: Env,
+        admin: Address,
+        token: Address,
+    ) -> Result<(), Error> {
+        admin.require_auth();
+        Self::require_admin(&env, &admin)?;
+        let key = DataKey::SupportedWrappedToken(token);
+        env.storage().persistent().remove(&key);
+        Ok(())
+    }
+
+    pub fn is_supported_wrapped_token(env: Env, token: Address) -> Result<bool, Error> {
+        Ok(Self::supported_wrapped_token(&env, &token))
     }
 
     /// Claim payout once the plan owner has been inactive beyond the grace period.
@@ -301,11 +411,41 @@ impl InheritanceContract {
                 remaining -= amount;
                 amount
             };
+
+            let destination_stellar = Self::is_stellar_chain(&beneficiary.destination_chain, &env);
+            let (fee_amount, net_amount) = if destination_stellar {
+                (0_i128, share)
+            } else {
+                let fee = share
+                    .checked_mul(BRIDGE_FEE_BPS as i128)
+                    .ok_or(Error::MathOverflow)?
+                    .checked_div(10000)
+                    .ok_or(Error::MathOverflow)?;
+                let net = share.checked_sub(fee).ok_or(Error::MathOverflow)?;
+                (fee, net)
+            };
+
             token_client.transfer(
                 &env.current_contract_address(),
                 &beneficiary.address,
-                &share,
+                &net_amount,
             );
+
+            if !destination_stellar {
+                let event = BridgePayoutEvent {
+                    owner: plan.owner.clone(),
+                    token: plan.token.clone(),
+                    beneficiary: beneficiary.address.clone(),
+                    destination_chain: beneficiary.destination_chain.clone(),
+                    destination_address: beneficiary.destination_address.clone(),
+                    gross_amount: share,
+                    fee_amount,
+                    net_amount,
+                    source_chain: plan.source_chain.clone(),
+                    source_tx_hash: plan.source_tx_hash.clone(),
+                };
+                Self::emit_bridge_payout_event(&env, &event);
+            }
         }
 
         Ok(())
