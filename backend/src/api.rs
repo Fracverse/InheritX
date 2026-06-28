@@ -842,8 +842,7 @@ async fn get_kyc_status() -> impl IntoResponse {
 
 // Submit KYC verification data
 async fn submit_kyc(
-    State(state): State<Arc<AppState>>,
-    Json(payload): Json<KYCSubmitRequest>,
+    Json(_payload): Json<KYCSubmitRequest>,
 ) -> impl IntoResponse {
     // In a real implementation, this would:
     // 1. Validate the request
