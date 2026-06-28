@@ -1,11 +1,18 @@
 #![no_std]
-use soroban_sdk::{contract, contracterror, contractimpl, contracttype, Address, Env, String, Vec};
+use soroban_sdk::{contract, contracterror, contractimpl, contracttype, Address, BytesN, Env, String, Vec};
 
 const MAX_BENEFICIARIES: u32 = 100;
 const PLAN_TTL_THRESHOLD: u32 = 500;
 const PLAN_TTL_LEEWAY: u32 = 100;
 const TEMP_TTL_THRESHOLD: u32 = 100;
 const TEMP_TTL_LEEWAY: u32 = 50;
+const INSTANCE_TTL_THRESHOLD: u32 = 100_000;
+const INSTANCE_TTL_LEEWAY: u32 = 50_000;
+/// Bump this whenever the contract logic changes in a backward-compatible way.
+/// The on-chain `upgrade` entrypoint swaps the wasm while keeping storage intact;
+/// `version()` exposes the deployed code version so off-chain consumers and the
+/// upgrade test can confirm that storage retention holds across an upgrade.
+pub const CONTRACT_VERSION: u32 = 1;
 
 #[contracterror]
 #[derive(Copy, Clone, Debug, Eq, PartialEq)]
@@ -18,6 +25,8 @@ pub enum Error {
     NegativeAmount = 6,
     InsufficientBalance = 7,
     TooManyBeneficiaries = 8,
+    AlreadyInitialized = 9,
+    NotInitialized = 10,
 }
 
 #[contracttype]
@@ -71,6 +80,30 @@ impl InheritanceContract {
         env.storage()
             .temporary()
             .extend_ttl(key, TEMP_TTL_LEEWAY, TEMP_TTL_THRESHOLD);
+    }
+
+    /// Bump the lifetime of the contract's instance storage so the admin record
+    /// (and any other instance-scoped keys) survives across `upgrade` calls and
+    /// extended periods of inactivity.
+    fn extend_instance_ttl(env: &Env) {
+        env.storage()
+            .instance()
+            .extend_ttl(INSTANCE_TTL_LEEWAY, INSTANCE_TTL_THRESHOLD);
+    }
+
+    /// Look up the stored admin and require it to authorize the current call.
+    /// Centralizing the admin check here keeps `set_admin`/`upgrade` symmetric
+    /// and ensures unauthorized callers always hit `require_auth()` before any
+    /// state change.
+    fn authorize_admin(env: &Env) -> Result<Address, Error> {
+        let key = InstanceDataKey::Admin;
+        let admin: Address = env
+            .storage()
+            .instance()
+            .get(&key)
+            .ok_or(Error::NotInitialized)?;
+        admin.require_auth();
+        Ok(admin)
     }
 }
 
@@ -264,6 +297,73 @@ impl InheritanceContract {
         Self::extend_plan_ttl(&env, &key);
 
         Ok(())
+    }
+
+    /// One-time initialization that pins the upgrade admin in instance storage.
+    /// After the first call the admin record is locked in; subsequent calls are
+    /// rejected so the admin cannot be silently overwritten by a stale or
+    /// unauthorized transaction. Use `set_admin` for explicit rotation.
+    pub fn initialize(env: Env, admin: Address) -> Result<(), Error> {
+        admin.require_auth();
+
+        let key = InstanceDataKey::Admin;
+        if env.storage().instance().has(&key) {
+            return Err(Error::AlreadyInitialized);
+        }
+
+        env.storage().instance().set(&key, &admin);
+        Self::extend_instance_ttl(&env);
+
+        Ok(())
+    }
+
+    /// Rotate the contract admin. Callable only by the currently stored admin
+    /// so that admin handover always requires explicit authorization from the
+    /// existing admin rather than from the candidate address.
+    pub fn set_admin(env: Env, new_admin: Address) -> Result<(), Error> {
+        Self::authorize_admin(&env)?;
+
+        let key = InstanceDataKey::Admin;
+        env.storage().instance().set(&key, &new_admin);
+        Self::extend_instance_ttl(&env);
+
+        Ok(())
+    }
+
+    /// Return the address currently designated as the contract admin.
+    pub fn get_admin(env: Env) -> Result<Address, Error> {
+        let key = InstanceDataKey::Admin;
+        env.storage()
+            .instance()
+            .get(&key)
+            .ok_or(Error::NotInitialized)
+    }
+
+    /// Replace the deployed contract wasm with `new_wasm_hash` while preserving
+    /// the existing instance and persistent storage. Only the stored admin can
+    /// invoke this entrypoint so governance over code changes stays with the
+    /// registered admin credentials. The persistent TTL of every stored Plan
+    /// and the instance admin record are untouched by the host's wasm swap.
+    pub fn upgrade(env: Env, new_wasm_hash: BytesN<32>) -> Result<(), Error> {
+        Self::authorize_admin(&env)?;
+
+        // Bump instance TTL before swapping the wasm so the admin record cannot
+        // expire between the upgrade committing and the new code taking over.
+        Self::extend_instance_ttl(&env);
+
+        env.deployer()
+            .update_current_contract_wasm(new_wasm_hash.clone());
+
+        Ok(())
+    }
+
+    /// Version marker exposed by the deployed contract. Bump `CONTRACT_VERSION`
+    /// on every backward-compatible change so off-chain consumers and the
+    /// upgrade test can confirm that a new wasm is actually in effect while
+    /// storage invariants from the previous version are preserved.
+    pub fn version(env: Env) -> u32 {
+        Self::extend_instance_ttl(&env);
+        CONTRACT_VERSION
     }
 }
 
