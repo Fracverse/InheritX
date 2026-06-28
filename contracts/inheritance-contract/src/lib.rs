@@ -1,5 +1,7 @@
 #![no_std]
-use soroban_sdk::{contract, contracterror, contractimpl, contracttype, Address, Env, String, Vec};
+use soroban_sdk::{
+    contract, contracterror, contractimpl, contracttype, symbol_short, Address, Env, String, Vec,
+};
 
 const MAX_BENEFICIARIES: u32 = 100;
 const PLAN_TTL_THRESHOLD: u32 = 500;
@@ -147,10 +149,13 @@ impl InheritanceContract {
         }
 
         let mut plan: Plan = env.storage().persistent().get(&key).unwrap();
-        plan.last_ping = env.ledger().timestamp();
+        let current_timestamp = env.ledger().timestamp();
+        plan.last_ping = current_timestamp;
 
         env.storage().persistent().set(&key, &plan);
         Self::extend_plan_ttl(&env, &key);
+        env.events()
+            .publish((symbol_short!("ping"), owner), current_timestamp);
 
         Ok(())
     }
