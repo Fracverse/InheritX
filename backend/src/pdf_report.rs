@@ -4,7 +4,10 @@
 //! entirely synchronous and must not be called directly on the async runtime.
 
 use crate::api::{BeneficiaryRow, PlanRow};
+<<<<<<< HEAD
 use chrono::TimeZone as _;
+=======
+>>>>>>> e572481f0e59338dbc4c97aac8ef3da2a05d94d1
 use printpdf::{BuiltinFont, Mm, PdfDocument};
 use std::io::BufWriter;
 
@@ -16,6 +19,7 @@ pub struct ReportData {
     pub accrued_yield: f64,
 }
 
+<<<<<<< HEAD
 fn fmt_epoch(epoch: i64) -> String {
     chrono::Utc
         .timestamp_opt(epoch, 0)
@@ -24,6 +28,8 @@ fn fmt_epoch(epoch: i64) -> String {
         .unwrap_or_else(|| epoch.to_string())
 }
 
+=======
+>>>>>>> e572481f0e59338dbc4c97aac8ef3da2a05d94d1
 /// Build and return raw PDF bytes for the given report data.
 ///
 /// **Synchronous** – run inside `tokio::task::spawn_blocking`.
@@ -35,6 +41,7 @@ pub fn build_pdf_bytes(data: ReportData) -> Result<Vec<u8>, printpdf::Error> {
     let bold = doc.add_builtin_font(BuiltinFont::HelveticaBold)?;
     let regular = doc.add_builtin_font(BuiltinFont::Helvetica)?;
 
+<<<<<<< HEAD
     let lm = Mm(15.0_f32);
     let rc = Mm(110.0_f32);
     let lh = Mm(7.0_f32);
@@ -42,12 +49,28 @@ pub fn build_pdf_bytes(data: ReportData) -> Result<Vec<u8>, printpdf::Error> {
 
     // ── Title ─────────────────────────────────────────────────────────────
     layer.use_text("InheritX - Inheritance Audit Report", 18.0_f32, lm, y, &bold);
+=======
+    let lm = Mm(15.0_f32); // left margin
+    let rc = Mm(110.0_f32); // right / value column
+    let lh = Mm(7.0_f32); // line height
+    let mut y = Mm(280.0_f32);
+
+    // ── Title ─────────────────────────────────────────────────────────────
+    layer.use_text(
+        "InheritX - Inheritance Audit Report",
+        18.0_f32,
+        lm,
+        y,
+        &bold,
+    );
+>>>>>>> e572481f0e59338dbc4c97aac8ef3da2a05d94d1
     y -= lh * 2.0_f32;
 
     // ── Plan Overview ─────────────────────────────────────────────────────
     layer.use_text("Plan Overview", 13.0_f32, lm, y, &bold);
     y -= lh;
 
+<<<<<<< HEAD
     // Pre-compute strings so references into them are valid for the slice.
     let plan_id = data.plan.id.to_string();
     let amount_str = data.plan.amount.to_string();
@@ -72,6 +95,47 @@ pub fn build_pdf_bytes(data: ReportData) -> Result<Vec<u8>, printpdf::Error> {
     for (label, value) in overview {
         layer.use_text(*label, 10.0_f32, lm, y, &regular);
         layer.use_text(*value, 10.0_f32, rc, y, &regular);
+=======
+    let rows: Vec<(&str, String)> = vec![
+        ("Plan ID:", data.plan.id.to_string()),
+        ("Status:", data.plan.status.clone()),
+        ("Token:", data.plan.token_address.clone()),
+        ("Principal:", data.plan.amount.to_string()),
+        (
+            "Yield Enabled:",
+            if data.plan.earn_yield {
+                "Yes".to_string()
+            } else {
+                "No".to_string()
+            },
+        ),
+        ("Yield Rate (bps):", data.plan.yield_rate_bps.to_string()),
+        ("Accrued Yield:", format!("{:.6}", data.accrued_yield)),
+        (
+            "Grace Period (s):",
+            data.plan.grace_period_seconds.to_string(),
+        ),
+        (
+            "Active:",
+            if data.plan.is_active {
+                "Yes".to_string()
+            } else {
+                "No".to_string()
+            },
+        ),
+        (
+            "Created At:",
+            data.plan
+                .created_at
+                .format("%Y-%m-%d %H:%M UTC")
+                .to_string(),
+        ),
+    ];
+
+    for (label, value) in rows {
+        layer.use_text(*label, 10.0_f32, lm, y, &regular);
+        layer.use_text(value.as_str(), 10.0_f32, rc, y, &regular);
+>>>>>>> e572481f0e59338dbc4c97aac8ef3da2a05d94d1
         y -= lh;
     }
     y -= lh;
@@ -80,7 +144,17 @@ pub fn build_pdf_bytes(data: ReportData) -> Result<Vec<u8>, printpdf::Error> {
     layer.use_text("Plan Owner", 13.0_f32, lm, y, &bold);
     y -= lh;
     layer.use_text("Wallet Address:", 10.0_f32, lm, y, &regular);
+<<<<<<< HEAD
     layer.use_text(data.plan.owner_address.as_str(), 10.0_f32, rc, y, &regular);
+=======
+    layer.use_text(
+        data.plan.owner_address.as_str(),
+        10.0_f32,
+        rc,
+        y,
+        &regular,
+    );
+>>>>>>> e572481f0e59338dbc4c97aac8ef3da2a05d94d1
     y -= lh * 2.0_f32;
 
     // ── Activity Log ──────────────────────────────────────────────────────
@@ -90,14 +164,27 @@ pub fn build_pdf_bytes(data: ReportData) -> Result<Vec<u8>, printpdf::Error> {
     let last_ping_str = if data.plan.last_ping == 0 {
         "Never pinged".to_string()
     } else {
+<<<<<<< HEAD
         fmt_epoch(data.plan.last_ping)
+=======
+        chrono::DateTime::from_timestamp(data.plan.last_ping, 0)
+            .map(|dt: chrono::DateTime<chrono::Utc>| dt.format("%Y-%m-%d %H:%M UTC").to_string())
+            .unwrap_or_else(|| data.plan.last_ping.to_string())
+>>>>>>> e572481f0e59338dbc4c97aac8ef3da2a05d94d1
     };
     layer.use_text("Last Proof-of-Life:", 10.0_f32, lm, y, &regular);
     layer.use_text(last_ping_str.as_str(), 10.0_f32, rc, y, &regular);
     y -= lh;
 
     let deadline_str = if data.plan.last_ping > 0 {
+<<<<<<< HEAD
         fmt_epoch(data.plan.last_ping + data.plan.grace_period_seconds)
+=======
+        let epoch = data.plan.last_ping + data.plan.grace_period_seconds;
+        chrono::DateTime::from_timestamp(epoch, 0)
+            .map(|dt: chrono::DateTime<chrono::Utc>| dt.format("%Y-%m-%d %H:%M UTC").to_string())
+            .unwrap_or_else(|| epoch.to_string())
+>>>>>>> e572481f0e59338dbc4c97aac8ef3da2a05d94d1
     } else {
         "N/A".to_string()
     };
@@ -129,15 +216,31 @@ pub fn build_pdf_bytes(data: ReportData) -> Result<Vec<u8>, printpdf::Error> {
             b.fiat_anchor_info.clone()
         };
         let pct = format!("{:.2}%", b.allocation_bps as f64 / 100.0);
+<<<<<<< HEAD
         let bps = b.allocation_bps.to_string();
 
         layer.use_text(addr.as_str(), 9.0_f32, lm, y, &regular);
         layer.use_text(bps.as_str(), 9.0_f32, Mm(110.0_f32), y, &regular);
+=======
+
+        layer.use_text(addr.as_str(), 9.0_f32, lm, y, &regular);
+        layer.use_text(
+            &b.allocation_bps.to_string(),
+            9.0_f32,
+            Mm(110.0_f32),
+            y,
+            &regular,
+        );
+>>>>>>> e572481f0e59338dbc4c97aac8ef3da2a05d94d1
         layer.use_text(pct.as_str(), 9.0_f32, Mm(145.0_f32), y, &regular);
         layer.use_text(anchor.as_str(), 9.0_f32, Mm(170.0_f32), y, &regular);
         y -= lh;
     }
 
+<<<<<<< HEAD
+=======
+    y -= lh;
+>>>>>>> e572481f0e59338dbc4c97aac8ef3da2a05d94d1
     layer.use_text(
         "Generated automatically by InheritX.",
         7.0_f32,

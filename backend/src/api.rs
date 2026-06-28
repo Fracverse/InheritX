@@ -845,6 +845,7 @@ async fn get_plan_report(
     };
 
     // 3. Compute live accrued yield (stored value + time elapsed since last ping).
+<<<<<<< HEAD
     let stored_yield = plan
         .accrued_yield
         .to_string()
@@ -852,6 +853,14 @@ async fn get_plan_report(
         .unwrap_or(0.0);
     let accrued_yield =
         compute_accrued_yield(&plan.amount, plan.yield_rate_bps, plan.last_ping) + stored_yield;
+=======
+    let accrued_yield = compute_accrued_yield(&plan.amount, plan.yield_rate_bps, plan.last_ping)
+        + plan
+            .accrued_yield
+            .to_string()
+            .parse::<f64>()
+            .unwrap_or(0.0);
+>>>>>>> e572481f0e59338dbc4c97aac8ef3da2a05d94d1
 
     let report_data = ReportData {
         plan,
