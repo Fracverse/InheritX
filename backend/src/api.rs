@@ -849,7 +849,7 @@ async fn submit_kyc(
     // 2. Submit to third-party KYC provider
     // 3. Store in database
     // 4. Return reference ID
-    
+
     let response = KYCStatusResponse {
         wallet_address: "GDTEST123".to_string(),
         kyc_status: "submitted".to_string(),
@@ -871,7 +871,7 @@ async fn upload_kyc_document() -> impl IntoResponse {
     // 3. Upload to cloud storage (S3, etc.)
     // 4. Store metadata in database
     // 5. Return document_id and URL
-    
+
     let response = KYCDocumentResponse {
         document_id: Uuid::new_v4().to_string(),
         url: "https://example.com/documents/doc-001".to_string(),
