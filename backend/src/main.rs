@@ -8,14 +8,27 @@ use tracing::{error, info, warn};
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
-    // Initialize tracing logging
-    telemetry::init_tracing()?;
-
     //loading the .env
     dotenvy::dotenv().ok();
 
     // Load configuration
     let config = Config::load()?;
+
+    let _sentry_guard = if let Some(dsn) = &config.sentry_dsn {
+        Some(sentry::init((
+            dsn.clone(),
+            sentry::ClientOptions {
+                release: sentry::release_name!(),
+                traces_sample_rate: 1.0,
+                ..Default::default()
+            },
+        )))
+    } else {
+        None
+    };
+
+    // Initialize tracing logging
+    telemetry::init_tracing()?;
 
     // Attempt to connect to PostgreSQL stub/real
     let db_pool = match DbManager::create_pool(&config.database_url).await {

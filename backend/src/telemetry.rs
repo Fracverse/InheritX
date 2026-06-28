@@ -7,6 +7,7 @@ pub fn init_tracing() -> Result<(), anyhow::Error> {
                 .unwrap_or_else(|_| "inheritx_backend=info,info".into()),
         )
         .with(tracing_subscriber::fmt::layer())
+        .with(sentry_tracing::layer())
         .init();
     Ok(())
 }

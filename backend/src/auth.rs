@@ -101,9 +101,16 @@ pub async fn jwt_auth_middleware(
     }
 
     let user_context = UserContext {
-        user_id: token_data.claims.sub,
+        user_id: token_data.claims.sub.clone(),
         role: token_data.claims.role,
     };
+
+    sentry::configure_scope(|scope| {
+        scope.set_user(Some(sentry::User {
+            id: Some(token_data.claims.sub),
+            ..Default::default()
+        }));
+    });
 
     req.extensions_mut().insert(user_context);
 
@@ -165,6 +172,13 @@ pub async fn signature_auth_middleware(
         user_id: public_key_hex.to_string(),
         role: "user".to_string(),
     };
+
+    sentry::configure_scope(|scope| {
+        scope.set_user(Some(sentry::User {
+            id: Some(public_key_hex.to_string()),
+            ..Default::default()
+        }));
+    });
 
     let mut new_req = Request::from_parts(parts, Body::from(body_str));
     new_req.extensions_mut().insert(user_context);
