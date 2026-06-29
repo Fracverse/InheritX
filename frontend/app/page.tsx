@@ -3,11 +3,7 @@
 import React, { useState, useEffect } from "react";
 import Image from "next/image";
 import dynamic from "next/dynamic";
-import {
-  ArrowUpRight,
-  Menu,
-  X,
-} from "lucide-react";
+import { ArrowUpRight, Menu, X } from "lucide-react";
 import { ConnectButton } from "@/components/ConnectButton";
 import Link from "next/link";
 import Footer from "./components/Footer";
@@ -64,29 +60,11 @@ export default function InheritXLanding() {
       </div>
 
       {/* Navigation */}
-      <header
-        className={`sticky top-0 z-50 backdrop-blur-xs transition-all duration-300 ${
-          isScrolled ? "bg-[#161E22]/60 shadow-lg" : "bg-[#161E22]/40"
-        }`}
-        role="banner"
-      >
-        <nav
-          className="flex justify-between items-center px-6 md:px-40 py-6 mx-auto"
-          role="navigation"
-          aria-label="Main navigation"
-        >
+      <header className={`sticky top-0 z-50 backdrop-blur-xs transition-all duration-300 ${isScrolled ? "bg-[#161E22]/60 shadow-lg" : "bg-[#161E22]/40"}`} role="banner">
+        <nav className="flex justify-between items-center px-6 md:px-40 py-6 mx-auto" role="navigation" aria-label="Main navigation">
           <div className="flex items-center gap-12 relative z-10">
-            <a
-              href="#hero"
-              className="focus-visible:outline-offset-2 focus-visible:outline-2 focus-visible:outline-cyan-400 rounded-sm"
-            >
-              <Image
-                src="/logo.svg"
-                alt="InheritX"
-                width={50}
-                height={50}
-                quality={85}
-              />
+            <a href="#hero" className="focus-visible:outline-offset-2 focus-visible:outline-2 focus-visible:outline-cyan-400 rounded-sm">
+              <Image src="/logo.svg" alt="InheritX" width={50} height={50} quality={75} />
             </a>
             <div className="hidden md:flex gap-8 text-xs font-medium uppercase tracking-widest text-slate-400">
               <a
@@ -170,12 +148,7 @@ export default function InheritXLanding() {
       </header>
 
       {/* Hero Section */}
-      <section
-        id="hero"
-        className="w-full h-full relative pb-20 md:pb-32 px-6 md:px-8 bg-transparent"
-        role="region"
-        aria-label="Hero section"
-      >
+      <section id="hero" className="w-full h-full relative pb-20 md:pb-32 px-6 md:px-8 bg-transparent" role="region" aria-label="Hero section">
         <div className="max-w-7xl mx-auto relative z-10 pt-28 md:pt-48 flex flex-col items-start">
           <h1 className="text-4xl md:text-7xl font-bold text-white mb-6 leading-[1.2] md:leading-[1.1] animate-slide-up">
             Yield-bearing, fiat-native <br />
