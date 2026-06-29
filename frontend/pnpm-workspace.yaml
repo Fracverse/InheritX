@@ -1,4 +1,18 @@
 allowBuilds:
+  '@parcel/watcher': false
+  '@swc/core': false
+  blake-hash: false
+  bufferutil: false
+  esbuild: false
+  msw: false
+  protobufjs: false
+  secp256k1: false
+  sharp: false
+  tiny-secp256k1: false
+  unrs-resolver: false
+  usb: false
+  utf-8-validate: false
+
   '@parcel/watcher': set this to true or false
   '@swc/core': set this to true or false
   blake-hash: set this to true or false

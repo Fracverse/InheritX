@@ -15,12 +15,12 @@ vi.mock("@/util/address", () => ({
 // Mock framer-motion to avoid animation issues in tests
 vi.mock("framer-motion", () => ({
   motion: {
-    button: ({ children, onClick, className, whileHover, whileTap, ...props }: any) => (
+    button: ({ children, onClick, className, whileHover, whileTap, layout, ...props }: any) => (
       <button onClick={onClick} className={className} {...props}>
         {children}
       </button>
     ),
-    div: ({ children, className, initial, animate, exit, transition, ...props }: any) => (
+    div: ({ children, className, initial, animate, exit, transition, layout, ...props }: any) => (
       <div className={className} {...props}>
         {children}
       </div>

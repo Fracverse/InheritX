@@ -28,10 +28,10 @@ export function VerificationRejectedView({ response }: VerificationRejectedViewP
 
       <h2 className="text-2xl font-bold text-[#F56565]">Verification Rejected</h2>
 
-      <p className="text-sm text-[#92A5A8] max-w-sm mx-auto">
-        Unfortunately, your KYC verification was not approved. You can resubmit with
-        corrected information.
-      </p>
+     <p className="text-sm text-[#92A5A8] max-w-sm mx-auto">
+  Unfortunately, your KYC verification was not approved. You can resubmit with
+  corrected information.
+</p>
 
       {response.rejection_reason && (
         <motion.div
@@ -51,12 +51,12 @@ export function VerificationRejectedView({ response }: VerificationRejectedViewP
 
       <div className="pt-4 bg-black/20 rounded-lg p-4 space-y-2 text-left">
         <p className="text-xs font-semibold text-slate-200">Common reasons for rejection:</p>
-        <ul className="text-xs text-[#92A5A8] space-y-1 list-inside list-disc">
-          <li>Documents are unclear or partially visible</li>
-          <li>Document has expired</li>
-          <li>Personal information doesn't match documents</li>
-          <li>Selfie doesn't match ID document</li>
-        </ul>
+       <ul className="text-xs text-[#92A5A8] space-y-1 list-inside list-disc">
+  <li>Documents are unclear or partially visible</li>
+  <li>Document has expired</li>
+  <li>Personal information doesn&apos;t match documents</li>
+  <li>Selfie doesn&apos;t match ID document</li>
+</ul>
       </div>
 
       <button

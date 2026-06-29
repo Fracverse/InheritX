@@ -27,11 +27,34 @@ export interface Plan {
   updated_at: string;
 }
 
+export interface FiatAnchorInfo {
+  currency: string;
+  anchor_provider: string;
+  country: string;
+  bank_name?: string;
+  iban?: string;
+  routing_number?: string;
+  account_number?: string;
+  accept_fees: boolean;
+}
+
+export interface FiatAnchorInfo {
+  currency: string;
+  anchor_provider: string;
+  country: string;
+  bank_name?: string;
+  iban?: string;
+  routing_number?: string;
+  account_number?: string;
+  accept_fees: boolean;
+}
+
 export interface Beneficiary {
   id?: string;
   wallet_address: string;
   name: string;
   allocation_percentage: number;
+  fiat_anchor_info?: string;
 }
 
 export interface CreatePlanRequest {

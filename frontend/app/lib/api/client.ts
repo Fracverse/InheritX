@@ -14,7 +14,8 @@ const DEFAULT_RETRY_CONFIG: RetryConfig = {
   maxRetries: 3,
   baseDelayMs: 1000,
   maxDelayMs: 10_000,
-  retryOnStatuses: [408, 429, 500, 502, 503, 504],
+  // Only retry on transient network and gateway errors.
+  retryOnStatuses: [408, 429, 502, 503, 504],
 };
 
 export interface ApiResponse<T> {

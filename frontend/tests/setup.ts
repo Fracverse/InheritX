@@ -2,6 +2,9 @@ import "@testing-library/jest-dom";
 import { afterAll, afterEach, beforeAll, vi } from "vitest";
 import { server } from "./mocks/server";
 
+// ✅ React 18 fix
+globalThis.IS_REACT_ACT_ENVIRONMENT = true;
+
 // Mock Stellar Freighter API
 vi.mock("@stellar/freighter-api", () => ({
   getAddress: vi.fn(),
@@ -23,11 +26,16 @@ vi.mock("@creit.tech/stellar-wallets-kit", () => ({
   allowAllModules: vi.fn().mockReturnValue([]),
 }));
 
-// Start MSW server before all tests
-beforeAll(() => server.listen({ onUnhandledRequest: "error" }));
+beforeAll(() => {
+  server.listen({ onUnhandledRequest: "error" });
+});
 
-// Reset handlers after each test
-afterEach(() => server.resetHandlers());
+afterEach(() => {
+  vi.clearAllMocks();
+  vi.clearAllTimers();
+  vi.useRealTimers(); // ✅ important reset per test
+});
 
-// Clean up after all tests
-afterAll(() => server.close());
+afterAll(() => {
+  server.close();
+});
