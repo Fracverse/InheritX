@@ -655,3 +655,255 @@ fn test_reclaim_success() {
     let result = client.try_get_plan(&owner);
     assert_eq!(result, Err(Ok(Error::PlanNotFound)));
 }
+
+// ── Virtual Yield Accrual Tests ────────────────────────────────────────────
+
+/// Helper: seconds per year constant (mirrors lib.rs).
+const SECONDS_PER_YEAR: u64 = 365 * 24 * 3600; // 31_536_000
+
+/// Expected accrued yield for given params (mirrors calculate_accrued_yield).
+fn expected_yield(amount: i128, rate_bps: u32, elapsed: u64) -> i128 {
+    amount * (rate_bps as i128) * (elapsed as i128) / (10_000_i128 * SECONDS_PER_YEAR as i128)
+}
+
+#[test]
+fn test_ping_accrues_yield() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let contract_id = env.register_contract(None, InheritanceContract);
+    let client = InheritanceContractClient::new(&env, &contract_id);
+
+    let token_id = env.register_contract(None, mock_token::MockToken);
+    let token_client = mock_token::MockTokenClient::new(&env, &token_id);
+
+    let owner = Address::generate(&env);
+    token_client.mint(&owner, &1_000_000);
+
+    let b = Beneficiary {
+        address: Address::generate(&env),
+        allocation_bps: 10000,
+        fiat_anchor_info: String::from_str(&env, ""),
+    };
+
+    let start: u64 = 1_000_000;
+    env.ledger().set_timestamp(start);
+
+    // 10% APY = 1000 bps
+    client.create_plan(
+        &owner,
+        &token_id,
+        &1_000_000,
+        &Vec::from_array(&env, [b]),
+        &3600,
+        &true,
+        &1000,
+        &0,
+    );
+
+    // Advance half a year and ping
+    let half_year = SECONDS_PER_YEAR / 2;
+    env.ledger().set_timestamp(start + half_year);
+    client.ping(&owner);
+
+    // After ping the yield is stored; get_plan adds 0 extra (no time passed since ping).
+    let plan = client.get_plan(&owner);
+    let expected = expected_yield(1_000_000, 1000, half_year);
+    assert_eq!(plan.accrued_yield, expected);
+    // 10% of 1_000_000 for half year ≈ 50_000
+    assert!(plan.accrued_yield > 0);
+}
+
+#[test]
+fn test_get_plan_projects_yield_dynamically() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let contract_id = env.register_contract(None, InheritanceContract);
+    let client = InheritanceContractClient::new(&env, &contract_id);
+
+    let token_id = env.register_contract(None, mock_token::MockToken);
+    let token_client = mock_token::MockTokenClient::new(&env, &token_id);
+
+    let owner = Address::generate(&env);
+    token_client.mint(&owner, &1_000_000);
+
+    let b = Beneficiary {
+        address: Address::generate(&env),
+        allocation_bps: 10000,
+        fiat_anchor_info: String::from_str(&env, ""),
+    };
+
+    let start: u64 = 1_000_000;
+    env.ledger().set_timestamp(start);
+
+    // 5% APY = 500 bps
+    client.create_plan(
+        &owner,
+        &token_id,
+        &1_000_000,
+        &Vec::from_array(&env, [b]),
+        &3600,
+        &true,
+        &500,
+        &0,
+    );
+
+    // Advance one full year without pinging — get_plan should project yield.
+    env.ledger().set_timestamp(start + SECONDS_PER_YEAR);
+
+    let plan = client.get_plan(&owner);
+    let expected = expected_yield(1_000_000, 500, SECONDS_PER_YEAR);
+    assert_eq!(plan.accrued_yield, expected);
+    // 5% of 1_000_000 = 50_000
+    assert_eq!(plan.accrued_yield, 50_000);
+}
+
+#[test]
+fn test_payout_includes_accrued_yield() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let contract_id = env.register_contract(None, InheritanceContract);
+    let client = InheritanceContractClient::new(&env, &contract_id);
+
+    let token_id = env.register_contract(None, mock_token::MockToken);
+    let token_client = mock_token::MockTokenClient::new(&env, &token_id);
+
+    let owner = Address::generate(&env);
+    let beneficiary = Address::generate(&env);
+
+    let principal: i128 = 1_000_000;
+    // 10% APY = 1000 bps
+    let rate_bps: u32 = 1000;
+    let accrued = expected_yield(principal, rate_bps, SECONDS_PER_YEAR);
+
+    // Mint principal to owner (locked into contract on create_plan).
+    // Separately mint the yield amount directly into the contract so it can
+    // pay out principal + yield (virtual yield = real tokens pre-funded here).
+    token_client.mint(&owner, &principal);
+    token_client.mint(&contract_id, &accrued);
+
+    let b = Beneficiary {
+        address: beneficiary.clone(),
+        allocation_bps: 10000,
+        fiat_anchor_info: String::from_str(&env, ""),
+    };
+
+    let start: u64 = 1_000_000;
+    env.ledger().set_timestamp(start);
+
+    client.create_plan(
+        &owner,
+        &token_id,
+        &principal,
+        &Vec::from_array(&env, [b]),
+        &3600,
+        &true,
+        &rate_bps,
+        &0,
+    );
+
+    client.close_plan(&owner);
+
+    // Advance one full year past grace period
+    env.ledger().set_timestamp(start + SECONDS_PER_YEAR);
+    client.claim(&owner);
+    client.trigger_payout(&owner);
+
+    // Beneficiary receives principal + accrued yield
+    assert_eq!(token_client.balance(&beneficiary), principal + accrued);
+    assert_eq!(token_client.balance(&contract_id), 0);
+}
+
+#[test]
+fn test_reclaim_includes_accrued_yield() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let contract_id = env.register_contract(None, InheritanceContract);
+    let client = InheritanceContractClient::new(&env, &contract_id);
+
+    let token_id = env.register_contract(None, mock_token::MockToken);
+    let token_client = mock_token::MockTokenClient::new(&env, &token_id);
+
+    let owner = Address::generate(&env);
+
+    let principal: i128 = 1_000_000;
+    // 5% APY = 500 bps
+    let rate_bps: u32 = 500;
+    let accrued = expected_yield(principal, rate_bps, SECONDS_PER_YEAR);
+
+    // Mint principal to owner; pre-fund contract with the yield amount.
+    token_client.mint(&owner, &principal);
+    token_client.mint(&contract_id, &accrued);
+
+    let b = Beneficiary {
+        address: Address::generate(&env),
+        allocation_bps: 10000,
+        fiat_anchor_info: String::from_str(&env, ""),
+    };
+
+    let start: u64 = 1_000_000;
+    env.ledger().set_timestamp(start);
+
+    client.create_plan(
+        &owner,
+        &token_id,
+        &principal,
+        &Vec::from_array(&env, [b]),
+        &3600,
+        &true,
+        &rate_bps,
+        &0,
+    );
+
+    // Advance one full year then reclaim
+    env.ledger().set_timestamp(start + SECONDS_PER_YEAR);
+    client.reclaim(&owner);
+
+    // Owner receives principal + accrued yield
+    assert_eq!(token_client.balance(&owner), principal + accrued);
+    assert_eq!(token_client.balance(&contract_id), 0);
+}
+
+#[test]
+fn test_no_yield_when_earn_yield_false() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let contract_id = env.register_contract(None, InheritanceContract);
+    let client = InheritanceContractClient::new(&env, &contract_id);
+
+    let token_id = env.register_contract(None, mock_token::MockToken);
+    let token_client = mock_token::MockTokenClient::new(&env, &token_id);
+
+    let owner = Address::generate(&env);
+    token_client.mint(&owner, &500);
+
+    let b = Beneficiary {
+        address: Address::generate(&env),
+        allocation_bps: 10000,
+        fiat_anchor_info: String::from_str(&env, ""),
+    };
+
+    let start: u64 = 1_000_000;
+    env.ledger().set_timestamp(start);
+
+    // earn_yield = false, rate_bps = 1000 (should be ignored)
+    client.create_plan(
+        &owner,
+        &token_id,
+        &500,
+        &Vec::from_array(&env, [b]),
+        &3600,
+        &false,
+        &1000,
+        &0,
+    );
+
+    env.ledger().set_timestamp(start + SECONDS_PER_YEAR);
+
+    let plan = client.get_plan(&owner);
+    assert_eq!(plan.accrued_yield, 0);
+}

@@ -4,6 +4,8 @@ use soroban_sdk::{contract, contracterror, contractimpl, contracttype, Address, 
 const MAX_BENEFICIARIES: u32 = 100;
 const PLAN_TTL_THRESHOLD: u32 = 500;
 const PLAN_TTL_LEEWAY: u32 = 100;
+/// Seconds in a 365-day year (integer arithmetic, no f64 in no_std).
+const SECONDS_PER_YEAR: u64 = 365 * 24 * 3600; // 31_536_000
 
 #[contracterror]
 #[derive(Copy, Clone, Debug, Eq, PartialEq)]
@@ -41,6 +43,8 @@ pub struct Plan {
     pub yield_rate_bps: u32,
     pub is_active: bool,
     pub timelock_duration: u64,
+    /// Yield accumulated so far (in token units). Updated on each ping.
+    pub accrued_yield: i128,
 }
 
 pub type InheritancePlan = Plan;
@@ -67,13 +71,26 @@ impl InheritanceContract {
             .persistent()
             .extend_ttl(key, PLAN_TTL_LEEWAY, PLAN_TTL_THRESHOLD);
     }
+
+    /// Simple-interest yield accrual (integer arithmetic, no f64).
+    ///
+    /// accrued = principal * rate_bps * elapsed_secs / (10_000 * SECONDS_PER_YEAR)
+    ///
+    /// Returns 0 when `earn_yield` is false or `rate_bps` is 0.
+    fn calculate_accrued_yield(amount: i128, rate_bps: u32, elapsed_secs: u64) -> i128 {
+        if rate_bps == 0 || elapsed_secs == 0 {
+            return 0;
+        }
+        // Overflow-safe: use i128 for all intermediate products.
+        amount * (rate_bps as i128) * (elapsed_secs as i128)
+            / (10_000_i128 * SECONDS_PER_YEAR as i128)
+    }
 }
 
 #[contractimpl]
 #[allow(clippy::too_many_arguments)]
 impl InheritanceContract {
     /// Create a yield-bearing inheritance plan with mass beneficiaries payout allocations.
-    /// Contributors: Implement token transfers from owner, validation checks, and storage configuration.
     #[allow(clippy::too_many_arguments)]
     pub fn create_plan(
         env: Env,
@@ -128,6 +145,7 @@ impl InheritanceContract {
             yield_rate_bps,
             is_active: true,
             timelock_duration,
+            accrued_yield: 0,
         };
 
         env.storage().persistent().set(&key, &plan);
@@ -136,8 +154,7 @@ impl InheritanceContract {
         Ok(())
     }
 
-    /// Reset the proof-of-life inactivity timer.
-    /// Contributors: Recalculate and accrue yield, update last ping timestamp.
+    /// Reset the proof-of-life inactivity timer, accruing yield for the elapsed period first.
     pub fn ping(env: Env, owner: Address) -> Result<(), Error> {
         owner.require_auth();
 
@@ -147,6 +164,15 @@ impl InheritanceContract {
         }
 
         let mut plan: Plan = env.storage().persistent().get(&key).unwrap();
+
+        // Accrue yield for the time elapsed since the last ping.
+        if plan.earn_yield {
+            let now = env.ledger().timestamp();
+            let elapsed = now.saturating_sub(plan.last_ping);
+            plan.accrued_yield +=
+                Self::calculate_accrued_yield(plan.amount, plan.yield_rate_bps, elapsed);
+        }
+
         plan.last_ping = env.ledger().timestamp();
 
         env.storage().persistent().set(&key, &plan);
@@ -156,8 +182,6 @@ impl InheritanceContract {
     }
 
     /// Claim payout once the plan owner has been inactive beyond the grace period.
-    /// Contributors: Calculate final yield-bearing payout, split assets among beneficiaries,
-    /// emit payout events, and trigger anchor event emissions for fiat recipients.
     pub fn claim(env: Env, owner: Address) -> Result<(), Error> {
         let key = DataKey::Plan(owner.clone());
         let plan: Plan = env
@@ -213,8 +237,6 @@ impl InheritanceContract {
     }
 
     /// Check if a plan has timed out (grace period elapsed).
-    /// Returns true if current_time >= last_ping + grace_period, false otherwise.
-    /// This is a read-only query method that does not modify state.
     pub fn is_plan_timed_out(env: Env, owner: Address) -> Result<bool, Error> {
         let key = DataKey::Plan(owner.clone());
         if !env.storage().persistent().has(&key) {
@@ -231,8 +253,6 @@ impl InheritanceContract {
     }
 
     /// Get the timeout deadline timestamp for a plan.
-    /// Returns the timestamp when the grace period expires (last_ping + grace_period).
-    /// This is a read-only query method for external monitoring.
     pub fn get_timeout_deadline(env: Env, owner: Address) -> Result<u64, Error> {
         let key = DataKey::Plan(owner.clone());
         if !env.storage().persistent().has(&key) {
@@ -245,28 +265,34 @@ impl InheritanceContract {
         Ok(plan.last_ping + plan.grace_period)
     }
 
-    /// Retrieve the current inheritance plan data.
-    /// Contributors: Query plan storage, dynamically projects the accumulated yield.
+    /// Retrieve the current inheritance plan, projecting any un-accrued yield dynamically.
+    ///
+    /// The returned `accrued_yield` reflects all yield accrued since the last ping
+    /// without writing to storage.
     pub fn get_plan(env: Env, owner: Address) -> Result<InheritancePlan, Error> {
         let key = DataKey::Plan(owner.clone());
         if !env.storage().persistent().has(&key) {
             return Err(Error::PlanNotFound);
         }
 
-        let plan: Plan = env.storage().persistent().get(&key).unwrap();
+        let mut plan: Plan = env.storage().persistent().get(&key).unwrap();
         Self::extend_plan_ttl(&env, &key);
+
+        // Project yield since the last ping without persisting the change.
+        if plan.earn_yield {
+            let now = env.ledger().timestamp();
+            let elapsed = now.saturating_sub(plan.last_ping);
+            plan.accrued_yield +=
+                Self::calculate_accrued_yield(plan.amount, plan.yield_rate_bps, elapsed);
+        }
 
         Ok(plan)
     }
 
-    /// Trigger payout to all beneficiaries once the plan is claimable.
-    /// Iterates over beneficiaries, computes pro-rata token allocations
-    /// using the stored basis points, and transfers tokens safely.
-    /// Remaining dust from integer division is allocated to the last beneficiary.
-    /// Aborts the entire transaction if any single transfer fails.
+    /// Trigger payout to all beneficiaries (principal + accrued yield).
     pub fn trigger_payout(env: Env, owner: Address) -> Result<(), Error> {
         let key = DataKey::Plan(owner.clone());
-        let plan: Plan = env
+        let mut plan: Plan = env
             .storage()
             .persistent()
             .get(&key)
@@ -284,20 +310,28 @@ impl InheritanceContract {
             return Err(Error::TimelockNotExpired);
         }
 
-        // Checks-effects-interactions: remove plan before transfers
-        // to prevent double payout and guard against re-entrancy
+        // Accrue any remaining yield up to claim time before distributing.
+        if plan.earn_yield {
+            let elapsed = current_time.saturating_sub(plan.last_ping);
+            plan.accrued_yield +=
+                Self::calculate_accrued_yield(plan.amount, plan.yield_rate_bps, elapsed);
+        }
+
+        let total_payout = plan.amount + plan.accrued_yield;
+
+        // Checks-effects-interactions: remove plan before transfers.
         env.storage().persistent().remove(&key);
         env.storage().persistent().remove(&claim_key);
 
         let token_client = soroban_sdk::token::Client::new(&env, &plan.token);
         let n = plan.beneficiaries.len();
-        let mut remaining = plan.amount;
+        let mut remaining = total_payout;
 
         for (i, beneficiary) in plan.beneficiaries.iter().enumerate() {
             let share = if i == (n - 1) as usize {
                 remaining
             } else {
-                let amount = plan.amount * (beneficiary.allocation_bps as i128) / 10000;
+                let amount = total_payout * (beneficiary.allocation_bps as i128) / 10000;
                 remaining -= amount;
                 amount
             };
@@ -311,8 +345,7 @@ impl InheritanceContract {
         Ok(())
     }
 
-    /// Deactivate the plan and withdraw all remaining assets.
-    /// Contributors: Reclaim assets and transfer principal + yield back to the owner.
+    /// Deactivate the plan.
     pub fn close_plan(env: Env, owner: Address) -> Result<(), Error> {
         owner.require_auth();
 
@@ -330,16 +363,26 @@ impl InheritanceContract {
         Ok(())
     }
 
-    /// Reclaim the locked assets and delete the plan.
+    /// Reclaim locked assets (principal + accrued yield) and delete the plan.
     pub fn reclaim(env: Env, owner: Address) -> Result<(), Error> {
         owner.require_auth();
 
         let key = DataKey::Plan(owner.clone());
-        let plan: Plan = env
+        let mut plan: Plan = env
             .storage()
             .persistent()
             .get(&key)
             .ok_or(Error::PlanNotFound)?;
+
+        // Accrue any remaining yield before returning funds.
+        if plan.earn_yield {
+            let now = env.ledger().timestamp();
+            let elapsed = now.saturating_sub(plan.last_ping);
+            plan.accrued_yield +=
+                Self::calculate_accrued_yield(plan.amount, plan.yield_rate_bps, elapsed);
+        }
+
+        let total_return = plan.amount + plan.accrued_yield;
 
         let claim_key = DataKey::ClaimStatus(owner.clone());
         if env.storage().persistent().has(&claim_key) {
@@ -349,7 +392,7 @@ impl InheritanceContract {
         env.storage().persistent().remove(&key);
 
         let token_client = soroban_sdk::token::Client::new(&env, &plan.token);
-        token_client.transfer(&env.current_contract_address(), &owner, &plan.amount);
+        token_client.transfer(&env.current_contract_address(), &owner, &total_return);
 
         Ok(())
     }
