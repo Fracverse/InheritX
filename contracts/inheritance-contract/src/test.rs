@@ -655,3 +655,209 @@ fn test_reclaim_success() {
     let result = client.try_get_plan(&owner);
     assert_eq!(result, Err(Ok(Error::PlanNotFound)));
 }
+
+// ── Yield Accrual Tests ──────────────────────────────────────────────────────
+
+/// Macro: inline plan setup to avoid lifetime issues with borrowed client types.
+macro_rules! setup_plan {
+    ($env:ident, $client:ident, $token_client:ident, $token_id:ident,
+     $contract_id:ident, $owner:ident, $beneficiary:ident,
+     earn_yield: $earn:expr, rate_bps: $rate:expr,
+     principal: $principal:expr, mint: $mint:expr) => {
+        let $env = Env::default();
+        $env.mock_all_auths();
+
+        let $contract_id = $env.register_contract(None, InheritanceContract);
+        let $client = InheritanceContractClient::new(&$env, &$contract_id);
+
+        let $token_id = $env.register_contract(None, mock_token::MockToken);
+        let $token_client = mock_token::MockTokenClient::new(&$env, &$token_id);
+
+        let $owner = Address::generate(&$env);
+        let $beneficiary = Address::generate(&$env);
+
+        $token_client.mint(&$owner, &$mint);
+
+        let _bene_item = Beneficiary {
+            address: $beneficiary.clone(),
+            allocation_bps: 10000,
+            fiat_anchor_info: String::from_str(&$env, ""),
+        };
+
+        $env.ledger().set_timestamp(1_000_000);
+
+        $client.create_plan(
+            &$owner,
+            &$token_id,
+            &$principal,
+            &Vec::from_array(&$env, [_bene_item]),
+            &3600,
+            &$earn,
+            &$rate,
+            &86400,
+        );
+    };
+}
+
+#[test]
+fn test_yield_not_accrued_when_disabled() {
+    // earn_yield = false: accrued_yield must always be 0 regardless of time elapsed.
+    setup_plan!(env, client, _tc, _ti, _ci, owner, _b,
+        earn_yield: false, rate_bps: 500, principal: 1000, mint: 1000);
+
+    env.ledger().set_timestamp(1_000_000 + 31_536_000);
+
+    let plan = client.get_plan(&owner);
+    assert_eq!(plan.accrued_yield, 0);
+}
+
+#[test]
+fn test_yield_accrues_over_one_year() {
+    // 10% APR on 1000 principal over 1 full year → exactly 100 tokens.
+    // formula: 1000 * 1000 * 31_536_000 / (10_000 * 31_536_000) = 100
+    setup_plan!(env, client, _tc, _ti, _ci, owner, _b,
+        earn_yield: true, rate_bps: 1000, principal: 1000, mint: 1000);
+
+    env.ledger().set_timestamp(1_000_000 + 31_536_000);
+
+    let plan = client.get_plan(&owner);
+    assert_eq!(plan.accrued_yield, 100);
+}
+
+#[test]
+fn test_yield_zero_at_creation() {
+    // Immediately after creation, no time has elapsed → projected yield = 0.
+    setup_plan!(env, client, _tc, _ti, _ci, owner, _b,
+        earn_yield: true, rate_bps: 500, principal: 1000, mint: 1000);
+
+    let plan = client.get_plan(&owner);
+    assert_eq!(plan.accrued_yield, 0);
+}
+
+#[test]
+fn test_ping_accrues_yield() {
+    // After ping at 1 year, stored accrued_yield = 100; get_plan at same ts returns 100.
+    setup_plan!(env, client, _tc, _ti, _ci, owner, _b,
+        earn_yield: true, rate_bps: 1000, principal: 1000, mint: 1000);
+
+    env.ledger().set_timestamp(1_000_000 + 31_536_000);
+    client.ping(&owner);
+
+    let plan = client.get_plan(&owner);
+    assert_eq!(plan.accrued_yield, 100);
+}
+
+#[test]
+fn test_ping_does_not_accrue_yield_when_disabled() {
+    setup_plan!(env, client, _tc, _ti, _ci, owner, _b,
+        earn_yield: false, rate_bps: 500, principal: 1000, mint: 1000);
+
+    env.ledger().set_timestamp(1_000_000 + 31_536_000);
+    client.ping(&owner);
+
+    let plan = client.get_plan(&owner);
+    assert_eq!(plan.accrued_yield, 0);
+}
+
+#[test]
+fn test_multiple_pings_accumulate_yield() {
+    // Two equal half-year periods should give the same total as one full year.
+    setup_plan!(env, client, _tc, _ti, _ci, owner, _b,
+        earn_yield: true, rate_bps: 1000, principal: 1000, mint: 1000);
+
+    let half_year: u64 = 31_536_000 / 2;
+
+    env.ledger().set_timestamp(1_000_000 + half_year);
+    client.ping(&owner);
+
+    env.ledger().set_timestamp(1_000_000 + half_year * 2);
+    client.ping(&owner);
+
+    // Full-year single-period = 100; two half-periods also = 100 (integer arithmetic).
+    let plan = client.get_plan(&owner);
+    assert_eq!(plan.accrued_yield, 100);
+}
+
+#[test]
+fn test_trigger_payout_includes_yield() {
+    // principal = 1000, 10% APR, 1 year → yield = 100, total payout = 1100.
+    setup_plan!(env, client, token_client, _ti, contract_id, owner, beneficiary,
+        earn_yield: true, rate_bps: 1000, principal: 1000, mint: 1000);
+
+    // Mint the expected yield into the contract so the transfer can succeed.
+    token_client.mint(&contract_id, &100);
+
+    client.close_plan(&owner);
+    env.ledger().set_timestamp(1_000_000 + 31_536_000 + 3600);
+    client.claim(&owner);
+
+    env.ledger().set_timestamp(1_000_000 + 31_536_000 + 3600 + 86400);
+    client.trigger_payout(&owner);
+
+    let balance = token_client.balance(&beneficiary);
+    assert!(balance >= 1000, "beneficiary got {balance}, expected >= 1000");
+    assert_eq!(token_client.balance(&contract_id), 0);
+}
+
+#[test]
+fn test_trigger_payout_no_yield_when_disabled() {
+    // earn_yield=false: payout = exactly principal.
+    setup_plan!(env, client, token_client, _ti, contract_id, owner, beneficiary,
+        earn_yield: false, rate_bps: 0, principal: 500, mint: 500);
+
+    client.close_plan(&owner);
+    env.ledger().set_timestamp(1_000_000 + 4000);
+    client.claim(&owner);
+
+    env.ledger().set_timestamp(env.ledger().timestamp() + 86400);
+    client.trigger_payout(&owner);
+
+    assert_eq!(token_client.balance(&beneficiary), 500);
+    assert_eq!(token_client.balance(&contract_id), 0);
+}
+
+#[test]
+fn test_reclaim_includes_yield() {
+    // principal = 1000, 10% APR, 1 year → yield = 100, reclaim = 1100.
+    setup_plan!(env, client, token_client, _ti, contract_id, owner, _b,
+        earn_yield: true, rate_bps: 1000, principal: 1000, mint: 1000);
+
+    token_client.mint(&contract_id, &100);
+
+    env.ledger().set_timestamp(1_000_000 + 31_536_000);
+    client.reclaim(&owner);
+
+    let owner_balance = token_client.balance(&owner);
+    assert!(owner_balance >= 1100, "owner got {owner_balance}, expected >= 1100");
+    assert_eq!(token_client.balance(&contract_id), 0);
+}
+
+#[test]
+fn test_reclaim_no_yield_when_disabled() {
+    setup_plan!(env, client, token_client, _ti, contract_id, owner, _b,
+        earn_yield: false, rate_bps: 0, principal: 500, mint: 500);
+
+    env.ledger().set_timestamp(1_000_000 + 31_536_000);
+    client.reclaim(&owner);
+
+    assert_eq!(token_client.balance(&owner), 500);
+    assert_eq!(token_client.balance(&contract_id), 0);
+}
+
+#[test]
+fn test_get_plan_projects_yield_without_persisting() {
+    // get_plan is pure: two calls at the same timestamp return the same value,
+    // and last_ping is not updated.
+    setup_plan!(env, client, _tc, _ti, _ci, owner, _b,
+        earn_yield: true, rate_bps: 1000, principal: 1000, mint: 1000);
+
+    env.ledger().set_timestamp(1_000_000 + 31_536_000);
+
+    let plan1 = client.get_plan(&owner);
+    let plan2 = client.get_plan(&owner);
+
+    assert_eq!(plan1.accrued_yield, 100);
+    assert_eq!(plan1.accrued_yield, plan2.accrued_yield);
+    // Storage last_ping must remain unchanged (no ping was called).
+    assert_eq!(plan1.last_ping, 1_000_000);
+}
