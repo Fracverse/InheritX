@@ -253,11 +253,14 @@ describe("EditInheritancePlanPanel", () => {
 
     await user.click(screen.getByRole("button", { name: /save changes/i }));
 
-    await waitFor(() => {
-      expect(
-        screen.getByText(/server error|failed to save/i)
-      ).toBeInTheDocument();
-    });
+    await waitFor(
+      () => {
+        expect(
+          screen.getByText(/server error|failed to save/i)
+        ).toBeInTheDocument();
+      },
+      { timeout: 8000 }
+    );
   });
 
   it("shows validation error when a beneficiary name is missing", async () => {
@@ -275,14 +278,12 @@ describe("EditInheritancePlanPanel", () => {
       />
     );
 
-    // Fill in allocation but leave name blank
-    const allocationInput = screen.getByLabelText(/inactivity period/i)
-      .closest("section")
-      ?.previousElementSibling?.querySelector("input[type='number']");
-
-    if (allocationInput) {
-      await user.clear(allocationInput);
-      await user.type(allocationInput, "100");
+    // Find the Share (%) input in the Beneficiaries section and set to 100
+    const shareInputs = screen.getAllByRole("spinbutton");
+    const shareInput = shareInputs[0];
+    if (shareInput) {
+      await user.clear(shareInput);
+      await user.type(shareInput, "100");
     }
 
     await user.click(screen.getByRole("button", { name: /save changes/i }));

@@ -5,6 +5,7 @@ edition = "2021"
 
 [dependencies]
 tokio = { version = "1.0", features = ["full"] }
+redis = { version = "0.27", features = ["tokio-comp", "connection-manager"] }
 axum = { version = "0.8", features = ["json", "multipart", "macros", "ws"] }
 tower = { version = "0.5", features = ["util"] }
 tower-http = { version = "0.6", features = ["cors", "trace", "request-id", "util"] }
@@ -28,4 +29,5 @@ jsonwebtoken = "9.0"
 base64 = "0.21"
 stellar-strkey = "0.0.8"
 ed25519-dalek = { version = "2.1", features = ["pkcs8", "rand_core"] }
-redis = { version = "0.27", features = ["tokio-comp"] }
+prometheus = { version = "0.13", features = ["process"] }
+once_cell = "1.19"

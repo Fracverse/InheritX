@@ -12,3 +12,18 @@ allowBuilds:
   unrs-resolver: false
   usb: false
   utf-8-validate: false
+
+  '@parcel/watcher': set this to true or false
+  '@swc/core': set this to true or false
+  blake-hash: set this to true or false
+  bufferutil: set this to true or false
+  esbuild: set this to true or false
+  msw: set this to true or false
+  protobufjs: set this to true or false
+  secp256k1: set this to true or false
+  sharp: set this to true or false
+  tiny-secp256k1: set this to true or false
+  unrs-resolver: set this to true or false
+  usb: set this to true or false
+  utf-8-validate: set this to true or false
+onlyBuiltDependenciesFile: ''
