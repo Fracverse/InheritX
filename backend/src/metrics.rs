@@ -1,9 +1,4 @@
-use axum::{
-    extract::Request,
-    http::StatusCode,
-    middleware::Next,
-    response::IntoResponse,
-};
+use axum::{extract::Request, http::StatusCode, middleware::Next, response::IntoResponse};
 use once_cell::sync::Lazy;
 use prometheus::{
     histogram_opts, opts, register_gauge, register_histogram_vec, Encoder, Gauge, HistogramVec,
@@ -37,14 +32,20 @@ pub static REQUEST_LATENCY: Lazy<HistogramVec> = Lazy::new(|| {
 
 /// DB pool size (total connections in the pool).
 pub static DB_POOL_SIZE: Lazy<Gauge> = Lazy::new(|| {
-    register_gauge!(opts!("inheritx_db_pool_size", "Total connections in the DB pool"))
-        .expect("failed to register db_pool_size gauge")
+    register_gauge!(opts!(
+        "inheritx_db_pool_size",
+        "Total connections in the DB pool"
+    ))
+    .expect("failed to register db_pool_size gauge")
 });
 
 /// DB pool idle connections.
 pub static DB_POOL_IDLE: Lazy<Gauge> = Lazy::new(|| {
-    register_gauge!(opts!("inheritx_db_pool_idle", "Idle connections in the DB pool"))
-        .expect("failed to register db_pool_idle gauge")
+    register_gauge!(opts!(
+        "inheritx_db_pool_idle",
+        "Idle connections in the DB pool"
+    ))
+    .expect("failed to register db_pool_idle gauge")
 });
 
 /// Call once at startup to force lazy initialization of all metrics.

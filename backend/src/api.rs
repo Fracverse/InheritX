@@ -19,7 +19,7 @@ use crate::auth::signature_auth_middleware;
 use crate::cache::PlanCache;
 use crate::kyc_webhook::kyc_webhook_handler;
 use crate::metrics::{latency_middleware, metrics_handler};
-use crate::stellar_anchor::{AnchorPayout, AnchorRegistry};
+use crate::stellar_anchor::AnchorRegistry;
 use crate::ws::{ws_handler, KycUpdateEvent};
 use crate::yield_calculator;
 
