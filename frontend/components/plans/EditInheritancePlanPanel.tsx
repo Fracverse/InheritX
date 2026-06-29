@@ -2,10 +2,18 @@
 
 import { useState, useCallback } from "react";
 import { motion, AnimatePresence } from "framer-motion";
-import { Plus, Trash2, X, Save, AlertCircle, CheckCircle, Loader2 } from "lucide-react";
+import { Plus, Trash2, X, Save, AlertCircle, CheckCircle, Loader2, ArrowLeftRight } from "lucide-react";
 import { plansAPI } from "@/app/lib/api/plans";
 import type { Plan, Beneficiary, UpdatePlanRequest } from "@/app/lib/api/plans";
 import { useWallet } from "@/context/WalletContext";
+import { AllocationFlowChart } from "@/components/plans/AllocationFlowChart";
+import type { BeneficiaryFlow } from "@/components/plans/AllocationFlowChart";
+
+// ─── Local type with fiat off‑ramp flag ─────────────────────────────────────
+
+interface BeneficiaryLocal extends Beneficiary {
+  isFiat: boolean;
+}
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
@@ -19,10 +27,11 @@ type TxStatus = "idle" | "signing" | "saving" | "success" | "error";
 
 // ─── Helpers ─────────────────────────────────────────────────────────────────
 
-const DEFAULT_BENEFICIARY: Omit<Beneficiary, "id"> = {
+const DEFAULT_BENEFICIARY: Omit<BeneficiaryLocal, "id"> = {
   wallet_address: "",
   name: "",
   allocation_percentage: 0,
+  isFiat: false,
 };
 
 function totalAllocation(beneficiaries: Beneficiary[]): number {
@@ -44,9 +53,9 @@ function BeneficiaryRow({
   onRemove,
   canRemove,
 }: {
-  beneficiary: Beneficiary;
+  beneficiary: BeneficiaryLocal;
   index: number;
-  onChange: (index: number, field: keyof Beneficiary, value: string | number) => void;
+  onChange: (index: number, field: keyof BeneficiaryLocal, value: string | number | boolean) => void;
   onRemove: (index: number) => void;
   canRemove: boolean;
 }) {
@@ -57,7 +66,7 @@ function BeneficiaryRow({
       animate={{ opacity: 1, y: 0 }}
       exit={{ opacity: 0, y: -8 }}
       transition={{ duration: 0.18 }}
-      className="grid grid-cols-[1fr_1fr_100px_36px] gap-3 items-start"
+      className="grid grid-cols-[1fr_1fr_80px_90px_36px] gap-2 items-start"
     >
       <div className="flex flex-col gap-1">
         <label className="text-[10px] text-[#92A5A8] uppercase tracking-wider">
@@ -102,6 +111,25 @@ function BeneficiaryRow({
         />
       </div>
 
+      <div className="flex flex-col gap-1">
+        <label className="text-[10px] text-[#92A5A8] uppercase tracking-wider">
+          Payout
+        </label>
+        <button
+          type="button"
+          onClick={() => onChange(index, "isFiat", !beneficiary.isFiat)}
+          aria-label={`Toggle fiat off-ramp for ${beneficiary.name || index + 1}`}
+          className={`flex items-center justify-center gap-1.5 px-2 py-2 rounded-lg text-xs font-medium border transition-colors ${
+            beneficiary.isFiat
+              ? "bg-[#F59E0B14] border-[#F59E0B40] text-[#F59E0B]"
+              : "bg-[#48BB7814] border-[#48BB7840] text-[#48BB78]"
+          }`}
+        >
+          <ArrowLeftRight size={12} />
+          {beneficiary.isFiat ? "Fiat" : "Token"}
+        </button>
+      </div>
+
       <button
         type="button"
         onClick={() => onRemove(index)}
@@ -132,7 +160,7 @@ export function EditInheritancePlanPanel({
   const [yieldEnabled, setYieldEnabled] = useState<boolean>(
     plan.risk_override_enabled ?? false
   );
-  const [beneficiaries, setBeneficiaries] = useState<Beneficiary[]>(() => {
+  const [beneficiaries, setBeneficiaries] = useState<BeneficiaryLocal[]>(() => {
     if (plan.beneficiary_name) {
       return [
         {
@@ -140,6 +168,7 @@ export function EditInheritancePlanPanel({
           wallet_address: "",
           name: plan.beneficiary_name,
           allocation_percentage: 100,
+          isFiat: false,
         },
       ];
     }
@@ -149,11 +178,19 @@ export function EditInheritancePlanPanel({
   const [txStatus, setTxStatus] = useState<TxStatus>("idle");
   const [errorMessage, setErrorMessage] = useState<string>("");
 
+  const flowBeneficiaries: BeneficiaryFlow[] = beneficiaries.map((b) => ({
+    name: b.name || "Unnamed",
+    allocation_percentage: b.allocation_percentage || 0,
+    isFiat: b.isFiat,
+  }));
+
+  const payoutAmount = plan.net_amount ?? plan.fee ?? 0;
+
   const allocationTotal = totalAllocation(beneficiaries);
   const isAllocationValid = isAllocationDistributionValid(beneficiaries);
 
   const handleBeneficiaryChange = useCallback(
-    (index: number, field: keyof Beneficiary, value: string | number) => {
+    (index: number, field: keyof BeneficiaryLocal, value: string | number | boolean) => {
       setBeneficiaries((prev) =>
         prev.map((b, i) => (i === index ? { ...b, [field]: value } : b))
       );
@@ -209,10 +246,14 @@ export function EditInheritancePlanPanel({
 
     setTxStatus("saving");
 
+    const apiBeneficiaries: Beneficiary[] = beneficiaries.map(
+      ({ isFiat: _, ...rest }) => rest
+    );
+
     const updateRequest: UpdatePlanRequest = {
       title,
       description: description || undefined,
-      beneficiaries,
+      beneficiaries: apiBeneficiaries,
       inactivity_period_days: inactivityDays,
       yield_harvesting_enabled: yieldEnabled,
       signed_transaction: signedTransaction,
@@ -352,6 +393,23 @@ export function EditInheritancePlanPanel({
               Add beneficiary
             </button>
           </section>
+
+          {/* Allocation Flow Chart */}
+          {beneficiaries.length > 0 && (
+            <section>
+              <div className="flex items-center justify-between mb-3">
+                <h3 className="text-xs font-semibold text-[#33C5E0] uppercase tracking-wider">
+                  Allocation Flow
+                </h3>
+              </div>
+              <div className="bg-[#0A0F11] border border-[#2A3338] rounded-xl p-3">
+                <AllocationFlowChart
+                  totalAmount={payoutAmount}
+                  beneficiaries={flowBeneficiaries}
+                />
+              </div>
+            </section>
+          )}
 
           {/* Inactivity Timer */}
           <section>
