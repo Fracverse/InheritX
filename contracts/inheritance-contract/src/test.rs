@@ -1,9 +1,7 @@
-#![cfg(test)]
-
 use super::*;
 use soroban_sdk::testutils::Address as _;
-use soroban_sdk::testutils::Ledger;
-use soroban_sdk::{Address, Env, String, Vec};
+use soroban_sdk::testutils::{Events, Ledger};
+use soroban_sdk::{symbol_short, vec, Address, Env, IntoVal, String, Vec};
 
 #[test]
 fn test_contract_compilation() {
@@ -46,6 +44,7 @@ fn test_create_plan_success() {
         &3600,
         &true,
         &500,
+        &86400,
     );
 
     // Verify balances
@@ -67,6 +66,91 @@ fn test_create_plan_success() {
         beneficiary_address
     );
     assert_eq!(plan.beneficiaries.get(0).unwrap().allocation_bps, 10000);
+}
+
+#[test]
+fn test_ping_updates_last_ping_and_emits_event() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let contract_id = env.register_contract(None, InheritanceContract);
+    let client = InheritanceContractClient::new(&env, &contract_id);
+
+    let token_id = env.register_contract(None, mock_token::MockToken);
+    let token_client = mock_token::MockTokenClient::new(&env, &token_id);
+
+    let owner = Address::generate(&env);
+    let beneficiary = Beneficiary {
+        address: Address::generate(&env),
+        allocation_bps: 10000,
+        fiat_anchor_info: String::from_str(&env, "NGN_BANK"),
+    };
+
+    token_client.mint(&owner, &2000);
+
+    let start = 1_000_000;
+    env.ledger().set_timestamp(start);
+
+    client.create_plan(
+        &owner,
+        &token_id,
+        &1500,
+        &Vec::from_array(&env, [beneficiary]),
+        &3600,
+        &true,
+        &500,
+        &86400,
+    );
+    assert_eq!(client.get_plan(&owner).last_ping, start);
+
+    let ping_timestamp = start + 1234;
+    env.ledger().set_timestamp(ping_timestamp);
+
+    client.ping(&owner);
+
+    let plan = client.get_plan(&owner);
+    assert_eq!(plan.last_ping, ping_timestamp);
+    assert_eq!(
+        env.events().all(),
+        vec![
+            &env,
+            (
+                contract_id,
+                (symbol_short!("ping"), owner).into_val(&env),
+                ping_timestamp.into_val(&env),
+            ),
+        ]
+    );
+}
+
+#[test]
+#[should_panic]
+fn test_ping_requires_owner_auth() {
+    let env = Env::default();
+
+    let contract_id = env.register_contract(None, InheritanceContract);
+    let client = InheritanceContractClient::new(&env, &contract_id);
+
+    let owner = Address::generate(&env);
+    let key = DataKey::Plan(owner.clone());
+    let plan = Plan {
+        owner: owner.clone(),
+        token: Address::generate(&env),
+        amount: 1,
+        beneficiaries: Vec::new(&env),
+        last_ping: env.ledger().timestamp(),
+        grace_period: 3600,
+        earn_yield: false,
+        yield_rate_bps: 0,
+        is_active: true,
+        timelock_duration: 86400,
+    };
+
+    env.as_contract(&contract_id, || {
+        env.storage().persistent().set(&key, &plan);
+    });
+
+    client.ping(&owner);
 }
 
 #[test]
@@ -98,6 +182,7 @@ fn test_create_plan_insufficient_balance() {
         &3600,
         &true,
         &500,
+        &86400,
     );
 
     assert_eq!(result, Err(Ok(Error::InsufficientBalance)));
@@ -132,6 +217,7 @@ fn test_create_plan_negative_or_zero_amount() {
         &3600,
         &true,
         &500,
+        &86400,
     );
     assert_eq!(result_zero, Err(Ok(Error::NegativeAmount)));
 
@@ -144,6 +230,7 @@ fn test_create_plan_negative_or_zero_amount() {
         &3600,
         &true,
         &500,
+        &86400,
     );
     assert_eq!(result_neg, Err(Ok(Error::NegativeAmount)));
 }
@@ -182,6 +269,7 @@ fn test_create_plan_invalid_basis_points() {
         &3600,
         &true,
         &500,
+        &86400,
     );
 
     assert_eq!(result, Err(Ok(Error::InvalidBasisPoints)));
@@ -216,6 +304,7 @@ fn test_create_plan_already_exists() {
         &3600,
         &true,
         &500,
+        &86400,
     );
 
     // Second creation on same owner
@@ -227,6 +316,7 @@ fn test_create_plan_already_exists() {
         &3600,
         &true,
         &500,
+        &86400,
     );
     assert_eq!(result2, Err(Ok(Error::PlanAlreadyExists)));
 }
@@ -264,6 +354,7 @@ fn test_trigger_payout_single_beneficiary() {
         &3600,
         &true,
         &500,
+        &86400,
     );
 
     // Deactivate plan
@@ -273,6 +364,8 @@ fn test_trigger_payout_single_beneficiary() {
     env.ledger().set_timestamp(start + 4000);
 
     // Trigger payout
+    client.claim(&owner);
+    env.ledger().set_timestamp(env.ledger().timestamp() + 86400);
     client.trigger_payout(&owner);
 
     // Beneficiary receives full amount, contract emptied
@@ -328,11 +421,14 @@ fn test_trigger_payout_multiple_beneficiaries() {
         &3600,
         &true,
         &500,
+        &86400,
     );
 
     client.close_plan(&owner);
     env.ledger().set_timestamp(1_000_000 + 4000);
 
+    client.claim(&owner);
+    env.ledger().set_timestamp(env.ledger().timestamp() + 86400);
     client.trigger_payout(&owner);
 
     // Alice: 1000 * 5000 / 10000 = 500
@@ -382,11 +478,14 @@ fn test_trigger_payout_dust_goes_to_last_beneficiary() {
         &3600,
         &false,
         &0,
+        &86400,
     );
 
     client.close_plan(&owner);
     env.ledger().set_timestamp(1_000_000 + 4000);
 
+    client.claim(&owner);
+    env.ledger().set_timestamp(env.ledger().timestamp() + 86400);
     client.trigger_payout(&owner);
 
     // A: 100 * 3333 / 10000 = 33 (integer truncation)
@@ -428,12 +527,13 @@ fn test_trigger_payout_plan_still_active() {
         &3600,
         &false,
         &0,
+        &86400,
     );
 
     // Plan is still active — close_plan was never called
     env.ledger().set_timestamp(1_000_000 + 4000);
 
-    let result = client.try_trigger_payout(&owner);
+    let result = client.try_claim(&owner);
     assert_eq!(result, Err(Ok(Error::InactivityPeriodNotMet)));
 }
 
@@ -469,6 +569,7 @@ fn test_trigger_payout_grace_period_not_met() {
         &3600,
         &false,
         &0,
+        &86400,
     );
 
     client.close_plan(&owner);
@@ -476,7 +577,7 @@ fn test_trigger_payout_grace_period_not_met() {
     // Only 1000 seconds passed — need 3600
     env.ledger().set_timestamp(1_000_000 + 1000);
 
-    let result = client.try_trigger_payout(&owner);
+    let result = client.try_claim(&owner);
     assert_eq!(result, Err(Ok(Error::InactivityPeriodNotMet)));
 }
 
@@ -512,12 +613,15 @@ fn test_trigger_payout_double_payout_prevented() {
         &3600,
         &false,
         &0,
+        &86400,
     );
 
     client.close_plan(&owner);
     env.ledger().set_timestamp(1_000_000 + 4000);
 
     // First payout succeeds
+    client.claim(&owner);
+    env.ledger().set_timestamp(env.ledger().timestamp() + 86400);
     client.trigger_payout(&owner);
     assert_eq!(token_client.balance(&beneficiary), 500);
 
@@ -537,5 +641,102 @@ fn test_trigger_payout_no_plan() {
     let owner = Address::generate(&env);
 
     let result = client.try_trigger_payout(&owner);
+    assert_eq!(result, Err(Ok(Error::PlanNotFound)));
+}
+
+#[test]
+fn test_cancel_claim_success() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let contract_id = env.register_contract(None, InheritanceContract);
+    let client = InheritanceContractClient::new(&env, &contract_id);
+
+    let token_id = env.register_contract(None, mock_token::MockToken);
+    let token_client = mock_token::MockTokenClient::new(&env, &token_id);
+
+    let owner = Address::generate(&env);
+    let beneficiary = Address::generate(&env);
+
+    token_client.mint(&owner, &2000);
+
+    let b = Beneficiary {
+        address: beneficiary.clone(),
+        allocation_bps: 10000,
+        fiat_anchor_info: String::from_str(&env, ""),
+    };
+
+    let start = 1_000_000;
+    env.ledger().set_timestamp(start);
+
+    client.create_plan(
+        &owner,
+        &token_id,
+        &500,
+        &Vec::from_array(&env, [b]),
+        &3600,
+        &false,
+        &0,
+        &86400,
+    );
+
+    client.close_plan(&owner);
+    env.ledger().set_timestamp(start + 4000);
+
+    // Trigger payout
+    client.claim(&owner);
+
+    // Cancel payout
+    client.cancel_claim(&owner);
+
+    // Attempting trigger_payout should now fail since the payout has been cancelled
+    env.ledger().set_timestamp(env.ledger().timestamp() + 86400);
+    let result = client.try_trigger_payout(&owner);
+    assert_eq!(result, Err(Ok(Error::PayoutNotTriggered)));
+}
+
+#[test]
+fn test_reclaim_success() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let contract_id = env.register_contract(None, InheritanceContract);
+    let client = InheritanceContractClient::new(&env, &contract_id);
+
+    let token_id = env.register_contract(None, mock_token::MockToken);
+    let token_client = mock_token::MockTokenClient::new(&env, &token_id);
+
+    let owner = Address::generate(&env);
+    let beneficiary = Address::generate(&env);
+
+    token_client.mint(&owner, &2000);
+
+    let b = Beneficiary {
+        address: beneficiary.clone(),
+        allocation_bps: 10000,
+        fiat_anchor_info: String::from_str(&env, ""),
+    };
+
+    let start = 1_000_000;
+    env.ledger().set_timestamp(start);
+
+    client.create_plan(
+        &owner,
+        &token_id,
+        &500,
+        &Vec::from_array(&env, [b]),
+        &3600,
+        &false,
+        &0,
+        &86400,
+    );
+
+    // Owner reclaims before claim
+    client.reclaim(&owner);
+
+    assert_eq!(token_client.balance(&owner), 2000);
+    assert_eq!(token_client.balance(&contract_id), 0);
+
+    let result = client.try_get_plan(&owner);
     assert_eq!(result, Err(Ok(Error::PlanNotFound)));
 }
