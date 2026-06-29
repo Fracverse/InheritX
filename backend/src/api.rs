@@ -898,7 +898,8 @@ async fn trigger_payout(
         return (
             StatusCode::BAD_REQUEST,
             Json(serde_json::json!({ "error": "Grace period has not elapsed" })),
-        ).into_response();
+        )
+            .into_response();
     }
 
     // 4. Compute final locked amount + yield
@@ -919,14 +920,18 @@ async fn trigger_payout(
     )
     .bind(plan.id)
     .fetch_all(&mut *tx)
-    .await {
+    .await
+    {
         Ok(rows) => rows,
         Err(e) => {
             error!(plan_id = %plan.id, error = %e, "Failed to load beneficiaries");
             return (
                 StatusCode::INTERNAL_SERVER_ERROR,
-                Json(serde_json::json!({ "error": format!("Failed to load beneficiaries: {}", e) })),
-            ).into_response();
+                Json(
+                    serde_json::json!({ "error": format!("Failed to load beneficiaries: {}", e) }),
+                ),
+            )
+                .into_response();
         }
     };
 
@@ -935,7 +940,8 @@ async fn trigger_payout(
         return (
             StatusCode::BAD_REQUEST,
             Json(serde_json::json!({ "error": "Plan has no beneficiaries" })),
-        ).into_response();
+        )
+            .into_response();
     }
 
     // 6. Iterate over beneficiaries and insert payout records
@@ -946,7 +952,8 @@ async fn trigger_payout(
         let share = if i == n - 1 {
             remaining
         } else {
-            let amount = (total_payout_dec * Decimal::from(b.allocation_bps)) / Decimal::from(10000);
+            let amount =
+                (total_payout_dec * Decimal::from(b.allocation_bps)) / Decimal::from(10000);
             let amount = amount.floor();
             remaining -= amount;
             amount
@@ -986,7 +993,8 @@ async fn trigger_payout(
 
         // Initiate payout distribution
         if is_fiat {
-            let (beneficiary_name, fiat_currency, bank_name, account_number) = parse_fiat_anchor_info(&b.fiat_anchor_info, &b.wallet_address);
+            let (beneficiary_name, fiat_currency, bank_name, account_number) =
+                parse_fiat_anchor_info(&b.fiat_anchor_info, &b.wallet_address);
             let token_amount_f64 = share.to_string().parse::<f64>().unwrap_or(0.0);
             let req = crate::stellar_anchor::AnchorPayoutRequest {
                 beneficiary_address: b.wallet_address.clone(),
@@ -1036,8 +1044,16 @@ async fn trigger_payout(
     }
 
     // 9. Invalidate cache
-    let beneficiary_addresses: Vec<String> = beneficiaries_rows.iter().map(|b| b.wallet_address.clone()).collect();
-    invalidate_plan_cache(&state.plan_cache, &plan.owner_address, &beneficiary_addresses).await;
+    let beneficiary_addresses: Vec<String> = beneficiaries_rows
+        .iter()
+        .map(|b| b.wallet_address.clone())
+        .collect();
+    invalidate_plan_cache(
+        &state.plan_cache,
+        &plan.owner_address,
+        &beneficiary_addresses,
+    )
+    .await;
 
     (StatusCode::OK, Json(payout_rows)).into_response()
 }
@@ -1055,8 +1071,12 @@ fn parse_fiat_anchor_info(info: &str, wallet_address: &str) -> (String, String, 
         return (
             parsed.name.unwrap_or_else(|| "Beneficiary".to_string()),
             parsed.currency.unwrap_or_else(|| "USD".to_string()),
-            parsed.bank.unwrap_or_else(|| "Stellar Anchor Bank".to_string()),
-            parsed.account.unwrap_or_else(|| format!("ACC-{}", &wallet_address[..8.min(wallet_address.len())])),
+            parsed
+                .bank
+                .unwrap_or_else(|| "Stellar Anchor Bank".to_string()),
+            parsed.account.unwrap_or_else(|| {
+                format!("ACC-{}", &wallet_address[..8.min(wallet_address.len())])
+            }),
         );
     }
 
@@ -1100,7 +1120,12 @@ fn parse_fiat_anchor_info(info: &str, wallet_address: &str) -> (String, String, 
 
     let account_number = format!("ACC-{}", &wallet_address[..8.min(wallet_address.len())]);
 
-    ("Beneficiary".to_string(), fiat_currency.to_string(), bank_name, account_number)
+    (
+        "Beneficiary".to_string(),
+        fiat_currency.to_string(),
+        bank_name,
+        account_number,
+    )
 }
 //
 // Handler: Get Anchor Payouts

@@ -354,9 +354,14 @@ async fn test_trigger_payout_invalid_signature() {
 
     let status = response.status();
     if status != StatusCode::UNAUTHORIZED {
-        let body_bytes = axum::body::to_bytes(response.into_body(), usize::MAX).await.unwrap();
+        let body_bytes = axum::body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .unwrap();
         let body_str = String::from_utf8(body_bytes.to_vec()).unwrap();
-        panic!("Expected 401 Unauthorized, got {}. Response body: {}", status, body_str);
+        panic!(
+            "Expected 401 Unauthorized, got {}. Response body: {}",
+            status, body_str
+        );
     }
 }
 
@@ -393,4 +398,3 @@ async fn test_trigger_payout_valid_signature_not_found() {
     // and reached the handler.
     assert_eq!(response.status(), StatusCode::INTERNAL_SERVER_ERROR);
 }
-
