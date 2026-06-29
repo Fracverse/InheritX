@@ -1,4 +1,5 @@
 import { AdminUser } from "./adminTypes";
+import { AdminMetrics } from "@/app/lib/api/admin";
 
 export const mockUsers: AdminUser[] = [
   {
@@ -110,3 +111,12 @@ export const mockUsers: AdminUser[] = [
     status: "active",
   },
 ];
+
+// Derived from mockUsers so metrics stay consistent with the users table
+export const mockAdminMetrics: AdminMetrics = {
+  total_users: mockUsers.filter((u) => u.status === "active").length, // 8
+  total_revenue: mockUsers.reduce((sum, u) => sum + u.tvl * 0.045, 0), // 4.5% yield on TVL
+  total_claims: mockUsers.filter((u) => u.kycStatus === "approved").length, // 5
+  active_plans: mockUsers.reduce((sum, u) => sum + u.activePlansCount, 0), // 21
+  total_plans: mockUsers.length, // 12
+};
