@@ -29,3 +29,4 @@ base64 = "0.21"
 stellar-strkey = "0.0.8"
 ed25519-dalek = { version = "2.1", features = ["pkcs8", "rand_core"] }
 redis = { version = "0.27", features = ["tokio-comp"] }
+printpdf = "0.7"

@@ -5,6 +5,7 @@ pub mod config;
 pub mod db;
 pub mod inactivity_watchdog;
 pub mod kyc_webhook;
+pub mod pdf_report;
 pub mod stellar_anchor;
 pub mod telemetry;
 pub mod ws;
