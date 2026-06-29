@@ -5,7 +5,9 @@ import { motion, AnimatePresence } from "framer-motion";
 import { Plus, Trash2, X, Save, AlertCircle, CheckCircle, Loader2 } from "lucide-react";
 import { plansAPI } from "@/app/lib/api/plans";
 import type { Plan, Beneficiary, UpdatePlanRequest } from "@/app/lib/api/plans";
+import { ApiError } from "@/app/lib/api/client";
 import { useWallet } from "@/context/WalletContext";
+import FiatAnchorDetailsForm from "./FiatAnchorDetailsForm";
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
@@ -23,6 +25,12 @@ const DEFAULT_BENEFICIARY: Omit<Beneficiary, "id"> = {
   wallet_address: "",
   name: "",
   allocation_percentage: 0,
+  fiat_anchor_info: JSON.stringify({
+    currency: "USD",
+    anchor_provider: "",
+    country: "",
+    accept_fees: false,
+  }),
 };
 
 function totalAllocation(beneficiaries: Beneficiary[]): number {
@@ -57,8 +65,7 @@ function BeneficiaryRow({
       animate={{ opacity: 1, y: 0 }}
       exit={{ opacity: 0, y: -8 }}
       transition={{ duration: 0.18 }}
-      className="grid grid-cols-[1fr_1fr_100px_36px] gap-3 items-start"
-    >
+      className="grid grid-cols-1 gap-3 items-start"    >
       <div className="flex flex-col gap-1">
         <label className="text-[10px] text-[#92A5A8] uppercase tracking-wider">
           Name
@@ -101,6 +108,15 @@ function BeneficiaryRow({
           className="bg-[#0A0F11] border border-[#2A3338] rounded-lg px-3 py-2 text-sm text-slate-200 placeholder-[#4A5568] focus:outline-none focus:border-[#33C5E0] transition-colors"
         />
       </div>
+
+        <div className="col-span-full">
+    <FiatAnchorDetailsForm
+      value={beneficiary.fiat_anchor_info}
+      onChange={(value) =>
+        onChange(index, "fiat_anchor_info", value)
+      }
+    />
+  </div>
 
       <button
         type="button"
@@ -223,10 +239,10 @@ export function EditInheritancePlanPanel({
       setTxStatus("success");
       setTimeout(() => onSaved(updated), 1200);
     } catch (err) {
+      const message = err instanceof ApiError ? err.message : "Failed to save changes.";
+      console.error("EditInheritancePlanPanel save error:", message, err);
       setTxStatus("error");
-      setErrorMessage(
-        err instanceof Error ? err.message : "Failed to save changes."
-      );
+      setErrorMessage(message);
     }
   };
 

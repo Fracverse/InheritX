@@ -1,7 +1,7 @@
 /**
  * Hook for managing inactivity countdown timer
- * Provides client-side active timer based on blockchain last-ping
  */
+
 import { useState, useEffect, useCallback, useRef } from "react";
 import { plansAPI } from "@/app/lib/api/plans";
 
@@ -12,7 +12,7 @@ export interface InactivityTimerState {
   seconds: number;
   lastPingTimestamp: number;
   isClaimable: boolean;
-  isSoonWarning: boolean; // True when <= 24 hours
+  isSoonWarning: boolean;
 }
 
 interface UseInactivityTimerOptions {
@@ -22,39 +22,33 @@ interface UseInactivityTimerOptions {
   warningThresholdHours?: number;
 }
 
-/**
- * Calculate time remaining from timestamps
- */
 function calculateTimeRemaining(
   lastPingTimestamp: number,
   inactivityPeriodDays: number
-): {
-  days: number;
-  hours: number;
-  minutes: number;
-  seconds: number;
-  totalSeconds: number;
-  isClaimable: boolean;
-} {
-  const claimableAt = lastPingTimestamp + inactivityPeriodDays * 24 * 60 * 60 * 1000;
-  const now = Date.now();
-  const remainingMs = Math.max(0, claimableAt - now);
+) {
+  const claimableAt =
+    lastPingTimestamp + inactivityPeriodDays * 24 * 60 * 60 * 1000;
+
+  const remainingMs = Math.max(0, claimableAt - Date.now());
   const isClaimable = remainingMs === 0;
 
   const totalSeconds = Math.floor(remainingMs / 1000);
-  const days = Math.floor(totalSeconds / (24 * 60 * 60));
-  const hours = Math.floor((totalSeconds % (24 * 60 * 60)) / (60 * 60));
-  const minutes = Math.floor((totalSeconds % (60 * 60)) / 60);
-  const seconds = totalSeconds % 60;
 
-  return { days, hours, minutes, seconds, totalSeconds, isClaimable };
+  return {
+    days: Math.floor(totalSeconds / (24 * 60 * 60)),
+    hours: Math.floor((totalSeconds % (24 * 60 * 60)) / (60 * 60)),
+    minutes: Math.floor((totalSeconds % (60 * 60)) / 60),
+    seconds: totalSeconds % 60,
+    totalSeconds,
+    isClaimable,
+  };
 }
 
 export function useInactivityTimer(options: UseInactivityTimerOptions) {
   const {
     planId,
     enabled = true,
-    pollIntervalMs = 5000, // Poll every 5 seconds for status
+    pollIntervalMs = 5000,
     warningThresholdHours = 24,
   } = options;
 
@@ -75,22 +69,21 @@ export function useInactivityTimer(options: UseInactivityTimerOptions) {
   const tickIntervalRef = useRef<NodeJS.Timeout | null>(null);
   const pollIntervalRef = useRef<NodeJS.Timeout | null>(null);
 
-  // Fetch initial inactivity status
   const fetchInactivityStatus = useCallback(async () => {
     if (!enabled) return;
 
     try {
       setLoading(true);
+
       const status = await plansAPI.getInactivityStatus(planId);
+
       setInactivityPeriodDays(status.inactivity_period_days);
       setError(null);
 
-      // Update timer state with fetched data
       const remaining = calculateTimeRemaining(
         status.last_ping_timestamp,
         status.inactivity_period_days
       );
-      const isSoonWarning = remaining.totalSeconds < warningThresholdHours * 60 * 60;
 
       setTimerState({
         days: remaining.days,
@@ -99,40 +92,52 @@ export function useInactivityTimer(options: UseInactivityTimerOptions) {
         seconds: remaining.seconds,
         lastPingTimestamp: status.last_ping_timestamp,
         isClaimable: status.is_claimable || remaining.isClaimable,
-        isSoonWarning,
+        isSoonWarning:
+          remaining.totalSeconds <
+          warningThresholdHours * 60 * 60,
       });
     } catch (err) {
-      setError(err instanceof Error ? err : new Error("Failed to fetch inactivity status"));
+      setError(
+        err instanceof Error
+          ? err
+          : new Error("Failed to fetch inactivity status")
+      );
     } finally {
       setLoading(false);
     }
   }, [planId, enabled, warningThresholdHours]);
 
-  // Update timer every second (client-side tick)
+  // Initial fetch + polling (FIXED)
   useEffect(() => {
-    if (!enabled || !inactivityPeriodDays) return;
+    if (!enabled) return;
 
-    // Start with immediate fetch
-    fetchInactivityStatus();
+    const init = async () => {
+      await fetchInactivityStatus();
+    };
 
-    // Set up polling for fresh data from blockchain
-    pollIntervalRef.current = setInterval(fetchInactivityStatus, pollIntervalMs);
+    init();
+
+    pollIntervalRef.current = setInterval(() => {
+      fetchInactivityStatus();
+    }, pollIntervalMs);
 
     return () => {
       if (pollIntervalRef.current) {
         clearInterval(pollIntervalRef.current);
       }
     };
-  }, [enabled, inactivityPeriodDays, pollIntervalMs, fetchInactivityStatus]);
+  }, [enabled, pollIntervalMs, fetchInactivityStatus]);
 
-  // Client-side tick (every second) for smooth countdown
+  // Local countdown ticker
   useEffect(() => {
-    if (!enabled || !inactivityPeriodDays) return;
+    if (!enabled || inactivityPeriodDays === null) return;
 
     const tick = () => {
       setTimerState((prev) => {
-        const remaining = calculateTimeRemaining(prev.lastPingTimestamp, inactivityPeriodDays);
-        const isSoonWarning = remaining.totalSeconds < warningThresholdHours * 60 * 60;
+        const remaining = calculateTimeRemaining(
+          prev.lastPingTimestamp,
+          inactivityPeriodDays
+        );
 
         return {
           days: remaining.days,
@@ -141,7 +146,9 @@ export function useInactivityTimer(options: UseInactivityTimerOptions) {
           seconds: remaining.seconds,
           lastPingTimestamp: prev.lastPingTimestamp,
           isClaimable: remaining.isClaimable,
-          isSoonWarning,
+          isSoonWarning:
+            remaining.totalSeconds <
+            warningThresholdHours * 60 * 60,
         };
       });
     };
@@ -155,22 +162,27 @@ export function useInactivityTimer(options: UseInactivityTimerOptions) {
     };
   }, [enabled, inactivityPeriodDays, warningThresholdHours]);
 
-  const ping = useCallback(
-    async (signedTransaction?: string) => {
-      try {
-        setError(null);
-        const updated = await plansAPI.pingKeepAlive(planId, signedTransaction);
-        // Refetch status to get updated timestamp
-        await fetchInactivityStatus();
-        return updated;
-      } catch (err) {
-        const error = err instanceof Error ? err : new Error("Keep-alive ping failed");
-        setError(error);
-        throw error;
-      }
-    },
-    [planId, fetchInactivityStatus]
-  );
+  const ping = useCallback(async (signedTransaction?: string) => {
+    try {
+      setError(null);
+
+      const updated = await plansAPI.pingKeepAlive(
+        planId,
+        signedTransaction
+      );
+
+      await fetchInactivityStatus();
+      return updated;
+    } catch (err) {
+      const error =
+        err instanceof Error
+          ? err
+          : new Error("Keep-alive ping failed");
+
+      setError(error);
+      throw error;
+    }
+  }, [planId, fetchInactivityStatus]);
 
   const refetch = useCallback(async () => {
     await fetchInactivityStatus();

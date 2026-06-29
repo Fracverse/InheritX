@@ -77,10 +77,10 @@ export function ReviewStep() {
               Ready to submit
             </p>
           </div>
-          <p className="text-xs text-[#92A5A8]">
-            All required information has been provided. Your KYC application will be
-            reviewed and you'll be notified of the status via email.
-          </p>
+         <p className="text-xs text-[#92A5A8]">
+  All required information has been provided. Your KYC application will be
+  reviewed and you&apos;ll be notified of the status via email.
+</p>
         </motion.div>
       )}
 

@@ -18,7 +18,7 @@ vi.mock("@/context/WalletContext", () => ({
 
 vi.mock("framer-motion", () => ({
   motion: {
-    div: ({ children, className, onClick, ...rest }: any) => (
+    div: ({ children, className, onClick, layout, ...rest }: any) => (
       <div className={className} onClick={onClick} {...rest}>
         {children}
       </div>
