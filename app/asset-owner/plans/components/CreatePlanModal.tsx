@@ -1,7 +1,8 @@
 "use client";
 
-import React, { useState } from "react";
+import React, { useState, useMemo } from "react";
 import { X, Plus, Trash2, Check, Loader } from "lucide-react";
+import YieldCalculator, { TOKEN_YIELD_RATES } from "./YieldCalculator";
 
 interface CreatePlanModalProps {
     onClose: () => void;
@@ -22,6 +23,15 @@ const initialBeneficiaries = [
     { name: "", email: "", relationship: "", allocatedPercentage: 100 },
 ];
 
+// Map form asset keys to TOKEN_YIELD_RATES keys
+const ASSET_TO_TOKEN: Record<string, string> = {
+    ERC20_TOKEN1: "ETH",
+    ERC20_TOKEN2: "BTC",
+    ERC20_TOKEN3: "USDT",
+    ERC20_TOKEN4: "USDC",
+    ERC20_TOKEN5: "XLM",
+};
+
 export default function CreatePlanModal({ onClose }: CreatePlanModalProps) {
     const [step, setStep] = useState<Step>("details");
     const [beneficiaries, setBeneficiaries] = useState(initialBeneficiaries);
@@ -33,6 +43,17 @@ export default function CreatePlanModal({ onClose }: CreatePlanModalProps) {
     const [assetAmount, setAssetAmount] = useState("");
     const [distributionMethod, setDistributionMethod] = useState("LUMP_SUM");
     const [transferDate, setTransferDate] = useState("");
+
+    // Derived values for yield calculator
+    const calculatorPrincipal = useMemo(() => {
+        const v = parseFloat(assetAmount);
+        return isNaN(v) || v <= 0 ? 1 : v;
+    }, [assetAmount]);
+
+    const calculatorToken = useMemo(
+        () => ASSET_TO_TOKEN[assetType] ?? "ETH",
+        [assetType]
+    );
 
     const currentStepIndex = STEPS.findIndex((s) => s.key === step);
 
@@ -73,7 +94,7 @@ export default function CreatePlanModal({ onClose }: CreatePlanModalProps) {
             onClick={onClose}
         >
             <div
-                className="bg-[#161E22] border border-[#1C252A] rounded-2xl w-full max-w-2xl max-h-[90vh] overflow-hidden"
+                className="bg-[#161E22] border border-[#1C252A] rounded-2xl w-full max-w-3xl max-h-[90vh] overflow-hidden"
                 onClick={(e) => e.stopPropagation()}
             >
                 {/* Header */}
@@ -133,7 +154,7 @@ export default function CreatePlanModal({ onClose }: CreatePlanModalProps) {
                 </div>
 
                 {/* Body */}
-                <div className="p-6 max-h-[50vh] overflow-y-auto">
+                <div className="p-6 max-h-[65vh] overflow-y-auto">
                     {/* Step 1: Details */}
                     {step === "details" && (
                         <div className="space-y-4">
@@ -176,6 +197,8 @@ export default function CreatePlanModal({ onClose }: CreatePlanModalProps) {
                                         <option value="ERC20_TOKEN1">ETH</option>
                                         <option value="ERC20_TOKEN2">BTC</option>
                                         <option value="ERC20_TOKEN3">USDT</option>
+                                        <option value="ERC20_TOKEN4">USDC</option>
+                                        <option value="ERC20_TOKEN5">XLM</option>
                                     </select>
                                 </div>
 
@@ -222,6 +245,13 @@ export default function CreatePlanModal({ onClose }: CreatePlanModalProps) {
                                     />
                                 </div>
                             </div>
+
+                            {/* ── Yield Calculator widget ── */}
+                            <YieldCalculator
+                                initialPrincipal={calculatorPrincipal}
+                                initialToken={calculatorToken}
+                                compact={false}
+                            />
                         </div>
                     )}
 
