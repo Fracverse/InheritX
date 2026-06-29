@@ -318,3 +318,83 @@ async fn test_ping_plan_invalid_signature() {
 
     assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
 }
+
+#[tokio::test]
+async fn test_trigger_payout_invalid_signature() {
+    let app = setup_app();
+
+    let body = json!({
+        "owner": "GDIW7P2XUXC4XZB452Y5Z774N4V27PUDHWTKWTQZ3KHYUGB743WEXG7T"
+    })
+    .to_string();
+
+    // Generate a valid signature for a different body
+    let (public_key, _correct_sig) = generate_valid_signature(
+        &body,
+        "0x1234567890abcdef1234567890abcdef1234567890abcdef1234567890abcdef",
+    );
+    let (_different_pub_key, invalid_signature) = generate_valid_signature(
+        "different body",
+        "0x1234567890abcdef1234567890abcdef1234567890abcdef1234567890abcdef",
+    );
+
+    let response = app
+        .oneshot(
+            Request::builder()
+                .method(http::Method::POST)
+                .uri("/api/plans/payout")
+                .header(http::header::CONTENT_TYPE, "application/json")
+                .header("X-Public-Key", public_key)
+                .header("X-Signature", invalid_signature)
+                .body(Body::from(body))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+
+    let status = response.status();
+    if status != StatusCode::UNAUTHORIZED {
+        let body_bytes = axum::body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let body_str = String::from_utf8(body_bytes.to_vec()).unwrap();
+        panic!(
+            "Expected 401 Unauthorized, got {}. Response body: {}",
+            status, body_str
+        );
+    }
+}
+
+#[tokio::test]
+async fn test_trigger_payout_valid_signature_not_found() {
+    let app = setup_app();
+
+    let body = json!({
+        "owner": "owner_address"
+    })
+    .to_string();
+
+    let (public_key, signature) = generate_valid_signature(
+        &body,
+        "0x1234567890abcdef1234567890abcdef1234567890abcdef1234567890abcdef",
+    );
+
+    let response = app
+        .oneshot(
+            Request::builder()
+                .method(http::Method::POST)
+                .uri("/api/plans/payout")
+                .header(http::header::CONTENT_TYPE, "application/json")
+                .header("X-Public-Key", public_key)
+                .header("X-Signature", signature)
+                .body(Body::from(body))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+
+    // Since the database is not actually running, this should return a DB connection error (500)
+    // rather than an unauthorized error (401), proving that the request successfully passed auth
+    // and reached the handler.
+    assert_eq!(response.status(), StatusCode::INTERNAL_SERVER_ERROR);
+}
