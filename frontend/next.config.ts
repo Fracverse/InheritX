@@ -44,6 +44,7 @@ const securityHeaders = [
 ];
 
 const nextConfig: NextConfig = {
+  transpilePackages: ["@allbridge/bridge-core-sdk"],
   images: {
     remotePatterns: [
       {

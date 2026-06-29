@@ -2,7 +2,6 @@ import "@testing-library/jest-dom";
 import { afterAll, afterEach, beforeAll, vi } from "vitest";
 import { server } from "./mocks/server";
 
-// Mock Stellar Freighter API
 vi.mock("@stellar/freighter-api", () => ({
   getAddress: vi.fn(),
   signTransaction: vi.fn(),
@@ -21,6 +20,33 @@ vi.mock("@creit.tech/stellar-wallets-kit", () => ({
     PUBLIC: "PUBLIC",
   },
   allowAllModules: vi.fn().mockReturnValue([]),
+}));
+
+vi.mock("@allbridge/bridge-core-sdk", () => ({
+  AllbridgeCoreSdk: vi.fn().mockImplementation(() => ({
+    chainDetailsMap: Promise.resolve({}),
+    getAmountToBeReceived: vi.fn().mockResolvedValue("95"),
+    getGasFeeOptions: vi.fn().mockResolvedValue([{ value: "1.5" }]),
+    getAverageTransferTime: vi.fn().mockResolvedValue(900),
+    getTransferStatus: vi.fn().mockResolvedValue({ destinationTransactionId: "dest-tx" }),
+    bridge: {
+      rawTxBuilder: {
+        send: vi.fn().mockResolvedValue({ txId: "0xabc", transferId: "transfer-1" }),
+      },
+    },
+  })),
+  ChainSymbol: {
+    ETH: "ETH",
+    BSC: "BSC",
+    POL: "POL",
+    ARB: "ARB",
+    OPT: "OPT",
+    AVA: "AVA",
+    SOL: "SOL",
+    SRB: "SRB",
+  },
+  Messenger: { ALLBRIDGE: "ALLBRIDGE" },
+  nodeRpcUrlsDefault: {},
 }));
 
 // Start MSW server before all tests
