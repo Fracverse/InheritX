@@ -1,9 +1,9 @@
 use axum::{
-    extract::{Query, State},
-    http::StatusCode,
-    http::{header::HeaderName, HeaderValue},
+    body::Body,
+    extract::{Path, Query, State},
+    http::{header::HeaderName, HeaderValue, StatusCode},
     middleware::from_fn,
-    response::IntoResponse,
+    response::{IntoResponse, Response},
     routing::{get, post},
     Json, Router,
 };
@@ -18,6 +18,7 @@ use uuid::Uuid;
 use crate::auth::signature_auth_middleware;
 use crate::cache::PlanCache;
 use crate::kyc_webhook::kyc_webhook_handler;
+use crate::pdf_report::{self, ReportData};
 use crate::stellar_anchor::AnchorRegistry;
 use crate::ws::{ws_handler, KycUpdateEvent};
 use crate::yield_calculator;
@@ -104,10 +105,6 @@ pub struct PayoutStatusResponse {
 }
 
 #[derive(Serialize)]
-struct ApiError {
-    error: String,
-}
-
 pub fn create_router(state: Arc<AppState>) -> Router {
     let cors = CorsLayer::new()
         .allow_origin(Any)
@@ -124,6 +121,7 @@ pub fn create_router(state: Arc<AppState>) -> Router {
     // Public or admin routes
     let public_routes = Router::new()
         .route("/api/plans", get(get_plans))
+        .route("/api/plans/:id/report", get(get_plan_report))
         .route("/api/anchor/payout-status", get(get_anchor_payouts))
         .route("/api/kyc/webhook", post(kyc_webhook_handler))
         .route("/api/kyc/status", get(get_kyc_status))
@@ -836,107 +834,121 @@ async fn ping_plan(
     )
     .await;
 
-    // 5. Return updated plan status and virtual balance
-    let virtual_balance = plan.amount + new_accrued_yield;
-    (
-        StatusCode::OK,
-        Json(PingResponse {
-            owner: plan.owner_address,
-            status: plan.status,
-            virtual_balance,
-        }),
-    )
-        .into_response()
-}
-// Handler: Trigger Payout
-// Contributors: Implement calculating final payout with yield, parsing fiat payout details,
-// submitting fiat payouts to AnchorRegistry, and marking the plan inactive
-async fn trigger_payout(
-    State(_state): State<Arc<AppState>>,
-    Json(_payload): Json<PayoutRequest>,
-) -> impl IntoResponse {
-    (
-        StatusCode::NOT_IMPLEMENTED,
-        "Payout trigger logic not implemented",
-    )
-}
-//
-// Handler: Get Anchor Payouts
-// Queries the payouts table filtered by beneficiary_address with pagination.
-async fn get_anchor_payouts(
+// Handler: Get Plan PDF Report
+// Generates a downloadable PDF audit report for a specific plan.
+async fn get_plan_report(
     State(state): State<Arc<AppState>>,
-    Query(query): Query<AnchorQuery>,
+    Path(plan_id): Path<uuid::Uuid>,
 ) -> impl IntoResponse {
-    let page = query.page.unwrap_or(1).max(1);
-    let page_size = query.page_size.unwrap_or(20).clamp(1, 100);
-    let offset = (page - 1) * page_size;
-    let address = query.beneficiary_address.as_deref();
-
-    let total: i64 = match sqlx::query_scalar(
-        r#"SELECT COUNT(*) FROM payouts WHERE ($1::text IS NULL OR beneficiary_address = $1)"#,
+    // 1. Load the plan.
+    let plan = match sqlx::query_as::<_, PlanRow>(
+        r#"
+        SELECT id, owner_address, token_address, amount, grace_period,
+               grace_period_seconds, earn_yield, last_ping, is_active,
+               status, yield_rate_bps, accrued_yield, created_at
+        FROM plans
+        WHERE id = $1
+        "#,
     )
-    .bind(address)
-    .fetch_one(&state.db_pool)
+    .bind(plan_id)
+    .fetch_optional(&state.db_pool)
     .await
     {
-        Ok(count) => count,
+        Ok(Some(p)) => p,
+        Ok(None) => {
+            return (
+                StatusCode::NOT_FOUND,
+                Json(serde_json::json!({ "error": "Plan not found" })),
+            )
+                .into_response();
+        }
         Err(e) => {
-            error!(error = %e, "Failed to count payouts");
+            error!(error = %e, %plan_id, "Failed to fetch plan for report");
             return (
                 StatusCode::INTERNAL_SERVER_ERROR,
-                Json(ApiError {
-                    error: "Database query failed".to_string(),
-                }),
+                Json(serde_json::json!({ "error": "Database error" })),
             )
                 .into_response();
         }
     };
 
-    let rows: Vec<PayoutRow> = match sqlx::query_as::<_, PayoutRow>(
+    // 2. Load beneficiaries.
+    let beneficiaries = match sqlx::query_as::<_, BeneficiaryRow>(
         r#"
-        SELECT
-            id,
-            plan_id,
-            beneficiary_address,
-            amount::text      AS amount,
-            payout_type::text AS payout_type,
-            status::text      AS status,
-            created_at
-        FROM payouts
-        WHERE ($1::text IS NULL OR beneficiary_address = $1)
-        ORDER BY created_at DESC
-        LIMIT $2 OFFSET $3
+        SELECT id, plan_id, wallet_address, allocation_bps, fiat_anchor_info
+        FROM beneficiaries
+        WHERE plan_id = $1
+        ORDER BY allocation_bps DESC
         "#,
     )
-    .bind(address)
-    .bind(page_size)
-    .bind(offset)
+    .bind(plan_id)
     .fetch_all(&state.db_pool)
     .await
     {
         Ok(rows) => rows,
         Err(e) => {
-            error!(error = %e, "Failed to query payouts");
+            error!(error = %e, %plan_id, "Failed to fetch beneficiaries for report");
             return (
                 StatusCode::INTERNAL_SERVER_ERROR,
-                Json(ApiError {
-                    error: "Database query failed".to_string(),
-                }),
+                Json(serde_json::json!({ "error": "Database error" })),
             )
                 .into_response();
         }
     };
 
-    (
-        StatusCode::OK,
-        Json(PayoutStatusResponse {
-            data: rows,
-            page,
-            page_size,
-            total,
-        }),
-    )
-        .into_response()
+    // 3. Compute live accrued yield (stored value + time elapsed since last ping).
+    let stored_yield = plan
+        .accrued_yield
+        .to_string()
+        .parse::<f64>()
+        .unwrap_or(0.0);
+    let accrued_yield =
+        compute_accrued_yield(&plan.amount, plan.yield_rate_bps, plan.last_ping) + stored_yield;
+
+    let report_data = ReportData {
+        plan,
+        beneficiaries,
+        accrued_yield,
+    };
+
+    // 4. Build PDF bytes on a blocking thread – avoids blocking the async executor.
+    let pdf_bytes = match tokio::task::spawn_blocking(move || pdf_report::build_pdf_bytes(report_data)).await
+    {
+        Ok(Ok(bytes)) => bytes,
+        Ok(Err(e)) => {
+            error!(error = %e, "PDF generation failed");
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(serde_json::json!({ "error": "Failed to generate PDF" })),
+            )
+                .into_response();
+        }
+        Err(e) => {
+            error!(error = %e, "PDF generation task panicked");
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(serde_json::json!({ "error": "PDF generation task failed" })),
+            )
+                .into_response();
+        }
+    };
+
+    // 5. Return the PDF with appropriate download headers.
+    let filename = format!("inheritance-audit-{plan_id}.pdf");
+    let content_disposition = format!("attachment; filename=\"{filename}\"");
+
+    let mut response = Response::new(Body::from(pdf_bytes));
+    *response.status_mut() = StatusCode::OK;
+    response.headers_mut().insert(
+        axum::http::header::CONTENT_TYPE,
+        HeaderValue::from_static("application/pdf"),
+    );
+    response.headers_mut().insert(
+        axum::http::header::CONTENT_DISPOSITION,
+        HeaderValue::from_str(&content_disposition)
+            .unwrap_or_else(|_| HeaderValue::from_static("attachment; filename=\"report.pdf\"")),
+    );
+    response
 }
 
 // --- KYC Endpoints ---
@@ -947,7 +959,6 @@ pub struct KYCStatusResponse {
     pub kyc_status: String,
     pub submitted_at: Option<DateTime<Utc>>,
     pub approved_at: Option<DateTime<Utc>>,
-    pub rejected_at: Option<DateTime<Utc>>,
     pub rejection_reason: Option<String>,
     pub provider_reference: Option<String>,
 }
@@ -1017,28 +1028,8 @@ async fn submit_kyc(Json(_payload): Json<KYCSubmitRequest>) -> impl IntoResponse
         rejection_reason: None,
         provider_reference: Some("ref-001".to_string()),
     };
-
     (StatusCode::OK, Json(response))
-}
-
-// Upload KYC document
-async fn upload_kyc_document() -> impl IntoResponse {
-    // In a real implementation, this would:
-    // 1. Receive multipart form data with file and document_type
-    // 2. Validate file (size, type)
-    // 3. Upload to cloud storage (S3, etc.)
-    // 4. Store metadata in database
-    // 5. Return document_id and URL
-
-    let response = KYCDocumentResponse {
-        document_id: Uuid::new_v4().to_string(),
-        url: "https://example.com/documents/doc-001".to_string(),
-    };
-
-    (StatusCode::OK, Json(response))
-}
-
-// Check if KYC is required
+  // Check if KYC is required
 async fn is_kyc_required() -> impl IntoResponse {
     #[derive(Debug, Serialize)]
     struct RequiredResponse {
