@@ -1,10 +1,13 @@
 "use client";
 import { useWallet } from "@/context/WalletContext";
 import { ConnectButton } from "@/components/ConnectButton";
+import { LanguageSwitcher } from "@/components/LanguageSwitcher";
 import { formatAddress } from "@/util/address";
+import { useTranslations } from "next-intl";
 
 export function DashboardHeader() {
   const { isConnected, address } = useWallet();
+  const t = useTranslations("dashboardHeader");
 
   return (
     <header className="h-14 flex items-center justify-between px-6 border-b border-white/10 bg-[#0d1117] shrink-0">
@@ -16,7 +19,7 @@ export function DashboardHeader() {
           }`}
         />
         <span className="text-xs text-gray-500">
-          {isConnected ? "Wallet Connected" : "Wallet Disconnected"}
+          {isConnected ? t("walletConnected") : t("walletDisconnected")}
         </span>
         {isConnected && address && (
           <span className="text-xs text-primary font-mono ml-1">
@@ -25,8 +28,11 @@ export function DashboardHeader() {
         )}
       </div>
 
-      {/* Right side — connect button or address dropdown */}
-      <ConnectButton targetUI="dashboard" />
+      {/* Right side */}
+      <div className="flex items-center gap-3">
+        <LanguageSwitcher />
+        <ConnectButton targetUI="dashboard" />
+      </div>
     </header>
   );
 }

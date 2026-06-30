@@ -1,9 +1,11 @@
 "use client";
 import { useState } from "react";
 import { useAdminAuth } from "@/context/AdminAuthContext";
+import { useTranslations } from "next-intl";
 
 export default function AdminLoginPage() {
   const { login } = useAdminAuth();
+  const t = useTranslations("admin");
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
   const [error, setError] = useState("");
@@ -26,14 +28,14 @@ export default function AdminLoginPage() {
       <div className="w-full max-w-sm">
         <div className="mb-8 text-center">
           <h1 className="text-2xl font-semibold text-foreground">InheritX</h1>
-          <p className="text-sm text-gray-500 mt-1">Admin Portal</p>
+          <p className="text-sm text-gray-500 mt-1">{t("adminPortal")}</p>
         </div>
         <div className="bg-white/3 border border-white/10 rounded-2xl p-6">
           <h2 className="text-base font-medium text-foreground mb-6">
-            Sign in to continue
+            {t("signIn")}
           </h2>
           <div className="mb-4">
-            <label className="block text-xs text-gray-500 mb-1.5">Email address</label>
+            <label className="block text-xs text-gray-500 mb-1.5">{t("emailAddress")}</label>
             <input
               type="email"
               value={email}
@@ -43,7 +45,7 @@ export default function AdminLoginPage() {
             />
           </div>
           <div className="mb-6">
-            <label className="block text-xs text-gray-500 mb-1.5">Password</label>
+            <label className="block text-xs text-gray-500 mb-1.5">{t("password")}</label>
             <input
               type="password"
               value={password}
@@ -63,7 +65,7 @@ export default function AdminLoginPage() {
             disabled={isLoading || !email || !password}
             className="w-full py-2.5 text-sm font-medium rounded-lg bg-primary text-black hover:bg-primary/90 disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
           >
-            {isLoading ? "Signing in..." : "Sign in"}
+            {isLoading ? t("signingIn") : t("signInButton")}
           </button>
         </div>
       </div>

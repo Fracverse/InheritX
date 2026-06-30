@@ -1,10 +1,15 @@
+"use client";
+
 import React, { useState, useEffect } from "react";
 import Image from "next/image";
-import { ArrowDownRight, Globe, Shield, Zap, Menu, X } from "lucide-react";
+import { Menu, X } from "lucide-react";
 import Link from "next/link";
 import { ConnectButton } from "@/components/ConnectButton";
+import { LanguageSwitcher } from "@/components/LanguageSwitcher";
+import { useTranslations } from "next-intl";
 
 const Navbar = () => {
+  const t = useTranslations("navbar");
   const [isMobileMenuOpen, setIsMobileMenuOpen] = useState(false);
   const [isScrolled, setIsScrolled] = useState(false);
 
@@ -18,6 +23,7 @@ const Navbar = () => {
   }, []);
 
   const closeMenu = () => setIsMobileMenuOpen(false);
+
   return (
     <header
       className={`sticky top-0 z-50 backdrop-blur-xs transition-all duration-300 ${
@@ -48,25 +54,25 @@ const Navbar = () => {
               href="/"
               className="hover:text-cyan-400 transition-colors focus-visible:outline-offset-2 focus-visible:outline-2 focus-visible:outline-cyan-400 rounded-sm px-1"
             >
-              Home
+              {t("home")}
             </Link>
             <Link
               href="/how-it-works"
               className="hover:text-cyan-400 transition-colors focus-visible:outline-offset-2 focus-visible:outline-2 focus-visible:outline-cyan-400 rounded-sm px-1"
             >
-              How it Works
+              {t("howItWorks")}
             </Link>
             <Link
               href="/faqs"
               className="hover:text-cyan-400 transition-colors focus-visible:outline-offset-2 focus-visible:outline-2 focus-visible:outline-cyan-400 rounded-sm px-1"
             >
-              FAQs
+              {t("faqs")}
             </Link>
             <Link
               href="/contact"
               className="hover:text-cyan-400 transition-colors focus-visible:outline-offset-2 focus-visible:outline-2 focus-visible:outline-cyan-400 rounded-sm px-1"
             >
-              Contact
+              {t("contact")}
             </Link>
           </div>
         </div>
@@ -92,40 +98,39 @@ const Navbar = () => {
               onClick={closeMenu}
               className="text-slate-300 hover:text-cyan-400 py-2 focus-visible:outline-offset-2 focus-visible:outline-2 focus-visible:outline-cyan-400 rounded-sm px-2 uppercase"
             >
-              Home
+              {t("home")}
             </Link>
             <Link
               href="/how-it-works"
               onClick={closeMenu}
               className="text-slate-300 hover:text-cyan-400 py-2 focus-visible:outline-offset-2 focus-visible:outline-2 focus-visible:outline-cyan-400 rounded-sm px-2 uppercase"
             >
-              How it Works
+              {t("howItWorks")}
             </Link>
             <Link
               href="/faqs"
               onClick={closeMenu}
               className="text-slate-300 hover:text-cyan-400 py-2 focus-visible:outline-offset-2 focus-visible:outline-2 focus-visible:outline-cyan-400 rounded-sm px-2 uppercase"
             >
-              FAQs
+              {t("faqs")}
             </Link>
             <Link
               href="/contact"
               onClick={closeMenu}
               className="text-slate-300 hover:text-cyan-400 py-2 focus-visible:outline-offset-2 focus-visible:outline-2 focus-visible:outline-cyan-400 rounded-sm px-2 uppercase"
             >
-              Contact
+              {t("contact")}
             </Link>
-
-            <button
-              className="flex justify-center items-center gap-4 text-[14px] border-[0.5px] border-[#33C5E03D] bg-[#161E22] px-4 py-3 rounded-lg text-slate-300 hover:border-cyan-400 transition-all w-full focus-visible:outline-offset-2 focus-visible:outline-2 focus-visible:outline-cyan-400 active:scale-95"
-              aria-label="Connect wallet"
-            >
-              Connect Wallet <ArrowDownRight size={16} aria-hidden={true} />
-            </button>
+            <LanguageSwitcher />
           </div>
         )}
 
-        <ConnectButton />
+        <div className="flex items-center gap-3">
+          <div className="hidden md:block">
+            <LanguageSwitcher />
+          </div>
+          <ConnectButton />
+        </div>
       </nav>
     </header>
   );

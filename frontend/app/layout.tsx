@@ -5,6 +5,8 @@ import { WalletProvider } from "@/context/WalletContext";
 import { AdminAuthProvider } from "@/context/AdminAuthContext";
 import { KYCProvider } from "@/context/KYCContext";
 import { WalletModal } from "@/components/WalletModal";
+import { NextIntlClientProvider } from "next-intl";
+import { getLocale, getMessages } from "next-intl/server";
 
 import {
   OrganizationStructuredData,
@@ -79,19 +81,16 @@ export const viewport: Viewport = {
 
 import { Vitals } from "@/app/components/Vitals";
 
-export default function RootLayout({
+export default async function RootLayout({
   children,
 }: Readonly<{
   children: React.ReactNode;
 }>) {
-  // We need to import these dynamically or ensure "use client" wraps them if passing context
-  // But Layout is a Server Component by default in Next.js App Router.
-  // We cannot use Context directly in a Server Component layout.
-  // So we need a "Providers" client component or assume WalletProvider is "use client".
-  // WalletProvider IS "use client".
+  const locale = await getLocale();
+  const messages = await getMessages();
 
   return (
-    <html lang="en" suppressHydrationWarning>
+    <html lang={locale} suppressHydrationWarning>
       <head>
         <meta name="color-scheme" content="dark" />
         <meta name="apple-mobile-web-app-capable" content="yes" />
@@ -110,14 +109,16 @@ export default function RootLayout({
         suppressHydrationWarning
       >
         <Vitals />
-        <AdminAuthProvider>
-          <WalletProvider>
-            <KYCProvider>
-              <main className="">{children}</main>
-              <WalletModal />
-            </KYCProvider>
-          </WalletProvider>
-        </AdminAuthProvider>
+        <NextIntlClientProvider locale={locale} messages={messages}>
+          <AdminAuthProvider>
+            <WalletProvider>
+              <KYCProvider>
+                <main className="">{children}</main>
+                <WalletModal />
+              </KYCProvider>
+            </WalletProvider>
+          </AdminAuthProvider>
+        </NextIntlClientProvider>
       </body>
     </html>
   );

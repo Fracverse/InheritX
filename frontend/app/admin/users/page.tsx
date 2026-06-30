@@ -5,10 +5,12 @@ import { AdminUser, KYCStatus } from "@/lib/adminTypes";
 import { SearchFilterBar } from "@/components/admin/SearchFilterBar";
 import { UserManagementTable } from "@/components/admin/UserManagementTable";
 import { Pagination } from "@/components/admin/Pagination";
+import { useTranslations } from "next-intl";
 
 const PAGE_SIZE = 10;
 
 export default function AdminUsersPage() {
+  const t = useTranslations("admin");
   const [users, setUsers] = useState<AdminUser[]>(mockUsers);
   const [search, setSearch] = useState("");
   const [kycFilter, setKycFilter] = useState<KYCStatus | "all">("all");
@@ -71,29 +73,20 @@ export default function AdminUsersPage() {
       {/* Header */}
       <div className="mb-8">
         <h1 className="text-2xl font-semibold text-foreground">
-          User Management
+          {t("userManagement")}
         </h1>
         <p className="text-sm text-gray-500 mt-1">
-          Manage users, KYC approvals, and active plans.
+          {t("userManagementDesc")}
         </p>
       </div>
 
       {/* Stats row */}
       <div className="grid grid-cols-2 sm:grid-cols-4 gap-4 mb-8">
         {[
-          { label: "Total Users", value: users.length },
-          {
-            label: "KYC Pending",
-            value: users.filter((u) => u.kycStatus === "pending").length,
-          },
-          {
-            label: "Active Users",
-            value: users.filter((u) => u.status === "active").length,
-          },
-          {
-            label: "Suspended",
-            value: users.filter((u) => u.status === "suspended").length,
-          },
+          { label: t("totalUsers"), value: users.length },
+          { label: t("kycPending"), value: users.filter((u) => u.kycStatus === "pending").length },
+          { label: t("activeUsers"), value: users.filter((u) => u.status === "active").length },
+          { label: t("suspended"), value: users.filter((u) => u.status === "suspended").length },
         ].map((stat) => (
           <div
             key={stat.label}
@@ -115,7 +108,7 @@ export default function AdminUsersPage() {
 
       {/* Results count */}
       <p className="text-xs text-gray-500 mb-3">
-        Showing {paginated.length} of {filtered.length} users
+        {t("showing")} {paginated.length} {t("of")} {filtered.length} {t("users")}
       </p>
 
       {/* Table */}

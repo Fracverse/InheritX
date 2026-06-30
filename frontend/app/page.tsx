@@ -5,8 +5,10 @@ import Image from "next/image";
 import dynamic from "next/dynamic";
 import { ArrowUpRight, Menu, X } from "lucide-react";
 import { ConnectButton } from "@/components/ConnectButton";
+import { LanguageSwitcher } from "@/components/LanguageSwitcher";
 import Link from "next/link";
 import Footer from "./components/Footer";
+import { useTranslations } from "next-intl";
 
 // --- Dynamic Imports for Performance ---
 
@@ -28,6 +30,9 @@ const BenefitsSection = dynamic(() => import("./components/landing/BenefitsSecti
 // --- Main Page ---
 
 export default function InheritXLanding() {
+  const t = useTranslations("landing");
+  const tNav = useTranslations("navbar");
+
   const [isMobileMenuOpen, setIsMobileMenuOpen] = useState(false);
   const [isScrolled, setIsScrolled] = useState(false);
 
@@ -71,25 +76,25 @@ export default function InheritXLanding() {
                 href="#hero"
                 className="hover:text-cyan-400 transition-colors focus-visible:outline-offset-2 focus-visible:outline-2 focus-visible:outline-cyan-400 rounded-sm px-1"
               >
-                Home
+                {tNav("home")}
               </a>
               <a
                 href="/how-it-works"
                 className="hover:text-cyan-400 transition-colors focus-visible:outline-offset-2 focus-visible:outline-2 focus-visible:outline-cyan-400 rounded-sm px-1"
               >
-                How it Works
+                {tNav("howItWorks")}
               </a>
               <Link
                 href="/faqs"
                 className="hover:text-cyan-400 transition-colors focus-visible:outline-offset-2 focus-visible:outline-2 focus-visible:outline-cyan-400 rounded-sm px-1"
               >
-                FAQs
+                {tNav("faqs")}
               </Link>
               <Link
                 href="/contact"
                 className="hover:text-cyan-400 transition-colors focus-visible:outline-offset-2 focus-visible:outline-2 focus-visible:outline-cyan-400 rounded-sm px-1"
               >
-                Contact
+                {tNav("contact")}
               </Link>
             </div>
           </div>
@@ -115,33 +120,35 @@ export default function InheritXLanding() {
                 onClick={closeMenu}
                 className="text-slate-300 hover:text-cyan-400 py-2 focus-visible:outline-offset-2 focus-visible:outline-2 focus-visible:outline-cyan-400 rounded-sm px-2 uppercase"
               >
-                Home
+                {tNav("home")}
               </a>
               <a
                 href="/how-it-works"
                 onClick={closeMenu}
                 className="text-slate-300 hover:text-cyan-400 py-2 focus-visible:outline-offset-2 focus-visible:outline-2 focus-visible:outline-cyan-400 rounded-sm px-2 uppercase"
               >
-                How it Works
+                {tNav("howItWorks")}
               </a>
               <Link
                 href="/faqs"
                 onClick={closeMenu}
                 className="text-slate-300 hover:text-cyan-400 py-2 focus-visible:outline-offset-2 focus-visible:outline-2 focus-visible:outline-cyan-400 rounded-sm px-2 uppercase"
               >
-                FAQs
+                {tNav("faqs")}
               </Link>
               <Link
                 href="/contact"
                 onClick={closeMenu}
                 className="text-slate-300 hover:text-cyan-400 py-2 focus-visible:outline-offset-2 focus-visible:outline-2 focus-visible:outline-cyan-400 rounded-sm px-2 uppercase"
               >
-                Contact
+                {tNav("contact")}
               </Link>
+              <LanguageSwitcher />
               <ConnectButton />
             </div>
           )}
-          <div className="md:block hidden">
+          <div className="md:flex hidden items-center gap-3">
+            <LanguageSwitcher />
             <ConnectButton />
           </div>
         </nav>
@@ -151,22 +158,20 @@ export default function InheritXLanding() {
       <section id="hero" className="w-full h-full relative pb-20 md:pb-32 px-6 md:px-8 bg-transparent" role="region" aria-label="Hero section">
         <div className="max-w-7xl mx-auto relative z-10 pt-28 md:pt-48 flex flex-col items-start">
           <h1 className="text-4xl md:text-7xl font-bold text-white mb-6 leading-[1.2] md:leading-[1.1] animate-slide-up">
-            Yield-bearing, fiat-native <br />
-            digital inheritance on Stellar.
+            {t("heroTitle")}
           </h1>
           <p
             className="text-[16px] md:text-[18px] text-[#FCFFFF] mb-8 md:mb-10 leading-relaxed max-w-md md:max-w-none animate-slide-up"
             style={{ animationDelay: "0.2s" }}
           >
-            InheritX helps you secure yield-earning inheritance plans with mass payouts
-            <br className="hidden md:block" /> and direct local fiat off-ramping to bank accounts or mobile money via Stellar anchors.
+            {t("heroSubtitle")}
           </p>
           <button
             className="flex items-center gap-2 px-8 py-3 rounded-t-lg rounded-b-[18px] bg-[#33C5E0] text-black font-semibold cursor-pointer transition-all duration-300 hover:bg-cyan-300 active:scale-95 focus-visible:outline-offset-2 focus-visible:outline-2 focus-visible:outline-cyan-400 animate-slide-up"
             style={{ animationDelay: "0.3s" }}
             aria-label="Start creating your inheritance plan now"
           >
-            Start Now <ArrowUpRight size={16} aria-hidden={true} />
+            {t("startNow")} <ArrowUpRight size={16} aria-hidden={true} />
           </button>
         </div>
       </section>
