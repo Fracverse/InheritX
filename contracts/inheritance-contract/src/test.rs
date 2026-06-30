@@ -290,6 +290,78 @@ fn test_create_plan_invalid_basis_points() {
 }
 
 #[test]
+fn test_create_plan_invalid_allocation_shares_total() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let contract_id = env.register_contract(None, InheritanceContract);
+    let client = InheritanceContractClient::new(&env, &contract_id);
+
+    let token_id = env.register_contract(None, mock_token::MockToken);
+    let token_client = mock_token::MockTokenClient::new(&env, &token_id);
+
+    let owner = Address::generate(&env);
+    token_client.mint(&owner, &1000);
+
+    let beneficiary1 = Beneficiary {
+        address: Address::generate(&env),
+        allocation_bps: 10000,
+        fiat_anchor_info: String::from_str(&env, "NGN_BANK"),
+    };
+
+    let beneficiary2 = Beneficiary {
+        address: Address::generate(&env),
+        allocation_bps: 5000, // Total = 15000 BPS (more than 10000)
+        fiat_anchor_info: String::from_str(&env, "NGN_BANK"),
+    };
+
+    let result = client.try_create_plan(
+        &owner,
+        &token_id,
+        &500,
+        &Vec::from_array(&env, [beneficiary1, beneficiary2]),
+        &3600,
+        &true,
+        &500,
+    );
+
+    assert_eq!(result, Err(Ok(Error::InvalidBasisPoints)));
+}
+
+#[test]
+fn test_create_plan_invalid_allocation_shares_zero() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let contract_id = env.register_contract(None, InheritanceContract);
+    let client = InheritanceContractClient::new(&env, &contract_id);
+
+    let token_id = env.register_contract(None, mock_token::MockToken);
+    let token_client = mock_token::MockTokenClient::new(&env, &token_id);
+
+    let owner = Address::generate(&env);
+    token_client.mint(&owner, &1000);
+
+    let beneficiary = Beneficiary {
+        address: Address::generate(&env),
+        allocation_bps: 0, // Invalid zero allocation
+        fiat_anchor_info: String::from_str(&env, "NGN_BANK"),
+    };
+
+    let result = client.try_create_plan(
+        &owner,
+        &token_id,
+        &500,
+        &Vec::from_array(&env, [beneficiary]),
+        &3600,
+        &true,
+        &500,
+    );
+
+    assert_eq!(result, Err(Ok(Error::InvalidAllocationShares)));
+}
+
+#[test]
 fn test_create_plan_already_exists() {
     let env = Env::default();
     env.mock_all_auths();

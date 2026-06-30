@@ -401,21 +401,30 @@ async fn create_plan(
             )
                 .into_response();
         }
+        if b.allocation_bps == 0 {
+            return (
+                StatusCode::BAD_REQUEST,
+                Json(serde_json::json!({ "error": "Beneficiary allocation_bps cannot be zero" })),
+            )
+                .into_response();
+        }
         if b.allocation_bps > 10000 {
             return (
                 StatusCode::BAD_REQUEST,
                 Json(serde_json::json!({ "error": "Beneficiary allocation_bps cannot exceed 10000" })),
-            ).into_response();
+            )
+                .into_response();
         }
         total_bps += b.allocation_bps;
     }
     if total_bps != 10000 {
         return (
             StatusCode::BAD_REQUEST,
-            Json(serde_json::json!({
-                "error": format!("Total allocation_bps must be exactly 10000 (100%), got {}", total_bps)
-            })),
-        ).into_response();
+            Json(
+                serde_json::json!({ "error": "Total allocation_bps must be exactly 10000 (100%)" }),
+            ),
+        )
+            .into_response();
     }
 
     // Convert amount to rust_decimal::Decimal
