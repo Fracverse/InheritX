@@ -5,8 +5,8 @@ use crate::middleware::{
 use axum::http::{HeaderValue, Method};
 use axum::{
     extract::{Query, State},
+    http::header::HeaderName,
     http::StatusCode,
-    http::{header::HeaderName, HeaderValue},
     middleware::from_fn,
     response::IntoResponse,
     routing::{get, post},
@@ -17,7 +17,6 @@ use rust_decimal::Decimal;
 use serde::{Deserialize, Serialize};
 use std::sync::Arc;
 use tower_http::cors::CorsLayer;
-use tower_http::cors::{Any, CorsLayer};
 use tracing::error;
 use uuid::Uuid;
 
