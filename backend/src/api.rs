@@ -9,7 +9,7 @@ use axum::{
     http::StatusCode,
     middleware::from_fn,
     response::IntoResponse,
-    routing::{get, post},
+    routing::{get, post, put},
     Json, Router,
 };
 use chrono::{DateTime, Utc};
@@ -20,7 +20,8 @@ use tower_http::cors::CorsLayer;
 use tracing::error;
 use uuid::Uuid;
 
-use crate::auth::signature_auth_middleware;
+use crate::admin::{list_users, update_user_kyc};
+use crate::auth::{jwt_auth_middleware, signature_auth_middleware};
 use crate::cache::PlanCache;
 use crate::kyc_webhook::kyc_webhook_handler;
 use crate::metrics::{latency_middleware, metrics_handler};
@@ -140,6 +141,12 @@ pub fn create_router(state: Arc<AppState>) -> Router {
         .route("/api/plans/payout", post(trigger_payout))
         .route_layer(from_fn(signature_auth_middleware));
 
+    // Admin routes requiring JWT authentication
+    let admin_routes = Router::new()
+        .route("/api/admin/users", get(list_users))
+        .route("/api/admin/users/:address/kyc", put(update_user_kyc))
+        .route_layer(from_fn(jwt_auth_middleware));
+
     // Public or admin routes
     let public_routes = Router::new()
         .route("/api/plans", get(get_plans))
@@ -154,6 +161,7 @@ pub fn create_router(state: Arc<AppState>) -> Router {
 
     Router::new()
         .merge(user_routes)
+        .merge(admin_routes)
         .merge(public_routes)
         .layer(axum::middleware::from_fn(move |req, next| {
             rate_limit_middleware(req, next, store.clone(), config.clone())
