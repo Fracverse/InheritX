@@ -1,3 +1,8 @@
+use crate::middleware::{
+    csp_layer, hsts_layer, rate_limit_middleware, referrer_policy_layer,
+    x_content_type_options_layer, x_frame_options_layer, RateLimitConfig, RateLimitStore,
+};
+use axum::http::{HeaderValue, Method};
 use axum::{
     extract::{Query, State},
     http::StatusCode,
@@ -12,11 +17,6 @@ use rust_decimal::Decimal;
 use serde::{Deserialize, Serialize};
 use std::sync::Arc;
 use tower_http::cors::CorsLayer;
-use axum::http::{Method, HeaderValue};
-use crate::middleware::{
-    rate_limit_middleware, RateLimitConfig, RateLimitStore,
-    hsts_layer, csp_layer, x_frame_options_layer, x_content_type_options_layer, referrer_policy_layer,
-};
 use tower_http::cors::{Any, CorsLayer};
 use tracing::error;
 use uuid::Uuid;
@@ -118,7 +118,11 @@ struct ApiError {
 pub fn create_router(state: Arc<AppState>) -> Router {
     // Strict CORS: only allow specific origins, methods, and headers
     let cors = CorsLayer::new()
-        .allow_origin("https://inheritx.vercel.app".parse::<HeaderValue>().unwrap())
+        .allow_origin(
+            "https://inheritx.vercel.app"
+                .parse::<HeaderValue>()
+                .unwrap(),
+        )
         .allow_methods([Method::GET, Method::POST, Method::OPTIONS])
         .allow_headers([
             axum::http::header::CONTENT_TYPE,
@@ -1372,4 +1376,3 @@ async fn get_kyc_requirements() -> impl IntoResponse {
 
     (StatusCode::OK, Json(response))
 }
-

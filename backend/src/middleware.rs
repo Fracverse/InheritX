@@ -1,4 +1,4 @@
-﻿/// Rate limiting and security-header middleware for InheritX.
+/// Rate limiting and security-header middleware for InheritX.
 use std::{
     net::IpAddr,
     sync::Arc,
@@ -114,7 +114,8 @@ pub fn x_frame_options_layer() -> tower_http::set_header::SetResponseHeaderLayer
 }
 
 /// X-Content-Type-Options: nosniff layer.
-pub fn x_content_type_options_layer() -> tower_http::set_header::SetResponseHeaderLayer<HeaderValue> {
+pub fn x_content_type_options_layer() -> tower_http::set_header::SetResponseHeaderLayer<HeaderValue>
+{
     tower_http::set_header::SetResponseHeaderLayer::if_not_present(
         axum::http::header::X_CONTENT_TYPE_OPTIONS,
         HeaderValue::from_static("nosniff"),

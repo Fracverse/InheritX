@@ -1,10 +1,10 @@
-﻿use axum::{
+use axum::{
     body::Body,
     http::{Request, StatusCode},
     routing::get,
     Router,
 };
-use inheritx_backend::middleware::{RateLimitConfig, RateLimitStore, rate_limit_middleware};
+use inheritx_backend::middleware::{rate_limit_middleware, RateLimitConfig, RateLimitStore};
 use std::sync::Arc;
 use std::time::Duration;
 use tower::ServiceExt;
@@ -98,7 +98,11 @@ async fn test_heavy_mock_traffic_triggers_rate_limit() {
     }
 
     // At least 20 requests should have been rate limited
-    assert!(limited_count >= 20, "Expected at least 20 limited, got {}", limited_count);
+    assert!(
+        limited_count >= 20,
+        "Expected at least 20 limited, got {}",
+        limited_count
+    );
 }
 
 #[tokio::test]
