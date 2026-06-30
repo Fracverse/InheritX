@@ -1,7 +1,6 @@
 #![no_std]
-use soroban_sdk::{contract, contracterror, contractimpl, contracttype, Address, Env, String, Symbol, Vec};
 use soroban_sdk::{
-    contract, contracterror, contractimpl, contracttype, symbol_short, Address, Env, String, Vec,
+    contract, contracterror, contractimpl, contracttype, symbol_short, Address, Env, String, Symbol, Vec,
 };
 
 const MAX_BENEFICIARIES: u32 = 100;
@@ -98,7 +97,10 @@ impl InheritanceContract {
     }
 
     fn emit_bridge_payout_event(env: &Env, event: &BridgePayoutEvent) {
-        let topic = (Symbol::short("BridgePayout"), env.current_contract_address());
+        let topic = (
+            Symbol::short("BridgePayout"),
+            env.current_contract_address(),
+        );
         env.events().publish(topic, event);
     }
 
