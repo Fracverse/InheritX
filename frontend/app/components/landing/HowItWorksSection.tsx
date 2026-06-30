@@ -1,7 +1,12 @@
+"use client";
+
 import { TreePine, Sprout, Leaf, ArrowUpRight } from "lucide-react";
 import Image from "next/image";
+import { useTranslations } from "next-intl";
 
 export default function HowItWorksSection() {
+  const t = useTranslations("landing");
+
   return (
     <section
       id="how-it-works"
@@ -47,24 +52,21 @@ export default function HowItWorksSection() {
                 aria-hidden={true}
               />
               <span className="text-[#FCFFFF] font-bold text-[18px]">
-                How It Works
+                {t("howItWorksTitle")}
               </span>
               <span className="text-[#FCFFFF] text-[14px] mt-1">
-                Here&apos;s how your legacy flows
+                {t("howItWorksSubtitle")}
               </span>
             </div>
           </div>
 
           {/* Step 1 - Bottom Position */}
           <div className="text-center relative group z-10 animate-scale-in">
-            {/* Connecting dot on line */}
             <div
               className="w-4 h-4 bg-slate-700 rounded-full mx-auto md:absolute md:top-1/2 md:left-1/2 md:-translate-x-1/2 md:-translate-y-1/2 group-hover:bg-cyan-400 transition-all duration-300 z-20 mb-4 md:mb-0 will-change-colors"
               role="presentation"
               aria-hidden={true}
             ></div>
-
-            {/* Content below line */}
             <div className="flex flex-col items-center">
               <div className="mb-4 md:mb-50 border-[3px] border-[#1C252A] bg-[#161E22] w-[80px] h-[80px] rounded-full flex items-center justify-center mx-auto shadow-lg transition-all duration-300 group-hover:border-cyan-400/50 group-hover:shadow-[0_0_20px_rgba(51,197,224,0.3)]">
                 <Sprout
@@ -74,24 +76,21 @@ export default function HowItWorksSection() {
                 />
               </div>
               <h4 className="text-[#FCFFFF] font-semibold text-[18px] mb-2">
-                1. Deposit & Grow
+                {t("step1Title")}
               </h4>
               <p className="text-[14px] text-[#92A5A8] max-w-[200px] mx-auto">
-                Fund Your Plan and Opt-In to Earn Continuous Yield.
+                {t("step1Desc")}
               </p>
             </div>
           </div>
 
           {/* Step 2 - Top Position */}
           <div className="text-center relative group z-10 animate-scale-in">
-            {/* Connecting dot on line */}
             <div
               className="w-4 h-4 bg-slate-700 rounded-full mx-auto md:absolute md:top-1/2 md:left-1/2 md:-translate-x-1/2 md:-translate-y-1/2 group-hover:bg-cyan-400 transition-all duration-300 z-20 mb-4 md:mb-0 will-change-colors"
               role="presentation"
               aria-hidden={true}
             ></div>
-
-            {/* Content above line */}
             <div className="flex flex-col md:flex-col-reverse items-center">
               <div className="mb-4 md:mt-50 border-[3px] border-[#1C252A] bg-[#161E22] w-[80px] h-[80px] rounded-full flex items-center justify-center mx-auto shadow-lg transition-all duration-300 group-hover:border-cyan-400/50 group-hover:shadow-[0_0_20px_rgba(51,197,224,0.3)]">
                 <Leaf
@@ -101,24 +100,21 @@ export default function HowItWorksSection() {
                 />
               </div>
               <p className="text-[14px] text-[#92A5A8] max-w-[200px] mx-auto">
-                Add Multiple Beneficiaries and Setup Allocation Splits.
+                {t("step2Desc")}
               </p>
               <h4 className="text-[#FCFFFF] font-semibold text-[18px] mb-2">
-                2. Configure Mass Payout
+                {t("step2Title")}
               </h4>
             </div>
           </div>
 
           {/* Step 3 - Bottom Position */}
           <div className="text-center relative group z-10 animate-scale-in">
-            {/* Connecting dot on line */}
             <div
               className="w-4 h-4 bg-slate-700 rounded-full mx-auto md:absolute md:top-1/2 md:left-1/2 md:-translate-x-1/2 md:-translate-y-1/2 group-hover:bg-cyan-400 transition-all duration-300 z-20 mb-4 md:mb-0 will-change-colors"
               role="presentation"
               aria-hidden={true}
             ></div>
-
-            {/* Content below line */}
             <div className="flex flex-col items-center">
               <div className="mb-4 md:mb-50 border-[3px] border-[#1C252A] bg-[#161E22] w-[80px] h-[80px] rounded-full flex items-center justify-center mx-auto shadow-lg transition-all duration-300 group-hover:border-cyan-400/50 group-hover:shadow-[0_0_20px_rgba(51,197,224,0.3)]">
                 <TreePine
@@ -128,10 +124,10 @@ export default function HowItWorksSection() {
                 />
               </div>
               <h4 className="text-[#FCFFFF] font-semibold text-[18px] mb-2">
-                3. Direct Fiat off-ramp
+                {t("step3Title")}
               </h4>
               <p className="text-[14px] text-[#92A5A8] max-w-[200px] mx-auto">
-                Receive directly in local fiat cash via Stellar Anchors.
+                {t("step3Desc")}
               </p>
             </div>
           </div>
@@ -143,26 +139,20 @@ export default function HowItWorksSection() {
         <div className="static md:absolute md:-right-10 space-y-8 max-w-full animate-slide-up">
           <div className="border-r-[0px] border-[13px] border-[#1C252A] rounded-l-[18px] py-6 px-14 shadow-[inset_0_2px_20px_rgba(0,0,0,0.15)] transition-all duration-300 hover:border-cyan-400/30 hover:shadow-[inset_0_2px_30px_rgba(51,197,224,0.1)]">
             <h3 className="text-[18px] font-bold text-[#FCFFFF] mb-4">
-              Why this works:
+              {t("whyWorksTitle")}
             </h3>
             <ul className="space-y-2 text-[14px] text-[#92A5A8]">
               <li className="flex gap-2 transition-all duration-300 hover:text-cyan-400">
-                <span className="">•</span>
-                <span>
-                  Starts with purpose &mdash; &ldquo;Helping your legacy reach
-                  the people who matter&rdquo; sets an emotional tone
-                </span>
+                <span>•</span>
+                <span>{t("whyWorks1")}</span>
               </li>
               <li className="flex gap-2 transition-all duration-300 hover:text-cyan-400">
                 <span>•</span>
-                <span>One short paragraph — easy to skim.</span>
+                <span>{t("whyWorks2")}</span>
               </li>
               <li className="flex gap-2 transition-all duration-300 hover:text-cyan-400">
                 <span>•</span>
-                <span>
-                  Metaphor tie-in &mdash; connects to your tree concept in a
-                  natural way.
-                </span>
+                <span>{t("whyWorks3")}</span>
               </li>
             </ul>
           </div>
@@ -171,7 +161,7 @@ export default function HowItWorksSection() {
             className="flex flex-row justify-center items-center gap-4 bg-cyan-400 text-black px-8 py-2 rounded-t-[8px] rounded-b-[16px] cursor-pointer transition-all duration-300 hover:bg-cyan-300 active:scale-95 focus-visible:outline-offset-2 focus-visible:outline-2 focus-visible:outline-cyan-400 font-semibold"
             aria-label="Get started with InheritX"
           >
-            GET STARTED
+            {t("getStarted")}
             <ArrowUpRight size={16} aria-hidden={true} />
           </button>
         </div>

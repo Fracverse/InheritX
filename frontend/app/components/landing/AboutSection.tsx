@@ -1,6 +1,11 @@
+"use client";
+
 import Image from "next/image";
+import { useTranslations } from "next-intl";
 
 export default function AboutSection() {
+  const t = useTranslations("landing");
+
   return (
     <section
       id="about"
@@ -10,28 +15,25 @@ export default function AboutSection() {
     >
       <div className="max-w-3xl mx-auto">
         <h2 className="text-[#FCFFFF] uppercase tracking-[0.3em] text-[32px] mb-4 animate-slide-up">
-          What is InheritX?
+          {t("aboutTitle")}
         </h2>
         <h3
           className="text-[#92A5A8] text-[14px] font-bold mb-6 animate-slide-up"
           style={{ animationDelay: "0.1s" }}
         >
-          Without roots, nothing grows.
+          {t("aboutTagline")}
         </h3>
         <p
           className="text-[18px] text-[#FCFFFF] leading-relaxed mb-8 animate-slide-up"
           style={{ animationDelay: "0.2s" }}
         >
-          InheritX simplifies digital wealth transfer by introducing yield-generating
-          inheritance plans with multi-beneficiary allocations. Your locked assets accrue interest
-          continuously, maximizing the value passed to your heirs.
+          {t("aboutBody1")}
         </p>
         <div
           className="text-[18px] text-[#FCFFFF] animate-slide-up"
           style={{ animationDelay: "0.3s" }}
         >
-          Through integrated Stellar Anchors, your heirs receive payouts directly
-          in their local fiat bank accounts or mobile money wallets, bypassing any Web3 complexity.
+          {t("aboutBody2")}
         </div>
       </div>
       {/* Decorative tree-like background glow */}

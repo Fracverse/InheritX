@@ -6,8 +6,10 @@ import { TVLChart } from "@/components/admin/metrics/TVLChart";
 import { AssetDistributionChart } from "@/components/admin/metrics/AssetDistributionChart";
 import { adminAPI, AdminMetrics } from "@/app/lib/api/admin";
 import { mockAdminMetrics } from "@/lib/mockAdminUsers";
+import { useTranslations } from "next-intl";
 
 export default function AdminDashboardPage() {
+  const t = useTranslations("admin");
   const [metrics, setMetrics] = useState<AdminMetrics | null>(null);
   const [loading, setLoading] = useState(true);
   const [usingMock, setUsingMock] = useState(false);
@@ -31,14 +33,17 @@ export default function AdminDashboardPage() {
     <DashboardLayout>
       <div className="space-y-6">
         <div>
-          <h1 className="text-2xl font-semibold text-foreground">Admin Dashboard</h1>
-          <p className="text-sm text-foreground/50 mt-1">Platform-wide metrics and asset overview</p>
+          <h1 className="text-2xl font-semibold text-foreground">{t("dashboard")}</h1>
+          <p className="text-sm text-foreground/50 mt-1">{t("dashboardDesc")}</p>
         </div>
 
         {usingMock && (
           <div className="rounded-lg border border-yellow-500/20 bg-yellow-500/5 px-4 py-2.5 text-xs text-yellow-400/80">
-            Backend unavailable — showing mock data derived from local user records. In production, metrics are fetched from{" "}
-            <code className="font-mono">/api/admin/metrics</code>.
+            {t("mockDataWarning")}{" "}
+            <span>
+              In production, metrics are fetched from{" "}
+              <code className="font-mono">/api/admin/metrics</code>.
+            </span>
           </div>
         )}
 
