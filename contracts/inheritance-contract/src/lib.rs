@@ -99,10 +99,10 @@ impl InheritanceContract {
 
     fn emit_bridge_payout_event(env: &Env, event: &BridgePayoutEvent) {
         let topic = (
-            Symbol::short("BridgePayout"),
+            symbol_short!("BridgePayout"),
             env.current_contract_address(),
         );
-        env.events().publish(topic, event);
+        env.events().publish(topic, event.clone());
     }
 
     fn is_stellar_chain(chain: &String, env: &Env) -> bool {
@@ -258,7 +258,7 @@ impl InheritanceContract {
         Ok(())
     }
 
-    pub fn unregister_supported_wrapped_token(
+    pub fn unregister_wrapped_token(
         env: Env,
         admin: Address,
         token: Address,
