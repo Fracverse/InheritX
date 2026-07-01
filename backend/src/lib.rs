@@ -6,6 +6,7 @@ pub mod db;
 pub mod inactivity_watchdog;
 pub mod kyc_webhook;
 pub mod metrics;
+pub mod middleware;
 pub mod stellar_anchor;
 pub mod telemetry;
 pub mod ws;
