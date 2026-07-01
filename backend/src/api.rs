@@ -1,7 +1,12 @@
+use crate::middleware::{
+    csp_layer, hsts_layer, rate_limit_middleware, referrer_policy_layer,
+    x_content_type_options_layer, x_frame_options_layer, RateLimitConfig, RateLimitStore,
+};
+use axum::http::{HeaderValue, Method};
 use axum::{
     extract::{Query, State},
+    http::header::HeaderName,
     http::StatusCode,
-    http::{header::HeaderName, HeaderValue},
     middleware::from_fn,
     response::IntoResponse,
     routing::{get, post},
@@ -11,7 +16,7 @@ use chrono::{DateTime, Utc};
 use rust_decimal::Decimal;
 use serde::{Deserialize, Serialize};
 use std::sync::Arc;
-use tower_http::cors::{Any, CorsLayer};
+use tower_http::cors::CorsLayer;
 use tracing::error;
 use uuid::Uuid;
 
@@ -115,10 +120,23 @@ struct ApiError {
 }
 
 pub fn create_router(state: Arc<AppState>) -> Router {
+    // Strict CORS: only allow specific origins, methods, and headers
     let cors = CorsLayer::new()
-        .allow_origin(Any)
-        .allow_methods(Any)
-        .allow_headers(Any);
+        .allow_origin(
+            "https://inheritx.vercel.app"
+                .parse::<HeaderValue>()
+                .unwrap(),
+        )
+        .allow_methods([Method::GET, Method::POST, Method::OPTIONS])
+        .allow_headers([
+            axum::http::header::CONTENT_TYPE,
+            axum::http::header::AUTHORIZATION,
+        ])
+        .max_age(std::time::Duration::from_secs(3600));
+
+    // Rate limiter: 100 requests per IP per 60 seconds
+    let store = RateLimitStore::new();
+    let config = Arc::new(RateLimitConfig::default());
 
     // User routes requiring signature verification
     let user_routes = Router::new()
@@ -142,6 +160,14 @@ pub fn create_router(state: Arc<AppState>) -> Router {
     Router::new()
         .merge(user_routes)
         .merge(public_routes)
+        .layer(axum::middleware::from_fn(move |req, next| {
+            rate_limit_middleware(req, next, store.clone(), config.clone())
+        }))
+        .layer(referrer_policy_layer())
+        .layer(x_content_type_options_layer())
+        .layer(x_frame_options_layer())
+        .layer(csp_layer())
+        .layer(hsts_layer())
         .route("/metrics", get(metrics_handler))
         .layer(from_fn(latency_middleware))
         .layer(cors)

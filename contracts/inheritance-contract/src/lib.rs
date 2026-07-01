@@ -316,11 +316,11 @@ impl InheritanceContract {
         Ok(())
     }
 
-    /// Deactivate the plan and withdraw all remaining assets.
-    /// Contributors: Reclaim assets and transfer principal + yield back to the owner.
-    pub fn close_plan(env: Env, owner: Address) -> Result<(), Error> {
-        owner.require_auth();
-
+    /// Deactivate a plan to start the inactivity grace period.
+    /// Used internally by claim logic. This does NOT refund tokens.
+    /// The plan owner can call close_plan() for an early refund.
+    #[allow(dead_code)]
+    fn deactivate_plan(env: &Env, owner: &Address) -> Result<(), Error> {
         let key = DataKey::Plan(owner.clone());
         if !env.storage().persistent().has(&key) {
             return Err(Error::PlanNotFound);
@@ -330,7 +330,33 @@ impl InheritanceContract {
         plan.is_active = false;
 
         env.storage().persistent().set(&key, &plan);
-        Self::extend_plan_ttl(&env, &key);
+        Self::extend_plan_ttl(env, &key);
+
+        Ok(())
+    }
+
+    /// Cancel a plan early and withdraw all remaining assets.
+    /// Authenticates that the caller is the plan owner.
+    /// Transfers all locked tokens back to the owner and deletes the plan from storage.
+    pub fn close_plan(env: Env, owner: Address) -> Result<(), Error> {
+        owner.require_auth();
+
+        let key = DataKey::Plan(owner.clone());
+        let plan: Plan = env
+            .storage()
+            .persistent()
+            .get(&key)
+            .ok_or(Error::PlanNotFound)?;
+
+        let claim_key = DataKey::ClaimStatus(owner.clone());
+        if env.storage().persistent().has(&claim_key) {
+            env.storage().persistent().remove(&claim_key);
+        }
+
+        env.storage().persistent().remove(&key);
+
+        let token_client = soroban_sdk::token::Client::new(&env, &plan.token);
+        token_client.transfer(&env.current_contract_address(), &owner, &plan.amount);
 
         Ok(())
     }
