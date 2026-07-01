@@ -1,4 +1,6 @@
+use crate::WebhookDispatcherService;
 use chrono::{DateTime, Utc};
+use serde_json::json;
 use sqlx::PgPool;
 use std::sync::Arc;
 use std::time::Duration;
@@ -146,6 +148,24 @@ impl InactivityWatchdogService {
                 inactivity_deadline_at = %plan.inactivity_deadline_at,
                 "Plan marked claimable by inactivity watchdog"
             );
+
+            // enqueue webhook for claimable/claimed plans
+            let payload = serde_json::json!({
+                "plan_id": plan.id,
+                "user_id": plan.user_id,
+                "title": plan.title,
+                "inactivity_deadline_at": plan.inactivity_deadline_at,
+            });
+
+            if let Err(e) = inheritx_backend::WebhookDispatcherService::enqueue_event(
+                &self.db,
+                "plan.claimable",
+                &payload,
+            )
+            .await
+            {
+                warn!("Failed to enqueue webhook for plan.claimable: {:?}", e);
+            }
         }
 
         tx.commit().await?;

@@ -21,15 +21,17 @@ rand = "0.8"
 sqlx = { version = "0.7", features = ["runtime-tokio-rustls", "postgres", "chrono", "uuid", "macros", "migrate", "rust_decimal"] }
 rust_decimal = { version = "1.33", features = ["serde-float", "maths"] }
 dotenvy = "0.15"
+reqwest = { version = "0.11", features = ["json", "rustls-tls"] }
 hmac = "0.12"
 sha2 = "0.10"
 hex = "0.4"
-tokio-tungstenite = "0.21"
-jsonwebtoken = "9.0"
 base64 = "0.21"
-stellar-strkey = "0.0.8"
 ed25519-dalek = { version = "2.1", features = ["pkcs8", "rand_core"] }
 
+jsonwebtoken = "9.0"
+stellar-strkey = "0.0.8"
+tokio-tungstenite = "0.21"
 dashmap = "6"
+
 prometheus = { version = "0.13", features = ["process"] }
 once_cell = "1.19"

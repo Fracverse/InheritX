@@ -68,17 +68,23 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     ));
     inactivity_watchdog.start();
 
-    // Periodically refresh DB pool metrics
-    {
-        let pool = db_pool.clone();
-        tokio::spawn(async move {
-            let mut interval = tokio::time::interval(std::time::Duration::from_secs(15));
-            loop {
-                interval.tick().await;
-                metrics::update_db_pool_metrics(&pool);
-            }
-        });
-    }
+// Start webhook dispatcher
+let webhook_dispatcher = Arc::new(inheritx_backend::WebhookDispatcherService::new(
+    db_pool.clone(),
+));
+webhook_dispatcher.start();
+
+// Periodically refresh DB pool metrics
+{
+    let pool = db_pool.clone();
+    tokio::spawn(async move {
+        let mut interval = tokio::time::interval(std::time::Duration::from_secs(15));
+        loop {
+            interval.tick().await;
+            metrics::update_db_pool_metrics(&pool);
+        }
+    });
+}
 
     // Create Axum application
     let app = create_router(state);

@@ -26,7 +26,12 @@ use crate::kyc_webhook::kyc_webhook_handler;
 use crate::metrics::{latency_middleware, metrics_handler};
 use crate::stellar_anchor::AnchorRegistry;
 use crate::ws::{ws_handler, KycUpdateEvent};
+
+use crate::{WebhookDispatcherService, yield_calculator};
+use ed25519_dalek::{Signature, Verifier, VerifyingKey};
+use stellar_strkey::ed25519::PublicKey as StellarPublicKey;
 use crate::yield_calculator;
+
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct PlanBeneficiary {
@@ -64,7 +69,7 @@ pub struct PlanQuery {
     pub beneficiary: Option<String>,
 }
 
-#[derive(Deserialize)]
+#[derive(Deserialize, serde::Serialize)]
 pub struct PingRequest {
     pub owner: String,
     pub signature: String,
@@ -573,6 +578,18 @@ async fn create_plan(
         beneficiaries: inserted_beneficiaries,
     };
 
+    // 3. Enqueue webhook event for plan.created (non-blocking)
+    let payload_value = serde_json::to_value(&response).unwrap_or(serde_json::json!({}));
+    if let Err(e) = inheritx_backend::WebhookDispatcherService::enqueue_event(
+        &state.db_pool,
+        "plan.created",
+        &payload_value,
+    )
+    .await
+    {
+        tracing::warn!("Failed to enqueue webhook for plan.created: {:?}", e);
+    }
+
     (StatusCode::CREATED, Json(response)).into_response()
 }
 
@@ -780,7 +797,7 @@ async fn ping_plan(
     State(state): State<Arc<AppState>>,
     Json(payload): Json<PingRequest>,
 ) -> impl IntoResponse {
-    // 1. Verify signature
+// 1. Verify signature
     if !verify_ping_signature(&payload.owner, &payload.signature, &payload.message) {
         return (
             StatusCode::UNAUTHORIZED,
@@ -821,8 +838,7 @@ async fn ping_plan(
     } else {
         0
     };
-
-    let mut new_accrued_yield: rust_decimal::Decimal = plan.accrued_yield;
+let mut new_accrued_yield: rust_decimal::Decimal = plan.accrued_yield;
     if plan.earn_yield && elapsed > 0 {
         let amount_f64 = plan.amount.to_string().parse::<f64>().unwrap_or(0.0);
         let yield_val =
@@ -847,25 +863,38 @@ async fn ping_plan(
             .into_response();
     }
 
-    let beneficiary_addresses = match load_beneficiary_addresses(&state.db_pool, plan.id).await {
-        Ok(addresses) => addresses,
-        Err(err) => {
-            error!(
-                plan_id = %plan.id,
-                error = %err,
-                "Failed to load beneficiaries for plan cache invalidation"
-            );
-            Vec::new()
-        }
-    };
-    invalidate_plan_cache(
-        &state.plan_cache,
-        &plan.owner_address,
-        &beneficiary_addresses,
-    )
-    .await;
+// 5. Enqueue webhook event for plan.pinged (non-blocking)
+let payload_value = serde_json::to_value(&payload).unwrap_or(serde_json::json!({}));
+if let Err(e) = WebhookDispatcherService::enqueue_event(
+    &state.db_pool,
+    "plan.pinged",
+    &payload_value,
+)
+.await
+{
+    tracing::warn!("Failed to enqueue webhook for plan.pinged: {:?}", e);
+}
 
-    // 5. Return updated plan status and virtual balance
+let beneficiary_addresses = match load_beneficiary_addresses(&state.db_pool, plan.id).await {
+    Ok(addresses) => addresses,
+    Err(err) => {
+        error!(
+            plan_id = %plan.id,
+            error = %err,
+            "Failed to load beneficiaries for plan cache invalidation"
+        );
+        Vec::new()
+    }
+};
+
+invalidate_plan_cache(
+    &state.plan_cache,
+    &plan.owner_address,
+    &beneficiary_addresses,
+)
+.await;
+
+// 6. Return updated plan status and virtual balance
     let virtual_balance = plan.amount + new_accrued_yield;
     (
         StatusCode::OK,
