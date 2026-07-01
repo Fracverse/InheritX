@@ -45,7 +45,16 @@ pub struct Plan {
     pub timelock_duration: u64,
 }
 
+// Alias for backward compatibility
 pub type InheritancePlan = Plan;
+
+/// Response type for get_plan query, includes the plan and remaining time until grace period expires.
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct PlanInfo {
+    pub plan: Plan,
+    pub remaining_time: u64,
+}
 
 #[contracttype]
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -252,7 +261,8 @@ impl InheritanceContract {
 
     /// Retrieve the current inheritance plan data.
     /// Contributors: Query plan storage, dynamically projects the accumulated yield.
-    pub fn get_plan(env: Env, owner: Address) -> Result<InheritancePlan, Error> {
+    #[contractquery]
+    pub fn get_plan(env: Env, owner: Address) -> Result<PlanInfo, Error> {
         let key = DataKey::Plan(owner.clone());
         if !env.storage().persistent().has(&key) {
             return Err(Error::PlanNotFound);
@@ -261,7 +271,17 @@ impl InheritanceContract {
         let plan: Plan = env.storage().persistent().get(&key).unwrap();
         Self::extend_plan_ttl(&env, &key);
 
-        Ok(plan)
+        // Calculate remaining time until grace period expires.
+        let current_time = env.ledger().timestamp();
+        let elapsed = current_time.saturating_sub(plan.last_ping);
+        let remaining_time = if plan.grace_period > elapsed {
+            plan.grace_period - elapsed
+        } else {
+            0u64
+        };
+
+        let response = PlanInfo { plan, remaining_time };
+        Ok(response)
     }
 
     /// Trigger payout to all beneficiaries once the plan is claimable.

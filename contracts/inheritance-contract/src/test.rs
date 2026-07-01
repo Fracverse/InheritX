@@ -66,7 +66,8 @@ fn test_create_plan_success() {
     assert_eq!(token_client.balance(&contract_id), 1500);
 
     // Verify stored plan
-    let plan = client.get_plan(&owner);
+    let plan_info = client.get_plan(&owner);
+    let plan = plan_info.plan;
     assert_eq!(plan.owner, owner);
     assert_eq!(plan.token, token_id);
     assert_eq!(plan.amount, 1500);
