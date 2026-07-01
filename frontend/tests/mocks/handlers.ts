@@ -22,6 +22,14 @@ export const plansHandlers = [
     const url = new URL(request.url);
     const params = parseQueryParams(url.searchParams);
 
+    // Support both owner and owner_address parameters for filtering
+    if (params.filters) {
+      if (params.filters.owner && !params.filters.owner_address) {
+        params.filters.owner_address = params.filters.owner;
+        delete params.filters.owner;
+      }
+    }
+
     const result = applyQueryParams(mockPlans, params, [
       "name",
       "status",
@@ -167,6 +175,48 @@ export const plansHandlers = [
       data: mockPlans.find((p) => p.id === params.id) || null,
     })
   ),
+
+  http.get("/api/plans/:planId/inactivity-status", ({ params }) => {
+    const planId = params.planId as string;
+    const plan = mockPlans.find((p) => p.id === planId);
+
+    if (!plan) {
+      return HttpResponse.json(
+        { error: "Plan not found" },
+        { status: 404 }
+      );
+    }
+
+    // plan_1 is claimable by default. plan_3 and plan_5 are active.
+    const isClaimable = planId === "plan_1" || plan.status === "claimable" || plan.status === "completed";
+    const inactivityDays = 30;
+    const daysAgo = isClaimable ? 35 : 25;
+    const lastPing = Date.now() - daysAgo * 24 * 60 * 60 * 1000;
+    const daysUntilClaimable = isClaimable ? 0 : 5;
+
+    return HttpResponse.json({
+      status: "ok",
+      data: {
+        last_ping_timestamp: lastPing,
+        inactivity_period_days: inactivityDays,
+        days_until_claimable: daysUntilClaimable,
+        is_claimable: isClaimable,
+      },
+    });
+  }),
+
+  http.post("/api/plans/:planId/claim", async ({ params }) => {
+    const planId = params.planId as string;
+    const plan = mockPlans.find((p) => p.id === planId);
+    if (plan) {
+      plan.status = "completed";
+    }
+    return HttpResponse.json({
+      status: "ok",
+      data: plan,
+      message: "Claim transaction processed successfully on-chain.",
+    });
+  }),
 
   http.put("/api/plans/:id", async ({ params, request }) => {
     const body = (await request.json()) as Record<string, unknown>;
