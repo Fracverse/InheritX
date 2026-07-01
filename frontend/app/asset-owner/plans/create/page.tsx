@@ -27,6 +27,7 @@ import { CrossChainDepositSection } from "@/components/plans/CrossChainDepositSe
 import { CrossChainWalletProvider } from "@/context/CrossChainWalletContext";
 import { useWallet } from "@/context/WalletContext";
 import { formatAddress } from "@/util/address";
+import { YieldCalculatorWidget } from "@/components/dashboard/YieldCalculatorWidget";
 
 const STEP_LABELS = ["Asset", "Amount", "Beneficiaries", "Confirm"];
 const DEFAULT_BENEFICIARY: DraftBeneficiary = {
@@ -434,6 +435,20 @@ export default function CreateInheritancePlanPage() {
                   </button>
                 </div>
               </div>
+
+              {draft.earnYield && (
+                <YieldCalculatorWidget
+                  initialAmount={parseFloat(draft.amount) || 10000}
+                  initialYears={5}
+                  tokenRates={[
+                    { name: "XLM", displayName: "Stellar (XLM)", rateBps: 200 },
+                    { name: "USDC", displayName: "USDC", rateBps: 300 },
+                    { name: "CUSTOM", displayName: "Custom Token", rateBps: 100 },
+                  ]}
+                  currency="$"
+                  showComparison={true}
+                />
+              )}
             </div>
 
             <CrossChainDepositSection

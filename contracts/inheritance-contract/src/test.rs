@@ -1321,3 +1321,93 @@ fn test_trigger_payout_with_single_beneficiary_receives_all() {
     assert_eq!(token_client.balance(&sole_beneficiary), plan_amount);
     assert_eq!(token_client.balance(&contract_id), 0);
 }
+
+// ============================================================================
+// Unit Tests for create_plan and get_plan
+// ============================================================================
+
+/// Verifies that create_plan correctly stores all plan fields when multiple
+/// beneficiaries with split allocations are provided.
+#[test]
+fn test_create_plan_stores_all_fields_with_multiple_beneficiaries() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let contract_id = env.register_contract(None, InheritanceContract);
+    let client = InheritanceContractClient::new(&env, &contract_id);
+
+    let token_id = env.register_contract(None, mock_token::MockToken);
+    let token_client = mock_token::MockTokenClient::new(&env, &token_id);
+
+    let owner = Address::generate(&env);
+    let alice = Address::generate(&env);
+    let bob = Address::generate(&env);
+
+    token_client.mint(&owner, &10000);
+
+    let alice_bene = Beneficiary {
+        address: alice.clone(),
+        allocation_bps: 7000,
+        fiat_anchor_info: String::from_str(&env, "USD_BANK"),
+    };
+    let bob_bene = Beneficiary {
+        address: bob.clone(),
+        allocation_bps: 3000,
+        fiat_anchor_info: String::from_str(&env, "EUR_BANK"),
+    };
+
+    let start = 2_000_000u64;
+    env.ledger().set_timestamp(start);
+
+    client.create_plan(
+        &owner,
+        &token_id,
+        &5000,
+        &Vec::from_array(&env, [alice_bene.clone(), bob_bene.clone()]),
+        &7200,
+        &true,
+        &300,
+        &172800,
+    );
+
+    // Tokens are transferred: owner balance reduced, contract holds the amount
+    assert_eq!(token_client.balance(&owner), 5000);
+    assert_eq!(token_client.balance(&contract_id), 5000);
+
+    // All stored plan fields match what was passed in
+    let plan = client.get_plan(&owner);
+    assert_eq!(plan.owner, owner);
+    assert_eq!(plan.token, token_id);
+    assert_eq!(plan.amount, 5000);
+    assert_eq!(plan.grace_period, 7200);
+    assert!(plan.earn_yield);
+    assert_eq!(plan.yield_rate_bps, 300);
+    assert_eq!(plan.timelock_duration, 172800);
+    assert!(plan.is_active);
+    assert_eq!(plan.last_ping, start);
+
+    // Beneficiary details are preserved in order
+    assert_eq!(plan.beneficiaries.len(), 2);
+    let stored_alice = plan.beneficiaries.get(0).unwrap();
+    assert_eq!(stored_alice.address, alice);
+    assert_eq!(stored_alice.allocation_bps, 7000);
+    let stored_bob = plan.beneficiaries.get(1).unwrap();
+    assert_eq!(stored_bob.address, bob);
+    assert_eq!(stored_bob.allocation_bps, 3000);
+}
+
+/// Verifies that get_plan returns PlanNotFound when no plan exists for the
+/// given owner address.
+#[test]
+fn test_get_plan_returns_not_found_for_unknown_owner() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let contract_id = env.register_contract(None, InheritanceContract);
+    let client = InheritanceContractClient::new(&env, &contract_id);
+
+    let unknown = Address::generate(&env);
+
+    let result = client.try_get_plan(&unknown);
+    assert_eq!(result, Err(Ok(Error::PlanNotFound)));
+}
