@@ -75,11 +75,11 @@ export async function getBridgeQuote(
   }
 
   try {
-    const { AllbridgeCoreSdk, ChainSymbol, Messenger, nodeRpcUrlsDefault } =
+    const { AllbridgeCoreSdk, ChainSymbol, Messenger, nodeRpcUrlsDefault, FeePaymentMethod, AmountFormat } =
       await loadAllbridgeSdk();
 
     const sdk = new AllbridgeCoreSdk(nodeRpcUrlsDefault);
-    const chainDetails = await sdk.chainDetailsMap;
+    const chainDetails = await sdk.chainDetailsMap();
 
     const sourceSymbol = mapToChainSymbol(request.sourceChain, ChainSymbol);
     const destSymbol = mapToChainSymbol(DESTINATION_CHAIN, ChainSymbol);
@@ -87,8 +87,8 @@ export async function getBridgeQuote(
       return buildQuoteFromEstimates(request);
     }
 
-    const sourceChainDetails = chainDetails[sourceSymbol as keyof typeof chainDetails];
-    const destChainDetails = chainDetails[destSymbol as keyof typeof chainDetails];
+    const sourceChainDetails = chainDetails[sourceSymbol];
+    const destChainDetails = chainDetails[destSymbol];
     if (!sourceChainDetails || !destChainDetails) {
       return buildQuoteFromEstimates(request);
     }
@@ -107,21 +107,29 @@ export async function getBridgeQuote(
     }
 
     const [receiveAmount, gasFeeOptions, transferTime] = await Promise.all([
-      sdk.getAmountToBeReceived({
-        amount: request.amount,
+      sdk.getAmountToBeReceived(
+        request.amount,
         sourceToken,
         destinationToken,
-        messenger: Messenger.ALLBRIDGE,
-      }),
-      sdk.getGasFeeOptions({
+        Messenger.ALLBRIDGE
+      ),
+      sdk.getGasFeeOptions(
         sourceToken,
         destinationToken,
-        messenger: Messenger.ALLBRIDGE,
-      }),
-      sdk.getAverageTransferTime(sourceToken, destinationToken),
+        Messenger.ALLBRIDGE
+      ),
+      Promise.resolve(
+        sdk.getAverageTransferTime(
+          sourceToken,
+          destinationToken,
+          Messenger.ALLBRIDGE
+        )
+      ),
     ]);
 
-    const gasFeeNative = gasFeeOptions?.[0]?.value ?? "0";
+    const gasFeeNative =
+      gasFeeOptions[FeePaymentMethod.WITH_NATIVE_CURRENCY]?.[AmountFormat.FLOAT] ??
+      "0";
     const gasFeeUsd = Number.parseFloat(gasFeeNative) || CHAIN_FEE_ESTIMATES_USD[request.sourceChain].gas;
 
     const amount = parseAmount(request.amount);
@@ -176,10 +184,10 @@ export async function executeBridgeTransfer(
   let transferId = "";
 
   try {
-    const { AllbridgeCoreSdk, ChainSymbol, Messenger, nodeRpcUrlsDefault } =
+    const { AllbridgeCoreSdk, ChainSymbol, Messenger, nodeRpcUrlsDefault, FeePaymentMethod, AmountFormat } =
       await loadAllbridgeSdk();
     const sdk = new AllbridgeCoreSdk(nodeRpcUrlsDefault);
-    const chainDetails = await sdk.chainDetailsMap;
+    const chainDetails = await sdk.chainDetailsMap();
 
     const sourceSymbol = mapToChainSymbol(quote.sourceChain, ChainSymbol);
     const destSymbol = mapToChainSymbol(DESTINATION_CHAIN, ChainSymbol);
@@ -187,8 +195,8 @@ export async function executeBridgeTransfer(
       throw new Error("Allbridge route not available for selected chain.");
     }
 
-    const sourceChainDetails = chainDetails[sourceSymbol as keyof typeof chainDetails];
-    const destChainDetails = chainDetails[destSymbol as keyof typeof chainDetails];
+    const sourceChainDetails = chainDetails[sourceSymbol];
+    const destChainDetails = chainDetails[destSymbol];
     const sourceToken = sourceChainDetails?.tokens.find(
       (token) =>
         token.symbol.toUpperCase() === quote.sourceToken.symbol.toUpperCase()
@@ -214,7 +222,7 @@ export async function executeBridgeTransfer(
       detail: `Sending bridge transaction on ${chain.name}…`,
     });
 
-    const sendResult = await sdk.bridge.rawTxBuilder.send({
+    const rawTx = await sdk.bridge.rawTxBuilder.send({
       amount: quote.amount,
       fromAccountAddress: sourceWalletAddress,
       toAccountAddress: destinationStellarAddress,
@@ -223,8 +231,19 @@ export async function executeBridgeTransfer(
       messenger: Messenger.ALLBRIDGE,
     });
 
-    sourceTxId = sendResult?.txId ?? `0x${Date.now().toString(16)}`;
-    transferId = sendResult?.transferId ?? sourceTxId;
+    const rawTxRecord =
+      typeof rawTx === "object" && rawTx !== null
+        ? (rawTx as Record<string, unknown>)
+        : null;
+
+    sourceTxId =
+      typeof rawTxRecord?.txId === "string"
+        ? rawTxRecord.txId
+        : `0x${Date.now().toString(16)}`;
+    transferId =
+      typeof rawTxRecord?.transferId === "string"
+        ? rawTxRecord.transferId
+        : sourceTxId;
 
     onStatusUpdate({
       step: "source_execution",
@@ -253,7 +272,7 @@ export async function executeBridgeTransfer(
     transferId,
   });
 
-  await waitForRelayerConfirmation(transferId);
+  await waitForRelayerConfirmation(quote.sourceChain, transferId);
 
   onStatusUpdate({
     step: "relayer",
@@ -286,7 +305,10 @@ export async function confirmStellarLock(
   });
 }
 
-async function waitForRelayerConfirmation(transferId: string): Promise<void> {
+async function waitForRelayerConfirmation(
+  chainSymbol: OriginChainId,
+  transferId: string
+): Promise<void> {
   if (!transferId) {
     await delay(1500);
     return;
@@ -297,8 +319,8 @@ async function waitForRelayerConfirmation(transferId: string): Promise<void> {
     const sdk = new AllbridgeCoreSdk(nodeRpcUrlsDefault);
 
     for (let attempt = 0; attempt < 30; attempt += 1) {
-      const status = await sdk.getTransferStatus(transferId);
-      if (status?.destinationTransactionId) {
+      const status = await sdk.getTransferStatus(chainSymbol, transferId);
+      if (status?.receive?.txId) {
         return;
       }
       await delay(2000);
