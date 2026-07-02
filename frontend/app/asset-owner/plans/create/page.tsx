@@ -1,6 +1,6 @@
 "use client";
 
-import { useMemo, useState } from "react";
+import { useCallback, useMemo, useState } from "react";
 import {
   AlertCircle,
   ArrowLeft,
@@ -22,6 +22,9 @@ import {
   type InheritancePlanDraft,
 } from "@/app/lib/validation/inheritancePlan";
 import { invokeCreatePlan } from "@/app/services/inheritanceContractService";
+import { KYCRequiredGuard } from "@/components/kyc/KYCRequiredGuard";
+import { CrossChainDepositSection } from "@/components/plans/CrossChainDepositSection";
+import { CrossChainWalletProvider } from "@/context/CrossChainWalletContext";
 import { useWallet } from "@/context/WalletContext";
 import { formatAddress } from "@/util/address";
 import { YieldCalculatorWidget } from "@/components/dashboard/YieldCalculatorWidget";
@@ -63,6 +66,11 @@ export default function CreateInheritancePlanPage() {
   const [submissionState, setSubmissionState] = useState<SubmissionState>("idle");
   const [submitMessage, setSubmitMessage] = useState("");
   const [createdPlanId, setCreatedPlanId] = useState<string | null>(null);
+  const [bridgeTransferId, setBridgeTransferId] = useState<string | null>(null);
+
+  const handleBridgeComplete = useCallback((transferId: string) => {
+    setBridgeTransferId(transferId);
+  }, []);
 
   const hydratedDraft = useMemo(
     () => ({ ...draft, owner: address ?? draft.owner }),
@@ -205,7 +213,9 @@ export default function CreateInheritancePlanPage() {
   const showErrors = touched || submissionState === "error";
 
   return (
-    <div className="animate-fade-in space-y-6">
+    <KYCRequiredGuard>
+      <CrossChainWalletProvider>
+        <div className="animate-fade-in space-y-6">
       <div>
         <p className="text-xs font-semibold uppercase tracking-[0.18em] text-primary">
           New inheritance plan
@@ -440,6 +450,17 @@ export default function CreateInheritancePlanPage() {
                 />
               )}
             </div>
+
+            <CrossChainDepositSection
+              amount={draft.amount}
+              onAmountChange={(amount) => updateDraft("amount", amount)}
+              onBridgeComplete={handleBridgeComplete}
+            />
+            {bridgeTransferId && (
+              <p className="text-xs text-emerald-300">
+                Cross-chain deposit ready. Transfer ID: {bridgeTransferId}
+              </p>
+            )}
           </div>
         )}
 
@@ -737,6 +758,8 @@ export default function CreateInheritancePlanPage() {
           )}
         </div>
       </section>
-    </div>
+        </div>
+      </CrossChainWalletProvider>
+    </KYCRequiredGuard>
   );
 }
