@@ -102,6 +102,8 @@ fn test_ping_updates_last_ping_and_emits_event() {
         address: Address::generate(&env),
         allocation_bps: 10000,
         fiat_anchor_info: String::from_str(&env, "NGN_BANK"),
+        destination_chain: String::from_str(&env, "Stellar"),
+        destination_address: String::from_str(&env, "GDESTADDR"),
     };
 
     token_client.mint(&owner, &2000);
@@ -118,6 +120,8 @@ fn test_ping_updates_last_ping_and_emits_event() {
         &true,
         &500,
         &86400,
+        &String::from_str(&env, "Stellar"),
+        &String::from_str(&env, "SRC_TX_HASH"),
     );
     assert_eq!(client.get_plan(&owner).last_ping, start);
 
@@ -162,6 +166,8 @@ fn test_ping_requires_owner_auth() {
         yield_rate_bps: 0,
         is_active: true,
         timelock_duration: 86400,
+        source_chain: String::from_str(&env, "Stellar"),
+        source_tx_hash: String::from_str(&env, "SRC_TX_HASH"),
     };
 
     env.as_contract(&contract_id, || {
@@ -844,6 +850,8 @@ fn test_ping_success_from_owner_updates_timestamp() {
         address: Address::generate(&env),
         allocation_bps: 10000,
         fiat_anchor_info: String::from_str(&env, "USD_BANK"),
+        destination_chain: String::from_str(&env, "Stellar"),
+        destination_address: String::from_str(&env, "GDESTADDR"),
     };
 
     token_client.mint(&owner, &5000);
@@ -860,6 +868,8 @@ fn test_ping_success_from_owner_updates_timestamp() {
         &true,
         &500,
         &86400,
+        &String::from_str(&env, "Stellar"),
+        &String::from_str(&env, "SRC_TX_HASH"),
     );
 
     // Verify initial ping timestamp
@@ -897,6 +907,8 @@ fn test_ping_from_third_party_fails() {
         address: Address::generate(&env),
         allocation_bps: 10000,
         fiat_anchor_info: String::from_str(&env, "USD_BANK"),
+        destination_chain: String::from_str(&env, "Stellar"),
+        destination_address: String::from_str(&env, "GDESTADDR"),
     };
 
     token_client.mint(&owner, &5000);
@@ -913,6 +925,8 @@ fn test_ping_from_third_party_fails() {
         &true,
         &500,
         &86400,
+        &String::from_str(&env, "Stellar"),
+        &String::from_str(&env, "SRC_TX_HASH"),
     );
 
     // Try to ping as third party without auth
@@ -960,11 +974,15 @@ fn test_close_plan_refunds_all_tokens_and_deletes_storage() {
         address: beneficiary1,
         allocation_bps: 5000,
         fiat_anchor_info: String::from_str(&env, "USD_BANK"),
+        destination_chain: String::from_str(&env, "Stellar"),
+        destination_address: String::from_str(&env, "GDESTADDR"),
     };
     let bene2 = Beneficiary {
         address: beneficiary2,
         allocation_bps: 5000,
         fiat_anchor_info: String::from_str(&env, "EUR_BANK"),
+        destination_chain: String::from_str(&env, "Stellar"),
+        destination_address: String::from_str(&env, "GDESTADDR"),
     };
 
     env.ledger().set_timestamp(1_000_000);
@@ -978,6 +996,8 @@ fn test_close_plan_refunds_all_tokens_and_deletes_storage() {
         &false,
         &0,
         &86400,
+        &String::from_str(&env, "Stellar"),
+        &String::from_str(&env, "SRC_TX_HASH"),
     );
 
     // Verify tokens are transferred to contract
@@ -1013,6 +1033,8 @@ fn test_close_plan_requires_owner_auth() {
         address: Address::generate(&env),
         allocation_bps: 10000,
         fiat_anchor_info: String::from_str(&env, "USD_BANK"),
+        destination_chain: String::from_str(&env, "Stellar"),
+        destination_address: String::from_str(&env, "GDESTADDR"),
     };
 
     token_client.mint(&owner, &5000);
@@ -1028,6 +1050,8 @@ fn test_close_plan_requires_owner_auth() {
         &false,
         &0,
         &86400,
+        &String::from_str(&env, "Stellar"),
+        &String::from_str(&env, "SRC_TX_HASH"),
     );
 
     // Try to close plan as unauthorized user
@@ -1081,26 +1105,36 @@ fn test_trigger_payout_5_beneficiaries_with_equal_allocations() {
         address: b1.clone(),
         allocation_bps: 2000,
         fiat_anchor_info: String::from_str(&env, "USD_BANK"),
+        destination_chain: String::from_str(&env, "Stellar"),
+        destination_address: String::from_str(&env, "GDESTADDR"),
     };
     let bene2 = Beneficiary {
         address: b2.clone(),
         allocation_bps: 2000,
         fiat_anchor_info: String::from_str(&env, "USD_BANK"),
+        destination_chain: String::from_str(&env, "Stellar"),
+        destination_address: String::from_str(&env, "GDESTADDR"),
     };
     let bene3 = Beneficiary {
         address: b3.clone(),
         allocation_bps: 2000,
         fiat_anchor_info: String::from_str(&env, "USD_BANK"),
+        destination_chain: String::from_str(&env, "Stellar"),
+        destination_address: String::from_str(&env, "GDESTADDR"),
     };
     let bene4 = Beneficiary {
         address: b4.clone(),
         allocation_bps: 2000,
         fiat_anchor_info: String::from_str(&env, "USD_BANK"),
+        destination_chain: String::from_str(&env, "Stellar"),
+        destination_address: String::from_str(&env, "GDESTADDR"),
     };
     let bene5 = Beneficiary {
         address: b5.clone(),
         allocation_bps: 2000,
         fiat_anchor_info: String::from_str(&env, "USD_BANK"),
+        destination_chain: String::from_str(&env, "Stellar"),
+        destination_address: String::from_str(&env, "GDESTADDR"),
     };
 
     env.ledger().set_timestamp(1_000_000);
@@ -1114,6 +1148,8 @@ fn test_trigger_payout_5_beneficiaries_with_equal_allocations() {
         &false,
         &0,
         &86400,
+        &String::from_str(&env, "Stellar"),
+        &String::from_str(&env, "SRC_TX_HASH"),
     );
 
     // Deactivate, claim, and payout
@@ -1167,6 +1203,8 @@ fn test_trigger_payout_10_beneficiaries_unequal_allocations() {
             address: beneficiary.clone(),
             allocation_bps: 1000,
             fiat_anchor_info: String::from_str(&env, "USD_BANK"),
+            destination_chain: String::from_str(&env, "Stellar"),
+            destination_address: String::from_str(&env, "GDESTADDR"),
         };
         bene_array.push_back(b);
     }
@@ -1183,6 +1221,8 @@ fn test_trigger_payout_10_beneficiaries_unequal_allocations() {
         &false,
         &0,
         &86400,
+        &String::from_str(&env, "Stellar"),
+        &String::from_str(&env, "SRC_TX_HASH"),
     );
 
     // Deactivate, claim, and payout
@@ -1223,16 +1263,22 @@ fn test_trigger_payout_rounding_with_3_beneficiaries() {
         address: bene1.clone(),
         allocation_bps: 3333,
         fiat_anchor_info: String::from_str(&env, "USD_BANK"),
+        destination_chain: String::from_str(&env, "Stellar"),
+        destination_address: String::from_str(&env, "GDESTADDR"),
     };
     let b2 = Beneficiary {
         address: bene2.clone(),
         allocation_bps: 3333,
         fiat_anchor_info: String::from_str(&env, "EUR_BANK"),
+        destination_chain: String::from_str(&env, "Stellar"),
+        destination_address: String::from_str(&env, "GDESTADDR"),
     };
     let b3 = Beneficiary {
         address: bene3.clone(),
         allocation_bps: 3334,
         fiat_anchor_info: String::from_str(&env, "GBP_BANK"),
+        destination_chain: String::from_str(&env, "Stellar"),
+        destination_address: String::from_str(&env, "GDESTADDR"),
     };
 
     env.ledger().set_timestamp(1_000_000);
@@ -1246,6 +1292,8 @@ fn test_trigger_payout_rounding_with_3_beneficiaries() {
         &false,
         &0,
         &86400,
+        &String::from_str(&env, "Stellar"),
+        &String::from_str(&env, "SRC_TX_HASH"),
     );
 
     deactivate_plan_for_testing(&env, &contract_id, &owner);
@@ -1285,11 +1333,15 @@ fn test_trigger_payout_after_grace_period_and_timelock_expiry() {
         address: alice.clone(),
         allocation_bps: 6000,
         fiat_anchor_info: String::from_str(&env, "USD_BANK"),
+        destination_chain: String::from_str(&env, "Stellar"),
+        destination_address: String::from_str(&env, "GDESTADDR"),
     };
     let bob_bene = Beneficiary {
         address: bob.clone(),
         allocation_bps: 4000,
         fiat_anchor_info: String::from_str(&env, "EUR_BANK"),
+        destination_chain: String::from_str(&env, "Stellar"),
+        destination_address: String::from_str(&env, "GDESTADDR"),
     };
 
     let grace_period = 7200; // 2 hours
@@ -1307,6 +1359,8 @@ fn test_trigger_payout_after_grace_period_and_timelock_expiry() {
         &false,
         &0,
         &timelock_duration,
+        &String::from_str(&env, "Stellar"),
+        &String::from_str(&env, "SRC_TX_HASH"),
     );
 
     // Deactivate plan
@@ -1358,6 +1412,8 @@ fn test_trigger_payout_with_single_beneficiary_receives_all() {
         address: sole_beneficiary.clone(),
         allocation_bps: 10000, // 100%
         fiat_anchor_info: String::from_str(&env, "USD_BANK"),
+        destination_chain: String::from_str(&env, "Stellar"),
+        destination_address: String::from_str(&env, "GDESTADDR"),
     };
 
     let plan_amount = 55555;
@@ -1372,6 +1428,8 @@ fn test_trigger_payout_with_single_beneficiary_receives_all() {
         &false,
         &0,
         &86400,
+        &String::from_str(&env, "Stellar"),
+        &String::from_str(&env, "SRC_TX_HASH"),
     );
 
     deactivate_plan_for_testing(&env, &contract_id, &owner);
@@ -1413,11 +1471,15 @@ fn test_create_plan_stores_all_fields_with_multiple_beneficiaries() {
         address: alice.clone(),
         allocation_bps: 7000,
         fiat_anchor_info: String::from_str(&env, "USD_BANK"),
+        destination_chain: String::from_str(&env, "Stellar"),
+        destination_address: String::from_str(&env, "GDESTADDR"),
     };
     let bob_bene = Beneficiary {
         address: bob.clone(),
         allocation_bps: 3000,
         fiat_anchor_info: String::from_str(&env, "EUR_BANK"),
+        destination_chain: String::from_str(&env, "Stellar"),
+        destination_address: String::from_str(&env, "GDESTADDR"),
     };
 
     let start = 2_000_000u64;
@@ -1432,6 +1494,8 @@ fn test_create_plan_stores_all_fields_with_multiple_beneficiaries() {
         &true,
         &300,
         &172800,
+        &String::from_str(&env, "Stellar"),
+        &String::from_str(&env, "SRC_TX_HASH"),
     );
 
     // Tokens are transferred: owner balance reduced, contract holds the amount

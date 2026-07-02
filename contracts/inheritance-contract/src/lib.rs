@@ -1,7 +1,6 @@
 #![no_std]
 use soroban_sdk::{
-    contract, contracterror, contractimpl, contracttype, symbol_short, Address, Env, String,
-    Symbol, Vec,
+    contract, contracterror, contractimpl, contracttype, symbol_short, Address, Env, String, Vec,
 };
 
 const MAX_BENEFICIARIES: u32 = 100;
@@ -97,12 +96,9 @@ impl InheritanceContract {
             .extend_ttl(key, PLAN_TTL_LEEWAY, PLAN_TTL_THRESHOLD);
     }
 
-    fn emit_bridge_payout_event(env: &Env, event: &BridgePayoutEvent) {
-        let topic = (
-            symbol_short!("BridgePayout"),
-            env.current_contract_address(),
-        );
-        env.events().publish(topic, event.clone());
+    fn emit_bridge_payout_event(env: &Env, event: BridgePayoutEvent) {
+        let topic = (symbol_short!("BridgePay"), env.current_contract_address());
+        env.events().publish(topic, event);
     }
 
     fn is_stellar_chain(chain: &String, env: &Env) -> bool {
@@ -258,11 +254,7 @@ impl InheritanceContract {
         Ok(())
     }
 
-    pub fn unregister_wrapped_token(
-        env: Env,
-        admin: Address,
-        token: Address,
-    ) -> Result<(), Error> {
+    pub fn unregister_wrapped_token(env: Env, admin: Address, token: Address) -> Result<(), Error> {
         admin.require_auth();
         Self::require_admin(&env, &admin)?;
         let key = DataKey::SupportedWrappedToken(token);
@@ -453,7 +445,7 @@ impl InheritanceContract {
                     source_chain: plan.source_chain.clone(),
                     source_tx_hash: plan.source_tx_hash.clone(),
                 };
-                Self::emit_bridge_payout_event(&env, &event);
+                Self::emit_bridge_payout_event(&env, event);
             }
         }
 
