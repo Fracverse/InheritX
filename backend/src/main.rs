@@ -11,13 +11,13 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // Initialize tracing logging
     telemetry::init_tracing()?;
 
-    //loading the .env
+    // Load environment
     dotenvy::dotenv().ok();
 
     // Load configuration
     let config = Config::load()?;
 
-    // Attempt to connect to PostgreSQL stub/real
+    // Connect to PostgreSQL and run migrations
     let db_pool = match DbManager::create_pool(&config.database_url).await {
         Ok(pool) => {
             info!("Successfully connected to PostgreSQL database.");
@@ -28,26 +28,23 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
             pool
         }
-
         Err(e) => {
             error!(
                 "Failed to connect to PostgreSQL database ({}): {:?}",
                 config.database_url, e
             );
-
             std::process::exit(1);
         }
     };
 
-    // Initialize state skeleton
-    let (kyc_tx, _) = tokio::sync::broadcast::channel(100);
+    // Initialize state
     let state = Arc::new(AppState {
         anchor: Arc::new(inheritx_backend::stellar_anchor::AnchorRegistry::new()),
         db_pool: db_pool.clone(),
-        kyc_tx,
         kyc_webhook_secret: std::env::var("KYC_WEBHOOK_SECRET").ok(),
     });
 
+    // Start inactivity watchdog
     let inactivity_watchdog = Arc::new(InactivityWatchdogService::new(
         db_pool.clone(),
         InactivityWatchdogConfig::from_env(),

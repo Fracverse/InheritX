@@ -25,12 +25,9 @@ fn test_state(secret: Option<&str>) -> std::sync::Arc<inheritx_backend::AppState
         sqlx::PgPool::connect_lazy("postgres://postgres:postgres@localhost:5432/inheritx_test")
             .unwrap();
 
-    let (kyc_tx, _) = tokio::sync::broadcast::channel(16);
-
     std::sync::Arc::new(inheritx_backend::AppState {
         anchor: std::sync::Arc::new(AnchorRegistry::new()),
         db_pool: pool,
-        kyc_tx,
         kyc_webhook_secret: secret.map(str::to_string),
     })
 }

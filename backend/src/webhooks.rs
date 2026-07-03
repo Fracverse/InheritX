@@ -2,11 +2,13 @@ use hmac::{Hmac, Mac};
 use reqwest::Client;
 use serde_json::Value;
 use sha2::Sha256;
-use sqlx::{PgPool, Postgres, Row, Transaction};
+use sqlx::PgPool;
 use std::sync::Arc;
 use std::time::Duration;
 use tokio::time::sleep;
 use tracing::{error, info, warn};
+
+use sqlx::Row;
 
 type HmacSha256 = Hmac<Sha256>;
 
@@ -36,18 +38,17 @@ impl WebhookDispatcherService {
     }
 
     async fn run_once(&self) -> Result<(), sqlx::Error> {
-        let mut tx: Transaction<'_, Postgres> = self.db.begin().await?;
-
-        // select pending dispatches ready to run
         let rows = sqlx::query(
             "SELECT wd.id, wd.endpoint_id, wd.event_type, wd.payload, wd.attempts, we.url, we.secret
                FROM webhook_dispatches wd
                JOIN webhook_endpoints we ON wd.endpoint_id = we.id
-               WHERE wd.status = 'pending' AND (wd.next_attempt_at IS NULL OR wd.next_attempt_at <= NOW())
+               WHERE wd.status = 'pending'
+                 AND (wd.next_attempt_at IS NULL OR wd.next_attempt_at <= NOW())
                ORDER BY wd.created_at ASC
-               LIMIT 25 FOR UPDATE SKIP LOCKED",
+               LIMIT 25
+               FOR UPDATE SKIP LOCKED",
         )
-        .fetch_all(&mut tx)
+        .fetch_all(&self.db)
         .await?;
 
         for row in rows {
@@ -78,10 +79,14 @@ impl WebhookDispatcherService {
 
             match res {
                 Ok(resp) if resp.status().is_success() => {
-                    sqlx::query("UPDATE webhook_dispatches SET status = 'success', updated_at = NOW() WHERE id = $1")
-                        .bind(id)
-                        .execute(&mut tx)
-                        .await?;
+                    sqlx::query(
+                        "UPDATE webhook_dispatches
+                         SET status = 'success', updated_at = NOW()
+                         WHERE id = $1",
+                    )
+                    .bind(id)
+                    .execute(&self.db)
+                    .await?;
                     info!("Webhook dispatch {} succeeded", id);
                 }
                 Ok(mut resp) => {
@@ -91,8 +96,9 @@ impl WebhookDispatcherService {
                         "Webhook dispatch {} returned status {}: {}",
                         id, status, text
                     );
+
                     Self::handle_failure(
-                        &mut tx,
+                        &self.db,
                         id,
                         attempts,
                         Some(format!("status {}: {}", status, text)),
@@ -101,26 +107,27 @@ impl WebhookDispatcherService {
                 }
                 Err(e) => {
                     warn!("Webhook dispatch {} request error: {}", id, e);
-                    Self::handle_failure(&mut tx, id, attempts, Some(e.to_string())).await?;
+
+                    Self::handle_failure(&self.db, id, attempts, Some(e.to_string())).await?;
                 }
             }
         }
 
-        tx.commit().await?;
         Ok(())
     }
 
     async fn handle_failure(
-        tx: &mut Transaction<'_, Postgres>,
+        db: &PgPool,
         id: uuid::Uuid,
         attempts: i32,
         last_error: Option<String>,
     ) -> Result<(), sqlx::Error> {
         let next_attempts = attempts + 1;
+
         let max_attempts_row =
             sqlx::query("SELECT max_attempts FROM webhook_dispatches WHERE id = $1")
                 .bind(id)
-                .fetch_optional(&mut *tx)
+                .fetch_optional(db)
                 .await?;
 
         let max_attempts: i32 = if let Some(row) = max_attempts_row {
@@ -130,22 +137,36 @@ impl WebhookDispatcherService {
         };
 
         if next_attempts >= max_attempts {
-            // mark failed
-            sqlx::query("UPDATE webhook_dispatches SET attempts = $1, status = 'failed', last_error = $2, updated_at = NOW() WHERE id = $3")
-                .bind(next_attempts)
-                .bind(last_error)
-                .bind(id)
-                .execute(&mut *tx)
-                .await?;
+            sqlx::query(
+                "UPDATE webhook_dispatches
+                 SET attempts = $1,
+                     status = 'failed',
+                     last_error = $2,
+                     updated_at = NOW()
+                 WHERE id = $3",
+            )
+            .bind(next_attempts)
+            .bind(last_error)
+            .bind(id)
+            .execute(db)
+            .await?;
         } else {
             let backoff_secs = 2u64.pow(next_attempts as u32);
-            sqlx::query("UPDATE webhook_dispatches SET attempts = $1, last_error = $2, next_attempt_at = (NOW() + ($3 || ' seconds')::interval), updated_at = NOW() WHERE id = $4")
-                .bind(next_attempts)
-                .bind(last_error)
-                .bind(backoff_secs as i64)
-                .bind(id)
-                .execute(&mut *tx)
-                .await?;
+
+            sqlx::query(
+                "UPDATE webhook_dispatches
+                 SET attempts = $1,
+                     last_error = $2,
+                     next_attempt_at = (NOW() + ($3 || ' seconds')::interval),
+                     updated_at = NOW()
+                 WHERE id = $4",
+            )
+            .bind(next_attempts)
+            .bind(last_error)
+            .bind(backoff_secs as i64)
+            .bind(id)
+            .execute(db)
+            .await?;
         }
 
         Ok(())
@@ -157,29 +178,32 @@ impl WebhookDispatcherService {
         event_type: &str,
         payload: &Value,
     ) -> Result<(), sqlx::Error> {
-        let mut tx = db.begin().await?;
         let endpoints = sqlx::query("SELECT id FROM webhook_endpoints WHERE is_active = true")
-            .fetch_all(&mut tx)
+            .fetch_all(db)
             .await?;
+
         for ep in endpoints {
             let endpoint_id: uuid::Uuid = ep.get("id");
-            sqlx::query("INSERT INTO webhook_dispatches (endpoint_id, event_type, payload) VALUES ($1, $2, $3)")
-                .bind(endpoint_id)
-                .bind(event_type)
-                .bind(payload.clone())
-                .execute(&mut tx)
-                .await?;
+
+            sqlx::query(
+                "INSERT INTO webhook_dispatches (endpoint_id, event_type, payload)
+                 VALUES ($1, $2, $3)",
+            )
+            .bind(endpoint_id)
+            .bind(event_type)
+            .bind(payload.clone())
+            .execute(db)
+            .await?;
         }
 
-        tx.commit().await?;
         Ok(())
     }
 }
 
 #[cfg(test)]
 mod tests {
-    // light compile-time sanity checks
     use super::*;
+
     #[test]
     fn smoke() {
         let _ = WebhookDispatcherService::new(

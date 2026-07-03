@@ -9,9 +9,8 @@ use serde::{Deserialize, Serialize};
 use std::sync::Arc;
 use tower_http::cors::{Any, CorsLayer};
 
-use crate::kyc_webhook::kyc_webhook_handler;
 use crate::stellar_anchor::{AnchorPayout, AnchorRegistry};
-use crate::ws::{ws_handler, KycUpdateEvent};
+
 use crate::WebhookDispatcherService;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -38,7 +37,6 @@ pub struct Plan {
 pub struct AppState {
     pub anchor: Arc<AnchorRegistry>,
     pub db_pool: sqlx::PgPool,
-    pub kyc_tx: tokio::sync::broadcast::Sender<KycUpdateEvent>,
     pub kyc_webhook_secret: Option<String>,
 }
 
@@ -73,8 +71,6 @@ pub fn create_router(state: Arc<AppState>) -> Router {
         .route("/api/plans/ping", post(ping_plan))
         .route("/api/plans/payout", post(trigger_payout))
         .route("/api/anchor/payout-status", get(get_anchor_payouts))
-        .route("/api/kyc/webhook", post(kyc_webhook_handler))
-        .route("/ws/kyc", get(ws_handler))
         .layer(cors)
         .with_state(state)
 }
@@ -315,7 +311,7 @@ async fn create_plan(
 
     // 3. Enqueue webhook event for plan.created (non-blocking)
     let payload_value = serde_json::to_value(&response).unwrap_or(serde_json::json!({}));
-    if let Err(e) = inheritx_backend::WebhookDispatcherService::enqueue_event(
+    if let Err(e) = crate::WebhookDispatcherService::enqueue_event(
         &state.db_pool,
         "plan.created",
         &payload_value,
@@ -346,7 +342,7 @@ async fn ping_plan(
 ) -> impl IntoResponse {
     // enqueue webhook event for plan.pinged
     let payload_value = serde_json::to_value(&_payload).unwrap_or(serde_json::json!({}));
-    if let Err(e) = inheritx_backend::WebhookDispatcherService::enqueue_event(
+    if let Err(e) = crate::WebhookDispatcherService::enqueue_event(
         &_state.db_pool,
         "plan.pinged",
         &payload_value,

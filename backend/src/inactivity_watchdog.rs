@@ -124,12 +124,9 @@ impl InactivityWatchdogService {
                 "inactivity_deadline_at": plan.inactivity_deadline_at,
             });
 
-            if let Err(e) = inheritx_backend::WebhookDispatcherService::enqueue_event(
-                &self.db,
-                "plan.claimable",
-                &payload,
-            )
-            .await
+            if let Err(e) =
+                crate::WebhookDispatcherService::enqueue_event(&self.db, "plan.claimable", &payload)
+                    .await
             {
                 warn!("Failed to enqueue webhook for plan.claimable: {:?}", e);
             }
