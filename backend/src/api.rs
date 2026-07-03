@@ -1494,24 +1494,25 @@ pub async fn get_plan_report(
     };
 
     // 5. Generate PDF in a blocking thread (printpdf is CPU-bound / not async)
-    let pdf_bytes =
-        match tokio::task::spawn_blocking(move || crate::pdf::generate(report_data)).await {
-            Ok(Ok(bytes)) => bytes,
-            Ok(Err(e)) => {
-                return (
-                    StatusCode::INTERNAL_SERVER_ERROR,
-                    Json(serde_json::json!({ "error": format!("PDF generation failed: {}", e) })),
-                )
-                    .into_response()
-            }
-            Err(e) => {
-                return (
-                    StatusCode::INTERNAL_SERVER_ERROR,
-                    Json(serde_json::json!({ "error": format!("PDF task panicked: {}", e) })),
-                )
-                    .into_response()
-            }
-        };
+    let pdf_bytes = match tokio::task::spawn_blocking(move || crate::pdf::generate(report_data))
+        .await
+    {
+        Ok(Ok(bytes)) => bytes,
+        Ok(Err(e)) => {
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(serde_json::json!({ "error": format!("PDF generation failed: {}", e) })),
+            )
+                .into_response()
+        }
+        Err(e) => {
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(serde_json::json!({ "error": format!("PDF task panicked: {}", e) })),
+            )
+                .into_response()
+        }
+    };
 
     // 6. Return the PDF as a downloadable attachment
     let filename = format!("plan-{}-report.pdf", plan_id);
