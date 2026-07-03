@@ -8,6 +8,7 @@ import { apiClient, ApiResponse, PaginatedResponse } from "./client";
 export interface Plan {
   id: string;
   user_id: string;
+  owner_address?: string;
   title: string;
   description?: string;
   fee: number;
