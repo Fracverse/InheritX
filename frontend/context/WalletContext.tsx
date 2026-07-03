@@ -1,6 +1,6 @@
 "use client";
 
-import React, { createContext, useContext, useEffect, useState } from "react";
+import React, { createContext, useContext, useEffect, useState, useCallback } from "react";
 import {
   StellarWalletsKit,
   WalletNetwork,
@@ -11,6 +11,7 @@ import { useRouter } from "next/navigation";
 interface WalletContextType {
   connect: (moduleId: string) => Promise<void>;
   disconnect: () => Promise<void>;
+  signTransaction: (xdr: string) => Promise<{ signedTxXdr: string }>;
   address: string | null;
   isConnected: boolean;
   isConnecting: boolean;
@@ -23,12 +24,21 @@ interface WalletContextType {
 }
 
 const WalletContext = createContext<WalletContextType | undefined>(undefined);
+
 const E2E_MOCK_WALLET_ADDRESS =
   "GDE2KZQ4QGJZ5Z5QW2Y4B7Y6Q5D3P9V8N7M6L5K4J3H2G1FTEST";
 
+const WALLET_ICONS: Record<string, string> = {
+  freighter: "/icons/freighter.png",
+  albedo: "/icons/albedo.png",
+  xbull: "/icons/xbull.png",
+  rabet: "/icons/rabet.png",
+  lobstr: "/icons/lobstr.png",
+  hana: "/icons/hana.png",
+};
+
 export const useWallet = () => {
   const context = useContext(WalletContext);
-
   if (!context) {
     throw new Error("useWallet must be used within a WalletProvider");
   }
@@ -43,7 +53,6 @@ export const WalletProvider = ({ children }: { children: React.ReactNode }) => {
   const [isModalOpen, setIsModalOpen] = useState(false);
   const router = useRouter();
 
-  // Initialize kit on mount
   useEffect(() => {
     const walletKit = new StellarWalletsKit({
       network: WalletNetwork.TESTNET,
@@ -52,32 +61,38 @@ export const WalletProvider = ({ children }: { children: React.ReactNode }) => {
     });
     setKit(walletKit);
 
-    // Check for persisted session
-    const checkSession = async () => {
-      // Basic persistence check - in a real app might verify token/session
-      // For now, we rely on the kit's internal state if it has one, or we can check simple localStorage
-      // But purely client-side:
-      const savedAddress = localStorage.getItem("inheritx_wallet_address");
-      const savedWalletId = localStorage.getItem("inheritx_wallet_id");
+    const savedAddress = localStorage.getItem("inheritx_wallet_address");
+    const savedWalletId = localStorage.getItem("inheritx_wallet_id");
 
-      if (savedAddress && savedWalletId) {
-        setAddress(savedAddress);
-        setSelectedWalletId(savedWalletId);
-        // We technically aren't "connected" in the kit sense until we call something,
-        // but for UI purposes we show the address.
-        // A robust implementation would verify connection here.
+    if (savedAddress && savedWalletId) {
+      setAddress(savedAddress);
+      setSelectedWalletId(savedWalletId);
+    }
+  }, []);
+
+  useEffect(() => {
+    const handleAddressChange = (e: Event) => {
+      const customEvent = e as CustomEvent<{ address: string }>;
+      if (customEvent.detail?.address) {
+        const newAddress = customEvent.detail.address;
+        setAddress(newAddress);
+        localStorage.setItem("inheritx_wallet_address", newAddress);
       }
     };
 
-    checkSession();
+    window.addEventListener("stellar-wallet:address-change", handleAddressChange);
+    return () => {
+      window.removeEventListener("stellar-wallet:address-change", handleAddressChange);
+    };
   }, []);
 
   const supportedWallets = [
-    { id: "freighter", name: "Freighter", icon: "/icons/freighter.png" },
-    { id: "albedo", name: "Albedo", icon: "/icons/albedo.png" },
-    { id: "xbull", name: "xBull", icon: "/icons/xbull.png" },
-    { id: "rabet", name: "Rabet", icon: "/icons/rabet.png" },
-    { id: "lobstr", name: "Lobstr", icon: "/icons/rabet.png" },
+    { id: "freighter", name: "Freighter", icon: WALLET_ICONS.freighter },
+    { id: "albedo", name: "Albedo", icon: WALLET_ICONS.albedo },
+    { id: "xbull", name: "xBull", icon: WALLET_ICONS.xbull },
+    { id: "rabet", name: "Rabet", icon: WALLET_ICONS.rabet },
+    { id: "lobstr", name: "Lobstr", icon: WALLET_ICONS.lobstr },
+    { id: "hana", name: "Hana", icon: WALLET_ICONS.hana },
   ];
 
   const connectCustom = async (moduleId: string) => {
@@ -99,10 +114,7 @@ export const WalletProvider = ({ children }: { children: React.ReactNode }) => {
     if (!kit) return;
     setIsConnecting(true);
     try {
-      // Set the wallet module
       kit.setWallet(moduleId);
-
-      // Request address (triggers popup)
       const { address } = await kit.getAddress();
 
       setAddress(address);
@@ -113,20 +125,35 @@ export const WalletProvider = ({ children }: { children: React.ReactNode }) => {
       router.push("/asset-owner");
     } catch (error) {
       console.error("Connection failed:", error);
-      // Handle specific errors (user rejected, extension not found)
       throw error;
     } finally {
       setIsConnecting(false);
     }
   };
 
-  const disconnect = async () => {
+  const disconnect = useCallback(async () => {
     setAddress(null);
     setSelectedWalletId(null);
     localStorage.removeItem("inheritx_wallet_address");
     localStorage.removeItem("inheritx_wallet_id");
-    // kit.disconnect() if available
-  };
+    if (kit) {
+      try {
+        await kit.disconnect();
+      } catch {
+        // kit.disconnect() may not be supported by all wallets
+      }
+    }
+  }, [kit]);
+
+  const signTransaction = useCallback(
+    async (xdr: string): Promise<{ signedTxXdr: string }> => {
+      if (!kit) {
+        throw new Error("Wallet not connected. Please connect your wallet first.");
+      }
+      return await kit.signTransaction(xdr);
+    },
+    [kit]
+  );
 
   const openModal = () => setIsModalOpen(true);
   const closeModal = () => setIsModalOpen(false);
@@ -136,6 +163,7 @@ export const WalletProvider = ({ children }: { children: React.ReactNode }) => {
       value={{
         connect: connectCustom,
         disconnect,
+        signTransaction,
         address,
         isConnected: !!address,
         isConnecting,

@@ -44,6 +44,20 @@ cd backend
 cargo run
 ```
 
+Optional cache tuning for hot plan reads:
+```bash
+export REDIS_URL=redis://127.0.0.1:6379
+export PLAN_CACHE_TTL_SECS=15
+```
+
+When Redis is enabled, `GET /api/plans` now returns:
+- `x-plan-cache-status`: `hit`, `miss`, `bypass`, or `error-fallback`
+- `x-plan-cache-lookup-ms`
+- `x-plan-db-query-ms`
+- `x-plan-total-latency-ms`
+
+Those headers are the easiest way to compare cache-hit latency against PostgreSQL fallback in local or staging runs.
+
 ### 3. Frontend
 To run the Next.js development server:
 ```bash

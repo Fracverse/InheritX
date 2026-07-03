@@ -39,6 +39,20 @@ impl DbManager {
 
     /// Runs database migrations
     pub async fn run_migrations(pool: &PgPool) -> Result<(), sqlx::migrate::MigrateError> {
+        let _ = sqlx::query(
+            "CREATE OR REPLACE FUNCTION bigint_add_interval(epoch_secs BIGINT, val INTERVAL) \
+             RETURNS TIMESTAMP WITH TIME ZONE LANGUAGE sql IMMUTABLE AS $$ \
+             SELECT to_timestamp(epoch_secs::double precision) + val; $$;",
+        )
+        .execute(pool)
+        .await;
+
+        let _ = sqlx::query(
+            "DO $$ BEGIN \
+             CREATE OPERATOR + (LEFTARG = BIGINT, RIGHTARG = INTERVAL, PROCEDURE = bigint_add_interval); \
+             EXCEPTION WHEN duplicate_object THEN NULL; END $$;"
+        ).execute(pool).await;
+
         sqlx::migrate!().run(pool).await
     }
 }
