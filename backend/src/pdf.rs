@@ -28,6 +28,9 @@ pub struct PingLogData {
 
 /// Generate a PDF audit report as raw bytes. This is synchronous / CPU-bound;
 /// callers must run it via `tokio::task::spawn_blocking`.
+// The `line!` macro always writes `y -= line_h` after `use_text`, so the last
+// assignment to `y` is never read. This is intentional cursor-tracking behaviour.
+#[allow(unused_assignments)]
 pub fn generate(data: PlanReportData) -> Result<Vec<u8>, String> {
     let (doc, page, layer) =
         PdfDocument::new("Inheritance Audit Report", Mm(210.0), Mm(297.0), "Content");
@@ -59,19 +62,43 @@ pub fn generate(data: PlanReportData) -> Result<Vec<u8>, String> {
     // Plan Details
     line!(bold, 11.0, "Plan Details");
     line!(regular, 9.0, format!("Plan ID:          {}", data.plan_id));
-    line!(regular, 9.0, format!("Owner:            {}", data.owner_address));
-    line!(regular, 9.0, format!("Token:            {}", data.token_address));
+    line!(
+        regular,
+        9.0,
+        format!("Owner:            {}", data.owner_address)
+    );
+    line!(
+        regular,
+        9.0,
+        format!("Token:            {}", data.token_address)
+    );
     line!(regular, 9.0, format!("Amount:           {}", data.amount));
     line!(regular, 9.0, format!("Status:           {}", data.status));
-    line!(regular, 9.0, format!("Earn Yield:       {}", data.earn_yield));
-    line!(regular, 9.0, format!("Yield Rate (bps): {}", data.yield_rate_bps));
-    line!(regular, 9.0, format!("Accrued Yield:    {}", data.accrued_yield));
+    line!(
+        regular,
+        9.0,
+        format!("Earn Yield:       {}", data.earn_yield)
+    );
+    line!(
+        regular,
+        9.0,
+        format!("Yield Rate (bps): {}", data.yield_rate_bps)
+    );
+    line!(
+        regular,
+        9.0,
+        format!("Accrued Yield:    {}", data.accrued_yield)
+    );
     line!(
         regular,
         9.0,
         format!("Grace Period (s): {}", data.grace_period_seconds)
     );
-    line!(regular, 9.0, format!("Created At:       {}", data.created_at));
+    line!(
+        regular,
+        9.0,
+        format!("Created At:       {}", data.created_at)
+    );
     y -= section_gap;
 
     // Beneficiaries
