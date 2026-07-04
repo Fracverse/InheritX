@@ -1,21 +1,34 @@
 import { NextRequest, NextResponse } from "next/server";
+import createIntlMiddleware from "next-intl/middleware";
+import { locales, defaultLocale } from "./i18n/config";
 
 /**
- * Security Headers Middleware — Issue #417
+ * Security Headers + i18n Middleware — proxy.ts
  *
- * Applies the following headers to every response:
- *  - Strict-Transport-Security (HSTS)
- *  - Content-Security-Policy (CSP)
- *  - X-Frame-Options
- *  - X-Content-Type-Options
- *  - Referrer-Policy
- *  - Permissions-Policy
- *  - X-XSS-Protection (legacy browsers)
+ * This file combines:
+ *  1. next-intl locale routing (browser language detection, locale prefix,
+ *     NEXT_LOCALE cookie persistence)
+ *  2. Security headers (HSTS, CSP, X-Frame-Options, etc.) — Issue #417
  *
- * All values can be overridden via environment variables so that
- * staging / production environments can tighten or relax policies
- * without a code change.
+ * Next.js only allows one middleware entry point. Because this project uses
+ * the custom "proxy" export convention, next-intl's middleware is composed
+ * here rather than in a separate middleware.ts file.
  */
+
+// ---------------------------------------------------------------------------
+// next-intl locale middleware
+// ---------------------------------------------------------------------------
+
+const intlMiddleware = createIntlMiddleware({
+  locales,
+  defaultLocale,
+  // "as-needed" omits the locale prefix for the default locale (en),
+  // so English users see /dashboard instead of /en/dashboard.
+  localePrefix: "as-needed",
+  // Reads Accept-Language header to detect browser language on first visit,
+  // then persists the choice in the NEXT_LOCALE cookie automatically.
+  localeDetection: true,
+});
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -128,7 +141,15 @@ function generateNonce(): string {
 // ---------------------------------------------------------------------------
 
 export function proxy(request: NextRequest): NextResponse {
-  const response = NextResponse.next();
+  // ── 0. Run next-intl locale routing first ────────────────────────────────
+  // This may return a redirect (e.g. / → /fr when browser is French) or
+  // a rewrite, so we must forward its response rather than always calling
+  // NextResponse.next().
+  const intlResponse = intlMiddleware(request);
+
+  // If next-intl issued a redirect or rewrite, apply security headers to
+  // that response and return it immediately.
+  const response = (intlResponse ?? NextResponse.next()) as NextResponse;
 
   const nonce = generateNonce();
 
