@@ -142,7 +142,7 @@ pub fn create_router(state: Arc<AppState>) -> Router {
 
     // Admin routes requiring JWT authentication
     let admin_routes = Router::new()
-        .route("/api/plans/:id/report", get(get_plan_report))
+        .route("/api/plans/{id}/report", get(get_plan_report))
         .route_layer(from_fn(jwt_auth_middleware));
 
     // Public or admin routes
