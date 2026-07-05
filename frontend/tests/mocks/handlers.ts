@@ -21,7 +21,7 @@ export const plansHandlers = [
   http.get("/api/plans", ({ request }) => {
     const url = new URL(request.url);
     const params = parseQueryParams(url.searchParams);
-    
+
     const result = applyQueryParams(mockPlans, params, [
       "name",
       "status",
@@ -43,12 +43,140 @@ export const plansHandlers = [
     });
   }),
 
+  // Create plan — matches the Axum POST /api/plans signature
+  http.post("/api/plans", async ({ request }) => {
+    const body = (await request.json()) as Record<string, unknown>;
+
+    // Validate required fields
+    if (!body.owner || (body.owner as string).trim() === "") {
+      return HttpResponse.json(
+        { error: "Owner address cannot be empty" },
+        { status: 400 }
+      );
+    }
+    if (!body.token || (body.token as string).trim() === "") {
+      return HttpResponse.json(
+        { error: "Token address cannot be empty" },
+        { status: 400 }
+      );
+    }
+    if ((body.amount as number) < 0) {
+      return HttpResponse.json(
+        { error: "Amount must be non-negative" },
+        { status: 400 }
+      );
+    }
+    if (!body.grace_period || (body.grace_period as number) === 0) {
+      return HttpResponse.json(
+        { error: "Grace period must be greater than zero" },
+        { status: 400 }
+      );
+    }
+    const beneficiaries = (body.beneficiaries as Array<Record<string, unknown>>) || [];
+    if (beneficiaries.length === 0) {
+      return HttpResponse.json(
+        { error: "Plan must have at least one beneficiary" },
+        { status: 400 }
+      );
+    }
+
+    // Check allocation_bps sum
+    const totalBps = beneficiaries.reduce(
+      (sum: number, b: Record<string, unknown>) => sum + ((b.allocation_bps as number) || 0),
+      0
+    );
+    if (totalBps !== 10000) {
+      return HttpResponse.json(
+        { error: `Total allocation_bps must be exactly 10000 (100%), got ${totalBps}` },
+        { status: 400 }
+      );
+    }
+
+    // Build response
+    const planId = "plan_inherit_" + Date.now();
+    const now = new Date().toISOString();
+    const beneficiaryResponses = beneficiaries.map((b, i) => ({
+      id: `ben_${planId}_${i}`,
+      plan_id: planId,
+      wallet_address: b.address as string,
+      allocation_bps: b.allocation_bps as number,
+      fiat_anchor_info: b.fiat_anchor_info as string || "",
+    }));
+
+    return HttpResponse.json(
+      {
+        id: planId,
+        owner_address: body.owner as string,
+        token_address: body.token as string,
+        amount: String(body.amount ?? "0"),
+        grace_period: body.grace_period as number,
+        grace_period_seconds: body.grace_period as number,
+        earn_yield: (body.earn_yield as boolean) ?? false,
+        last_ping: (body.last_ping as number) ?? 0,
+        is_active: (body.is_active as boolean) ?? true,
+        status: "ACTIVE",
+        yield_rate_bps: (body.yield_rate_bps as number) ?? 0,
+        accrued_yield: 0,
+        created_at: now,
+        beneficiaries: beneficiaryResponses,
+      },
+      { status: 201 }
+    );
+  }),
+
+  // Ping plan — matches Axum POST /api/plans/ping
+  http.post("/api/plans/ping", async ({ request }) => {
+    const body = (await request.json()) as Record<string, unknown>;
+
+    if (!body.signature || (body.signature as string).trim() === "") {
+      return HttpResponse.json(
+        { error: "Invalid signature" },
+        { status: 401 }
+      );
+    }
+
+    const owner = (body.owner as string) || "unknown";
+    return HttpResponse.json({
+      owner,
+      status: "ACTIVE",
+      virtual_balance: "1050.75",
+    });
+  }),
+
+  // Trigger payout — matches Axum POST /api/plans/payout
+  http.post("/api/plans/payout", async ({ request }) => {
+    const body = (await request.json()) as Record<string, unknown>;
+
+    if (!body.owner || (body.owner as string).trim() === "") {
+      return HttpResponse.json(
+        { error: "Owner address cannot be empty" },
+        { status: 400 }
+      );
+    }
+
+    // Currently returns 501 in backend, but for mock we return success
+    return HttpResponse.json(
+      { status: "ok", message: "Payout triggered successfully" },
+      { status: 200 }
+    );
+  }),
+
   http.get("/api/plans/:id", ({ params }) =>
     HttpResponse.json({
       status: "ok",
       data: mockPlans.find((p) => p.id === params.id) || null,
     })
   ),
+
+  http.put("/api/plans/:id", async ({ params, request }) => {
+    const body = (await request.json()) as Record<string, unknown>;
+    const plan = mockPlans.find((p) => p.id === params.id);
+    if (!plan) {
+      return HttpResponse.json({ status: "error", message: "Plan not found" }, { status: 404 });
+    }
+    const updated = { ...plan, ...body, updated_at: new Date().toISOString() };
+    return HttpResponse.json({ status: "ok", data: updated });
+  }),
 
   http.post("/api/plans/:id/trigger", ({ params }) => {
     const id = params.id as string;
@@ -673,6 +801,80 @@ export const aiOptimizationHandlers = [
   }),
 ];
 
+// ─── Anchor / Payout Status ──────────────────────────────────────────────
+
+export const anchorHandlers = [
+  // GET /api/anchor/payout-status — Fetch payout records
+  http.get("/api/anchor/payout-status", ({ request }) => {
+    const url = new URL(request.url);
+    const beneficiaryAddress = url.searchParams.get("beneficiary_address");
+    const page = parseInt(url.searchParams.get("page") || "1", 10);
+    const pageSize = Math.min(
+      Math.max(parseInt(url.searchParams.get("page_size") || "20", 10), 1),
+      100
+    );
+
+    // Generate mock payout data
+    const allPayouts = [
+      {
+        id: "payout_001",
+        plan_id: "plan_inherit_001",
+        beneficiary_address: "GBENEFICIARY1ADDRESS",
+        amount: "500.00",
+        payout_type: "fiat",
+        status: "COMPLETED",
+        created_at: new Date(Date.now() - 86400000).toISOString(),
+      },
+      {
+        id: "payout_002",
+        plan_id: "plan_inherit_002",
+        beneficiary_address: "GBENEFICIARY2ADDRESS",
+        amount: "1250.50",
+        payout_type: "crypto",
+        status: "PENDING",
+        created_at: new Date(Date.now() - 3600000).toISOString(),
+      },
+      {
+        id: "payout_003",
+        plan_id: "plan_inherit_003",
+        beneficiary_address: "GBENEFICIARY1ADDRESS",
+        amount: "300.25",
+        payout_type: "fiat",
+        status: "FAILED",
+        created_at: new Date(Date.now() - 172800000).toISOString(),
+      },
+      {
+        id: "payout_004",
+        plan_id: "plan_inherit_004",
+        beneficiary_address: "GBENEFICIARY3ADDRESS",
+        amount: "7500.00",
+        payout_type: "crypto",
+        status: "COMPLETED",
+        created_at: new Date(Date.now() - 259200000).toISOString(),
+      },
+    ];
+
+    // Filter by beneficiary if provided
+    let filtered = allPayouts;
+    if (beneficiaryAddress) {
+      filtered = allPayouts.filter(
+        (p) => p.beneficiary_address === beneficiaryAddress
+      );
+    }
+
+    // Paginate
+    const offset = (page - 1) * pageSize;
+    const paginated = filtered.slice(offset, offset + pageSize);
+
+    return HttpResponse.json({
+      data: paginated,
+      page,
+      page_size: pageSize,
+      total: filtered.length,
+    });
+  }),
+];
+
 // ─── Compliance ──────────────────────────────────────────────────────────────
 
 export const complianceHandlers = [
@@ -788,5 +990,6 @@ export const handlers = [
   ...notificationsHandlers,
   ...aiOptimizationHandlers,
   ...complianceHandlers,
+  ...anchorHandlers,
 ];
 

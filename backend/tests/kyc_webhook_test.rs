@@ -33,6 +33,7 @@ fn test_state(secret: Option<&str>) -> std::sync::Arc<inheritx_backend::AppState
         kyc_tx,
         kyc_webhook_secret: secret.map(str::to_string),
         apy_config: inheritx_backend::yield_calculator::ApyConfig::default(),
+        plan_cache: inheritx_backend::PlanCache::disabled(),
     })
 }
 #[tokio::test]

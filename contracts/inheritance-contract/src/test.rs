@@ -1,5 +1,3 @@
-#![cfg(test)]
-
 use super::*;
 use soroban_sdk::testutils::Address as _;
 use soroban_sdk::testutils::Ledger;
@@ -36,6 +34,8 @@ fn test_create_plan_success() {
         address: beneficiary_address.clone(),
         allocation_bps: 10000,
         fiat_anchor_info: String::from_str(&env, "NGN_BANK"),
+        destination_chain: String::from_str(&env, "Stellar"),
+        destination_address: String::from_str(&env, "GDESTADDR"),
     };
 
     client.create_plan(
@@ -46,6 +46,9 @@ fn test_create_plan_success() {
         &3600,
         &true,
         &500,
+        &86400,
+        &String::from_str(&env, "Stellar"),
+        &String::from_str(&env, "SRC_TX_HASH"),
     );
 
     // Verify balances
@@ -70,6 +73,97 @@ fn test_create_plan_success() {
 }
 
 #[test]
+fn test_ping_updates_last_ping_and_emits_event() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let contract_id = env.register_contract(None, InheritanceContract);
+    let client = InheritanceContractClient::new(&env, &contract_id);
+
+    let token_id = env.register_contract(None, mock_token::MockToken);
+    let token_client = mock_token::MockTokenClient::new(&env, &token_id);
+
+    let owner = Address::generate(&env);
+    let beneficiary = Beneficiary {
+        address: Address::generate(&env),
+        allocation_bps: 10000,
+        fiat_anchor_info: String::from_str(&env, "NGN_BANK"),
+        destination_chain: String::from_str(&env, "Stellar"),
+        destination_address: String::from_str(&env, "GDESTADDR"),
+    };
+
+    token_client.mint(&owner, &2000);
+
+    let start = 1_000_000;
+    env.ledger().set_timestamp(start);
+
+    client.create_plan(
+        &owner,
+        &token_id,
+        &1500,
+        &Vec::from_array(&env, [beneficiary]),
+        &3600,
+        &true,
+        &500,
+        &86400,
+        &String::from_str(&env, "Stellar"),
+        &String::from_str(&env, "SRC_TX_HASH"),
+    );
+    assert_eq!(client.get_plan(&owner).last_ping, start);
+
+    let ping_timestamp = start + 1234;
+    env.ledger().set_timestamp(ping_timestamp);
+
+    client.ping(&owner);
+
+    let plan = client.get_plan(&owner);
+    assert_eq!(plan.last_ping, ping_timestamp);
+    assert_eq!(
+        env.events().all(),
+        vec![
+            &env,
+            (
+                contract_id,
+                (symbol_short!("ping"), owner).into_val(&env),
+                ping_timestamp.into_val(&env),
+            ),
+        ]
+    );
+}
+
+#[test]
+#[should_panic]
+fn test_ping_requires_owner_auth() {
+    let env = Env::default();
+
+    let contract_id = env.register_contract(None, InheritanceContract);
+    let client = InheritanceContractClient::new(&env, &contract_id);
+
+    let owner = Address::generate(&env);
+    let key = DataKey::Plan(owner.clone());
+    let plan = Plan {
+        owner: owner.clone(),
+        token: Address::generate(&env),
+        amount: 1,
+        beneficiaries: Vec::new(&env),
+        last_ping: env.ledger().timestamp(),
+        grace_period: 3600,
+        earn_yield: false,
+        yield_rate_bps: 0,
+        is_active: true,
+        timelock_duration: 86400,
+        source_chain: String::from_str(&env, "Stellar"),
+        source_tx_hash: String::from_str(&env, "SRC_TX_HASH"),
+    };
+
+    env.as_contract(&contract_id, || {
+        env.storage().persistent().set(&key, &plan);
+    });
+
+    client.ping(&owner);
+}
+
+#[test]
 fn test_create_plan_insufficient_balance() {
     let env = Env::default();
     env.mock_all_auths();
@@ -87,6 +181,8 @@ fn test_create_plan_insufficient_balance() {
         address: Address::generate(&env),
         allocation_bps: 10000,
         fiat_anchor_info: String::from_str(&env, "NGN_BANK"),
+        destination_chain: String::from_str(&env, "Stellar"),
+        destination_address: String::from_str(&env, "GDESTADDR"),
     };
 
     // Attempting to create plan for 1500 (owner only has 1000)
@@ -98,6 +194,9 @@ fn test_create_plan_insufficient_balance() {
         &3600,
         &true,
         &500,
+        &86400,
+        &String::from_str(&env, "Stellar"),
+        &String::from_str(&env, "SRC_TX_HASH"),
     );
 
     assert_eq!(result, Err(Ok(Error::InsufficientBalance)));
@@ -121,6 +220,8 @@ fn test_create_plan_negative_or_zero_amount() {
         address: Address::generate(&env),
         allocation_bps: 10000,
         fiat_anchor_info: String::from_str(&env, "NGN_BANK"),
+        destination_chain: String::from_str(&env, "Stellar"),
+        destination_address: String::from_str(&env, "GDESTADDR"),
     };
 
     // Amount = 0
@@ -132,6 +233,9 @@ fn test_create_plan_negative_or_zero_amount() {
         &3600,
         &true,
         &500,
+        &86400,
+        &String::from_str(&env, "Stellar"),
+        &String::from_str(&env, "SRC_TX_HASH"),
     );
     assert_eq!(result_zero, Err(Ok(Error::NegativeAmount)));
 
@@ -144,6 +248,9 @@ fn test_create_plan_negative_or_zero_amount() {
         &3600,
         &true,
         &500,
+        &86400,
+        &String::from_str(&env, "Stellar"),
+        &String::from_str(&env, "SRC_TX_HASH"),
     );
     assert_eq!(result_neg, Err(Ok(Error::NegativeAmount)));
 }
@@ -166,12 +273,16 @@ fn test_create_plan_invalid_basis_points() {
         address: Address::generate(&env),
         allocation_bps: 4000,
         fiat_anchor_info: String::from_str(&env, "NGN_BANK"),
+        destination_chain: String::from_str(&env, "Stellar"),
+        destination_address: String::from_str(&env, "GDESTADDR"),
     };
 
     let beneficiary2 = Beneficiary {
         address: Address::generate(&env),
         allocation_bps: 5000, // Total = 9000 BPS (less than 10000)
         fiat_anchor_info: String::from_str(&env, "NGN_BANK"),
+        destination_chain: String::from_str(&env, "Stellar"),
+        destination_address: String::from_str(&env, "GDESTADDR"),
     };
 
     let result = client.try_create_plan(
@@ -182,6 +293,9 @@ fn test_create_plan_invalid_basis_points() {
         &3600,
         &true,
         &500,
+        &86400,
+        &String::from_str(&env, "Stellar"),
+        &String::from_str(&env, "SRC_TX_HASH"),
     );
 
     assert_eq!(result, Err(Ok(Error::InvalidBasisPoints)));
@@ -205,6 +319,8 @@ fn test_create_plan_already_exists() {
         address: Address::generate(&env),
         allocation_bps: 10000,
         fiat_anchor_info: String::from_str(&env, "NGN_BANK"),
+        destination_chain: String::from_str(&env, "Stellar"),
+        destination_address: String::from_str(&env, "GDESTADDR"),
     };
 
     // First creation
@@ -216,6 +332,9 @@ fn test_create_plan_already_exists() {
         &3600,
         &true,
         &500,
+        &86400,
+        &String::from_str(&env, "Stellar"),
+        &String::from_str(&env, "SRC_TX_HASH"),
     );
 
     // Second creation on same owner
@@ -227,6 +346,9 @@ fn test_create_plan_already_exists() {
         &3600,
         &true,
         &500,
+        &86400,
+        &String::from_str(&env, "Stellar"),
+        &String::from_str(&env, "SRC_TX_HASH"),
     );
     assert_eq!(result2, Err(Ok(Error::PlanAlreadyExists)));
 }
@@ -251,6 +373,8 @@ fn test_trigger_payout_single_beneficiary() {
         address: beneficiary.clone(),
         allocation_bps: 10000,
         fiat_anchor_info: String::from_str(&env, "USD_BANK"),
+        destination_chain: String::from_str(&env, "Stellar"),
+        destination_address: String::from_str(&env, "GDESTADDR"),
     };
 
     let start = 1_000_000;
@@ -264,15 +388,20 @@ fn test_trigger_payout_single_beneficiary() {
         &3600,
         &true,
         &500,
+        &86400,
+        &String::from_str(&env, "Stellar"),
+        &String::from_str(&env, "SRC_TX_HASH"),
     );
 
-    // Deactivate plan
-    client.close_plan(&owner);
+    // Deactivate plan to start grace period
+    deactivate_plan_for_testing(&env, &contract_id, &owner);
 
     // Jump past grace period
     env.ledger().set_timestamp(start + 4000);
 
     // Trigger payout
+    client.claim(&owner);
+    env.ledger().set_timestamp(env.ledger().timestamp() + 86400);
     client.trigger_payout(&owner);
 
     // Beneficiary receives full amount, contract emptied
@@ -306,16 +435,22 @@ fn test_trigger_payout_multiple_beneficiaries() {
         address: alice.clone(),
         allocation_bps: 5000,
         fiat_anchor_info: String::from_str(&env, "USD_BANK"),
+        destination_chain: String::from_str(&env, "Stellar"),
+        destination_address: String::from_str(&env, "GDESTADDR"),
     };
     let bob_bene = Beneficiary {
         address: bob.clone(),
         allocation_bps: 3000,
         fiat_anchor_info: String::from_str(&env, "EUR_BANK"),
+        destination_chain: String::from_str(&env, "Stellar"),
+        destination_address: String::from_str(&env, "GDESTADDR"),
     };
     let charlie_bene = Beneficiary {
         address: charlie.clone(),
         allocation_bps: 2000,
         fiat_anchor_info: String::from_str(&env, "GBP_BANK"),
+        destination_chain: String::from_str(&env, "Stellar"),
+        destination_address: String::from_str(&env, "GDESTADDR"),
     };
 
     env.ledger().set_timestamp(1_000_000);
@@ -328,11 +463,17 @@ fn test_trigger_payout_multiple_beneficiaries() {
         &3600,
         &true,
         &500,
+        &86400,
+        &String::from_str(&env, "Stellar"),
+        &String::from_str(&env, "SRC_TX_HASH"),
     );
 
-    client.close_plan(&owner);
+    // Deactivate plan to start grace period
+    deactivate_plan_for_testing(&env, &contract_id, &owner);
     env.ledger().set_timestamp(1_000_000 + 4000);
 
+    client.claim(&owner);
+    env.ledger().set_timestamp(env.ledger().timestamp() + 86400);
     client.trigger_payout(&owner);
 
     // Alice: 1000 * 5000 / 10000 = 500
@@ -365,11 +506,15 @@ fn test_trigger_payout_dust_goes_to_last_beneficiary() {
         address: a.clone(),
         allocation_bps: 3333,
         fiat_anchor_info: String::from_str(&env, ""),
+        destination_chain: String::from_str(&env, "Stellar"),
+        destination_address: String::from_str(&env, "GDESTADDR"),
     };
     let bene_b = Beneficiary {
         address: b.clone(),
         allocation_bps: 6667,
         fiat_anchor_info: String::from_str(&env, ""),
+        destination_chain: String::from_str(&env, "Stellar"),
+        destination_address: String::from_str(&env, "GDESTADDR"),
     };
 
     env.ledger().set_timestamp(1_000_000);
@@ -382,11 +527,17 @@ fn test_trigger_payout_dust_goes_to_last_beneficiary() {
         &3600,
         &false,
         &0,
+        &86400,
+        &String::from_str(&env, "Stellar"),
+        &String::from_str(&env, "SRC_TX_HASH"),
     );
 
-    client.close_plan(&owner);
+    // Deactivate plan to start grace period
+    deactivate_plan_for_testing(&env, &contract_id, &owner);
     env.ledger().set_timestamp(1_000_000 + 4000);
 
+    client.claim(&owner);
+    env.ledger().set_timestamp(env.ledger().timestamp() + 86400);
     client.trigger_payout(&owner);
 
     // A: 100 * 3333 / 10000 = 33 (integer truncation)
@@ -416,6 +567,8 @@ fn test_trigger_payout_plan_still_active() {
         address: beneficiary.clone(),
         allocation_bps: 10000,
         fiat_anchor_info: String::from_str(&env, ""),
+        destination_chain: String::from_str(&env, "Stellar"),
+        destination_address: String::from_str(&env, "GDESTADDR"),
     };
 
     env.ledger().set_timestamp(1_000_000);
@@ -428,12 +581,15 @@ fn test_trigger_payout_plan_still_active() {
         &3600,
         &false,
         &0,
+        &86400,
+        &String::from_str(&env, "Stellar"),
+        &String::from_str(&env, "SRC_TX_HASH"),
     );
 
-    // Plan is still active — close_plan was never called
+    // Plan is still active — deactivate_plan_for_testing was never called
     env.ledger().set_timestamp(1_000_000 + 4000);
 
-    let result = client.try_trigger_payout(&owner);
+    let result = client.try_claim(&owner);
     assert_eq!(result, Err(Ok(Error::InactivityPeriodNotMet)));
 }
 
@@ -457,6 +613,8 @@ fn test_trigger_payout_grace_period_not_met() {
         address: beneficiary.clone(),
         allocation_bps: 10000,
         fiat_anchor_info: String::from_str(&env, ""),
+        destination_chain: String::from_str(&env, "Stellar"),
+        destination_address: String::from_str(&env, "GDESTADDR"),
     };
 
     env.ledger().set_timestamp(1_000_000);
@@ -469,14 +627,18 @@ fn test_trigger_payout_grace_period_not_met() {
         &3600,
         &false,
         &0,
+        &86400,
+        &String::from_str(&env, "Stellar"),
+        &String::from_str(&env, "SRC_TX_HASH"),
     );
 
-    client.close_plan(&owner);
+    // Deactivate plan to start grace period
+    deactivate_plan_for_testing(&env, &contract_id, &owner);
 
     // Only 1000 seconds passed — need 3600
     env.ledger().set_timestamp(1_000_000 + 1000);
 
-    let result = client.try_trigger_payout(&owner);
+    let result = client.try_claim(&owner);
     assert_eq!(result, Err(Ok(Error::InactivityPeriodNotMet)));
 }
 
@@ -500,6 +662,8 @@ fn test_trigger_payout_double_payout_prevented() {
         address: beneficiary.clone(),
         allocation_bps: 10000,
         fiat_anchor_info: String::from_str(&env, ""),
+        destination_chain: String::from_str(&env, "Stellar"),
+        destination_address: String::from_str(&env, "GDESTADDR"),
     };
 
     env.ledger().set_timestamp(1_000_000);
@@ -512,12 +676,18 @@ fn test_trigger_payout_double_payout_prevented() {
         &3600,
         &false,
         &0,
+        &86400,
+        &String::from_str(&env, "Stellar"),
+        &String::from_str(&env, "SRC_TX_HASH"),
     );
 
-    client.close_plan(&owner);
+    // Deactivate plan to start grace period
+    deactivate_plan_for_testing(&env, &contract_id, &owner);
     env.ledger().set_timestamp(1_000_000 + 4000);
 
     // First payout succeeds
+    client.claim(&owner);
+    env.ledger().set_timestamp(env.ledger().timestamp() + 86400);
     client.trigger_payout(&owner);
     assert_eq!(token_client.balance(&beneficiary), 500);
 

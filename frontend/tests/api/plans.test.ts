@@ -2,6 +2,7 @@ import { describe, it, expect, beforeEach } from "vitest";
 import { http, HttpResponse } from "msw";
 import { server } from "../mocks/server";
 import { PlansAPI } from "@/app/lib/api/plans";
+import type { UpdatePlanRequest } from "@/app/lib/api/plans";
 import { apiClient } from "@/app/lib/api/client";
 
 let api: PlansAPI;
@@ -9,6 +10,42 @@ let api: PlansAPI;
 beforeEach(() => {
   api = new PlansAPI();
   (apiClient as any).baseUrl = "";
+});
+
+describe("PlansAPI - Update Plan", () => {
+  it("successfully updates a plan with new beneficiaries and settings", async () => {
+    const updateRequest: UpdatePlanRequest = {
+      title: "Updated Family Trust",
+      beneficiaries: [
+        { wallet_address: "GABC123", name: "Alice", allocation_percentage: 60 },
+        { wallet_address: "GDEF456", name: "Bob", allocation_percentage: 40 },
+      ],
+      inactivity_period_days: 365,
+      yield_harvesting_enabled: true,
+    };
+
+    const result = await api.updatePlan("plan_1", updateRequest);
+    expect(result).toBeDefined();
+    expect(result.id).toBe("plan_1");
+    expect(result.title).toBe("Updated Family Trust");
+  });
+
+  it("throws an error when updating a non-existent plan", async () => {
+    await expect(
+      api.updatePlan("plan_nonexistent", { title: "Ghost" })
+    ).rejects.toThrow();
+  });
+
+  it("throws error when server returns 500", async () => {
+    server.use(
+      http.put("/api/plans/:id", () =>
+        HttpResponse.json({ error: "Internal server error" }, { status: 500 })
+      )
+    );
+    await expect(api.updatePlan("plan_1", { title: "X" })).rejects.toThrow(
+      "Internal server error"
+    );
+  });
 });
 
 describe("PlansAPI - Trigger and Settlement Endpoints", () => {

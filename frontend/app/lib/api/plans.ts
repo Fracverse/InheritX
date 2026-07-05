@@ -27,6 +27,13 @@ export interface Plan {
   updated_at: string;
 }
 
+export interface Beneficiary {
+  id?: string;
+  wallet_address: string;
+  name: string;
+  allocation_percentage: number;
+}
+
 export interface CreatePlanRequest {
   title: string;
   description?: string;
@@ -37,6 +44,15 @@ export interface CreatePlanRequest {
   bank_name?: string;
   currency_preference: string;
   two_fa_code: string;
+}
+
+export interface UpdatePlanRequest {
+  title?: string;
+  description?: string;
+  beneficiaries?: Beneficiary[];
+  inactivity_period_days?: number;
+  yield_harvesting_enabled?: boolean;
+  signed_transaction?: string;
 }
 
 export interface ClaimPlanRequest {
@@ -122,6 +138,17 @@ export class PlansAPI {
   }
 
   /**
+   * Update an existing plan
+   */
+  async updatePlan(planId: string, request: UpdatePlanRequest): Promise<Plan> {
+    const response = await apiClient.put<ApiResponse<Plan>>(
+      `/api/plans/${planId}`,
+      request
+    );
+    return response.data!;
+  }
+
+  /**
    * Cancel/deactivate a plan
    */
   async cancelPlan(planId: string): Promise<Plan> {
@@ -164,6 +191,40 @@ export class PlansAPI {
    */
   async getTriggerInfo(planId: string): Promise<any> {
     return apiClient.get(`/api/plans/${planId}/trigger-info`);
+  }
+
+  /**
+   * Keep-alive ping to reset inactivity timer
+   */
+  async pingKeepAlive(
+    planId: string,
+    signedTransaction?: string
+  ): Promise<Plan> {
+    const response = await apiClient.post<ApiResponse<Plan>>(
+      `/api/plans/${planId}/keep-alive`,
+      { signed_transaction: signedTransaction }
+    );
+    return response.data!;
+  }
+
+  /**
+   * Get plan inactivity status
+   */
+  async getInactivityStatus(planId: string): Promise<{
+    last_ping_timestamp: number;
+    inactivity_period_days: number;
+    days_until_claimable: number;
+    is_claimable: boolean;
+  }> {
+    const response = await apiClient.get<
+      ApiResponse<{
+        last_ping_timestamp: number;
+        inactivity_period_days: number;
+        days_until_claimable: number;
+        is_claimable: boolean;
+      }>
+    >(`/api/plans/${planId}/inactivity-status`);
+    return response.data!;
   }
 }
 
