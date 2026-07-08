@@ -37,16 +37,14 @@ const navItems = [
   },
   {
     label: "Admin Dashboard",
-    href: "/admin/users",
+    href: "/admin/dashboard",
     icon: <ShieldCheck size={16} />,
   },
 ];
 
-export function SidebarNav() {
+function NavLinks({ onClose }: { onClose?: () => void }) {
   const pathname = usePathname();
-  const [isOpen, setIsOpen] = useState(false);
-
-  const NavLinks = () => (
+  return (
     <nav className="flex flex-col gap-1 mt-6">
       {navItems.map((item) => {
         const isActive = pathname === item.href;
@@ -54,51 +52,45 @@ export function SidebarNav() {
           <Link
             key={item.href}
             href={item.href}
-            onClick={() => setIsOpen(false)}
+            onClick={onClose}
             className={`flex items-center gap-3 px-4 py-2.5 rounded-lg text-sm font-medium transition-colors ${
-              isActive
-                ? "bg-primary/10 text-primary border border-primary/20"
-                : "text-gray-400 hover:text-foreground hover:bg-white/5"
+              isActive ? "bg-primary/10 text-primary border border-primary/20" : "text-gray-400 hover:text-foreground hover:bg-white/5"
             }`}
           >
-            <span className={isActive ? "text-primary" : "text-gray-500"}>
-              {item.icon}
-            </span>
+            <span className={isActive ? "text-primary" : "text-gray-500"}>{item.icon}</span>
             {item.label}
           </Link>
         );
       })}
     </nav>
   );
+}
+
+export function SidebarNav() {
+  const [isOpen, setIsOpen] = useState(false);
 
   return (
     <>
-      {/* Desktop Sidebar */}
+      {/* ── Desktop Sidebar ── */}
       <aside className="hidden md:flex flex-col w-56 min-h-screen bg-[#0d1117] border-r border-white/10 px-3 py-6 shrink-0">
-        {/* Logo */}
         <div className="px-4 mb-2">
-          <span className="text-primary font-semibold tracking-wide text-sm uppercase">
-            InheritX
-          </span>
+          <span className="text-primary font-semibold tracking-wide text-sm uppercase">InheritX</span>
         </div>
         <NavLinks />
       </aside>
 
-      {/* Mobile Top Bar */}
-      <div className="md:hidden flex items-center justify-between px-4 py-3 border-b border-white/10 bg-[#0d1117]">
-        <span className="text-primary font-semibold tracking-wide text-sm uppercase">
-          InheritX
-        </span>
-        <button
-          onClick={() => setIsOpen(true)}
-          className="text-gray-400 hover:text-foreground p-1"
-          aria-label="Open menu"
-        >
+      {/* ── Mobile Top Bar (visible only on mobile, sits at top of page) ── */}
+      <div className="md:hidden fixed top-0 left-0 right-0 z-30 flex items-center justify-between px-4 h-14 bg-[#0d1117] border-b border-white/10">
+        <button onClick={() => setIsOpen(true)} className="text-gray-400 hover:text-foreground p-1" aria-label="Open menu">
           <Menu size={20} />
         </button>
+        <span className="text-primary font-semibold tracking-wide text-sm uppercase">InheritX</span>
       </div>
 
-      {/* Mobile Drawer */}
+      {/* ── Spacer so page content clears the fixed mobile top bar ── */}
+      <div className="md:hidden h-14 shrink-0" />
+
+      {/* ── Mobile Drawer ── */}
       <AnimatePresence>
         {isOpen && (
           <>
@@ -111,7 +103,7 @@ export function SidebarNav() {
               className="fixed inset-0 bg-black/60 z-40 md:hidden"
             />
 
-            {/* Drawer */}
+            {/* Drawer panel */}
             <motion.div
               initial={{ x: "-100%" }}
               animate={{ x: 0 }}
@@ -120,18 +112,12 @@ export function SidebarNav() {
               className="fixed top-0 left-0 h-full w-64 bg-[#0d1117] border-r border-white/10 px-3 py-6 z-50 md:hidden"
             >
               <div className="flex items-center justify-between px-4 mb-2">
-                <span className="text-primary font-semibold tracking-wide text-sm uppercase">
-                  InheritX
-                </span>
-                <button
-                  onClick={() => setIsOpen(false)}
-                  className="text-gray-400 hover:text-foreground"
-                  aria-label="Close menu"
-                >
+                <span className="text-primary font-semibold tracking-wide text-sm uppercase">InheritX</span>
+                <button onClick={() => setIsOpen(false)} className="text-gray-400 hover:text-foreground" aria-label="Close menu">
                   <X size={18} />
                 </button>
               </div>
-              <NavLinks />
+              <NavLinks onClose={() => setIsOpen(false)} />
             </motion.div>
           </>
         )}

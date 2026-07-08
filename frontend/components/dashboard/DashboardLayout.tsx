@@ -14,9 +14,7 @@ export function DashboardLayout({ children }: { children: React.ReactNode }) {
         <DashboardHeader />
 
         {/* Page content */}
-        <main className="flex-1 overflow-y-auto p-6">
-          {children}
-        </main>
+        <main className="flex-1 overflow-y-auto sm:p-6 p-4">{children}</main>
       </div>
     </div>
   );

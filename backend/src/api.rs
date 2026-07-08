@@ -1,9 +1,14 @@
+use crate::middleware::{
+    csp_layer, hsts_layer, rate_limit_middleware, referrer_policy_layer,
+    x_content_type_options_layer, x_frame_options_layer, RateLimitConfig, RateLimitStore,
+};
+use axum::http::{HeaderValue, Method};
 use axum::{
-    extract::{Query, State},
-    http::StatusCode,
-    http::{header::HeaderName, HeaderValue},
+    body::Body,
+    extract::{Path, Query, State},
+    http::{header, header::HeaderName, StatusCode},
     middleware::from_fn,
-    response::IntoResponse,
+    response::{IntoResponse, Response},
     routing::{get, post},
     Json, Router,
 };
@@ -11,13 +16,14 @@ use chrono::{DateTime, Utc};
 use rust_decimal::Decimal;
 use serde::{Deserialize, Serialize};
 use std::sync::Arc;
-use tower_http::cors::{Any, CorsLayer};
+use tower_http::cors::CorsLayer;
 use tracing::error;
 use uuid::Uuid;
 
-use crate::auth::signature_auth_middleware;
+use crate::auth::{jwt_auth_middleware, signature_auth_middleware};
 use crate::cache::PlanCache;
 use crate::kyc_webhook::kyc_webhook_handler;
+use crate::metrics::{latency_middleware, metrics_handler};
 use crate::stellar_anchor::AnchorRegistry;
 use crate::ws::{ws_handler, KycUpdateEvent};
 use crate::yield_calculator;
@@ -109,10 +115,23 @@ struct ApiError {
 }
 
 pub fn create_router(state: Arc<AppState>) -> Router {
+    // Strict CORS: only allow specific origins, methods, and headers
     let cors = CorsLayer::new()
-        .allow_origin(Any)
-        .allow_methods(Any)
-        .allow_headers(Any);
+        .allow_origin(
+            "https://inheritx.vercel.app"
+                .parse::<HeaderValue>()
+                .unwrap(),
+        )
+        .allow_methods([Method::GET, Method::POST, Method::OPTIONS])
+        .allow_headers([
+            axum::http::header::CONTENT_TYPE,
+            axum::http::header::AUTHORIZATION,
+        ])
+        .max_age(std::time::Duration::from_secs(3600));
+
+    // Rate limiter: 100 requests per IP per 60 seconds
+    let store = RateLimitStore::new();
+    let config = Arc::new(RateLimitConfig::default());
 
     // User routes requiring signature verification
     let user_routes = Router::new()
@@ -120,6 +139,11 @@ pub fn create_router(state: Arc<AppState>) -> Router {
         .route("/api/plans/ping", post(ping_plan))
         .route("/api/plans/payout", post(trigger_payout))
         .route_layer(from_fn(signature_auth_middleware));
+
+    // Admin routes requiring JWT authentication
+    let admin_routes = Router::new()
+        .route("/api/plans/{id}/report", get(get_plan_report))
+        .route_layer(from_fn(jwt_auth_middleware));
 
     // Public or admin routes
     let public_routes = Router::new()
@@ -135,7 +159,18 @@ pub fn create_router(state: Arc<AppState>) -> Router {
 
     Router::new()
         .merge(user_routes)
+        .merge(admin_routes)
         .merge(public_routes)
+        .layer(axum::middleware::from_fn(move |req, next| {
+            rate_limit_middleware(req, next, store.clone(), config.clone())
+        }))
+        .layer(referrer_policy_layer())
+        .layer(x_content_type_options_layer())
+        .layer(x_frame_options_layer())
+        .layer(csp_layer())
+        .layer(hsts_layer())
+        .route("/metrics", get(metrics_handler))
+        .layer(from_fn(latency_middleware))
         .layer(cors)
         .with_state(state)
 }
@@ -164,6 +199,12 @@ pub struct BeneficiaryRow {
     pub wallet_address: String,
     pub allocation_bps: i32,
     pub fiat_anchor_info: String,
+}
+
+#[derive(Debug, Clone, sqlx::FromRow)]
+pub struct PingLogRow {
+    pub pinged_at: chrono::DateTime<chrono::Utc>,
+    pub accrued_yield_snapshot: rust_decimal::Decimal,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -852,12 +893,279 @@ async fn ping_plan(
 // Contributors: Implement calculating final payout with yield, parsing fiat payout details,
 // submitting fiat payouts to AnchorRegistry, and marking the plan inactive
 async fn trigger_payout(
-    State(_state): State<Arc<AppState>>,
-    Json(_payload): Json<PayoutRequest>,
+    State(state): State<Arc<AppState>>,
+    Json(payload): Json<PayoutRequest>,
 ) -> impl IntoResponse {
+    // 1. Begin database transaction
+    let mut tx = match state.db_pool.begin().await {
+        Ok(tx) => tx,
+        Err(e) => {
+            error!(error = %e, "Failed to begin database transaction");
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(serde_json::json!({ "error": format!("Failed to begin database transaction: {}", e) })),
+            ).into_response();
+        }
+    };
+
+    // 2. Fetch the active plan for the owner
+    let plan = match sqlx::query_as::<_, PlanRow>(
+        "SELECT id, owner_address, token_address, amount, grace_period, grace_period_seconds, earn_yield, last_ping, is_active, status, yield_rate_bps, accrued_yield, created_at FROM plans WHERE owner_address = $1 AND is_active = true FOR UPDATE",
+    )
+    .bind(&payload.owner)
+    .fetch_optional(&mut *tx)
+    .await
+    {
+        Ok(Some(p)) => p,
+        Ok(None) => {
+            return (
+                StatusCode::NOT_FOUND,
+                Json(serde_json::json!({ "error": "No active plan found for this owner" })),
+            ).into_response();
+        }
+        Err(e) => {
+            error!(owner = %payload.owner, error = %e, "Database error fetching plan");
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(serde_json::json!({ "error": format!("Database error: {}", e) })),
+            ).into_response();
+        }
+    };
+
+    // 3. Verify if the grace period has elapsed
+    let now = chrono::Utc::now().timestamp();
+    let deadline = plan.last_ping + plan.grace_period_seconds;
+    if now < deadline {
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(serde_json::json!({ "error": "Grace period has not elapsed" })),
+        )
+            .into_response();
+    }
+
+    // 4. Compute final locked amount + yield
+    let accrued_yield_f64 = compute_projected_accrued_yield(&plan);
+    let accrued_yield_dec = match Decimal::from_f64_retain(accrued_yield_f64) {
+        Some(d) => d.normalize(),
+        None => Decimal::ZERO,
+    };
+    let total_payout_dec = plan.amount + accrued_yield_dec;
+
+    // 5. Load beneficiaries for the plan
+    let beneficiaries_rows = match sqlx::query_as::<_, BeneficiaryRow>(
+        r#"
+        SELECT id, plan_id, wallet_address, allocation_bps, fiat_anchor_info
+        FROM beneficiaries
+        WHERE plan_id = $1
+        "#,
+    )
+    .bind(plan.id)
+    .fetch_all(&mut *tx)
+    .await
+    {
+        Ok(rows) => rows,
+        Err(e) => {
+            error!(plan_id = %plan.id, error = %e, "Failed to load beneficiaries");
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(
+                    serde_json::json!({ "error": format!("Failed to load beneficiaries: {}", e) }),
+                ),
+            )
+                .into_response();
+        }
+    };
+
+    let n = beneficiaries_rows.len();
+    if n == 0 {
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(serde_json::json!({ "error": "Plan has no beneficiaries" })),
+        )
+            .into_response();
+    }
+
+    // 6. Iterate over beneficiaries and insert payout records
+    let mut remaining = total_payout_dec;
+    let mut payout_rows = Vec::with_capacity(n);
+
+    for (i, b) in beneficiaries_rows.iter().enumerate() {
+        let share = if i == n - 1 {
+            remaining
+        } else {
+            let amount =
+                (total_payout_dec * Decimal::from(b.allocation_bps)) / Decimal::from(10000);
+            let amount = amount.floor();
+            remaining -= amount;
+            amount
+        };
+
+        if share <= Decimal::ZERO {
+            continue;
+        }
+
+        let is_fiat = !b.fiat_anchor_info.trim().is_empty();
+        let payout_type_str = if is_fiat { "fiat" } else { "crypto" };
+        let payout_status_str = "processing";
+
+        let payout_row = match sqlx::query_as::<_, PayoutRow>(
+            r#"
+            INSERT INTO payouts (plan_id, beneficiary_address, amount, payout_type, status)
+            VALUES ($1, $2, $3, $4::payout_type, $5::payout_status)
+            RETURNING id, plan_id, beneficiary_address, amount::text, payout_type::text, status::text, created_at
+            "#,
+        )
+        .bind(plan.id)
+        .bind(&b.wallet_address)
+        .bind(share)
+        .bind(payout_type_str)
+        .bind(payout_status_str)
+        .fetch_one(&mut *tx)
+        .await {
+            Ok(row) => row,
+            Err(e) => {
+                error!(plan_id = %plan.id, beneficiary = %b.wallet_address, error = %e, "Failed to insert payout record");
+                return (
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    Json(serde_json::json!({ "error": format!("Failed to insert payout record: {}", e) })),
+                ).into_response();
+            }
+        };
+
+        // Initiate payout distribution
+        if is_fiat {
+            let (beneficiary_name, fiat_currency, bank_name, account_number) =
+                parse_fiat_anchor_info(&b.fiat_anchor_info, &b.wallet_address);
+            let token_amount_f64 = share.to_string().parse::<f64>().unwrap_or(0.0);
+            let req = crate::stellar_anchor::AnchorPayoutRequest {
+                beneficiary_address: b.wallet_address.clone(),
+                beneficiary_name,
+                token: plan.token_address.clone(),
+                token_amount: token_amount_f64,
+                fiat_currency,
+                bank_name,
+                account_number,
+            };
+            state.anchor.create_payout(req);
+        } else {
+            tracing::info!(
+                plan_id = %plan.id,
+                beneficiary = %b.wallet_address,
+                amount = %share,
+                "Initiated on-chain crypto distribution"
+            );
+        }
+
+        payout_rows.push(payout_row);
+    }
+
+    // 7. Mark the plan as inactive
+    if let Err(e) = sqlx::query(
+        "UPDATE plans SET is_active = false, status = 'PAID_OUT', accrued_yield = $1, last_ping = $2 WHERE id = $3"
+    )
+    .bind(accrued_yield_dec)
+    .bind(now)
+    .bind(plan.id)
+    .execute(&mut *tx)
+    .await {
+        error!(plan_id = %plan.id, error = %e, "Failed to mark plan as inactive");
+        return (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(serde_json::json!({ "error": format!("Failed to mark plan as inactive: {}", e) })),
+        ).into_response();
+    }
+
+    // 8. Commit transaction
+    if let Err(e) = tx.commit().await {
+        error!(error = %e, "Failed to commit database transaction");
+        return (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(serde_json::json!({ "error": format!("Failed to commit database transaction: {}", e) })),
+        ).into_response();
+    }
+
+    // 9. Invalidate cache
+    let beneficiary_addresses: Vec<String> = beneficiaries_rows
+        .iter()
+        .map(|b| b.wallet_address.clone())
+        .collect();
+    invalidate_plan_cache(
+        &state.plan_cache,
+        &plan.owner_address,
+        &beneficiary_addresses,
+    )
+    .await;
+
+    (StatusCode::OK, Json(payout_rows)).into_response()
+}
+
+fn parse_fiat_anchor_info(info: &str, wallet_address: &str) -> (String, String, String, String) {
+    #[derive(Deserialize)]
+    struct LocalAnchorInfo {
+        name: Option<String>,
+        currency: Option<String>,
+        bank: Option<String>,
+        account: Option<String>,
+    }
+
+    if let Ok(parsed) = serde_json::from_str::<LocalAnchorInfo>(info) {
+        return (
+            parsed.name.unwrap_or_else(|| "Beneficiary".to_string()),
+            parsed.currency.unwrap_or_else(|| "USD".to_string()),
+            parsed
+                .bank
+                .unwrap_or_else(|| "Stellar Anchor Bank".to_string()),
+            parsed.account.unwrap_or_else(|| {
+                format!("ACC-{}", &wallet_address[..8.min(wallet_address.len())])
+            }),
+        );
+    }
+
+    let parts: Vec<&str> = if info.contains(';') {
+        info.split(';').map(|s| s.trim()).collect()
+    } else if info.contains(',') {
+        info.split(',').map(|s| s.trim()).collect()
+    } else {
+        vec![info]
+    };
+
+    if parts.len() >= 3 {
+        return (
+            "Beneficiary".to_string(),
+            parts[2].to_string(),
+            parts[0].to_string(),
+            parts[1].to_string(),
+        );
+    }
+
+    let info_upper = info.to_uppercase();
+    let fiat_currency = if info_upper.contains("NGN") {
+        "NGN"
+    } else if info_upper.contains("KES") {
+        "KES"
+    } else if info_upper.contains("BRL") {
+        "BRL"
+    } else if info_upper.contains("PHP") {
+        "PHP"
+    } else if info_upper.contains("EUR") {
+        "EUR"
+    } else {
+        "USD"
+    };
+
+    let bank_name = if info.trim().is_empty() {
+        "Stellar Anchor Bank".to_string()
+    } else {
+        info.to_string()
+    };
+
+    let account_number = format!("ACC-{}", &wallet_address[..8.min(wallet_address.len())]);
+
     (
-        StatusCode::NOT_IMPLEMENTED,
-        "Payout trigger logic not implemented",
+        "Beneficiary".to_string(),
+        fiat_currency.to_string(),
+        bank_name,
+        account_number,
     )
 }
 //
@@ -1078,4 +1386,146 @@ async fn get_kyc_requirements() -> impl IntoResponse {
     };
 
     (StatusCode::OK, Json(response))
+}
+
+/// Handler: GET /api/plans/:id/report
+/// Generates a PDF audit report for the given plan.
+/// Requires a valid JWT (role = admin) via Bearer token.
+pub async fn get_plan_report(
+    State(state): State<Arc<AppState>>,
+    Path(plan_id): Path<uuid::Uuid>,
+) -> Response {
+    // 1. Fetch the plan
+    let plan = match sqlx::query_as::<_, PlanRow>(
+        r#"
+        SELECT id, owner_address, token_address, amount, grace_period,
+               grace_period_seconds, earn_yield, last_ping, is_active,
+               status, yield_rate_bps, accrued_yield, created_at
+        FROM plans
+        WHERE id = $1
+        "#,
+    )
+    .bind(plan_id)
+    .fetch_optional(&state.db_pool)
+    .await
+    {
+        Ok(Some(p)) => p,
+        Ok(None) => {
+            return (
+                StatusCode::NOT_FOUND,
+                Json(serde_json::json!({ "error": "Plan not found" })),
+            )
+                .into_response()
+        }
+        Err(e) => {
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(serde_json::json!({ "error": format!("Database error: {}", e) })),
+            )
+                .into_response()
+        }
+    };
+
+    // 2. Fetch beneficiaries
+    let beneficiary_rows =
+        match sqlx::query_as::<_, BeneficiaryRow>(
+            "SELECT id, plan_id, wallet_address, allocation_bps, fiat_anchor_info \
+         FROM beneficiaries WHERE plan_id = $1 ORDER BY allocation_bps DESC",
+        )
+        .bind(plan_id)
+        .fetch_all(&state.db_pool)
+        .await
+        {
+            Ok(rows) => rows,
+            Err(e) => return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(
+                    serde_json::json!({ "error": format!("Failed to load beneficiaries: {}", e) }),
+                ),
+            )
+                .into_response(),
+        };
+
+    // 3. Fetch ping logs
+    let ping_rows = match sqlx::query_as::<_, PingLogRow>(
+        "SELECT pinged_at, accrued_yield_snapshot FROM ping_logs \
+         WHERE plan_id = $1 ORDER BY pinged_at ASC",
+    )
+    .bind(plan_id)
+    .fetch_all(&state.db_pool)
+    .await
+    {
+        Ok(rows) => rows,
+        Err(e) => {
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(serde_json::json!({ "error": format!("Failed to load ping logs: {}", e) })),
+            )
+                .into_response()
+        }
+    };
+
+    // 4. Build PDF data structs (owned, so they can cross the thread boundary)
+    let report_data = crate::pdf::PlanReportData {
+        plan_id: plan.id.to_string(),
+        owner_address: plan.owner_address.clone(),
+        token_address: plan.token_address.clone(),
+        amount: plan.amount.to_string(),
+        status: plan.status.clone(),
+        earn_yield: plan.earn_yield,
+        yield_rate_bps: plan.yield_rate_bps,
+        accrued_yield: plan.accrued_yield.to_string(),
+        created_at: plan.created_at.to_rfc3339(),
+        grace_period_seconds: plan.grace_period_seconds,
+        beneficiaries: beneficiary_rows
+            .into_iter()
+            .map(|b| crate::pdf::BeneficiaryData {
+                wallet_address: b.wallet_address,
+                allocation_bps: b.allocation_bps,
+                fiat_anchor_info: b.fiat_anchor_info,
+            })
+            .collect(),
+        ping_logs: ping_rows
+            .into_iter()
+            .map(|p| crate::pdf::PingLogData {
+                pinged_at: p.pinged_at.to_rfc3339(),
+                accrued_yield_snapshot: p.accrued_yield_snapshot.to_string(),
+            })
+            .collect(),
+    };
+
+    // 5. Generate PDF in a blocking thread (printpdf is CPU-bound / not async)
+    let pdf_bytes =
+        match tokio::task::spawn_blocking(move || crate::pdf::generate(report_data)).await {
+            Ok(Ok(bytes)) => bytes,
+            Ok(Err(e)) => {
+                return (
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    Json(serde_json::json!({ "error": format!("PDF generation failed: {}", e) })),
+                )
+                    .into_response()
+            }
+            Err(e) => {
+                return (
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    Json(serde_json::json!({ "error": format!("PDF task panicked: {}", e) })),
+                )
+                    .into_response()
+            }
+        };
+
+    // 6. Return the PDF as a downloadable attachment
+    let filename = format!("plan-{}-report.pdf", plan_id);
+    (
+        StatusCode::OK,
+        [
+            (header::CONTENT_TYPE, "application/pdf".to_string()),
+            (
+                header::CONTENT_DISPOSITION,
+                format!("attachment; filename=\"{}\"", filename),
+            ),
+        ],
+        Body::from(pdf_bytes),
+    )
+        .into_response()
 }

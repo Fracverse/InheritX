@@ -2,7 +2,7 @@
 
 import { useWallet } from "../context/WalletContext";
 import { motion, AnimatePresence } from "framer-motion";
-import { Loader2, Wallet, Check } from "lucide-react";
+import { Loader2, Check } from "lucide-react";
 import React from "react";
 import UserIcon from "./userIcon";
 
@@ -80,14 +80,24 @@ export function WalletModal() {
                             )}
                           </div>
 
-                          {/* Icon Placeholder */}
-                          <div className="text-[#92A5A8]">
-                            {/* We can use the icon from context or generic */}
-                            {wallet.id.includes("freighter") ? (
-                              <Wallet className="w-5 h-5" />
-                            ) : (
-                              <Wallet className="w-5 h-5" />
-                            )}
+                          <div className="w-8 h-8 rounded-full bg-[#1C252A] flex items-center justify-center overflow-hidden">
+                            <img
+                              src={wallet.icon}
+                              alt={`${wallet.name} icon`}
+                              className="w-5 h-5"
+                              onError={(e) => {
+                                (e.target as HTMLImageElement).style.display = "none";
+                                (e.target as HTMLImageElement).parentElement!.innerHTML = '';
+                                const svg = document.createElementNS("http://www.w3.org/2000/svg", "svg");
+                                svg.setAttribute("class", "w-5 h-5 text-[#92A5A8]");
+                                svg.setAttribute("viewBox", "0 0 24 24");
+                                svg.setAttribute("fill", "none");
+                                svg.setAttribute("stroke", "currentColor");
+                                svg.setAttribute("stroke-width", "2");
+                                svg.innerHTML = '<rect x="2" y="6" width="20" height="12" rx="2"/><path d="M16 12h2"/><path d="M6 12h2"/>';
+                                (e.target as HTMLImageElement).parentElement!.appendChild(svg);
+                              }}
+                            />
                           </div>
 
                           <span className="font-semibold text-sm tracking-wider uppercase text-[#92A5A8]">

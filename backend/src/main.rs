@@ -1,5 +1,5 @@
 use inheritx_backend::{
-    create_router, telemetry, AppState, Config, DbManager, InactivityWatchdogConfig,
+    create_router, metrics, telemetry, AppState, Config, DbManager, InactivityWatchdogConfig,
     InactivityWatchdogService,
 };
 use std::net::SocketAddr;
@@ -10,6 +10,9 @@ use tracing::{error, info, warn};
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // Initialize tracing logging
     telemetry::init_tracing()?;
+
+    // Initialize Prometheus metrics
+    metrics::init();
 
     //loading the .env
     dotenvy::dotenv().ok();
@@ -64,6 +67,18 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         InactivityWatchdogConfig::from_env(),
     ));
     inactivity_watchdog.start();
+
+    // Periodically refresh DB pool metrics
+    {
+        let pool = db_pool.clone();
+        tokio::spawn(async move {
+            let mut interval = tokio::time::interval(std::time::Duration::from_secs(15));
+            loop {
+                interval.tick().await;
+                metrics::update_db_pool_metrics(&pool);
+            }
+        });
+    }
 
     // Create Axum application
     let app = create_router(state);

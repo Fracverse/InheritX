@@ -15,6 +15,7 @@
     "test:coverage": "vitest --run --coverage"
   },
   "dependencies": {
+    "@allbridge/bridge-core-sdk": "^3.19.0",
     "@creit.tech/stellar-wallets-kit": "^1.9.5",
     "@ducanh2912/next-pwa": "^10.2.9",
     "@heroicons/react": "^2.2.0",
@@ -27,6 +28,7 @@
     "next-intl": "^4.13.0",
     "react": "19.2.3",
     "react-dom": "19.2.3",
+    "recharts": "^3.9.0",
     "sharp": "^0.34.5",
     "tailwind-scrollbar-hide": "^4.0.0",
     "zustand": "^5.0.3"

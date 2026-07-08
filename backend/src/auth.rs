@@ -55,12 +55,8 @@ pub enum AuthError {
 
 impl IntoResponse for AuthError {
     fn into_response(self) -> Response {
-        let status = match self {
-            AuthError::TokenExpired => StatusCode::UNAUTHORIZED,
-            _ => StatusCode::UNAUTHORIZED,
-        };
         let body = serde_json::json!({ "error": self.to_string() });
-        (status, Json(body)).into_response()
+        (StatusCode::UNAUTHORIZED, Json(body)).into_response()
     }
 }
 
