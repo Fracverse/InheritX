@@ -20,19 +20,14 @@ use tower_http::cors::CorsLayer;
 use tracing::error;
 use uuid::Uuid;
 
-
-use crate::stellar_anchor::{AnchorPayout, AnchorRegistry};
-
-use crate::WebhookDispatcherService;
+use crate::stellar_anchor::AnchorRegistry;
 
 use crate::auth::signature_auth_middleware;
 use crate::cache::PlanCache;
 use crate::kyc_webhook::kyc_webhook_handler;
 use crate::metrics::{latency_middleware, metrics_handler};
-use crate::stellar_anchor::AnchorRegistry;
-use crate::ws::{ws_handler, KycUpdateEvent};
+use crate::ws::ws_handler;
 use crate::yield_calculator;
-
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct PlanBeneficiary {
@@ -61,6 +56,7 @@ pub struct AppState {
     pub kyc_webhook_secret: Option<String>,
     pub apy_config: yield_calculator::ApyConfig,
     pub plan_cache: PlanCache,
+    pub kyc_tx: tokio::sync::broadcast::Sender<crate::ws::KycUpdateEvent>,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -149,7 +145,7 @@ pub fn create_router(state: Arc<AppState>) -> Router {
     let public_routes = Router::new()
         .route("/api/plans", get(get_plans))
         .route("/api/anchor/payout-status", get(get_anchor_payouts))
-.route("/api/kyc/webhook", post(kyc_webhook_handler))
+        .route("/api/kyc/webhook", post(kyc_webhook_handler))
         .route("/api/kyc/status", get(get_kyc_status))
         .route("/api/kyc/submit", post(submit_kyc))
         .route("/api/kyc/upload", post(upload_kyc_document))
@@ -796,7 +792,7 @@ async fn ping_plan(
     State(state): State<Arc<AppState>>,
     Json(payload): Json<PingRequest>,
 ) -> impl IntoResponse {
-// 1. Verify signature
+    // 1. Verify signature
     if !verify_ping_signature(&payload.owner, &payload.signature, &payload.message) {
         return (
             StatusCode::UNAUTHORIZED,
@@ -834,7 +830,7 @@ async fn ping_plan(
         (current_time - plan.last_ping) as u64
     } else {
         0
-    };r
+    };
 
     let mut new_accrued_yield: rust_decimal::Decimal = plan.accrued_yield;
     if plan.earn_yield && elapsed > 0 {

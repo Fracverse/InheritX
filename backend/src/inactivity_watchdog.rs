@@ -1,6 +1,4 @@
-use crate::WebhookDispatcherService;
 use chrono::{DateTime, Utc};
-use serde_json::json;
 use sqlx::PgPool;
 use std::sync::Arc;
 use std::time::Duration;

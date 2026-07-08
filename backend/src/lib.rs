@@ -12,6 +12,7 @@ pub mod middleware;
 pub mod stellar_anchor;
 pub mod telemetry;
 pub mod webhooks;
+pub mod ws;
 pub mod yield_calculator;
 
 pub use api::{create_router, AppState, PlanResponse};

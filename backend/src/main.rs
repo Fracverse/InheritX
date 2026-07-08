@@ -11,7 +11,6 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // Initialize tracing logging
     telemetry::init_tracing()?;
 
-
     // Initialize Prometheus metrics
     metrics::init();
 
@@ -50,6 +49,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         }
     };
 
+    let (kyc_tx, _) = tokio::sync::broadcast::channel(100);
     // Initialize state
     let state = Arc::new(AppState {
         anchor: Arc::new(inheritx_backend::stellar_anchor::AnchorRegistry::new()),
@@ -57,6 +57,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         kyc_webhook_secret: std::env::var("KYC_WEBHOOK_SECRET").ok(),
         apy_config: inheritx_backend::yield_calculator::ApyConfig::from_env(),
         plan_cache: plan_cache.clone(),
+        kyc_tx: kyc_tx.clone(),
     });
 
     // Start inactivity watchdog
@@ -67,7 +68,6 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     ));
     inactivity_watchdog.start();
 
-r
     let webhook_dispatcher = Arc::new(inheritx_backend::WebhookDispatcherService::new(
         db_pool.clone(),
     ));
@@ -84,7 +84,6 @@ r
             }
         });
     }
-
 
     // Create Axum application
     let app = create_router(state);

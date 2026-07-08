@@ -89,7 +89,7 @@ impl WebhookDispatcherService {
                     .await?;
                     info!("Webhook dispatch {} succeeded", id);
                 }
-                Ok(mut resp) => {
+                Ok(resp) => {
                     let status = resp.status().as_u16();
                     let text = resp.text().await.unwrap_or_default();
                     warn!(
