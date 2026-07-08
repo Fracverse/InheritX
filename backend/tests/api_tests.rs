@@ -41,17 +41,10 @@ fn setup_app_with_cache(plan_cache: PlanCache) -> axum::Router {
         .acquire_timeout(Duration::from_secs(1))
         .connect_lazy(&database_url)
         .unwrap();
-
     let state = Arc::new(AppState {
         anchor: Arc::new(inheritx_backend::stellar_anchor::AnchorRegistry::new()),
-
-        db_pool: PgPoolOptions::new()
-            .connect_lazy("postgres://postgres:password@localhost/test")
-            .unwrap(),
-
-        kyc_tx: tokio::sync::broadcast::channel(16).0,
         db_pool,
-
+        kyc_tx: tokio::sync::broadcast::channel(16).0,
         kyc_webhook_secret: None,
         apy_config: inheritx_backend::yield_calculator::ApyConfig::default(),
         plan_cache,
