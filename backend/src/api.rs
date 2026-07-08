@@ -20,11 +20,11 @@ use tower_http::cors::CorsLayer;
 use tracing::error;
 use uuid::Uuid;
 
-use crate::stellar_anchor::AnchorRegistry;
 use crate::auth::{jwt_auth_middleware, signature_auth_middleware};
 use crate::cache::PlanCache;
 use crate::kyc_webhook::kyc_webhook_handler;
 use crate::metrics::{latency_middleware, metrics_handler};
+use crate::stellar_anchor::AnchorRegistry;
 use crate::ws::ws_handler;
 use crate::yield_calculator;
 
