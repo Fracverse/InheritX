@@ -1583,7 +1583,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "9f7c3e4beb33f85d45ae3e3a1792185706c8e16d043238c593331cc7cd313b50"
 
 [[package]]
-[[package]]
 name = "openssl"
 version = "0.10.81"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1627,7 +1626,12 @@ dependencies = [
 ]
 
 [[package]]
-name =
+name = "owned_ttf_parser"
+version = "0.19.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "706de7e2214113d63a8238d1910463cfce781129a6f263d13fdb09ff64355ba4"
+dependencies = [
+ "ttf-parser",
 ]
 
 [[package]]
@@ -3160,7 +3164,6 @@ dependencies = [
  "tracing-serde",
 ]
 
-[[package]]
 [[package]]
 name = "try-lock"
 version = "0.2.5"
