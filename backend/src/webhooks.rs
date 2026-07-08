@@ -204,8 +204,8 @@ impl WebhookDispatcherService {
 mod tests {
     use super::*;
 
-    #[test]
-    fn smoke() {
+    #[tokio::test]
+    async fn smoke() {
         let _ = WebhookDispatcherService::new(
             sqlx::PgPool::connect_lazy("postgres://localhost").unwrap(),
         );
