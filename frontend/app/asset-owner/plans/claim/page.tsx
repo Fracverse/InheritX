@@ -236,7 +236,7 @@ function PlanClaimCard({ initialPlan, onSuccess }: PlanClaimCardProps) {
               Payout Claimed
             </>
           )}
-          {claimStatus === "idle" && claimStatus !== "error" && (
+          {claimStatus === "idle" && (
             <>
               {isCompleted ? (
                 "Payout Completed"
