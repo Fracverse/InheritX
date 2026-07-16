@@ -84,6 +84,28 @@ fn test_create_plan_success() {
         beneficiary_address
     );
     assert_eq!(plan.beneficiaries.get(0).unwrap().allocation_bps, 10000);
+
+    // Verify PlanCreate event was emitted
+    let expected_event = CreatePlanEvent {
+        owner: owner.clone(),
+        token: token_id.clone(),
+        amount: 1500,
+        grace_period: 3600,
+        earn_yield: true,
+        yield_rate_bps: 500,
+        timelock_duration: 86400,
+    };
+    assert_eq!(
+        env.events().all(),
+        vec![
+            &env,
+            (
+                contract_id,
+                (symbol_short!("PlanCreate"), contract_id).into_val(&env),
+                expected_event.into_val(&env),
+            ),
+        ]
+    );
 }
 
 #[test]
@@ -132,10 +154,27 @@ fn test_ping_updates_last_ping_and_emits_event() {
 
     let plan = client.get_plan(&owner);
     assert_eq!(plan.last_ping, ping_timestamp);
+    
+    // CreatePlanEvent from the initial create_plan call
+    let create_plan_event = CreatePlanEvent {
+        owner: owner.clone(),
+        token: token_id.clone(),
+        amount: 1500,
+        grace_period: 3600,
+        earn_yield: true,
+        yield_rate_bps: 500,
+        timelock_duration: 86400,
+    };
+    
     assert_eq!(
         env.events().all(),
         vec![
             &env,
+            (
+                contract_id,
+                (symbol_short!("PlanCreate"), contract_id).into_val(&env),
+                create_plan_event.into_val(&env),
+            ),
             (
                 contract_id,
                 (symbol_short!("ping"), owner).into_val(&env),
