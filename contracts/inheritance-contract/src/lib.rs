@@ -170,6 +170,11 @@ impl InheritanceContract {
         }
 
         let token_client = soroban_sdk::token::Client::new(&env, &token);
+        
+        // Validate token by checking if it's a valid Soroban Token contract
+        // Calling decimals() will fail if the token address is not a valid token contract
+        let _ = token_client.decimals();
+
         let balance = token_client.balance(&owner);
         if balance < amount {
             return Err(Error::InsufficientBalance);
