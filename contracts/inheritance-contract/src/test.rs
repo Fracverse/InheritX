@@ -98,6 +98,7 @@ fn test_create_plan_success() {
     
     let actual_events = env.events().all();
     eprintln!("actual events: {:#?}", actual_events);
+    eprintln!("expected event: {:#?}", expected_event);
     
     assert_eq!(
         actual_events,
