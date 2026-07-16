@@ -95,8 +95,12 @@ fn test_create_plan_success() {
         yield_rate_bps: 500,
         timelock_duration: 86400,
     };
+    
+    let actual_events = env.events().all();
+    eprintln!("actual events: {:#?}", actual_events);
+    
     assert_eq!(
-        env.events().all(),
+        actual_events,
         vec![
             &env,
             (
@@ -166,8 +170,11 @@ fn test_ping_updates_last_ping_and_emits_event() {
         timelock_duration: 86400,
     };
     
+    let actual_events = env.events().all();
+    eprintln!("actual events: {:#?}", actual_events);
+    
     assert_eq!(
-        env.events().all(),
+        actual_events,
         vec![
             &env,
             (
