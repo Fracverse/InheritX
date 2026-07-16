@@ -101,7 +101,7 @@ fn test_create_plan_success() {
             &env,
             (
                 contract_id,
-                (symbol_short!("PlanCreate"), contract_id).into_val(&env),
+                (symbol_short!("PlanCreate"), owner).into_val(&env),
                 expected_event.into_val(&env),
             ),
         ]
@@ -172,7 +172,7 @@ fn test_ping_updates_last_ping_and_emits_event() {
             &env,
             (
                 contract_id,
-                (symbol_short!("PlanCreate"), contract_id).into_val(&env),
+                (symbol_short!("PlanCreate"), owner).into_val(&env),
                 create_plan_event.into_val(&env),
             ),
             (
