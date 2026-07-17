@@ -357,10 +357,7 @@ async fn test_trigger_payout_invalid_signature() {
             .await
             .unwrap();
         let body_str = String::from_utf8(body_bytes.to_vec()).unwrap();
-        panic!(
-            "Expected 401 Unauthorized, got {}. Response body: {}",
-            status, body_str
-        );
+        panic!("Expected 401 Unauthorized, got {status}. Response body: {body_str}");
     }
 }
 
