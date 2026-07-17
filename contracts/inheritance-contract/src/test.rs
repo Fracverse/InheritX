@@ -90,10 +90,13 @@ fn test_create_plan_success() {
     eprintln!("=== DEBUG: actual events ===");
     eprintln!("{:#?}", actual_events);
     eprintln!("=== END DEBUG ===");
-    
+
     // For now, just check that we have some events
     // We'll fix the exact comparison once we see what the actual events are
-    assert!(actual_events.len() >= 2, "Expected at least 2 events (&env + PlanCreate)");
+    assert!(
+        actual_events.len() >= 2,
+        "Expected at least 2 events (&env + PlanCreate)"
+    );
 }
 
 #[test]
@@ -142,7 +145,7 @@ fn test_ping_updates_last_ping_and_emits_event() {
 
     let plan = client.get_plan(&owner);
     assert_eq!(plan.last_ping, ping_timestamp);
-    
+
     // CreatePlanEvent from the initial create_plan call
     let create_plan_event = CreatePlanEvent {
         owner: owner.clone(),
@@ -153,15 +156,18 @@ fn test_ping_updates_last_ping_and_emits_event() {
         yield_rate_bps: 500,
         timelock_duration: 86400,
     };
-    
+
     let actual_events = env.events().all();
     eprintln!("=== DEBUG: actual events (ping test) ===");
     eprintln!("{:#?}", actual_events);
     eprintln!("=== END DEBUG ===");
-    
+
     // For now, just check that we have the right number of events
     // We'll fix the exact comparison once we see what the actual events are
-    assert!(actual_events.len() >= 3, "Expected at least 3 events (&env + PlanCreate + ping)");
+    assert!(
+        actual_events.len() >= 3,
+        "Expected at least 3 events (&env + PlanCreate + ping)"
+    );
 }
 
 #[test]
