@@ -520,6 +520,60 @@ impl InheritanceContract {
 
         Ok(())
     }
+
+    /// Update an existing plan's beneficiaries and other parameters.
+    /// Validates that beneficiary allocation_bps sum to exactly 10000.
+    pub fn update_plan(
+        env: Env,
+        owner: Address,
+        beneficiaries: Vec<Beneficiary>,
+        grace_period: Option<u64>,
+        earn_yield: Option<bool>,
+        yield_rate_bps: Option<u32>,
+    ) -> Result<(), Error> {
+        owner.require_auth();
+
+        let key = DataKey::Plan(owner.clone());
+        let mut plan: Plan = env
+            .storage()
+            .persistent()
+            .get(&key)
+            .ok_or(Error::PlanNotFound)?;
+
+        if beneficiaries.len() > MAX_BENEFICIARIES {
+            return Err(Error::TooManyBeneficiaries);
+        }
+
+        // Validate beneficiary allocation_bps sum to exactly 10000
+        let mut total_bps: u32 = 0;
+        for beneficiary in beneficiaries.iter() {
+            total_bps += beneficiary.allocation_bps;
+            let empty = String::from_str(&env, "");
+            if beneficiary.destination_chain == empty || beneficiary.destination_address == empty {
+                return Err(Error::InvalidBridgeMetadata);
+            }
+        }
+        if total_bps != 10000 {
+            return Err(Error::InvalidBasisPoints);
+        }
+
+        // Update plan fields
+        plan.beneficiaries = beneficiaries;
+        if let Some(gp) = grace_period {
+            plan.grace_period = gp;
+        }
+        if let Some(ey) = earn_yield {
+            plan.earn_yield = ey;
+        }
+        if let Some(yrb) = yield_rate_bps {
+            plan.yield_rate_bps = yrb;
+        }
+
+        env.storage().persistent().set(&key, &plan);
+        Self::extend_plan_ttl(&env, &key);
+
+        Ok(())
+    }
 }
 
 #[cfg(test)]
