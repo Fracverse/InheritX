@@ -684,17 +684,22 @@ async fn update_plan(
 
     // 4. Update plan fields if provided
     if let Some(gp) = payload.grace_period {
-        if let Err(e) = sqlx::query("UPDATE plans SET grace_period = $1, grace_period_seconds = $2 WHERE id = $3")
-            .bind(gp as i64)
-            .bind(gp as i64)
-            .bind(plan_id)
-            .execute(&mut *tx)
-            .await
+        if let Err(e) = sqlx::query(
+            "UPDATE plans SET grace_period = $1, grace_period_seconds = $2 WHERE id = $3",
+        )
+        .bind(gp as i64)
+        .bind(gp as i64)
+        .bind(plan_id)
+        .execute(&mut *tx)
+        .await
         {
             return (
                 StatusCode::INTERNAL_SERVER_ERROR,
-                Json(serde_json::json!({ "error": format!("Failed to update grace_period: {}", e) })),
-            ).into_response();
+                Json(
+                    serde_json::json!({ "error": format!("Failed to update grace_period: {}", e) }),
+                ),
+            )
+                .into_response();
         }
     }
 
@@ -708,7 +713,8 @@ async fn update_plan(
             return (
                 StatusCode::INTERNAL_SERVER_ERROR,
                 Json(serde_json::json!({ "error": format!("Failed to update earn_yield: {}", e) })),
-            ).into_response();
+            )
+                .into_response();
         }
     }
 
@@ -765,7 +771,8 @@ async fn update_plan(
         return (
             StatusCode::INTERNAL_SERVER_ERROR,
             Json(serde_json::json!({ "error": format!("Failed to commit transaction: {}", e) })),
-        ).into_response();
+        )
+            .into_response();
     }
 
     // 7. Fetch updated plan with beneficiaries
