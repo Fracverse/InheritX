@@ -72,7 +72,7 @@ impl WebhookDispatcherService {
                 .client
                 .post(&url)
                 .header("X-Event-Type", event_type.clone())
-                .header("X-Signature", format!("sha256={}", signature))
+                .header("X-Signature", format!("sha256={signature}"))
                 .json(&payload)
                 .send()
                 .await;
@@ -101,7 +101,7 @@ impl WebhookDispatcherService {
                         &self.db,
                         id,
                         attempts,
-                        Some(format!("status {}: {}", status, text)),
+                        Some(format!("status {status}: {text}")),
                     )
                     .await?;
                 }

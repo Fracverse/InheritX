@@ -1764,14 +1764,14 @@ pub async fn get_plan_report(
         };
 
     // 6. Return the PDF as a downloadable attachment
-    let filename = format!("plan-{}-report.pdf", plan_id);
+    let filename = format!("plan-{plan_id}-report.pdf");
     (
         StatusCode::OK,
         [
             (header::CONTENT_TYPE, "application/pdf".to_string()),
             (
                 header::CONTENT_DISPOSITION,
-                format!("attachment; filename=\"{}\"", filename),
+                format!("attachment; filename=\"{filename}\""),
             ),
         ],
         Body::from(pdf_bytes),
