@@ -2,6 +2,7 @@
 name = "inheritx-backend"
 version = "0.1.0"
 edition = "2021"
+rust-version = "1.88"
 
 # ─── Feature flags ────────────────────────────────────────────────────────────
 # Default build includes everything. Contributors who just want to run the
