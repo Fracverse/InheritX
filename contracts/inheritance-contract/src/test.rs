@@ -87,23 +87,30 @@ fn test_create_plan_success() {
 
     // Verify PlanCreate event was emitted
     let actual_events = env.events().all();
-    
+
     // Debug output for CI
     println!("=== Test: Checking PlanCreate event ===");
     println!("Number of events: {}", actual_events.len());
-    
+
     // Basic check: we should have at least &env + PlanCreate event
     assert!(
         actual_events.len() >= 2,
         "Expected at least 2 events (&env + PlanCreate), got {}",
         actual_events.len()
     );
-    
+
     // Check that the first element is &env
-    assert_eq!(actual_events.get(0).unwrap(), &env, "First element should be &env");
-    
+    assert_eq!(
+        actual_events.get(0).unwrap(),
+        &env,
+        "First element should be &env"
+    );
+
     // We have at least one event after &env
-    println!("Event check passed: Found {} total events", actual_events.len());
+    println!(
+        "Event check passed: Found {} total events",
+        actual_events.len()
+    );
 }
 
 #[test]
@@ -166,22 +173,29 @@ fn test_ping_updates_last_ping_and_emits_event() {
 
     // Verify events were emitted
     let actual_events = env.events().all();
-    
+
     // Debug output for CI
     println!("=== Test: Checking events in ping test ===");
     println!("Number of events: {}", actual_events.len());
-    
+
     // Basic check: we should have at least &env + PlanCreate + ping events
     assert!(
         actual_events.len() >= 3,
         "Expected at least 3 events (&env + PlanCreate + ping), got {}",
         actual_events.len()
     );
-    
+
     // Check that the first element is &env
-    assert_eq!(actual_events.get(0).unwrap(), &env, "First element should be &env");
-    
-    println!("Event check passed: Found {} total events", actual_events.len());
+    assert_eq!(
+        actual_events.get(0).unwrap(),
+        &env,
+        "First element should be &env"
+    );
+
+    println!(
+        "Event check passed: Found {} total events",
+        actual_events.len()
+    );
 }
 
 #[test]

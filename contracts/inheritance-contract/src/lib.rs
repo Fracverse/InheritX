@@ -115,7 +115,8 @@ impl InheritanceContract {
 
     fn emit_create_plan_event(env: &Env, event: CreatePlanEvent) {
         let owner = event.owner.clone();
-        let topic = (symbol_short!("PlanCreate"), owner);
+        let token = event.token.clone();
+        let topic = (symbol_short!("PlanCreate"), owner, token);
         env.events().publish(topic, event);
     }
 
