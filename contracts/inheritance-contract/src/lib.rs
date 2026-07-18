@@ -3,6 +3,8 @@ use soroban_sdk::{
     contract, contracterror, contractimpl, contracttype, symbol_short, Address, Env, String, Vec,
 };
 
+pub mod safe_math;
+
 const MAX_BENEFICIARIES: u32 = 100;
 const PLAN_TTL_THRESHOLD: u32 = 500;
 const PLAN_TTL_LEEWAY: u32 = 100;
@@ -26,6 +28,8 @@ pub enum Error {
     InvalidBridgeMetadata = 12,
     MathOverflow = 13,
     AlreadyInitialized = 14,
+    DivisionByZero = 15,
+    InvalidYieldRate = 16,
 }
 
 #[contracttype]
@@ -78,6 +82,17 @@ pub enum DataKey {
     Plan(Address),
     ClaimStatus(Address),
     SupportedWrappedToken(Address),
+    YieldState(Address),
+}
+
+/// Checkpointed virtual-yield bookkeeping for a plan. `accrued` holds
+/// interest locked in by past checkpoints; interest since `last_accrual`
+/// is projected on demand with `safe_math::compound_yield`.
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct YieldState {
+    pub accrued: i128,
+    pub last_accrual: u64,
 }
 
 #[contracttype]
@@ -110,6 +125,70 @@ impl InheritanceContract {
         env.storage()
             .persistent()
             .has(&DataKey::SupportedWrappedToken(token.clone()))
+    }
+
+    /// Loads the yield checkpoint for a plan, falling back to a zero
+    /// checkpoint anchored at `last_ping` for plans created before the
+    /// yield engine existed.
+    fn load_yield_state(env: &Env, plan: &Plan, owner: &Address) -> YieldState {
+        env.storage()
+            .persistent()
+            .get(&DataKey::YieldState(owner.clone()))
+            .unwrap_or(YieldState {
+                accrued: 0,
+                last_accrual: plan.last_ping,
+            })
+    }
+
+    /// Interest earned since the last checkpoint, compounded daily on
+    /// principal + already-accrued interest. Zero while yield is disabled.
+    fn live_yield(env: &Env, plan: &Plan, state: &YieldState) -> Result<i128, Error> {
+        if !plan.earn_yield || plan.yield_rate_bps == 0 {
+            return Ok(0);
+        }
+        let elapsed = env.ledger().timestamp().saturating_sub(state.last_accrual);
+        let base = safe_math::safe_add(plan.amount, state.accrued)?;
+        let compounded = safe_math::compound_yield(base, plan.yield_rate_bps, elapsed)?;
+        safe_math::safe_sub(compounded, base)
+    }
+
+    /// Locks in interest accrued so far and re-anchors the accrual clock at
+    /// the current ledger time. Returns (gain, new total accrued).
+    fn checkpoint_yield(env: &Env, plan: &Plan, owner: &Address) -> Result<(i128, i128), Error> {
+        let mut state = Self::load_yield_state(env, plan, owner);
+        let gain = Self::live_yield(env, plan, &state)?;
+        state.accrued = safe_math::safe_add(state.accrued, gain)?;
+        state.last_accrual = env.ledger().timestamp();
+        let key = DataKey::YieldState(owner.clone());
+        env.storage().persistent().set(&key, &state);
+        Self::extend_plan_ttl(env, &key);
+        Ok((gain, state.accrued))
+    }
+
+    fn clear_yield_state(env: &Env, owner: &Address) {
+        env.storage()
+            .persistent()
+            .remove(&DataKey::YieldState(owner.clone()));
+    }
+
+    /// Sums beneficiary allocations with checked math and validates bridge
+    /// metadata; returns InvalidBasisPoints when the sum overflows or
+    /// deviates from 100%.
+    fn validate_beneficiaries(env: &Env, beneficiaries: &Vec<Beneficiary>) -> Result<(), Error> {
+        let mut total_bps: u32 = 0;
+        let empty = String::from_str(env, "");
+        for beneficiary in beneficiaries.iter() {
+            total_bps = total_bps
+                .checked_add(beneficiary.allocation_bps)
+                .ok_or(Error::InvalidBasisPoints)?;
+            if beneficiary.destination_chain == empty || beneficiary.destination_address == empty {
+                return Err(Error::InvalidBridgeMetadata);
+            }
+        }
+        if total_bps != 10000 {
+            return Err(Error::InvalidBasisPoints);
+        }
+        Ok(())
     }
 }
 
@@ -147,17 +226,8 @@ impl InheritanceContract {
             return Err(Error::NegativeAmount);
         }
 
-        let mut total_bps: u32 = 0;
-        for beneficiary in beneficiaries.iter() {
-            total_bps += beneficiary.allocation_bps;
-            let empty = String::from_str(&env, "");
-            if beneficiary.destination_chain == empty || beneficiary.destination_address == empty {
-                return Err(Error::InvalidBridgeMetadata);
-            }
-        }
-        if total_bps != 10000 {
-            return Err(Error::InvalidBasisPoints);
-        }
+        safe_math::validate_yield_rate(yield_rate_bps)?;
+        Self::validate_beneficiaries(&env, &beneficiaries)?;
 
         let empty = String::from_str(&env, "");
         if source_chain == empty || source_tx_hash == empty {
@@ -195,6 +265,16 @@ impl InheritanceContract {
         env.storage().persistent().set(&key, &plan);
         Self::extend_plan_ttl(&env, &key);
 
+        let yield_key = DataKey::YieldState(owner.clone());
+        env.storage().persistent().set(
+            &yield_key,
+            &YieldState {
+                accrued: 0,
+                last_accrual: plan.last_ping,
+            },
+        );
+        Self::extend_plan_ttl(&env, &yield_key);
+
         Ok(())
     }
 
@@ -210,6 +290,15 @@ impl InheritanceContract {
 
         let mut plan: Plan = env.storage().persistent().get(&key).unwrap();
         let current_timestamp = env.ledger().timestamp();
+
+        let (gain, total_accrued) = Self::checkpoint_yield(&env, &plan, &owner)?;
+        if gain > 0 {
+            env.events().publish(
+                (symbol_short!("yield"), owner.clone()),
+                (gain, total_accrued),
+            );
+        }
+
         plan.last_ping = current_timestamp;
 
         env.storage().persistent().set(&key, &plan);
@@ -282,7 +371,8 @@ impl InheritanceContract {
         }
 
         let current_time = env.ledger().timestamp();
-        if current_time < plan.last_ping + plan.grace_period {
+        let inactivity_deadline = safe_math::safe_add_u64(plan.last_ping, plan.grace_period)?;
+        if current_time < inactivity_deadline {
             return Err(Error::InactivityPeriodNotMet);
         }
 
@@ -336,7 +426,7 @@ impl InheritanceContract {
         Self::extend_plan_ttl(&env, &key);
 
         let current_time = env.ledger().timestamp();
-        let timeout_deadline = plan.last_ping + plan.grace_period;
+        let timeout_deadline = safe_math::safe_add_u64(plan.last_ping, plan.grace_period)?;
 
         Ok(current_time >= timeout_deadline)
     }
@@ -353,7 +443,7 @@ impl InheritanceContract {
         let plan: Plan = env.storage().persistent().get(&key).unwrap();
         Self::extend_plan_ttl(&env, &key);
 
-        Ok(plan.last_ping + plan.grace_period)
+        safe_math::safe_add_u64(plan.last_ping, plan.grace_period)
     }
 
     /// Retrieve the current inheritance plan data.
@@ -391,7 +481,8 @@ impl InheritanceContract {
             .ok_or(Error::PayoutNotTriggered)?;
 
         let current_time = env.ledger().timestamp();
-        if current_time < claim_time + plan.timelock_duration {
+        let payout_time = safe_math::safe_add_u64(claim_time, plan.timelock_duration)?;
+        if current_time < payout_time {
             return Err(Error::TimelockNotExpired);
         }
 
@@ -399,6 +490,7 @@ impl InheritanceContract {
         // to prevent double payout and guard against re-entrancy
         env.storage().persistent().remove(&key);
         env.storage().persistent().remove(&claim_key);
+        Self::clear_yield_state(&env, &owner);
 
         let token_client = soroban_sdk::token::Client::new(&env, &plan.token);
         let n = plan.beneficiaries.len();
@@ -408,8 +500,8 @@ impl InheritanceContract {
             let share = if i == (n - 1) as usize {
                 remaining
             } else {
-                let amount = plan.amount * (beneficiary.allocation_bps as i128) / 10000;
-                remaining -= amount;
+                let amount = safe_math::apply_bps(plan.amount, beneficiary.allocation_bps)?;
+                remaining = safe_math::safe_sub(remaining, amount)?;
                 amount
             };
 
@@ -490,6 +582,7 @@ impl InheritanceContract {
         }
 
         env.storage().persistent().remove(&key);
+        Self::clear_yield_state(&env, &owner);
 
         let token_client = soroban_sdk::token::Client::new(&env, &plan.token);
         token_client.transfer(&env.current_contract_address(), &owner, &plan.amount);
@@ -514,6 +607,7 @@ impl InheritanceContract {
         }
 
         env.storage().persistent().remove(&key);
+        Self::clear_yield_state(&env, &owner);
 
         let token_client = soroban_sdk::token::Client::new(&env, &plan.token);
         token_client.transfer(&env.current_contract_address(), &owner, &plan.amount);
@@ -545,17 +639,14 @@ impl InheritanceContract {
         }
 
         // Validate beneficiary allocation_bps sum to exactly 10000
-        let mut total_bps: u32 = 0;
-        for beneficiary in beneficiaries.iter() {
-            total_bps += beneficiary.allocation_bps;
-            let empty = String::from_str(&env, "");
-            if beneficiary.destination_chain == empty || beneficiary.destination_address == empty {
-                return Err(Error::InvalidBridgeMetadata);
-            }
+        Self::validate_beneficiaries(&env, &beneficiaries)?;
+        if let Some(yrb) = yield_rate_bps {
+            safe_math::validate_yield_rate(yrb)?;
         }
-        if total_bps != 10000 {
-            return Err(Error::InvalidBasisPoints);
-        }
+
+        // Lock in interest earned under the old rate/earn_yield settings
+        // before they change, so updates never apply retroactively.
+        Self::checkpoint_yield(&env, &plan, &owner)?;
 
         // Update plan fields
         plan.beneficiaries = beneficiaries;
@@ -573,6 +664,45 @@ impl InheritanceContract {
         Self::extend_plan_ttl(&env, &key);
 
         Ok(())
+    }
+
+    /// Total virtual interest accrued by a plan: checkpointed interest plus
+    /// interest compounded daily since the last checkpoint. Read-only.
+    pub fn get_accrued_yield(env: Env, owner: Address) -> Result<i128, Error> {
+        let key = DataKey::Plan(owner.clone());
+        let plan: Plan = env
+            .storage()
+            .persistent()
+            .get(&key)
+            .ok_or(Error::PlanNotFound)?;
+        Self::extend_plan_ttl(&env, &key);
+
+        let state = Self::load_yield_state(&env, &plan, &owner);
+        let live = Self::live_yield(&env, &plan, &state)?;
+        safe_math::safe_add(state.accrued, live)
+    }
+
+    /// Principal plus all accrued virtual yield. Read-only projection.
+    pub fn get_projected_balance(env: Env, owner: Address) -> Result<i128, Error> {
+        let accrued = Self::get_accrued_yield(env.clone(), owner.clone())?;
+        let plan: Plan = env
+            .storage()
+            .persistent()
+            .get(&DataKey::Plan(owner))
+            .ok_or(Error::PlanNotFound)?;
+        safe_math::safe_add(plan.amount, accrued)
+    }
+
+    /// Pure preview of daily compounding: the value of `principal` after
+    /// `days` days at `annual_rate_bps` APY, using only checked math.
+    pub fn simulate_compound(
+        principal: i128,
+        annual_rate_bps: u32,
+        days: u64,
+    ) -> Result<i128, Error> {
+        safe_math::validate_yield_rate(annual_rate_bps)?;
+        let elapsed = safe_math::safe_mul_u64(days, safe_math::SECONDS_PER_DAY)?;
+        safe_math::compound_yield(principal, annual_rate_bps, elapsed)
     }
 }
 

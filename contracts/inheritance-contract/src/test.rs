@@ -1539,3 +1539,542 @@ fn test_get_plan_returns_not_found_for_unknown_owner() {
     let result = client.try_get_plan(&unknown);
     assert_eq!(result, Err(Ok(Error::PlanNotFound)));
 }
+
+// ============================================================================
+// Safe-math yield engine tests (Issue #8: checked compounding)
+// ============================================================================
+
+const DAY: u64 = safe_math::SECONDS_PER_DAY;
+
+/// Registers the contract plus a mock token, mints `amount` to a fresh owner
+/// and creates a single-beneficiary plan with the given yield settings.
+fn setup_yield_plan<'a>(
+    env: &'a Env,
+    amount: i128,
+    earn_yield: bool,
+    yield_rate_bps: u32,
+) -> (
+    InheritanceContractClient<'a>,
+    mock_token::MockTokenClient<'a>,
+    Address,
+    Address,
+    Address,
+) {
+    env.mock_all_auths();
+
+    let contract_id = env.register_contract(None, InheritanceContract);
+    let client = InheritanceContractClient::new(env, &contract_id);
+
+    let token_id = env.register_contract(None, mock_token::MockToken);
+    let token_client = mock_token::MockTokenClient::new(env, &token_id);
+
+    let owner = Address::generate(env);
+    let beneficiary_address = Address::generate(env);
+    token_client.mint(&owner, &amount);
+
+    let beneficiary = Beneficiary {
+        address: beneficiary_address.clone(),
+        allocation_bps: 10000,
+        fiat_anchor_info: String::from_str(env, "NGN_BANK"),
+        destination_chain: String::from_str(env, "Stellar"),
+        destination_address: String::from_str(env, "GDESTADDR"),
+    };
+
+    client.create_plan(
+        &owner,
+        &token_id,
+        &amount,
+        &Vec::from_array(env, [beneficiary]),
+        &3600,
+        &earn_yield,
+        &yield_rate_bps,
+        &86400,
+        &String::from_str(env, "Stellar"),
+        &String::from_str(env, "SRC_TX_HASH"),
+    );
+
+    (client, token_client, owner, beneficiary_address, contract_id)
+}
+
+#[test]
+fn test_get_accrued_yield_zero_immediately_after_creation() {
+    let env = Env::default();
+    env.ledger().set_timestamp(1_000_000);
+    let (client, _token, owner, _bene, _cid) = setup_yield_plan(&env, 1_000_000_000, true, 500);
+
+    assert_eq!(client.get_accrued_yield(&owner), 0);
+    assert_eq!(client.get_projected_balance(&owner), 1_000_000_000);
+}
+
+#[test]
+fn test_get_accrued_yield_compounds_daily_after_one_year() {
+    let env = Env::default();
+    let start = 1_000_000u64;
+    env.ledger().set_timestamp(start);
+    let principal: i128 = 1_000_000_000;
+    let (client, _token, owner, _bene, _cid) = setup_yield_plan(&env, principal, true, 500);
+
+    env.ledger().set_timestamp(start + 365 * DAY);
+    let accrued = client.get_accrued_yield(&owner);
+
+    let expected = safe_math::accrued_interest(principal, 500, 365 * DAY).unwrap();
+    assert_eq!(accrued, expected);
+    // Daily compounding at 5% APY must beat simple interest but stay < 5.2%
+    assert!(accrued > 50_000_000);
+    assert!(accrued < 52_000_000);
+}
+
+#[test]
+fn test_get_projected_balance_is_principal_plus_yield() {
+    let env = Env::default();
+    let start = 1_000_000u64;
+    env.ledger().set_timestamp(start);
+    let principal: i128 = 1_000_000_000;
+    let (client, _token, owner, _bene, _cid) = setup_yield_plan(&env, principal, true, 500);
+
+    env.ledger().set_timestamp(start + 365 * DAY);
+    let accrued = client.get_accrued_yield(&owner);
+    assert!(accrued > 0);
+    assert_eq!(client.get_projected_balance(&owner), principal + accrued);
+}
+
+#[test]
+fn test_get_accrued_yield_zero_when_earn_yield_disabled() {
+    let env = Env::default();
+    let start = 1_000_000u64;
+    env.ledger().set_timestamp(start);
+    let (client, _token, owner, _bene, _cid) = setup_yield_plan(&env, 1_000_000_000, false, 500);
+
+    env.ledger().set_timestamp(start + 365 * DAY);
+    assert_eq!(client.get_accrued_yield(&owner), 0);
+    assert_eq!(client.get_projected_balance(&owner), 1_000_000_000);
+}
+
+#[test]
+fn test_yield_queries_return_plan_not_found_for_unknown_owner() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let contract_id = env.register_contract(None, InheritanceContract);
+    let client = InheritanceContractClient::new(&env, &contract_id);
+
+    let unknown = Address::generate(&env);
+    assert_eq!(
+        client.try_get_accrued_yield(&unknown),
+        Err(Ok(Error::PlanNotFound))
+    );
+    assert_eq!(
+        client.try_get_projected_balance(&unknown),
+        Err(Ok(Error::PlanNotFound))
+    );
+}
+
+#[test]
+fn test_ping_checkpoints_and_keeps_compounding_on_new_base() {
+    let env = Env::default();
+    let start = 1_000_000u64;
+    env.ledger().set_timestamp(start);
+    let principal: i128 = 1_000_000_000;
+    let (client, _token, owner, _bene, _cid) = setup_yield_plan(&env, principal, true, 500);
+
+    env.ledger().set_timestamp(start + 100 * DAY);
+    client.ping(&owner);
+
+    env.ledger().set_timestamp(start + 200 * DAY);
+    let accrued = client.get_accrued_yield(&owner);
+
+    // Checkpoint at day 100, then compounding continues on principal + accrued
+    let first_leg = safe_math::accrued_interest(principal, 500, 100 * DAY).unwrap();
+    let second_leg =
+        safe_math::accrued_interest(principal + first_leg, 500, 100 * DAY).unwrap();
+    assert_eq!(accrued, first_leg + second_leg);
+
+    // Within integer-rounding distance of one uninterrupted 200-day stretch
+    let single_stretch = safe_math::accrued_interest(principal, 500, 200 * DAY).unwrap();
+    assert!((accrued - single_stretch).abs() <= 5);
+}
+
+#[test]
+fn test_multiple_pings_match_single_stretch_within_rounding() {
+    let env = Env::default();
+    let start = 1_000_000u64;
+    env.ledger().set_timestamp(start);
+    let principal: i128 = 1_000_000_000;
+    let (client, _token, owner, _bene, _cid) = setup_yield_plan(&env, principal, true, 500);
+
+    for k in 1..=4u64 {
+        env.ledger().set_timestamp(start + k * 50 * DAY);
+        client.ping(&owner);
+    }
+
+    let accrued = client.get_accrued_yield(&owner);
+    let single_stretch = safe_math::accrued_interest(principal, 500, 200 * DAY).unwrap();
+    assert!((accrued - single_stretch).abs() <= 10);
+}
+
+#[test]
+fn test_ping_emits_yield_event_when_interest_accrued() {
+    let env = Env::default();
+    let start = 1_000_000u64;
+    env.ledger().set_timestamp(start);
+    let principal: i128 = 1_000_000_000;
+    let (client, _token, owner, _bene, contract_id) =
+        setup_yield_plan(&env, principal, true, 500);
+
+    let ping_ts = start + 10 * DAY;
+    env.ledger().set_timestamp(ping_ts);
+    client.ping(&owner);
+
+    let gain = safe_math::accrued_interest(principal, 500, 10 * DAY).unwrap();
+    assert!(gain > 0);
+    assert_eq!(
+        env.events().all(),
+        vec![
+            &env,
+            (
+                contract_id.clone(),
+                (symbol_short!("yield"), owner.clone()).into_val(&env),
+                (gain, gain).into_val(&env),
+            ),
+            (
+                contract_id,
+                (symbol_short!("ping"), owner).into_val(&env),
+                ping_ts.into_val(&env),
+            ),
+        ]
+    );
+}
+
+#[test]
+fn test_create_plan_rejects_excessive_yield_rate() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let contract_id = env.register_contract(None, InheritanceContract);
+    let client = InheritanceContractClient::new(&env, &contract_id);
+    let token_id = env.register_contract(None, mock_token::MockToken);
+    let token_client = mock_token::MockTokenClient::new(&env, &token_id);
+
+    let owner = Address::generate(&env);
+    token_client.mint(&owner, &2000);
+
+    let beneficiary = Beneficiary {
+        address: Address::generate(&env),
+        allocation_bps: 10000,
+        fiat_anchor_info: String::from_str(&env, "NGN_BANK"),
+        destination_chain: String::from_str(&env, "Stellar"),
+        destination_address: String::from_str(&env, "GDESTADDR"),
+    };
+
+    let result = client.try_create_plan(
+        &owner,
+        &token_id,
+        &1500,
+        &Vec::from_array(&env, [beneficiary]),
+        &3600,
+        &true,
+        &(safe_math::MAX_YIELD_RATE_BPS + 1),
+        &86400,
+        &String::from_str(&env, "Stellar"),
+        &String::from_str(&env, "SRC_TX_HASH"),
+    );
+    assert_eq!(result, Err(Ok(Error::InvalidYieldRate)));
+}
+
+#[test]
+fn test_update_plan_rejects_excessive_yield_rate() {
+    let env = Env::default();
+    env.ledger().set_timestamp(1_000_000);
+    let (client, _token, owner, bene, _cid) = setup_yield_plan(&env, 1_000_000_000, true, 500);
+
+    let beneficiary = Beneficiary {
+        address: bene,
+        allocation_bps: 10000,
+        fiat_anchor_info: String::from_str(&env, "NGN_BANK"),
+        destination_chain: String::from_str(&env, "Stellar"),
+        destination_address: String::from_str(&env, "GDESTADDR"),
+    };
+    let result = client.try_update_plan(
+        &owner,
+        &Vec::from_array(&env, [beneficiary]),
+        &None,
+        &None,
+        &Some(safe_math::MAX_YIELD_RATE_BPS + 1),
+    );
+    assert_eq!(result, Err(Ok(Error::InvalidYieldRate)));
+}
+
+#[test]
+fn test_create_plan_allocation_bps_overflow_returns_invalid_basis_points() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let contract_id = env.register_contract(None, InheritanceContract);
+    let client = InheritanceContractClient::new(&env, &contract_id);
+    let token_id = env.register_contract(None, mock_token::MockToken);
+
+    let owner = Address::generate(&env);
+    let make_beneficiary = |bps: u32| Beneficiary {
+        address: Address::generate(&env),
+        allocation_bps: bps,
+        fiat_anchor_info: String::from_str(&env, "NGN_BANK"),
+        destination_chain: String::from_str(&env, "Stellar"),
+        destination_address: String::from_str(&env, "GDESTADDR"),
+    };
+
+    // 3_000_000_000 + 3_000_000_000 overflows u32: must be a clean error
+    let result = client.try_create_plan(
+        &owner,
+        &token_id,
+        &1000,
+        &Vec::from_array(
+            &env,
+            [make_beneficiary(3_000_000_000), make_beneficiary(3_000_000_000)],
+        ),
+        &3600,
+        &false,
+        &0,
+        &86400,
+        &String::from_str(&env, "Stellar"),
+        &String::from_str(&env, "SRC_TX_HASH"),
+    );
+    assert_eq!(result, Err(Ok(Error::InvalidBasisPoints)));
+}
+
+#[test]
+fn test_update_plan_freezes_accrual_when_yield_disabled() {
+    let env = Env::default();
+    let start = 1_000_000u64;
+    env.ledger().set_timestamp(start);
+    let principal: i128 = 1_000_000_000;
+    let (client, _token, owner, bene, _cid) = setup_yield_plan(&env, principal, true, 500);
+
+    env.ledger().set_timestamp(start + 100 * DAY);
+    let beneficiary = Beneficiary {
+        address: bene,
+        allocation_bps: 10000,
+        fiat_anchor_info: String::from_str(&env, "NGN_BANK"),
+        destination_chain: String::from_str(&env, "Stellar"),
+        destination_address: String::from_str(&env, "GDESTADDR"),
+    };
+    client.update_plan(
+        &owner,
+        &Vec::from_array(&env, [beneficiary]),
+        &None,
+        &Some(false),
+        &None,
+    );
+
+    // Interest up to the update is locked in; nothing accrues afterwards
+    let frozen = safe_math::accrued_interest(principal, 500, 100 * DAY).unwrap();
+    env.ledger().set_timestamp(start + 200 * DAY);
+    assert_eq!(client.get_accrued_yield(&owner), frozen);
+}
+
+#[test]
+fn test_update_plan_applies_new_rate_only_forward() {
+    let env = Env::default();
+    let start = 1_000_000u64;
+    env.ledger().set_timestamp(start);
+    let principal: i128 = 1_000_000_000;
+    let (client, _token, owner, bene, _cid) = setup_yield_plan(&env, principal, true, 500);
+
+    env.ledger().set_timestamp(start + 100 * DAY);
+    let beneficiary = Beneficiary {
+        address: bene,
+        allocation_bps: 10000,
+        fiat_anchor_info: String::from_str(&env, "NGN_BANK"),
+        destination_chain: String::from_str(&env, "Stellar"),
+        destination_address: String::from_str(&env, "GDESTADDR"),
+    };
+    client.update_plan(
+        &owner,
+        &Vec::from_array(&env, [beneficiary]),
+        &None,
+        &None,
+        &Some(1000),
+    );
+
+    env.ledger().set_timestamp(start + 200 * DAY);
+    let accrued = client.get_accrued_yield(&owner);
+
+    // First 100 days at the old 5% rate, next 100 days at 10% on the new base
+    let first_leg = safe_math::accrued_interest(principal, 500, 100 * DAY).unwrap();
+    let second_leg =
+        safe_math::accrued_interest(principal + first_leg, 1000, 100 * DAY).unwrap();
+    assert_eq!(accrued, first_leg + second_leg);
+}
+
+#[test]
+fn test_close_plan_clears_yield_state() {
+    let env = Env::default();
+    let start = 1_000_000u64;
+    env.ledger().set_timestamp(start);
+    let principal: i128 = 1_000_000_000;
+    let (client, token_client, owner, _bene, contract_id) =
+        setup_yield_plan(&env, principal, true, 500);
+
+    env.ledger().set_timestamp(start + 365 * DAY);
+    assert!(client.get_accrued_yield(&owner) > 0);
+
+    client.close_plan(&owner);
+    env.as_contract(&contract_id, || {
+        assert!(!env
+            .storage()
+            .persistent()
+            .has(&DataKey::YieldState(owner.clone())));
+    });
+
+    // Recreating a plan starts the yield clock from scratch
+    assert_eq!(token_client.balance(&owner), principal);
+    let beneficiary = Beneficiary {
+        address: Address::generate(&env),
+        allocation_bps: 10000,
+        fiat_anchor_info: String::from_str(&env, "NGN_BANK"),
+        destination_chain: String::from_str(&env, "Stellar"),
+        destination_address: String::from_str(&env, "GDESTADDR"),
+    };
+    client.create_plan(
+        &owner,
+        &token_client.address,
+        &principal,
+        &Vec::from_array(&env, [beneficiary]),
+        &3600,
+        &true,
+        &500,
+        &86400,
+        &String::from_str(&env, "Stellar"),
+        &String::from_str(&env, "SRC_TX_HASH"),
+    );
+    assert_eq!(client.get_accrued_yield(&owner), 0);
+}
+
+#[test]
+fn test_reclaim_clears_yield_state() {
+    let env = Env::default();
+    let start = 1_000_000u64;
+    env.ledger().set_timestamp(start);
+    let (client, _token, owner, _bene, contract_id) =
+        setup_yield_plan(&env, 1_000_000_000, true, 500);
+
+    env.ledger().set_timestamp(start + 365 * DAY);
+    client.reclaim(&owner);
+
+    env.as_contract(&contract_id, || {
+        assert!(!env
+            .storage()
+            .persistent()
+            .has(&DataKey::YieldState(owner.clone())));
+    });
+}
+
+#[test]
+fn test_trigger_payout_pays_principal_only_and_clears_yield_state() {
+    let env = Env::default();
+    let start = 1_000_000u64;
+    env.ledger().set_timestamp(start);
+    let principal: i128 = 10_000;
+    let (client, token_client, owner, beneficiary, contract_id) =
+        setup_yield_plan(&env, principal, true, 500);
+
+    // A year of virtual yield accrues, then the owner goes silent
+    env.ledger().set_timestamp(start + 365 * DAY);
+    assert!(client.get_accrued_yield(&owner) > 0);
+    deactivate_plan_for_testing(&env, &contract_id, &owner);
+    client.claim(&owner);
+
+    env.ledger().set_timestamp(start + 365 * DAY + 86400);
+    client.trigger_payout(&owner);
+
+    // Payout distributes exactly the held principal; yield stays virtual
+    assert_eq!(token_client.balance(&beneficiary), principal);
+    assert_eq!(token_client.balance(&contract_id), 0);
+    env.as_contract(&contract_id, || {
+        assert!(!env
+            .storage()
+            .persistent()
+            .has(&DataKey::YieldState(owner.clone())));
+    });
+}
+
+#[test]
+fn test_get_accrued_yield_overflow_surfaces_math_error() {
+    let env = Env::default();
+    let start = 1_000_000u64;
+    env.ledger().set_timestamp(start);
+    let (client, _token, owner, _bene, _cid) =
+        setup_yield_plan(&env, 1_000_000, true, safe_math::MAX_YIELD_RATE_BPS);
+
+    // 100% APY over 100 years: growth ~e^100 overflows i128 fixed-point math
+    env.ledger().set_timestamp(start + 36_500 * DAY);
+    assert_eq!(
+        client.try_get_accrued_yield(&owner),
+        Err(Ok(Error::MathOverflow))
+    );
+}
+
+#[test]
+fn test_timeout_deadline_overflow_surfaces_math_error() {
+    let env = Env::default();
+    env.mock_all_auths();
+    env.ledger().set_timestamp(1_000_000);
+
+    let contract_id = env.register_contract(None, InheritanceContract);
+    let client = InheritanceContractClient::new(&env, &contract_id);
+    let token_id = env.register_contract(None, mock_token::MockToken);
+    let token_client = mock_token::MockTokenClient::new(&env, &token_id);
+
+    let owner = Address::generate(&env);
+    token_client.mint(&owner, &2000);
+
+    let beneficiary = Beneficiary {
+        address: Address::generate(&env),
+        allocation_bps: 10000,
+        fiat_anchor_info: String::from_str(&env, "NGN_BANK"),
+        destination_chain: String::from_str(&env, "Stellar"),
+        destination_address: String::from_str(&env, "GDESTADDR"),
+    };
+
+    // A grace period of u64::MAX makes last_ping + grace_period overflow
+    client.create_plan(
+        &owner,
+        &token_id,
+        &1500,
+        &Vec::from_array(&env, [beneficiary]),
+        &u64::MAX,
+        &false,
+        &0,
+        &86400,
+        &String::from_str(&env, "Stellar"),
+        &String::from_str(&env, "SRC_TX_HASH"),
+    );
+
+    assert_eq!(
+        client.try_get_timeout_deadline(&owner),
+        Err(Ok(Error::MathOverflow))
+    );
+    assert_eq!(
+        client.try_is_plan_timed_out(&owner),
+        Err(Ok(Error::MathOverflow))
+    );
+}
+
+#[test]
+fn test_simulate_compound_matches_safe_math_and_validates() {
+    let env = Env::default();
+    let contract_id = env.register_contract(None, InheritanceContract);
+    let client = InheritanceContractClient::new(&env, &contract_id);
+
+    let expected = safe_math::compound_yield(1_000_000_000, 500, 365 * DAY).unwrap();
+    assert_eq!(client.simulate_compound(&1_000_000_000, &500, &365), expected);
+    assert_eq!(client.simulate_compound(&1_000_000_000, &500, &0), 1_000_000_000);
+    assert_eq!(client.simulate_compound(&1_000_000_000, &0, &365), 1_000_000_000);
+
+    assert_eq!(
+        client.try_simulate_compound(&1_000, &(safe_math::MAX_YIELD_RATE_BPS + 1), &10),
+        Err(Ok(Error::InvalidYieldRate))
+    );
+    assert_eq!(
+        client.try_simulate_compound(&1_000, &500, &u64::MAX),
+        Err(Ok(Error::MathOverflow))
+    );
+}
