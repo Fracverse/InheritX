@@ -94,7 +94,7 @@ pub async fn kyc_webhook_handler(
                 StatusCode::BAD_REQUEST,
                 Json(WebhookResponse {
                     success: false,
-                    message: format!("Invalid payload: {}", e),
+                    message: format!("Invalid payload: {e}"),
                 }),
             )
                 .into_response();

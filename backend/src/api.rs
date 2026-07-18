@@ -8,7 +8,7 @@ use axum::{
     http::{header::HeaderName, StatusCode},
     middleware::from_fn,
     response::{IntoResponse, Response},
-    routing::{get, post},
+    routing::{get, post, put},
     Json, Router,
 };
 // These imports are only used by the PDF report handler
@@ -87,6 +87,14 @@ pub struct PayoutRequest {
 }
 
 #[derive(Deserialize)]
+pub struct UpdatePlanRequest {
+    pub beneficiaries: Vec<PlanBeneficiary>,
+    pub grace_period: Option<u64>,
+    pub earn_yield: Option<bool>,
+    pub yield_rate_bps: Option<u32>,
+}
+
+#[derive(Deserialize)]
 pub struct AnchorQuery {
     pub beneficiary_address: Option<String>,
     pub page: Option<i64>,
@@ -139,6 +147,7 @@ pub fn create_router(state: Arc<AppState>) -> Router {
     // User routes requiring signature verification
     let user_routes = Router::new()
         .route("/api/plans", post(create_plan))
+        .route("/api/plans/{id}", put(update_plan))
         .route("/api/plans/ping", post(ping_plan))
         .route("/api/plans/payout", post(trigger_payout))
         .route_layer(from_fn(signature_auth_middleware));
@@ -603,6 +612,231 @@ async fn create_plan(
     }
 
     (StatusCode::CREATED, Json(response)).into_response()
+}
+
+// Handler: Update Plan
+// Contributors: Implement plan update with beneficiary allocation_bps validation
+async fn update_plan(
+    State(state): State<Arc<AppState>>,
+    Path(plan_id): Path<uuid::Uuid>,
+    Json(payload): Json<UpdatePlanRequest>,
+) -> impl IntoResponse {
+    // 1. Validate beneficiary allocation_bps sum to exactly 10000
+    if !payload.beneficiaries.is_empty() {
+        let mut total_bps = 0;
+        for b in &payload.beneficiaries {
+            if b.address.trim().is_empty() {
+                return (
+                    StatusCode::BAD_REQUEST,
+                    Json(serde_json::json!({ "error": "Beneficiary address cannot be empty" })),
+                )
+                    .into_response();
+            }
+            if b.allocation_bps > 10000 {
+                return (
+                    StatusCode::BAD_REQUEST,
+                    Json(serde_json::json!({ "error": "Beneficiary allocation_bps cannot exceed 10000" })),
+                ).into_response();
+            }
+            total_bps += b.allocation_bps;
+        }
+        if total_bps != 10000 {
+            return (
+                StatusCode::BAD_REQUEST,
+                Json(serde_json::json!({
+                    "error": format!("Total allocation_bps must be exactly 10000 (100%), got {}", total_bps)
+                })),
+            ).into_response();
+        }
+    }
+
+    // 2. Transaction Execution
+    let mut tx = match state.db_pool.begin().await {
+        Ok(tx) => tx,
+        Err(e) => return (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(serde_json::json!({ "error": format!("Failed to begin database transaction: {}", e) })),
+        ).into_response(),
+    };
+
+    // 3. Check if plan exists
+    let _plan_row = match sqlx::query_as::<_, PlanRow>(
+        "SELECT id, owner_address, token_address, amount, grace_period, grace_period_seconds, earn_yield, last_ping, is_active, status, yield_rate_bps, accrued_yield, created_at FROM plans WHERE id = $1"
+    )
+    .bind(plan_id)
+    .fetch_optional(&mut *tx)
+    .await
+    {
+        Ok(Some(row)) => row,
+        Ok(None) => {
+            return (
+                StatusCode::NOT_FOUND,
+                Json(serde_json::json!({ "error": "Plan not found" })),
+            ).into_response();
+        }
+        Err(e) => {
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(serde_json::json!({ "error": format!("Failed to fetch plan: {}", e) })),
+            ).into_response();
+        }
+    };
+
+    // 4. Update plan fields if provided
+    if let Some(gp) = payload.grace_period {
+        if let Err(e) = sqlx::query(
+            "UPDATE plans SET grace_period = $1, grace_period_seconds = $2 WHERE id = $3",
+        )
+        .bind(gp as i64)
+        .bind(gp as i64)
+        .bind(plan_id)
+        .execute(&mut *tx)
+        .await
+        {
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(
+                    serde_json::json!({ "error": format!("Failed to update grace_period: {}", e) }),
+                ),
+            )
+                .into_response();
+        }
+    }
+
+    if let Some(ey) = payload.earn_yield {
+        if let Err(e) = sqlx::query("UPDATE plans SET earn_yield = $1 WHERE id = $2")
+            .bind(ey)
+            .bind(plan_id)
+            .execute(&mut *tx)
+            .await
+        {
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(serde_json::json!({ "error": format!("Failed to update earn_yield: {}", e) })),
+            )
+                .into_response();
+        }
+    }
+
+    if let Some(yrb) = payload.yield_rate_bps {
+        if let Err(e) = sqlx::query("UPDATE plans SET yield_rate_bps = $1 WHERE id = $2")
+            .bind(yrb as i32)
+            .bind(plan_id)
+            .execute(&mut *tx)
+            .await
+        {
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(serde_json::json!({ "error": format!("Failed to update yield_rate_bps: {}", e) })),
+            ).into_response();
+        }
+    }
+
+    // 5. Update beneficiaries if provided
+    if !payload.beneficiaries.is_empty() {
+        // Delete existing beneficiaries
+        if let Err(e) = sqlx::query("DELETE FROM beneficiaries WHERE plan_id = $1")
+            .bind(plan_id)
+            .execute(&mut *tx)
+            .await
+        {
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(serde_json::json!({ "error": format!("Failed to delete existing beneficiaries: {}", e) })),
+            ).into_response();
+        }
+
+        // Insert new beneficiaries
+        for b in &payload.beneficiaries {
+            if let Err(e) = sqlx::query(
+                "INSERT INTO beneficiaries (plan_id, wallet_address, allocation_bps, fiat_anchor_info) VALUES ($1, $2, $3, $4)"
+            )
+            .bind(plan_id)
+            .bind(&b.address)
+            .bind(b.allocation_bps as i32)
+            .bind(&b.fiat_anchor_info)
+            .execute(&mut *tx)
+            .await
+            {
+                return (
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    Json(serde_json::json!({ "error": format!("Failed to insert beneficiary: {}", e) })),
+                ).into_response();
+            }
+        }
+    }
+
+    // 6. Commit transaction
+    if let Err(e) = tx.commit().await {
+        return (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(serde_json::json!({ "error": format!("Failed to commit transaction: {}", e) })),
+        )
+            .into_response();
+    }
+
+    // 7. Fetch updated plan with beneficiaries
+    let updated_plan_row = match sqlx::query_as::<_, PlanRow>(
+        "SELECT id, owner_address, token_address, amount, grace_period, grace_period_seconds, earn_yield, last_ping, is_active, status, yield_rate_bps, accrued_yield, created_at FROM plans WHERE id = $1"
+    )
+    .bind(plan_id)
+    .fetch_one(&state.db_pool)
+    .await
+    {
+        Ok(row) => row,
+        Err(e) => {
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(serde_json::json!({ "error": format!("Failed to fetch updated plan: {}", e) })),
+            ).into_response();
+        }
+    };
+
+    let beneficiaries = match sqlx::query_as::<_, BeneficiaryRow>(
+        "SELECT id, plan_id, wallet_address, allocation_bps, fiat_anchor_info FROM beneficiaries WHERE plan_id = $1"
+    )
+    .bind(plan_id)
+    .fetch_all(&state.db_pool)
+    .await
+    {
+        Ok(rows) => rows,
+        Err(e) => {
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(serde_json::json!({ "error": format!("Failed to fetch beneficiaries: {}", e) })),
+            ).into_response();
+        }
+    };
+
+    let inserted_beneficiaries: Vec<BeneficiaryResponse> = beneficiaries
+        .iter()
+        .map(|r| BeneficiaryResponse {
+            id: r.id,
+            plan_id: r.plan_id,
+            wallet_address: r.wallet_address.clone(),
+            allocation_bps: r.allocation_bps,
+            fiat_anchor_info: r.fiat_anchor_info.clone(),
+        })
+        .collect();
+
+    let response = PlanResponse {
+        id: updated_plan_row.id,
+        owner_address: updated_plan_row.owner_address,
+        token_address: updated_plan_row.token_address,
+        amount: updated_plan_row.amount,
+        grace_period: updated_plan_row.grace_period,
+        grace_period_seconds: updated_plan_row.grace_period_seconds,
+        earn_yield: updated_plan_row.earn_yield,
+        last_ping: updated_plan_row.last_ping,
+        is_active: updated_plan_row.is_active,
+        status: updated_plan_row.status,
+        yield_rate_bps: updated_plan_row.yield_rate_bps,
+        accrued_yield: 0.0,
+        created_at: updated_plan_row.created_at,
+        beneficiaries: inserted_beneficiaries,
+    };
+
+    (StatusCode::OK, Json(response)).into_response()
 }
 
 // Handler: Get Plans
@@ -1530,14 +1764,14 @@ pub async fn get_plan_report(
         };
 
     // 6. Return the PDF as a downloadable attachment
-    let filename = format!("plan-{}-report.pdf", plan_id);
+    let filename = format!("plan-{plan_id}-report.pdf");
     (
         StatusCode::OK,
         [
             (header::CONTENT_TYPE, "application/pdf".to_string()),
             (
                 header::CONTENT_DISPOSITION,
-                format!("attachment; filename=\"{}\"", filename),
+                format!("attachment; filename=\"{filename}\""),
             ),
         ],
         Body::from(pdf_bytes),

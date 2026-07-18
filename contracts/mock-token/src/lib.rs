@@ -30,6 +30,10 @@ impl MockToken {
         env.storage().instance().get(&key).unwrap_or(0)
     }
 
+    pub fn decimals() -> u32 {
+        18
+    }
+
     pub fn total_supply(env: Env) -> i128 {
         let key = MockTokenDataKey::TotalSupply;
         env.storage().instance().get(&key).unwrap_or(0)

@@ -100,8 +100,7 @@ async fn test_heavy_mock_traffic_triggers_rate_limit() {
     // At least 20 requests should have been rate limited
     assert!(
         limited_count >= 20,
-        "Expected at least 20 limited, got {}",
-        limited_count
+        "Expected at least 20 limited, got {limited_count}"
     );
 }
 
