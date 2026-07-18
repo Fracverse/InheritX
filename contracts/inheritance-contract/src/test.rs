@@ -137,6 +137,11 @@ fn test_ping_updates_last_ping_and_emits_event() {
         vec![
             &env,
             (
+                contract_id.clone(),
+                (symbol_short!("PlanCrea"), owner.clone()).into_val(&env),
+                (1500_i128).into_val(&env),
+            ),
+            (
                 contract_id,
                 (symbol_short!("ping"), owner).into_val(&env),
                 ping_timestamp.into_val(&env),
@@ -1861,6 +1866,11 @@ fn test_ping_emits_yield_event_when_interest_accrued() {
             &env,
             (
                 contract_id.clone(),
+                (symbol_short!("PlanCrea"), owner.clone()).into_val(&env),
+                principal.into_val(&env),
+            ),
+            (
+                contract_id.clone(),
                 (symbol_short!("yield"), owner.clone()).into_val(&env),
                 (gain, gain).into_val(&env),
             ),
@@ -2357,5 +2367,64 @@ fn test_get_yield_at_overflow_surfaces_math_error() {
     assert_eq!(
         client.try_get_yield_at(&owner, &(start + 36_500 * DAY)),
         Err(Ok(Error::MathOverflow))
+    );
+}
+
+// ============================================================================
+// Issue #969: PlanCreate event emission on plan creation
+// ============================================================================
+
+/// Verifies that create_plan emits a PlanCreate event with the owner as the
+/// topic address and the locked amount as the event data.
+#[test]
+fn test_create_plan_emits_plan_create_event() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let contract_id = env.register_contract(None, InheritanceContract);
+    let client = InheritanceContractClient::new(&env, &contract_id);
+
+    let token_id = env.register_contract(None, mock_token::MockToken);
+    let token_client = mock_token::MockTokenClient::new(&env, &token_id);
+
+    let owner = Address::generate(&env);
+    let beneficiary_address = Address::generate(&env);
+
+    token_client.mint(&owner, &2000);
+
+    let beneficiary = Beneficiary {
+        address: beneficiary_address,
+        allocation_bps: 10000,
+        fiat_anchor_info: String::from_str(&env, "NGN_BANK"),
+        destination_chain: String::from_str(&env, "Stellar"),
+        destination_address: String::from_str(&env, "GDESTADDR"),
+    };
+
+    let amount: i128 = 1500;
+
+    client.create_plan(
+        &owner,
+        &token_id,
+        &amount,
+        &Vec::from_array(&env, [beneficiary]),
+        &3600,
+        &false,
+        &0,
+        &86400,
+        &String::from_str(&env, "Stellar"),
+        &String::from_str(&env, "SRC_TX_HASH"),
+    );
+
+    // Exactly one event should be emitted: the PlanCreate event.
+    assert_eq!(
+        env.events().all(),
+        vec![
+            &env,
+            (
+                contract_id,
+                (symbol_short!("PlanCrea"), owner).into_val(&env),
+                amount.into_val(&env),
+            ),
+        ]
     );
 }

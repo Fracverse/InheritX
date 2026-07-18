@@ -288,6 +288,9 @@ impl InheritanceContract {
         );
         Self::extend_plan_ttl(&env, &yield_key);
 
+        env.events()
+            .publish((symbol_short!("PlanCrea"), owner), amount);
+
         Ok(())
     }
 
