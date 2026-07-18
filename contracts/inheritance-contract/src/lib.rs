@@ -74,6 +74,18 @@ pub struct BridgePayoutEvent {
 
 #[contracttype]
 #[derive(Clone, Debug, Eq, PartialEq)]
+pub struct CreatePlanEvent {
+    pub owner: Address,
+    pub token: Address,
+    pub amount: i128,
+    pub grace_period: u64,
+    pub earn_yield: bool,
+    pub yield_rate_bps: u32,
+    pub timelock_duration: u64,
+}
+
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
 pub enum DataKey {
     Plan(Address),
     ClaimStatus(Address),
@@ -98,6 +110,13 @@ impl InheritanceContract {
 
     fn emit_bridge_payout_event(env: &Env, event: BridgePayoutEvent) {
         let topic = (symbol_short!("BridgePay"), env.current_contract_address());
+        env.events().publish(topic, event);
+    }
+
+    fn emit_create_plan_event(env: &Env, event: CreatePlanEvent) {
+        let owner = event.owner.clone();
+        let token = event.token.clone();
+        let topic = (symbol_short!("PlanCreate"), owner, token);
         env.events().publish(topic, event);
     }
 
@@ -194,6 +213,17 @@ impl InheritanceContract {
 
         env.storage().persistent().set(&key, &plan);
         Self::extend_plan_ttl(&env, &key);
+
+        let event = CreatePlanEvent {
+            owner: owner.clone(),
+            token,
+            amount,
+            grace_period,
+            earn_yield,
+            yield_rate_bps,
+            timelock_duration,
+        };
+        Self::emit_create_plan_event(&env, event);
 
         Ok(())
     }
