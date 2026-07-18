@@ -81,6 +81,7 @@ pub struct BridgePayoutEvent {
 pub enum DataKey {
     Plan(Address),
     ClaimStatus(Address),
+    PaidBeneficiary(Address, Address),
     SupportedWrappedToken(Address),
     YieldState(Address),
 }
@@ -467,6 +468,15 @@ impl InheritanceContract {
         Ok(plan)
     }
 
+    /// Check whether a beneficiary has already received a plan payout.
+    /// This is a read-only query method that does not modify state.
+    pub fn is_beneficiary_paid(env: Env, owner: Address, beneficiary: Address) -> bool {
+        env.storage()
+            .persistent()
+            .get(&DataKey::PaidBeneficiary(owner, beneficiary))
+            .unwrap_or(false)
+    }
+
     /// Trigger payout to all beneficiaries once the plan is claimable.
     /// Iterates over beneficiaries, computes pro-rata token allocations
     /// using the stored basis points, and transfers tokens safely.
@@ -512,6 +522,11 @@ impl InheritanceContract {
                 amount
             };
 
+            let paid_key = DataKey::PaidBeneficiary(owner.clone(), beneficiary.address.clone());
+            if env.storage().persistent().has(&paid_key) {
+                continue;
+            }
+
             let destination_stellar = Self::is_stellar_chain(&beneficiary.destination_chain, &env);
             let (fee_amount, net_amount) = if destination_stellar {
                 (0_i128, share)
@@ -530,6 +545,8 @@ impl InheritanceContract {
                 &beneficiary.address,
                 &net_amount,
             );
+            env.storage().persistent().set(&paid_key, &true);
+            Self::extend_plan_ttl(&env, &paid_key);
 
             if !destination_stellar {
                 let event = BridgePayoutEvent {
@@ -546,6 +563,15 @@ impl InheritanceContract {
                 };
                 Self::emit_bridge_payout_event(&env, event);
             }
+        }
+
+        // A completed payout no longer needs retry markers. Removing them also
+        // prevents a later plan for the same owner from inheriting stale state.
+        for beneficiary in plan.beneficiaries.iter() {
+            env.storage().persistent().remove(&DataKey::PaidBeneficiary(
+                owner.clone(),
+                beneficiary.address,
+            ));
         }
 
         Ok(())

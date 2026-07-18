@@ -500,6 +500,131 @@ fn test_trigger_payout_multiple_beneficiaries() {
 }
 
 #[test]
+fn test_beneficiary_paid_status_before_and_after_full_payout() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let contract_id = env.register_contract(None, InheritanceContract);
+    let client = InheritanceContractClient::new(&env, &contract_id);
+    let token_id = env.register_contract(None, mock_token::MockToken);
+    let token_client = mock_token::MockTokenClient::new(&env, &token_id);
+
+    let owner = Address::generate(&env);
+    let beneficiary = Address::generate(&env);
+    token_client.mint(&owner, &1000);
+
+    let b = Beneficiary {
+        address: beneficiary.clone(),
+        allocation_bps: 10000,
+        fiat_anchor_info: String::from_str(&env, "USD_BANK"),
+        destination_chain: String::from_str(&env, "Stellar"),
+        destination_address: String::from_str(&env, "GDESTADDR"),
+    };
+
+    env.ledger().set_timestamp(1_000_000);
+    client.create_plan(
+        &owner,
+        &token_id,
+        &1000,
+        &Vec::from_array(&env, [b]),
+        &3600,
+        &false,
+        &0,
+        &86400,
+        &String::from_str(&env, "Stellar"),
+        &String::from_str(&env, "SRC_TX_HASH"),
+    );
+
+    assert!(!client.is_beneficiary_paid(&owner, &beneficiary));
+
+    deactivate_plan_for_testing(&env, &contract_id, &owner);
+    env.ledger().set_timestamp(1_004_000);
+    client.claim(&owner);
+    env.ledger().set_timestamp(env.ledger().timestamp() + 86400);
+    client.trigger_payout(&owner);
+
+    assert_eq!(token_client.balance(&beneficiary), 1000);
+    // Retry markers are removed once every beneficiary has been paid.
+    assert!(!client.is_beneficiary_paid(&owner, &beneficiary));
+}
+
+#[test]
+fn test_trigger_payout_skips_beneficiary_paid_by_prior_attempt() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let contract_id = env.register_contract(None, InheritanceContract);
+    let client = InheritanceContractClient::new(&env, &contract_id);
+    let token_id = env.register_contract(None, mock_token::MockToken);
+    let token_client = mock_token::MockTokenClient::new(&env, &token_id);
+
+    let owner = Address::generate(&env);
+    let alice = Address::generate(&env);
+    let bob = Address::generate(&env);
+    token_client.mint(&owner, &1000);
+
+    let beneficiaries = Vec::from_array(
+        &env,
+        [
+            Beneficiary {
+                address: alice.clone(),
+                allocation_bps: 5000,
+                fiat_anchor_info: String::from_str(&env, "USD_BANK"),
+                destination_chain: String::from_str(&env, "Stellar"),
+                destination_address: String::from_str(&env, "GALICE"),
+            },
+            Beneficiary {
+                address: bob.clone(),
+                allocation_bps: 5000,
+                fiat_anchor_info: String::from_str(&env, "USD_BANK"),
+                destination_chain: String::from_str(&env, "Stellar"),
+                destination_address: String::from_str(&env, "GBOB"),
+            },
+        ],
+    );
+
+    env.ledger().set_timestamp(1_000_000);
+    client.create_plan(
+        &owner,
+        &token_id,
+        &1000,
+        &beneficiaries,
+        &3600,
+        &false,
+        &0,
+        &86400,
+        &String::from_str(&env, "Stellar"),
+        &String::from_str(&env, "SRC_TX_HASH"),
+    );
+
+    // Simulate a prior payout transaction that paid Alice before work was
+    // resumed in a later invocation. A failed Soroban invocation itself is
+    // atomic, so a transfer failure cannot retain partial storage writes.
+    token_client.transfer(&contract_id, &alice, &500);
+    env.as_contract(&contract_id, || {
+        env.storage().persistent().set(
+            &DataKey::PaidBeneficiary(owner.clone(), alice.clone()),
+            &true,
+        );
+    });
+
+    assert!(client.is_beneficiary_paid(&owner, &alice));
+    assert!(!client.is_beneficiary_paid(&owner, &bob));
+
+    deactivate_plan_for_testing(&env, &contract_id, &owner);
+    env.ledger().set_timestamp(1_004_000);
+    client.claim(&owner);
+    env.ledger().set_timestamp(env.ledger().timestamp() + 86400);
+    client.trigger_payout(&owner);
+
+    assert_eq!(token_client.balance(&alice), 500);
+    assert_eq!(token_client.balance(&bob), 500);
+    assert_eq!(token_client.balance(&contract_id), 0);
+    assert!(!client.is_beneficiary_paid(&owner, &alice));
+    assert!(!client.is_beneficiary_paid(&owner, &bob));
+}
+
+#[test]
 fn test_trigger_payout_dust_goes_to_last_beneficiary() {
     let env = Env::default();
     env.mock_all_auths();
