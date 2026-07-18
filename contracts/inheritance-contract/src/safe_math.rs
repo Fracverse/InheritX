@@ -345,4 +345,88 @@ mod tests {
         assert!(interest > 0);
         assert_eq!(accrued_interest(principal, 500, 0), Ok(0));
     }
+
+    // ---- additional boundary and consistency coverage ----
+
+    #[test]
+    fn apply_bps_at_max_rate_is_exact_amount() {
+        assert_eq!(apply_bps(123_456, MAX_YIELD_RATE_BPS), Ok(123_456));
+    }
+
+    #[test]
+    fn apply_bps_handles_negative_amounts_symmetrically() {
+        // Bridge fees always operate on non-negative shares, but the helper
+        // itself must stay sign-correct since it's pure checked math.
+        assert_eq!(apply_bps(-1_000, 5_000), Ok(-500));
+    }
+
+    #[test]
+    fn mul_div_rounds_toward_zero_like_integer_division() {
+        assert_eq!(mul_div(1, 1, 3), Ok(0));
+        assert_eq!(mul_div(-1, 1, 3), Ok(0));
+        assert_eq!(mul_div(2, 1, 3), Ok(0));
+        assert_eq!(mul_div(4, 1, 3), Ok(1));
+    }
+
+    #[test]
+    fn pow_factor_handles_odd_and_even_exponents_consistently() {
+        // x^7 == x^6 * x == (x^3)^2 * x, exercised via the squaring ladder
+        let base = 1_050_000_000_000; // 1.05 at YIELD_SCALE
+        let seven = pow_factor(base, 7).unwrap();
+        let six = pow_factor(base, 6).unwrap();
+        let manual_seven = mul_div(six, base, YIELD_SCALE).unwrap();
+        assert_eq!(seven, manual_seven);
+    }
+
+    #[test]
+    fn pow_factor_large_exponent_stays_within_bounds_at_low_base() {
+        // A base just above 1.0 with many periods must not overflow even
+        // though the loop runs through every bit of a large exponent.
+        let base = YIELD_SCALE + 1; // smallest possible daily growth tick
+        let result = pow_factor(base, 100_000).unwrap();
+        assert!(result >= YIELD_SCALE);
+    }
+
+    #[test]
+    fn compound_amount_zero_periods_ignores_rate() {
+        assert_eq!(compound_amount(10_000, MAX_YIELD_RATE_BPS, 0), Ok(10_000));
+    }
+
+    #[test]
+    fn compound_amount_single_period_matches_apply_bps_plus_principal() {
+        let principal: i128 = 50_000;
+        let rate_bps = 750u32;
+        let expected = principal + apply_bps(principal, rate_bps).unwrap();
+        assert_eq!(compound_amount(principal, rate_bps, 1), Ok(expected));
+    }
+
+    #[test]
+    fn compound_yield_zero_rate_is_identity_across_long_horizons() {
+        let principal: i128 = 987_654_321;
+        assert_eq!(
+            compound_yield(principal, 0, 10_000 * SECONDS_PER_DAY),
+            Ok(principal)
+        );
+    }
+
+    #[test]
+    fn compound_yield_small_principal_does_not_underflow_to_negative() {
+        // A tiny principal at a low rate over a short horizon may round its
+        // interest down to zero, but must never go negative.
+        let value = compound_yield(1, 1, SECONDS_PER_DAY).unwrap();
+        assert!(value >= 1);
+    }
+
+    #[test]
+    fn safe_div_negative_operands_round_toward_zero() {
+        assert_eq!(safe_div(-7, 2), Ok(-3));
+        assert_eq!(safe_div(7, -2), Ok(-3));
+        assert_eq!(safe_div(-7, -2), Ok(3));
+    }
+
+    #[test]
+    fn safe_mul_u64_zero_and_one_are_identities() {
+        assert_eq!(safe_mul_u64(0, 12345), Ok(0));
+        assert_eq!(safe_mul_u64(1, 12345), Ok(12345));
+    }
 }

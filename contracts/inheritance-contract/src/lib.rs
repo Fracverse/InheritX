@@ -140,16 +140,23 @@ impl InheritanceContract {
             })
     }
 
-    /// Interest earned since the last checkpoint, compounded daily on
-    /// principal + already-accrued interest. Zero while yield is disabled.
-    fn live_yield(env: &Env, plan: &Plan, state: &YieldState) -> Result<i128, Error> {
+    /// Interest earned between the last checkpoint and `at`, compounded
+    /// daily on principal + already-accrued interest. Zero while yield is
+    /// disabled, and zero for any `at` at or before the last checkpoint.
+    fn yield_between(plan: &Plan, state: &YieldState, at: u64) -> Result<i128, Error> {
         if !plan.earn_yield || plan.yield_rate_bps == 0 {
             return Ok(0);
         }
-        let elapsed = env.ledger().timestamp().saturating_sub(state.last_accrual);
+        let elapsed = at.saturating_sub(state.last_accrual);
         let base = safe_math::safe_add(plan.amount, state.accrued)?;
         let compounded = safe_math::compound_yield(base, plan.yield_rate_bps, elapsed)?;
         safe_math::safe_sub(compounded, base)
+    }
+
+    /// Interest earned since the last checkpoint, as of the current ledger
+    /// timestamp.
+    fn live_yield(env: &Env, plan: &Plan, state: &YieldState) -> Result<i128, Error> {
+        Self::yield_between(plan, state, env.ledger().timestamp())
     }
 
     /// Locks in interest accrued so far and re-anchors the accrual clock at
@@ -691,6 +698,40 @@ impl InheritanceContract {
             .get(&DataKey::Plan(owner))
             .ok_or(Error::PlanNotFound)?;
         safe_math::safe_add(plan.amount, accrued)
+    }
+
+    /// Raw yield checkpoint for a plan: interest locked in as of
+    /// `last_accrual`, plus the anchor timestamp itself. Useful for
+    /// off-chain indexing and for auditing when interest was last locked in
+    /// by a `ping` or `update_plan` call. Read-only.
+    pub fn get_yield_state(env: Env, owner: Address) -> Result<YieldState, Error> {
+        let key = DataKey::Plan(owner.clone());
+        let plan: Plan = env
+            .storage()
+            .persistent()
+            .get(&key)
+            .ok_or(Error::PlanNotFound)?;
+        Self::extend_plan_ttl(&env, &key);
+
+        Ok(Self::load_yield_state(&env, &plan, &owner))
+    }
+
+    /// Previews total accrued interest at an arbitrary future ledger
+    /// timestamp, without mutating any state. `at` before the last
+    /// checkpoint yields the checkpointed total (no negative accrual).
+    /// Lets a caller answer "what will this plan be worth on date X".
+    pub fn get_yield_at(env: Env, owner: Address, at: u64) -> Result<i128, Error> {
+        let key = DataKey::Plan(owner.clone());
+        let plan: Plan = env
+            .storage()
+            .persistent()
+            .get(&key)
+            .ok_or(Error::PlanNotFound)?;
+        Self::extend_plan_ttl(&env, &key);
+
+        let state = Self::load_yield_state(&env, &plan, &owner);
+        let projected = Self::yield_between(&plan, &state, at)?;
+        safe_math::safe_add(state.accrued, projected)
     }
 
     /// Pure preview of daily compounding: the value of `principal` after

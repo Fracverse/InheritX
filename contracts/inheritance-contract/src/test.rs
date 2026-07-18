@@ -2078,3 +2078,141 @@ fn test_simulate_compound_matches_safe_math_and_validates() {
         Err(Ok(Error::MathOverflow))
     );
 }
+
+// ============================================================================
+// get_yield_state / get_yield_at (future-preview) tests
+// ============================================================================
+
+#[test]
+fn test_get_yield_state_reflects_creation_checkpoint() {
+    let env = Env::default();
+    let start = 1_000_000u64;
+    env.ledger().set_timestamp(start);
+    let (client, _token, owner, _bene, _cid) = setup_yield_plan(&env, 1_000_000_000, true, 500);
+
+    let state = client.get_yield_state(&owner);
+    assert_eq!(state.accrued, 0);
+    assert_eq!(state.last_accrual, start);
+}
+
+#[test]
+fn test_get_yield_state_updates_after_ping() {
+    let env = Env::default();
+    let start = 1_000_000u64;
+    env.ledger().set_timestamp(start);
+    let principal: i128 = 1_000_000_000;
+    let (client, _token, owner, _bene, _cid) = setup_yield_plan(&env, principal, true, 500);
+
+    let ping_ts = start + 10 * DAY;
+    env.ledger().set_timestamp(ping_ts);
+    client.ping(&owner);
+
+    let state = client.get_yield_state(&owner);
+    let expected_gain = safe_math::accrued_interest(principal, 500, 10 * DAY).unwrap();
+    assert_eq!(state.accrued, expected_gain);
+    assert_eq!(state.last_accrual, ping_ts);
+}
+
+#[test]
+fn test_get_yield_state_returns_plan_not_found_for_unknown_owner() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let contract_id = env.register_contract(None, InheritanceContract);
+    let client = InheritanceContractClient::new(&env, &contract_id);
+
+    let unknown = Address::generate(&env);
+    assert_eq!(
+        client.try_get_yield_state(&unknown),
+        Err(Ok(Error::PlanNotFound))
+    );
+}
+
+#[test]
+fn test_get_yield_at_matches_get_accrued_yield_for_current_timestamp() {
+    let env = Env::default();
+    let start = 1_000_000u64;
+    env.ledger().set_timestamp(start);
+    let principal: i128 = 1_000_000_000;
+    let (client, _token, owner, _bene, _cid) = setup_yield_plan(&env, principal, true, 500);
+
+    let now = start + 90 * DAY;
+    env.ledger().set_timestamp(now);
+
+    assert_eq!(client.get_yield_at(&owner, &now), client.get_accrued_yield(&owner));
+}
+
+#[test]
+fn test_get_yield_at_previews_future_timestamp_without_mutating_state() {
+    let env = Env::default();
+    let start = 1_000_000u64;
+    env.ledger().set_timestamp(start);
+    let principal: i128 = 1_000_000_000;
+    let (client, _token, owner, _bene, _cid) = setup_yield_plan(&env, principal, true, 500);
+
+    // Preview one year out while the ledger clock is still at `start`.
+    let future = start + 365 * DAY;
+    let preview = client.get_yield_at(&owner, &future);
+    let expected = safe_math::accrued_interest(principal, 500, 365 * DAY).unwrap();
+    assert_eq!(preview, expected);
+
+    // The preview call must not have written a new checkpoint.
+    let state = client.get_yield_state(&owner);
+    assert_eq!(state.accrued, 0);
+    assert_eq!(state.last_accrual, start);
+    assert_eq!(client.get_accrued_yield(&owner), 0);
+}
+
+#[test]
+fn test_get_yield_at_before_last_checkpoint_returns_checkpointed_total_only() {
+    let env = Env::default();
+    let start = 1_000_000u64;
+    env.ledger().set_timestamp(start);
+    let principal: i128 = 1_000_000_000;
+    let (client, _token, owner, _bene, _cid) = setup_yield_plan(&env, principal, true, 500);
+
+    env.ledger().set_timestamp(start + 50 * DAY);
+    client.ping(&owner);
+    let checkpointed = client.get_yield_state(&owner).accrued;
+    assert!(checkpointed > 0);
+
+    // Querying a timestamp before the checkpoint must not go negative.
+    assert_eq!(client.get_yield_at(&owner, &start), checkpointed);
+}
+
+#[test]
+fn test_get_yield_at_zero_when_earn_yield_disabled() {
+    let env = Env::default();
+    let start = 1_000_000u64;
+    env.ledger().set_timestamp(start);
+    let (client, _token, owner, _bene, _cid) = setup_yield_plan(&env, 1_000_000_000, false, 500);
+
+    assert_eq!(client.get_yield_at(&owner, &(start + 365 * DAY)), 0);
+}
+
+#[test]
+fn test_get_yield_at_returns_plan_not_found_for_unknown_owner() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let contract_id = env.register_contract(None, InheritanceContract);
+    let client = InheritanceContractClient::new(&env, &contract_id);
+
+    let unknown = Address::generate(&env);
+    assert_eq!(
+        client.try_get_yield_at(&unknown, &1_000_000),
+        Err(Ok(Error::PlanNotFound))
+    );
+}
+
+#[test]
+fn test_get_yield_at_overflow_surfaces_math_error() {
+    let env = Env::default();
+    let start = 1_000_000u64;
+    env.ledger().set_timestamp(start);
+    let (client, _token, owner, _bene, _cid) =
+        setup_yield_plan(&env, 1_000_000, true, safe_math::MAX_YIELD_RATE_BPS);
+
+    assert_eq!(
+        client.try_get_yield_at(&owner, &(start + 36_500 * DAY)),
+        Err(Ok(Error::MathOverflow))
+    );
+}
