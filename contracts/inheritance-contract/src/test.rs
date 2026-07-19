@@ -26,6 +26,23 @@ fn test_contract_compilation() {
 }
 
 #[test]
+fn test_initialize_locks_admin_and_rejects_reinitialization() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let contract_id = env.register_contract(None, InheritanceContract);
+    let client = InheritanceContractClient::new(&env, &contract_id);
+
+    let admin = Address::generate(&env);
+    let other_admin = Address::generate(&env);
+
+    client.initialize(&admin);
+
+    let result = client.try_initialize(&other_admin);
+    assert_eq!(result, Err(Ok(Error::AlreadyInitialized)));
+}
+
+#[test]
 fn test_create_plan_success() {
     let env = Env::default();
     env.mock_all_auths();
