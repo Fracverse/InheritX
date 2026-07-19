@@ -2428,3 +2428,457 @@ fn test_create_plan_emits_plan_create_event() {
         ]
     );
 }
+
+use soroban_sdk::FromVal;
+
+/// Bridge fee is 1% (100 bps) of the beneficiary share for non-Stellar destinations.
+const TEST_BRIDGE_FEE_BPS: i128 = 100;
+
+fn bridge_fee_and_net(gross: i128) -> (i128, i128) {
+    let fee = gross * TEST_BRIDGE_FEE_BPS / 10_000;
+    (fee, gross - fee)
+}
+
+fn advance_plan_to_payout(
+    env: &Env,
+    client: &InheritanceContractClient,
+    contract_id: &Address,
+    owner: &Address,
+    start: u64,
+    grace_period: u64,
+    timelock: u64,
+) {
+    deactivate_plan_for_testing(env, contract_id, owner);
+    env.ledger().set_timestamp(start + grace_period + 1);
+    client.claim(owner);
+    env.ledger()
+        .set_timestamp(env.ledger().timestamp() + timelock);
+}
+
+#[test]
+fn test_bridge_payout_event_emits_exact_validator_payload() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let contract_id = env.register_contract(None, InheritanceContract);
+    let client = InheritanceContractClient::new(&env, &contract_id);
+
+    let token_id = env.register_contract(None, mock_token::MockToken);
+    let token_client = mock_token::MockTokenClient::new(&env, &token_id);
+
+    let admin = Address::generate(&env);
+    let owner = Address::generate(&env);
+    let beneficiary = Address::generate(&env);
+
+    client.initialize(&admin);
+    client.register_supported_wrapped_token(&admin, &token_id);
+
+    let amount: i128 = 10_000;
+    token_client.mint(&owner, &amount);
+
+    let destination_chain = String::from_str(&env, "Ethereum");
+    let destination_address = String::from_str(&env, "0xBridgeDest123");
+    let source_chain = String::from_str(&env, "Polygon");
+    let source_tx_hash = String::from_str(&env, "0xsrc_bridge_tx_hash_abc");
+
+    let b = Beneficiary {
+        address: beneficiary.clone(),
+        allocation_bps: 10000,
+        fiat_anchor_info: String::from_str(&env, "USD_BANK"),
+        destination_chain: destination_chain.clone(),
+        destination_address: destination_address.clone(),
+    };
+
+    let start = 1_000_000;
+    env.ledger().set_timestamp(start);
+
+    client.create_plan(
+        &owner,
+        &token_id,
+        &amount,
+        &Vec::from_array(&env, [b]),
+        &3600,
+        &false,
+        &0,
+        &86400,
+        &source_chain,
+        &source_tx_hash,
+    );
+
+    advance_plan_to_payout(&env, &client, &contract_id, &owner, start, 3600, 86400);
+
+    client.trigger_payout(&owner);
+
+    let (fee_amount, net_amount) = bridge_fee_and_net(amount);
+    assert_eq!(fee_amount, 100);
+    assert_eq!(net_amount, 9_900);
+    assert_eq!(token_client.balance(&beneficiary), net_amount);
+    // Bridge fee remains locked in the contract for validators/operators.
+    assert_eq!(token_client.balance(&contract_id), fee_amount);
+
+    let expected = BridgePayoutEvent {
+        owner: owner.clone(),
+        token: token_id.clone(),
+        beneficiary: beneficiary.clone(),
+        destination_chain,
+        destination_address,
+        gross_amount: amount,
+        fee_amount,
+        net_amount,
+        source_chain,
+        source_tx_hash,
+    };
+
+    assert_eq!(
+        env.events().all(),
+        vec![
+            &env,
+            (
+                contract_id.clone(),
+                (symbol_short!("PlanCrea"), owner.clone()).into_val(&env),
+                amount.into_val(&env),
+            ),
+            (
+                contract_id.clone(),
+                (symbol_short!("BridgePay"), contract_id.clone()).into_val(&env),
+                expected.into_val(&env),
+            ),
+        ]
+    );
+
+    // Field-level checks against the decoded event payload bridge validators consume.
+    let events = env.events().all();
+    assert_eq!(events.len(), 2);
+    let (emitted_contract, topics, data) = events.get(1).unwrap();
+    assert_eq!(emitted_contract, contract_id);
+    assert_eq!(
+        topics,
+        (symbol_short!("BridgePay"), contract_id).into_val(&env)
+    );
+    let payload = BridgePayoutEvent::from_val(&env, &data);
+    assert_eq!(payload.owner, owner);
+    assert_eq!(payload.token, token_id);
+    assert_eq!(payload.beneficiary, beneficiary);
+    assert_eq!(
+        payload.destination_chain,
+        String::from_str(&env, "Ethereum")
+    );
+    assert_eq!(
+        payload.destination_address,
+        String::from_str(&env, "0xBridgeDest123")
+    );
+    assert_eq!(payload.gross_amount, amount);
+    assert_eq!(payload.fee_amount, fee_amount);
+    assert_eq!(payload.net_amount, net_amount);
+    assert_eq!(
+        payload.gross_amount,
+        payload.fee_amount + payload.net_amount
+    );
+    assert_eq!(payload.source_chain, String::from_str(&env, "Polygon"));
+    assert_eq!(
+        payload.source_tx_hash,
+        String::from_str(&env, "0xsrc_bridge_tx_hash_abc")
+    );
+}
+
+#[test]
+fn test_bridge_payout_event_not_emitted_for_stellar_destination() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let contract_id = env.register_contract(None, InheritanceContract);
+    let client = InheritanceContractClient::new(&env, &contract_id);
+
+    let token_id = env.register_contract(None, mock_token::MockToken);
+    let token_client = mock_token::MockTokenClient::new(&env, &token_id);
+
+    let owner = Address::generate(&env);
+    let beneficiary = Address::generate(&env);
+
+    let amount: i128 = 1_500;
+    token_client.mint(&owner, &amount);
+
+    let b = Beneficiary {
+        address: beneficiary.clone(),
+        allocation_bps: 10000,
+        fiat_anchor_info: String::from_str(&env, "USD_BANK"),
+        destination_chain: String::from_str(&env, "Stellar"),
+        destination_address: String::from_str(&env, "GDESTADDR"),
+    };
+
+    let start = 1_000_000;
+    env.ledger().set_timestamp(start);
+
+    client.create_plan(
+        &owner,
+        &token_id,
+        &amount,
+        &Vec::from_array(&env, [b]),
+        &3600,
+        &false,
+        &0,
+        &86400,
+        &String::from_str(&env, "Stellar"),
+        &String::from_str(&env, "SRC_TX_HASH"),
+    );
+
+    advance_plan_to_payout(&env, &client, &contract_id, &owner, start, 3600, 86400);
+    client.trigger_payout(&owner);
+
+    // Stellar destinations are zero-fee and must not emit BridgePay.
+    assert_eq!(token_client.balance(&beneficiary), amount);
+    assert_eq!(token_client.balance(&contract_id), 0);
+    assert_eq!(
+        env.events().all(),
+        vec![
+            &env,
+            (
+                contract_id,
+                (symbol_short!("PlanCrea"), owner).into_val(&env),
+                amount.into_val(&env),
+            ),
+        ]
+    );
+}
+
+#[test]
+fn test_bridge_payout_event_multiple_non_stellar_beneficiaries() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let contract_id = env.register_contract(None, InheritanceContract);
+    let client = InheritanceContractClient::new(&env, &contract_id);
+
+    let token_id = env.register_contract(None, mock_token::MockToken);
+    let token_client = mock_token::MockTokenClient::new(&env, &token_id);
+
+    let admin = Address::generate(&env);
+    let owner = Address::generate(&env);
+    let alice = Address::generate(&env);
+    let bob = Address::generate(&env);
+    let charlie = Address::generate(&env);
+
+    client.initialize(&admin);
+    client.register_supported_wrapped_token(&admin, &token_id);
+
+    let amount: i128 = 10_000;
+    token_client.mint(&owner, &amount);
+
+    let source_chain = String::from_str(&env, "Avalanche");
+    let source_tx_hash = String::from_str(&env, "0xmulti_src_tx");
+
+    let alice_bene = Beneficiary {
+        address: alice.clone(),
+        allocation_bps: 5000,
+        fiat_anchor_info: String::from_str(&env, "USD_BANK"),
+        destination_chain: String::from_str(&env, "Ethereum"),
+        destination_address: String::from_str(&env, "0xalice"),
+    };
+    let bob_bene = Beneficiary {
+        address: bob.clone(),
+        allocation_bps: 3000,
+        fiat_anchor_info: String::from_str(&env, "EUR_BANK"),
+        destination_chain: String::from_str(&env, "Polygon"),
+        destination_address: String::from_str(&env, "0xbob"),
+    };
+    let charlie_bene = Beneficiary {
+        address: charlie.clone(),
+        allocation_bps: 2000,
+        fiat_anchor_info: String::from_str(&env, "GBP_BANK"),
+        destination_chain: String::from_str(&env, "Base"),
+        destination_address: String::from_str(&env, "0xcharlie"),
+    };
+
+    let start = 1_000_000;
+    env.ledger().set_timestamp(start);
+
+    client.create_plan(
+        &owner,
+        &token_id,
+        &amount,
+        &Vec::from_array(&env, [alice_bene, bob_bene, charlie_bene]),
+        &3600,
+        &false,
+        &0,
+        &86400,
+        &source_chain,
+        &source_tx_hash,
+    );
+
+    advance_plan_to_payout(&env, &client, &contract_id, &owner, start, 3600, 86400);
+    client.trigger_payout(&owner);
+
+    let alice_gross = 5_000;
+    let bob_gross = 3_000;
+    let charlie_gross = 2_000;
+    let (alice_fee, alice_net) = bridge_fee_and_net(alice_gross);
+    let (bob_fee, bob_net) = bridge_fee_and_net(bob_gross);
+    let (charlie_fee, charlie_net) = bridge_fee_and_net(charlie_gross);
+
+    assert_eq!(token_client.balance(&alice), alice_net);
+    assert_eq!(token_client.balance(&bob), bob_net);
+    assert_eq!(token_client.balance(&charlie), charlie_net);
+    assert_eq!(
+        token_client.balance(&contract_id),
+        alice_fee + bob_fee + charlie_fee
+    );
+
+    let expected_alice = BridgePayoutEvent {
+        owner: owner.clone(),
+        token: token_id.clone(),
+        beneficiary: alice,
+        destination_chain: String::from_str(&env, "Ethereum"),
+        destination_address: String::from_str(&env, "0xalice"),
+        gross_amount: alice_gross,
+        fee_amount: alice_fee,
+        net_amount: alice_net,
+        source_chain: source_chain.clone(),
+        source_tx_hash: source_tx_hash.clone(),
+    };
+    let expected_bob = BridgePayoutEvent {
+        owner: owner.clone(),
+        token: token_id.clone(),
+        beneficiary: bob,
+        destination_chain: String::from_str(&env, "Polygon"),
+        destination_address: String::from_str(&env, "0xbob"),
+        gross_amount: bob_gross,
+        fee_amount: bob_fee,
+        net_amount: bob_net,
+        source_chain: source_chain.clone(),
+        source_tx_hash: source_tx_hash.clone(),
+    };
+    let expected_charlie = BridgePayoutEvent {
+        owner: owner.clone(),
+        token: token_id.clone(),
+        beneficiary: charlie,
+        destination_chain: String::from_str(&env, "Base"),
+        destination_address: String::from_str(&env, "0xcharlie"),
+        gross_amount: charlie_gross,
+        fee_amount: charlie_fee,
+        net_amount: charlie_net,
+        source_chain,
+        source_tx_hash,
+    };
+
+    assert_eq!(
+        env.events().all(),
+        vec![
+            &env,
+            (
+                contract_id.clone(),
+                (symbol_short!("PlanCrea"), owner.clone()).into_val(&env),
+                amount.into_val(&env),
+            ),
+            (
+                contract_id.clone(),
+                (symbol_short!("BridgePay"), contract_id.clone()).into_val(&env),
+                expected_alice.into_val(&env),
+            ),
+            (
+                contract_id.clone(),
+                (symbol_short!("BridgePay"), contract_id.clone()).into_val(&env),
+                expected_bob.into_val(&env),
+            ),
+            (
+                contract_id.clone(),
+                (symbol_short!("BridgePay"), contract_id.clone()).into_val(&env),
+                expected_charlie.into_val(&env),
+            ),
+        ]
+    );
+}
+
+#[test]
+fn test_bridge_payout_event_only_for_non_stellar_in_mixed_plan() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let contract_id = env.register_contract(None, InheritanceContract);
+    let client = InheritanceContractClient::new(&env, &contract_id);
+
+    let token_id = env.register_contract(None, mock_token::MockToken);
+    let token_client = mock_token::MockTokenClient::new(&env, &token_id);
+
+    let owner = Address::generate(&env);
+    let stellar_bene = Address::generate(&env);
+    let eth_bene = Address::generate(&env);
+
+    let amount: i128 = 10_000;
+    token_client.mint(&owner, &amount);
+
+    let source_chain = String::from_str(&env, "Stellar");
+    let source_tx_hash = String::from_str(&env, "STELLAR_SRC_TX");
+
+    let on_stellar = Beneficiary {
+        address: stellar_bene.clone(),
+        allocation_bps: 6000,
+        fiat_anchor_info: String::from_str(&env, "USD_BANK"),
+        destination_chain: String::from_str(&env, "Stellar"),
+        destination_address: String::from_str(&env, "GSTELLARDEST"),
+    };
+    let on_ethereum = Beneficiary {
+        address: eth_bene.clone(),
+        allocation_bps: 4000,
+        fiat_anchor_info: String::from_str(&env, "EUR_BANK"),
+        destination_chain: String::from_str(&env, "Ethereum"),
+        destination_address: String::from_str(&env, "0xethdest"),
+    };
+
+    let start = 1_000_000;
+    env.ledger().set_timestamp(start);
+
+    client.create_plan(
+        &owner,
+        &token_id,
+        &amount,
+        &Vec::from_array(&env, [on_stellar, on_ethereum]),
+        &3600,
+        &false,
+        &0,
+        &86400,
+        &source_chain,
+        &source_tx_hash,
+    );
+
+    advance_plan_to_payout(&env, &client, &contract_id, &owner, start, 3600, 86400);
+    client.trigger_payout(&owner);
+
+    let stellar_share = 6_000;
+    let eth_gross = 4_000;
+    let (eth_fee, eth_net) = bridge_fee_and_net(eth_gross);
+
+    // Stellar beneficiary: full share, no fee. Bridge beneficiary: net after 1% fee.
+    assert_eq!(token_client.balance(&stellar_bene), stellar_share);
+    assert_eq!(token_client.balance(&eth_bene), eth_net);
+    assert_eq!(token_client.balance(&contract_id), eth_fee);
+
+    let expected = BridgePayoutEvent {
+        owner: owner.clone(),
+        token: token_id.clone(),
+        beneficiary: eth_bene,
+        destination_chain: String::from_str(&env, "Ethereum"),
+        destination_address: String::from_str(&env, "0xethdest"),
+        gross_amount: eth_gross,
+        fee_amount: eth_fee,
+        net_amount: eth_net,
+        source_chain,
+        source_tx_hash,
+    };
+
+    assert_eq!(
+        env.events().all(),
+        vec![
+            &env,
+            (
+                contract_id.clone(),
+                (symbol_short!("PlanCrea"), owner.clone()).into_val(&env),
+                amount.into_val(&env),
+            ),
+            (
+                contract_id.clone(),
+                (symbol_short!("BridgePay"), contract_id).into_val(&env),
+                expected.into_val(&env),
+            ),
+        ]
+    );
+}
