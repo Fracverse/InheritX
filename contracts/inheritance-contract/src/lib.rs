@@ -462,18 +462,9 @@ impl InheritanceContract {
         safe_math::safe_add_u64(plan.last_ping, plan.grace_period)
     }
 
-    /// Retrieve the current inheritance plan data.
-    /// Contributors: Query plan storage, dynamically projects the accumulated yield.
-    pub fn get_plan(env: Env, owner: Address) -> Result<InheritancePlan, Error> {
-        let key = DataKey::Plan(owner.clone());
-        if !env.storage().persistent().has(&key) {
-            return Err(Error::PlanNotFound);
-        }
-
-        let plan: Plan = env.storage().persistent().get(&key).unwrap();
-        Self::extend_plan_ttl(&env, &key);
-
-        Ok(plan)
+    /// Retrieve the current inheritance plan data for client RPC queries.
+    pub fn get_plan(env: Env, owner: Address) -> Option<InheritancePlan> {
+        env.storage().persistent().get(&DataKey::Plan(owner))
     }
 
     /// Check whether a beneficiary has already received a plan payout.

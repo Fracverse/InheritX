@@ -87,7 +87,7 @@ fn test_create_plan_success() {
     assert_eq!(token_client.balance(&contract_id), 1500);
 
     // Verify stored plan
-    let plan = client.get_plan(&owner);
+    let plan = client.get_plan(&owner).unwrap();
     assert_eq!(plan.owner, owner);
     assert_eq!(plan.token, token_id);
     assert_eq!(plan.amount, 1500);
@@ -140,14 +140,14 @@ fn test_ping_updates_last_ping_and_emits_event() {
         &String::from_str(&env, "Stellar"),
         &String::from_str(&env, "SRC_TX_HASH"),
     );
-    assert_eq!(client.get_plan(&owner).last_ping, start);
+    assert_eq!(client.get_plan(&owner).unwrap().last_ping, start);
 
     let ping_timestamp = start + 1234;
     env.ledger().set_timestamp(ping_timestamp);
 
     client.ping(&owner);
 
-    let plan = client.get_plan(&owner);
+    let plan = client.get_plan(&owner).unwrap();
     assert_eq!(plan.last_ping, ping_timestamp);
     assert_eq!(
         env.events().all(),
@@ -445,8 +445,7 @@ fn test_trigger_payout_single_beneficiary() {
     assert_eq!(token_client.balance(&contract_id), 0);
 
     // Plan removed from storage
-    let result = client.try_get_plan(&owner);
-    assert_eq!(result, Err(Ok(Error::PlanNotFound)));
+    assert_eq!(client.get_plan(&owner), None);
 }
 
 #[test]
@@ -973,8 +972,7 @@ fn test_reclaim_success() {
     assert_eq!(token_client.balance(&owner), 2000);
     assert_eq!(token_client.balance(&contract_id), 0);
 
-    let result = client.try_get_plan(&owner);
-    assert_eq!(result, Err(Ok(Error::PlanNotFound)));
+    assert_eq!(client.get_plan(&owner), None);
 }
 
 // ============================================================================
@@ -1020,7 +1018,7 @@ fn test_ping_success_from_owner_updates_timestamp() {
     );
 
     // Verify initial ping timestamp
-    let plan = client.get_plan(&owner);
+    let plan = client.get_plan(&owner).unwrap();
     assert_eq!(plan.last_ping, start);
 
     // Owner pings at a later time
@@ -1029,7 +1027,7 @@ fn test_ping_success_from_owner_updates_timestamp() {
     client.ping(&owner);
 
     // Verify timestamp is updated
-    let updated_plan = client.get_plan(&owner);
+    let updated_plan = client.get_plan(&owner).unwrap();
     assert_eq!(updated_plan.last_ping, ping_time);
 
     // Owner is still within grace period
@@ -1159,8 +1157,7 @@ fn test_close_plan_refunds_all_tokens_and_deletes_storage() {
     assert_eq!(token_client.balance(&contract_id), 0);
 
     // Verify plan is deleted from storage
-    let result = client.try_get_plan(&owner);
-    assert_eq!(result, Err(Ok(Error::PlanNotFound)));
+    assert_eq!(client.get_plan(&owner), None);
 }
 
 #[test]
@@ -1650,7 +1647,7 @@ fn test_create_plan_stores_all_fields_with_multiple_beneficiaries() {
     assert_eq!(token_client.balance(&contract_id), 5000);
 
     // All stored plan fields match what was passed in
-    let plan = client.get_plan(&owner);
+    let plan = client.get_plan(&owner).unwrap();
     assert_eq!(plan.owner, owner);
     assert_eq!(plan.token, token_id);
     assert_eq!(plan.amount, 5000);
@@ -1671,8 +1668,8 @@ fn test_create_plan_stores_all_fields_with_multiple_beneficiaries() {
     assert_eq!(stored_bob.allocation_bps, 3000);
 }
 
-/// Verifies that get_plan returns PlanNotFound when no plan exists for the
-/// given owner address.
+/// Verifies that get_plan returns None when no plan exists for the given owner
+/// address.
 #[test]
 fn test_get_plan_returns_not_found_for_unknown_owner() {
     let env = Env::default();
@@ -1683,8 +1680,7 @@ fn test_get_plan_returns_not_found_for_unknown_owner() {
 
     let unknown = Address::generate(&env);
 
-    let result = client.try_get_plan(&unknown);
-    assert_eq!(result, Err(Ok(Error::PlanNotFound)));
+    assert_eq!(client.get_plan(&unknown), None);
 }
 
 // ============================================================================
