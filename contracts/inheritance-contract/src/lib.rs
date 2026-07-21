@@ -10,6 +10,7 @@ const PLAN_TTL_THRESHOLD: u32 = 500;
 const PLAN_TTL_LEEWAY: u32 = 100;
 const BRIDGE_FEE_BPS: u32 = 100; // 1% bridge fee
 const STELLAR_CHAIN: &str = "Stellar";
+const MIN_GRACE_PERIOD_SECONDS: u64 = 86_400;
 
 #[contracterror]
 #[derive(Copy, Clone, Debug, Eq, PartialEq)]
@@ -30,6 +31,7 @@ pub enum Error {
     AlreadyInitialized = 14,
     DivisionByZero = 15,
     InvalidYieldRate = 16,
+    InvalidGracePeriod = 17,
 }
 
 #[contracttype]
@@ -232,6 +234,10 @@ impl InheritanceContract {
 
         if amount <= 0 {
             return Err(Error::NegativeAmount);
+        }
+
+        if grace_period < MIN_GRACE_PERIOD_SECONDS {
+            return Err(Error::InvalidGracePeriod);
         }
 
         safe_math::validate_yield_rate(yield_rate_bps)?;
