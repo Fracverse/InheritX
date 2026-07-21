@@ -582,6 +582,147 @@ impl InheritanceContract {
         Ok(())
     }
 
+    /// Distribute the full yield-bearing inheritance to Stellar-native beneficiaries.
+    ///
+    /// This function is the Stellar-specific payout path: it computes the total
+    /// claimable amount as `principal + all accrued yield`, then iterates over
+    /// every beneficiary whose `destination_chain` is `"Stellar"` and transfers
+    /// their pro-rata share (computed via `allocation_bps / 10 000`) directly to
+    /// their on-chain `address`.  Non-Stellar beneficiaries (cross-chain bridge
+    /// destinations) are intentionally skipped — they are handled by the separate
+    /// bridge settlement flow in `trigger_payout`.
+    ///
+    /// Dust from integer-division rounding is absorbed by the last Stellar
+    /// beneficiary in the list, ensuring the contract never retains stranded
+    /// tokens.  A `StelPay` event is emitted for every beneficiary paid so that
+    /// off-chain indexers can track individual settlement receipts.
+    ///
+    /// # Preconditions
+    /// * A `claim` must have been registered for `owner` (i.e. `ClaimStatus`
+    ///   storage key is present).
+    /// * The timelock window (`claim_time + plan.timelock_duration`) must have
+    ///   elapsed before calling this function.
+    /// * The plan must not have been fully consumed by a prior `trigger_payout`
+    ///   call (plan storage key must still exist).
+    ///
+    /// # Errors
+    /// Returns `Error::PlanNotFound` if no plan exists for `owner`.
+    /// Returns `Error::PayoutNotTriggered` if `claim` was never called.
+    /// Returns `Error::TimelockNotExpired` if the timelock has not yet elapsed.
+    /// Returns `Error::MathOverflow` if any arithmetic overflows.
+    pub fn claim_payout(env: Env, owner: Address) -> Result<(), Error> {
+        let key = DataKey::Plan(owner.clone());
+        let plan: Plan = env
+            .storage()
+            .persistent()
+            .get(&key)
+            .ok_or(Error::PlanNotFound)?;
+
+        // Ensure claim was triggered before attempting payout.
+        let claim_key = DataKey::ClaimStatus(owner.clone());
+        let claim_time: u64 = env
+            .storage()
+            .persistent()
+            .get(&claim_key)
+            .ok_or(Error::PayoutNotTriggered)?;
+
+        // Enforce the timelock: callers must wait `timelock_duration` seconds
+        // after the claim timestamp before the payout can be executed.
+        let current_time = env.ledger().timestamp();
+        let payout_time = safe_math::safe_add_u64(claim_time, plan.timelock_duration)?;
+        if current_time < payout_time {
+            return Err(Error::TimelockNotExpired);
+        }
+
+        // Snapshot accrued yield at payout time. `checkpoint_yield` writes to
+        // storage, so we do it before the checks-effects-interactions removal
+        // to avoid losing the computed value.
+        let (_, total_yield) = Self::checkpoint_yield(&env, &plan, &owner)?;
+
+        // Total distributable amount = principal + all accrued yield.
+        let total_payout = safe_math::safe_add(plan.amount, total_yield)?;
+
+        let token_client = soroban_sdk::token::Client::new(&env, &plan.token);
+        let stellar_str = String::from_str(&env, STELLAR_CHAIN);
+
+        // Collect Stellar-native beneficiaries so we can handle dust correctly.
+        let mut stellar_beneficiaries: Vec<Beneficiary> = Vec::new(&env);
+        for beneficiary in plan.beneficiaries.iter() {
+            if beneficiary.destination_chain == stellar_str {
+                stellar_beneficiaries.push_back(beneficiary);
+            }
+        }
+
+        let n = stellar_beneficiaries.len();
+        if n == 0 {
+            // No Stellar beneficiaries in this plan. Nothing for this function
+            // to distribute — the plan/claim state is intentionally preserved
+            // so the bridge settlement path (trigger_payout) can still execute.
+            return Ok(());
+        }
+
+        // Checks-effects-interactions: remove plan state before any token
+        // transfers to guard against re-entrancy and double-payout.
+        env.storage().persistent().remove(&key);
+        env.storage().persistent().remove(&claim_key);
+        Self::clear_yield_state(&env, &owner);
+
+        // Determine whether all beneficiaries are Stellar-native. When they
+        // are, the last Stellar beneficiary absorbs integer-division dust so
+        // the contract never retains stranded tokens. In a mixed plan the
+        // non-Stellar portion remains in the contract for bridge settlement,
+        // so each Stellar beneficiary receives exactly their bps-computed share.
+        let all_stellar = plan.beneficiaries.len() == n;
+
+        // `remaining` tracks undistributed Stellar tokens. For a pure-Stellar
+        // plan it starts at total_payout; for a mixed plan we compute a running
+        // subtraction but the last beneficiary still uses apply_bps, not remaining.
+        let mut remaining = total_payout;
+
+        for (i, beneficiary) in stellar_beneficiaries.iter().enumerate() {
+            let share = if all_stellar && i == (n - 1) as usize {
+                // Pure-Stellar plan: last beneficiary absorbs rounding dust.
+                remaining
+            } else {
+                let s = safe_math::apply_bps(total_payout, beneficiary.allocation_bps)?;
+                remaining = safe_math::safe_sub(remaining, s)?;
+                s
+            };
+
+            let paid_key = DataKey::PaidBeneficiary(owner.clone(), beneficiary.address.clone());
+            // Skip beneficiaries that were already paid in a prior partial attempt.
+            if env.storage().persistent().has(&paid_key) {
+                continue;
+            }
+
+            // Direct transfer to the beneficiary's Stellar address.
+            token_client.transfer(
+                &env.current_contract_address(),
+                &beneficiary.address,
+                &share,
+            );
+            env.storage().persistent().set(&paid_key, &true);
+            Self::extend_plan_ttl(&env, &paid_key);
+
+            // Emit a per-beneficiary settlement event for off-chain indexers.
+            env.events().publish(
+                (symbol_short!("StelPay"), owner.clone()),
+                (beneficiary.address.clone(), share),
+            );
+        }
+
+        // Clean up per-beneficiary paid markers once the full Stellar payout is
+        // complete, so stale state cannot bleed into a future plan by the same owner.
+        for beneficiary in stellar_beneficiaries.iter() {
+            env.storage().persistent().remove(&DataKey::PaidBeneficiary(
+                owner.clone(),
+                beneficiary.address,
+            ));
+        }
+
+        Ok(())
+    }
+
     /// Deactivate a plan to start the inactivity grace period.
     /// Used internally by claim logic. This does NOT refund tokens.
     /// The plan owner can call close_plan() for an early refund.

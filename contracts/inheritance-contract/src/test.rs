@@ -2933,3 +2933,549 @@ fn test_bridge_payout_event_only_for_non_stellar_in_mixed_plan() {
         ]
     );
 }
+
+// ============================================================================
+// Issue #13: claim_payout for Stellar-native beneficiaries
+// ============================================================================
+
+/// Helper: sets up a plan, deactivates it, calls claim, and advances past the
+/// timelock so the test body can call claim_payout immediately.
+fn setup_claim_payout<'a>(
+    env: &'a Env,
+    principal: i128,
+    earn_yield: bool,
+    yield_rate_bps: u32,
+    grace_period: u64,
+    timelock_duration: u64,
+    beneficiaries: Vec<Beneficiary>,
+) -> (
+    InheritanceContractClient<'a>,
+    mock_token::MockTokenClient<'a>,
+    Address, // owner
+    Address, // contract_id
+) {
+    let contract_id = env.register_contract(None, InheritanceContract);
+    let client = InheritanceContractClient::new(env, &contract_id);
+
+    let token_id = env.register_contract(None, mock_token::MockToken);
+    let token_client = mock_token::MockTokenClient::new(env, &token_id);
+
+    let owner = Address::generate(env);
+    token_client.mint(&owner, &principal);
+
+    client.create_plan(
+        &owner,
+        &token_id,
+        &principal,
+        &beneficiaries,
+        &grace_period,
+        &earn_yield,
+        &yield_rate_bps,
+        &timelock_duration,
+        &String::from_str(env, "Stellar"),
+        &String::from_str(env, "SRC_TX_HASH"),
+    );
+
+    deactivate_plan_for_testing(env, &contract_id, &owner);
+    env.ledger()
+        .set_timestamp(env.ledger().timestamp() + grace_period + 1);
+    client.claim(&owner);
+    env.ledger()
+        .set_timestamp(env.ledger().timestamp() + timelock_duration);
+
+    (client, token_client, owner, contract_id)
+}
+
+/// Single Stellar beneficiary with 100% allocation receives the full principal
+/// when earn_yield is disabled.
+#[test]
+fn test_claim_payout_single_stellar_beneficiary_principal_only() {
+    let env = Env::default();
+    env.mock_all_auths();
+    env.ledger().set_timestamp(1_000_000);
+
+    let principal: i128 = 5_000;
+    let beneficiary_addr = Address::generate(&env);
+
+    let b = Beneficiary {
+        address: beneficiary_addr.clone(),
+        allocation_bps: 10000,
+        fiat_anchor_info: String::from_str(&env, "USD_BANK"),
+        destination_chain: String::from_str(&env, "Stellar"),
+        destination_address: String::from_str(&env, "GDEST1"),
+    };
+
+    let (client, token_client, owner, contract_id) = setup_claim_payout(
+        &env,
+        principal,
+        false,
+        0,
+        86_400,
+        86_400,
+        Vec::from_array(&env, [b]),
+    );
+
+    client.claim_payout(&owner);
+
+    // Beneficiary receives the full principal; contract is empty.
+    assert_eq!(token_client.balance(&beneficiary_addr), principal);
+    assert_eq!(token_client.balance(&contract_id), 0);
+    // Plan storage is removed after payout.
+    assert_eq!(client.get_plan(&owner), None);
+}
+
+/// Single Stellar beneficiary receives principal **plus** all accrued yield.
+#[test]
+fn test_claim_payout_single_stellar_beneficiary_includes_yield() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let start = 1_000_000u64;
+    env.ledger().set_timestamp(start);
+
+    let principal: i128 = 1_000_000_000;
+    let yield_rate_bps: u32 = 500; // 5% APY
+    let beneficiary_addr = Address::generate(&env);
+
+    let b = Beneficiary {
+        address: beneficiary_addr.clone(),
+        allocation_bps: 10000,
+        fiat_anchor_info: String::from_str(&env, "USD_BANK"),
+        destination_chain: String::from_str(&env, "Stellar"),
+        destination_address: String::from_str(&env, "GDEST1"),
+    };
+
+    // Let one year of yield accrue before the owner goes silent.
+    let (client, token_client, owner, _contract_id) = setup_claim_payout(
+        &env,
+        principal,
+        true,
+        yield_rate_bps,
+        86_400,
+        86_400,
+        Vec::from_array(&env, [b]),
+    );
+
+    // The mock token only holds `principal`; mint the yield so the transfer
+    // does not fail inside the contract (simulates external yield source).
+    let token_id = token_client.address.clone();
+    let mock_token = mock_token::MockTokenClient::new(&env, &token_id);
+    let accrued = client.get_accrued_yield(&owner);
+    assert!(accrued > 0, "yield must have accrued before payout");
+    mock_token.mint(&_contract_id, &accrued);
+
+    let expected_total = principal + accrued;
+
+    client.claim_payout(&owner);
+
+    assert_eq!(token_client.balance(&beneficiary_addr), expected_total);
+    assert_eq!(token_client.balance(&_contract_id), 0);
+}
+
+/// Two Stellar beneficiaries with 60/40 split receive correct pro-rata shares.
+#[test]
+fn test_claim_payout_two_stellar_beneficiaries_split_correctly() {
+    let env = Env::default();
+    env.mock_all_auths();
+    env.ledger().set_timestamp(1_000_000);
+
+    let principal: i128 = 10_000;
+    let alice = Address::generate(&env);
+    let bob = Address::generate(&env);
+
+    let alice_bene = Beneficiary {
+        address: alice.clone(),
+        allocation_bps: 6000,
+        fiat_anchor_info: String::from_str(&env, "USD_BANK"),
+        destination_chain: String::from_str(&env, "Stellar"),
+        destination_address: String::from_str(&env, "GALICE"),
+    };
+    let bob_bene = Beneficiary {
+        address: bob.clone(),
+        allocation_bps: 4000,
+        fiat_anchor_info: String::from_str(&env, "USD_BANK"),
+        destination_chain: String::from_str(&env, "Stellar"),
+        destination_address: String::from_str(&env, "GBOB"),
+    };
+
+    let (client, token_client, owner, contract_id) = setup_claim_payout(
+        &env,
+        principal,
+        false,
+        0,
+        86_400,
+        86_400,
+        Vec::from_array(&env, [alice_bene, bob_bene]),
+    );
+
+    client.claim_payout(&owner);
+
+    // Alice: 10_000 × 6000 / 10_000 = 6_000
+    assert_eq!(token_client.balance(&alice), 6_000);
+    // Bob: remainder = 10_000 − 6_000 = 4_000 (also matches apply_bps)
+    assert_eq!(token_client.balance(&bob), 4_000);
+    assert_eq!(token_client.balance(&contract_id), 0);
+}
+
+/// Rounding dust from integer division is absorbed by the last Stellar beneficiary.
+#[test]
+fn test_claim_payout_dust_goes_to_last_stellar_beneficiary() {
+    let env = Env::default();
+    env.mock_all_auths();
+    env.ledger().set_timestamp(1_000_000);
+
+    let principal: i128 = 100;
+    let a = Address::generate(&env);
+    let b = Address::generate(&env);
+
+    let bene_a = Beneficiary {
+        address: a.clone(),
+        allocation_bps: 3333,
+        fiat_anchor_info: String::from_str(&env, ""),
+        destination_chain: String::from_str(&env, "Stellar"),
+        destination_address: String::from_str(&env, "GA"),
+    };
+    let bene_b = Beneficiary {
+        address: b.clone(),
+        allocation_bps: 6667,
+        fiat_anchor_info: String::from_str(&env, ""),
+        destination_chain: String::from_str(&env, "Stellar"),
+        destination_address: String::from_str(&env, "GB"),
+    };
+
+    let (client, token_client, owner, contract_id) = setup_claim_payout(
+        &env,
+        principal,
+        false,
+        0,
+        86_400,
+        86_400,
+        Vec::from_array(&env, [bene_a, bene_b]),
+    );
+
+    client.claim_payout(&owner);
+
+    // a: 100 × 3333 / 10_000 = 33 (truncated)
+    assert_eq!(token_client.balance(&a), 33);
+    // b: remainder = 100 − 33 = 67
+    assert_eq!(token_client.balance(&b), 67);
+    assert_eq!(token_client.balance(&contract_id), 0);
+}
+
+/// Five equal Stellar beneficiaries each receive exactly 20% of principal.
+#[test]
+fn test_claim_payout_five_equal_stellar_beneficiaries() {
+    let env = Env::default();
+    env.mock_all_auths();
+    env.ledger().set_timestamp(1_000_000);
+
+    let principal: i128 = 10_000;
+    let addrs: [Address; 5] = [
+        Address::generate(&env),
+        Address::generate(&env),
+        Address::generate(&env),
+        Address::generate(&env),
+        Address::generate(&env),
+    ];
+
+    let mut beneficiaries: Vec<Beneficiary> = Vec::new(&env);
+    for addr in addrs.iter() {
+        beneficiaries.push_back(Beneficiary {
+            address: addr.clone(),
+            allocation_bps: 2000,
+            fiat_anchor_info: String::from_str(&env, "USD_BANK"),
+            destination_chain: String::from_str(&env, "Stellar"),
+            destination_address: String::from_str(&env, "GDEST"),
+        });
+    }
+
+    let (client, token_client, owner, contract_id) =
+        setup_claim_payout(&env, principal, false, 0, 86_400, 86_400, beneficiaries);
+
+    client.claim_payout(&owner);
+
+    for addr in addrs.iter() {
+        assert_eq!(token_client.balance(addr), 2_000);
+    }
+    assert_eq!(token_client.balance(&contract_id), 0);
+}
+
+/// claim_payout skips non-Stellar beneficiaries: only the Stellar wallet
+/// receives tokens; the non-Stellar beneficiary share stays in the contract.
+#[test]
+fn test_claim_payout_skips_non_stellar_beneficiaries() {
+    let env = Env::default();
+    env.mock_all_auths();
+    env.ledger().set_timestamp(1_000_000);
+
+    let principal: i128 = 10_000;
+    let stellar_bene = Address::generate(&env);
+    let bridge_bene = Address::generate(&env);
+
+    // 60 % Stellar, 40 % cross-chain bridge
+    let bene_stellar = Beneficiary {
+        address: stellar_bene.clone(),
+        allocation_bps: 6000,
+        fiat_anchor_info: String::from_str(&env, "USD_BANK"),
+        destination_chain: String::from_str(&env, "Stellar"),
+        destination_address: String::from_str(&env, "GDESTSTELLAR"),
+    };
+    let bene_bridge = Beneficiary {
+        address: bridge_bene.clone(),
+        allocation_bps: 4000,
+        fiat_anchor_info: String::from_str(&env, ""),
+        destination_chain: String::from_str(&env, "Ethereum"),
+        destination_address: String::from_str(&env, "0xBridgeDest"),
+    };
+
+    let (client, token_client, owner, contract_id) = setup_claim_payout(
+        &env,
+        principal,
+        false,
+        0,
+        86_400,
+        86_400,
+        Vec::from_array(&env, [bene_stellar, bene_bridge]),
+    );
+
+    client.claim_payout(&owner);
+
+    // Stellar beneficiary gets their 60 % share (they are the only "last"
+    // Stellar beneficiary so remaining == 10_000 as well; but allocation_bps
+    // is applied on total_payout before the last-beneficiary-dust shortcut,
+    // because n == 1 for Stellar beneficiaries).
+    assert_eq!(token_client.balance(&stellar_bene), 6_000);
+    // Bridge beneficiary is not paid by claim_payout; their share stays locked.
+    assert_eq!(token_client.balance(&bridge_bene), 0);
+    // Remaining 40 % stays in the contract for the bridge settlement path.
+    assert_eq!(token_client.balance(&contract_id), 4_000);
+}
+
+/// claim_payout fails with PayoutNotTriggered if claim() was never called.
+#[test]
+fn test_claim_payout_fails_without_prior_claim() {
+    let env = Env::default();
+    env.mock_all_auths();
+    env.ledger().set_timestamp(1_000_000);
+
+    let contract_id = env.register_contract(None, InheritanceContract);
+    let client = InheritanceContractClient::new(&env, &contract_id);
+    let token_id = env.register_contract(None, mock_token::MockToken);
+    let token_client = mock_token::MockTokenClient::new(&env, &token_id);
+
+    let owner = Address::generate(&env);
+    let beneficiary_addr = Address::generate(&env);
+    token_client.mint(&owner, &5_000);
+
+    let b = Beneficiary {
+        address: beneficiary_addr,
+        allocation_bps: 10000,
+        fiat_anchor_info: String::from_str(&env, "USD_BANK"),
+        destination_chain: String::from_str(&env, "Stellar"),
+        destination_address: String::from_str(&env, "GDEST1"),
+    };
+
+    client.create_plan(
+        &owner,
+        &token_id,
+        &5_000,
+        &Vec::from_array(&env, [b]),
+        &86_400,
+        &false,
+        &0,
+        &86_400,
+        &String::from_str(&env, "Stellar"),
+        &String::from_str(&env, "SRC_TX_HASH"),
+    );
+
+    // Skip calling claim() — payout should be rejected.
+    let result = client.try_claim_payout(&owner);
+    assert_eq!(result, Err(Ok(Error::PayoutNotTriggered)));
+}
+
+/// claim_payout fails with TimelockNotExpired when called before the timelock.
+#[test]
+fn test_claim_payout_fails_before_timelock_expires() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let start = 1_000_000u64;
+    env.ledger().set_timestamp(start);
+
+    let principal: i128 = 5_000;
+    let beneficiary_addr = Address::generate(&env);
+
+    let b = Beneficiary {
+        address: beneficiary_addr,
+        allocation_bps: 10000,
+        fiat_anchor_info: String::from_str(&env, "USD_BANK"),
+        destination_chain: String::from_str(&env, "Stellar"),
+        destination_address: String::from_str(&env, "GDEST1"),
+    };
+
+    let contract_id = env.register_contract(None, InheritanceContract);
+    let client = InheritanceContractClient::new(&env, &contract_id);
+    let token_id = env.register_contract(None, mock_token::MockToken);
+    let token_client = mock_token::MockTokenClient::new(&env, &token_id);
+    let owner = Address::generate(&env);
+    token_client.mint(&owner, &principal);
+
+    client.create_plan(
+        &owner,
+        &token_id,
+        &principal,
+        &Vec::from_array(&env, [b]),
+        &86_400,
+        &false,
+        &0,
+        &86_400,
+        &String::from_str(&env, "Stellar"),
+        &String::from_str(&env, "SRC_TX_HASH"),
+    );
+
+    deactivate_plan_for_testing(&env, &contract_id, &owner);
+    env.ledger().set_timestamp(start + 86_400 + 1);
+    client.claim(&owner);
+
+    // Do NOT advance past timelock — attempt should fail.
+    let result = client.try_claim_payout(&owner);
+    assert_eq!(result, Err(Ok(Error::TimelockNotExpired)));
+}
+
+/// claim_payout fails with PlanNotFound when no plan exists for the given owner.
+#[test]
+fn test_claim_payout_fails_for_unknown_owner() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let contract_id = env.register_contract(None, InheritanceContract);
+    let client = InheritanceContractClient::new(&env, &contract_id);
+
+    let unknown = Address::generate(&env);
+    let result = client.try_claim_payout(&unknown);
+    assert_eq!(result, Err(Ok(Error::PlanNotFound)));
+}
+
+/// claim_payout emits a StelPay event per Stellar beneficiary paid.
+#[test]
+fn test_claim_payout_emits_stellar_payout_events() {
+    let env = Env::default();
+    env.mock_all_auths();
+    env.ledger().set_timestamp(1_000_000);
+
+    let principal: i128 = 1_000;
+    let alice = Address::generate(&env);
+    let bob = Address::generate(&env);
+
+    let alice_bene = Beneficiary {
+        address: alice.clone(),
+        allocation_bps: 7000,
+        fiat_anchor_info: String::from_str(&env, "USD_BANK"),
+        destination_chain: String::from_str(&env, "Stellar"),
+        destination_address: String::from_str(&env, "GALICE"),
+    };
+    let bob_bene = Beneficiary {
+        address: bob.clone(),
+        allocation_bps: 3000,
+        fiat_anchor_info: String::from_str(&env, "USD_BANK"),
+        destination_chain: String::from_str(&env, "Stellar"),
+        destination_address: String::from_str(&env, "GBOB"),
+    };
+
+    let (client, _token_client, owner, contract_id) = setup_claim_payout(
+        &env,
+        principal,
+        false,
+        0,
+        86_400,
+        86_400,
+        Vec::from_array(&env, [alice_bene, bob_bene]),
+    );
+
+    client.claim_payout(&owner);
+
+    let events = env.events().all();
+    // Expect: PlanCrea + StelPay(alice) + StelPay(bob) = 3 events.
+    assert_eq!(events.len(), 3);
+
+    // Verify alice's StelPay event (index 1).
+    let (emitted_contract, topics, data) = events.get(1).unwrap();
+    assert_eq!(emitted_contract, contract_id);
+    let expected_topics = (symbol_short!("StelPay"), owner.clone()).into_val(&env);
+    assert_eq!(topics, expected_topics);
+    let (paid_addr, paid_amount): (Address, i128) = soroban_sdk::FromVal::from_val(&env, &data);
+    assert_eq!(paid_addr, alice);
+    assert_eq!(paid_amount, 700); // 1_000 × 7000 / 10_000
+
+    // Verify bob's StelPay event (index 2).
+    let (_, _, data2) = events.get(2).unwrap();
+    let (paid_addr2, paid_amount2): (Address, i128) = soroban_sdk::FromVal::from_val(&env, &data2);
+    assert_eq!(paid_addr2, bob);
+    assert_eq!(paid_amount2, 300); // remainder
+}
+
+/// A plan with no Stellar beneficiaries returns Ok without transferring anything.
+#[test]
+fn test_claim_payout_no_op_when_no_stellar_beneficiaries() {
+    let env = Env::default();
+    env.mock_all_auths();
+    env.ledger().set_timestamp(1_000_000);
+
+    let principal: i128 = 5_000;
+    let bridge_bene = Address::generate(&env);
+
+    // All beneficiaries are cross-chain; none are Stellar.
+    // We need to register a supported wrapped token so the plan can be created.
+    let contract_id = env.register_contract(None, InheritanceContract);
+    let client = InheritanceContractClient::new(&env, &contract_id);
+
+    let token_id = env.register_contract(None, mock_token::MockToken);
+    let token_client = mock_token::MockTokenClient::new(&env, &token_id);
+
+    let admin = Address::generate(&env);
+    client.initialize(&admin);
+    client.register_supported_wrapped_token(&admin, &token_id);
+
+    let owner = Address::generate(&env);
+    token_client.mint(&owner, &principal);
+
+    let b = Beneficiary {
+        address: bridge_bene.clone(),
+        allocation_bps: 10000,
+        fiat_anchor_info: String::from_str(&env, ""),
+        destination_chain: String::from_str(&env, "Ethereum"),
+        destination_address: String::from_str(&env, "0xBridgeDest"),
+    };
+
+    client.create_plan(
+        &owner,
+        &token_id,
+        &principal,
+        &Vec::from_array(&env, [b]),
+        &86_400,
+        &false,
+        &0,
+        &86_400,
+        &String::from_str(&env, "Polygon"),
+        &String::from_str(&env, "0xsrc_hash"),
+    );
+
+    deactivate_plan_for_testing(&env, &contract_id, &owner);
+    env.ledger().set_timestamp(1_000_000 + 86_400 + 1);
+    client.claim(&owner);
+    env.ledger()
+        .set_timestamp(env.ledger().timestamp() + 86_400);
+
+    // claim_payout should succeed with no transfers.
+    client.claim_payout(&owner);
+
+    // Bridge beneficiary received nothing from claim_payout.
+    assert_eq!(token_client.balance(&bridge_bene), 0);
+    // Principal stays locked for the bridge settlement path.
+    // Plan state is preserved because no Stellar beneficiaries were served.
+    assert_eq!(token_client.balance(&contract_id), principal);
+    assert!(
+        client.get_plan(&owner).is_some(),
+        "plan should remain for bridge settlement"
+    );
+}
