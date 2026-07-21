@@ -453,6 +453,31 @@ impl InheritanceContract {
         Ok(current_time >= timeout_deadline)
     }
 
+    /// Check whether a plan can have its claim triggered now.
+    ///
+    /// Returns false when the plan does not exist, is still active, has
+    /// already been claimed, or its inactivity deadline cannot be represented.
+    /// The grace period is complete at the exact deadline.
+    pub fn is_plan_claimable(env: Env, owner: Address) -> bool {
+        let Some(plan): Option<Plan> = env
+            .storage()
+            .persistent()
+            .get(&DataKey::Plan(owner.clone()))
+        else {
+            return false;
+        };
+
+        if plan.is_active || env.storage().persistent().has(&DataKey::ClaimStatus(owner)) {
+            return false;
+        }
+
+        let Some(deadline) = plan.last_ping.checked_add(plan.grace_period) else {
+            return false;
+        };
+
+        env.ledger().timestamp() >= deadline
+    }
+
     /// Get the timeout deadline timestamp for a plan.
     /// Returns the timestamp when the grace period expires (last_ping + grace_period).
     /// This is a read-only query method for external monitoring.

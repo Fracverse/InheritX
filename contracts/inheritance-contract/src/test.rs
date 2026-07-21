@@ -2251,6 +2251,105 @@ fn test_timeout_deadline_overflow_surfaces_math_error() {
 }
 
 #[test]
+fn test_is_plan_claimable_tracks_grace_period_and_claim_state() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let start = 1_000_000;
+    let grace_period = 86_400;
+    env.ledger().set_timestamp(start);
+
+    let contract_id = env.register_contract(None, InheritanceContract);
+    let client = InheritanceContractClient::new(&env, &contract_id);
+    let token_id = env.register_contract(None, mock_token::MockToken);
+    let token_client = mock_token::MockTokenClient::new(&env, &token_id);
+
+    let owner = Address::generate(&env);
+    token_client.mint(&owner, &2_000);
+
+    let beneficiary = Beneficiary {
+        address: Address::generate(&env),
+        allocation_bps: 10_000,
+        fiat_anchor_info: String::from_str(&env, "NGN_BANK"),
+        destination_chain: String::from_str(&env, "Stellar"),
+        destination_address: String::from_str(&env, "GDESTADDR"),
+    };
+
+    client.create_plan(
+        &owner,
+        &token_id,
+        &1_500,
+        &Vec::from_array(&env, [beneficiary]),
+        &grace_period,
+        &false,
+        &0,
+        &86_400,
+        &String::from_str(&env, "Stellar"),
+        &String::from_str(&env, "SRC_TX_HASH"),
+    );
+
+    env.ledger().set_timestamp(start + grace_period);
+    assert!(
+        !client.is_plan_claimable(&owner),
+        "active plans are not claimable"
+    );
+
+    deactivate_plan_for_testing(&env, &contract_id, &owner);
+    env.ledger().set_timestamp(start + grace_period - 1);
+    assert!(!client.is_plan_claimable(&owner));
+
+    env.ledger().set_timestamp(start + grace_period);
+    assert!(
+        client.is_plan_claimable(&owner),
+        "the deadline is inclusive"
+    );
+
+    client.claim(&owner);
+    assert!(
+        !client.is_plan_claimable(&owner),
+        "an existing claim is not claimable again"
+    );
+}
+
+#[test]
+fn test_is_plan_claimable_returns_false_for_missing_plan() {
+    let env = Env::default();
+    let contract_id = env.register_contract(None, InheritanceContract);
+    let client = InheritanceContractClient::new(&env, &contract_id);
+
+    assert!(!client.is_plan_claimable(&Address::generate(&env)));
+}
+
+#[test]
+fn test_is_plan_claimable_returns_false_when_deadline_overflows() {
+    let env = Env::default();
+    let contract_id = env.register_contract(None, InheritanceContract);
+    let client = InheritanceContractClient::new(&env, &contract_id);
+    let owner = Address::generate(&env);
+    let key = DataKey::Plan(owner.clone());
+    let plan = Plan {
+        owner: owner.clone(),
+        token: Address::generate(&env),
+        amount: 1,
+        beneficiaries: Vec::new(&env),
+        last_ping: 1,
+        grace_period: u64::MAX,
+        earn_yield: false,
+        yield_rate_bps: 0,
+        is_active: false,
+        timelock_duration: 0,
+        source_chain: String::from_str(&env, "Stellar"),
+        source_tx_hash: String::from_str(&env, "SRC_TX_HASH"),
+    };
+    env.as_contract(&contract_id, || {
+        env.storage().persistent().set(&key, &plan);
+    });
+
+    env.ledger().set_timestamp(u64::MAX);
+    assert!(!client.is_plan_claimable(&owner));
+}
+
+#[test]
 fn test_simulate_compound_matches_safe_math_and_validates() {
     let env = Env::default();
     let contract_id = env.register_contract(None, InheritanceContract);
