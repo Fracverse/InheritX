@@ -2663,8 +2663,9 @@ fn test_bridge_payout_event_emits_exact_validator_payload() {
     assert_eq!(fee_amount, 100);
     assert_eq!(net_amount, 9_900);
     assert_eq!(token_client.balance(&beneficiary), net_amount);
-    // Bridge fee remains locked in the contract for validators/operators.
-    assert_eq!(token_client.balance(&contract_id), fee_amount);
+    // Bridge fee is transferred to the configured admin.
+    assert_eq!(token_client.balance(&admin), fee_amount);
+    assert_eq!(token_client.balance(&contract_id), 0);
 
     let expected = BridgePayoutEvent {
         owner: owner.clone(),
@@ -2868,10 +2869,8 @@ fn test_bridge_payout_event_multiple_non_stellar_beneficiaries() {
     assert_eq!(token_client.balance(&alice), alice_net);
     assert_eq!(token_client.balance(&bob), bob_net);
     assert_eq!(token_client.balance(&charlie), charlie_net);
-    assert_eq!(
-        token_client.balance(&contract_id),
-        alice_fee + bob_fee + charlie_fee
-    );
+    assert_eq!(token_client.balance(&admin), alice_fee + bob_fee + charlie_fee);
+    assert_eq!(token_client.balance(&contract_id), 0);
 
     let expected_alice = BridgePayoutEvent {
         owner: owner.clone(),
@@ -2949,9 +2948,12 @@ fn test_bridge_payout_event_only_for_non_stellar_in_mixed_plan() {
     let token_id = env.register_contract(None, mock_token::MockToken);
     let token_client = mock_token::MockTokenClient::new(&env, &token_id);
 
+    let admin = Address::generate(&env);
     let owner = Address::generate(&env);
     let stellar_bene = Address::generate(&env);
     let eth_bene = Address::generate(&env);
+
+    client.initialize(&admin);
 
     let amount: i128 = 10_000;
     token_client.mint(&owner, &amount);
@@ -3000,7 +3002,8 @@ fn test_bridge_payout_event_only_for_non_stellar_in_mixed_plan() {
     // Stellar beneficiary: full share, no fee. Bridge beneficiary: net after 1% fee.
     assert_eq!(token_client.balance(&stellar_bene), stellar_share);
     assert_eq!(token_client.balance(&eth_bene), eth_net);
-    assert_eq!(token_client.balance(&contract_id), eth_fee);
+    assert_eq!(token_client.balance(&admin), eth_fee);
+    assert_eq!(token_client.balance(&contract_id), 0);
 
     let expected = BridgePayoutEvent {
         owner: owner.clone(),

@@ -340,13 +340,15 @@ impl InheritanceContract {
         Ok(())
     }
 
-    fn require_admin(env: &Env, admin: &Address) -> Result<(), Error> {
-        let admin_key = InstanceDataKey::Admin;
-        let configured_admin: Address = env
-            .storage()
+    fn configured_admin(env: &Env) -> Result<Address, Error> {
+        env.storage()
             .instance()
-            .get(&admin_key)
-            .ok_or(Error::Unauthorized)?;
+            .get(&InstanceDataKey::Admin)
+            .ok_or(Error::Unauthorized)
+    }
+
+    fn require_admin(env: &Env, admin: &Address) -> Result<(), Error> {
+        let configured_admin = Self::configured_admin(env)?;
         if &configured_admin != admin {
             return Err(Error::Unauthorized);
         }
@@ -542,6 +544,7 @@ impl InheritanceContract {
         let token_client = soroban_sdk::token::Client::new(&env, &plan.token);
         let n = plan.beneficiaries.len();
         let mut remaining = plan.amount;
+        let mut fee_recipient: Option<Address> = None;
 
         for (i, beneficiary) in plan.beneficiaries.iter().enumerate() {
             let share = if i == (n - 1) as usize {
@@ -561,12 +564,22 @@ impl InheritanceContract {
             let (fee_amount, net_amount) = if destination_stellar {
                 (0_i128, share)
             } else {
+                let admin = if let Some(existing) = fee_recipient.clone() {
+                    existing
+                } else {
+                    let configured = Self::configured_admin(&env)?;
+                    fee_recipient = Some(configured.clone());
+                    configured
+                };
                 let fee = share
                     .checked_mul(BRIDGE_FEE_BPS as i128)
                     .ok_or(Error::MathOverflow)?
                     .checked_div(10000)
                     .ok_or(Error::MathOverflow)?;
                 let net = share.checked_sub(fee).ok_or(Error::MathOverflow)?;
+                if fee > 0 {
+                    token_client.transfer(&env.current_contract_address(), &admin, &fee);
+                }
                 (fee, net)
             };
 
