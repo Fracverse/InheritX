@@ -2869,7 +2869,10 @@ fn test_bridge_payout_event_multiple_non_stellar_beneficiaries() {
     assert_eq!(token_client.balance(&alice), alice_net);
     assert_eq!(token_client.balance(&bob), bob_net);
     assert_eq!(token_client.balance(&charlie), charlie_net);
-    assert_eq!(token_client.balance(&admin), alice_fee + bob_fee + charlie_fee);
+    assert_eq!(
+        token_client.balance(&admin),
+        alice_fee + bob_fee + charlie_fee
+    );
     assert_eq!(token_client.balance(&contract_id), 0);
 
     let expected_alice = BridgePayoutEvent {
