@@ -2234,3 +2234,62 @@ fn test_get_yield_at_overflow_surfaces_math_error() {
         Err(Ok(Error::MathOverflow))
     );
 }
+
+#[test]
+fn test_pause_and_unpause() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let contract_id = env.register_contract(None, InheritanceContract);
+    let client = InheritanceContractClient::new(&env, &contract_id);
+
+    let admin = Address::generate(&env);
+    client.initialize(&admin);
+
+    assert!(!client.is_paused());
+
+    client.pause_contract(&admin);
+    assert!(client.is_paused());
+
+    client.unpause_contract(&admin);
+    assert!(!client.is_paused());
+}
+
+#[test]
+fn test_create_plan_when_paused() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let contract_id = env.register_contract(None, InheritanceContract);
+    let client = InheritanceContractClient::new(&env, &contract_id);
+
+    let admin = Address::generate(&env);
+    client.initialize(&admin);
+    client.pause_contract(&admin);
+
+    let token_id = env.register_contract(None, mock_token::MockToken);
+    let token_client = mock_token::MockTokenClient::new(&env, &token_id);
+    let owner = Address::generate(&env);
+    token_client.mint(&owner, &2000);
+
+    let beneficiary = Beneficiary {
+        address: Address::generate(&env),
+        allocation_bps: 10000,
+        fiat_anchor_info: String::from_str(&env, "NGN_BANK"),
+        destination_chain: String::from_str(&env, "Stellar"),
+        destination_address: String::from_str(&env, "GDESTADDR"),
+    };
+
+    let result = client.try_create_plan(
+        &owner,
+        &token_id,
+        &1500,
+        &Vec::from_array(&env, [beneficiary]),
+        &3600,
+        &true,
+        &500,
+        &86400,
+        &String::from_str(&env, "Stellar"),
+        &String::from_str(&env, "SRC_TX_HASH"),
+    );
+
+    assert_eq!(result, Err(Ok(Error::ContractPaused)));
+}
