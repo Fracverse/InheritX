@@ -198,6 +198,83 @@ fn test_ping_requires_owner_auth() {
 
     client.ping(&owner);
 }
+#[test]
+fn test_ping_succeeds_on_inactive_plan() {
+    // Documents current behavior: `ping` only checks that a plan exists
+    // and does not check `is_active`. A deactivated plan can still have
+    // its keep-alive timer reset.
+    let env = Env::default();
+    env.mock_all_auths();
+    let contract_id = env.register_contract(None, InheritanceContract);
+    let client = InheritanceContractClient::new(&env, &contract_id);
+    let owner = Address::generate(&env);
+    let key = DataKey::Plan(owner.clone());
+    let start = 1_000_000;
+    env.ledger().set_timestamp(start);
+    let plan = Plan {
+        owner: owner.clone(),
+        token: Address::generate(&env),
+        amount: 1,
+        beneficiaries: Vec::new(&env),
+        last_ping: start,
+        grace_period: 86_400,
+        earn_yield: false,
+        yield_rate_bps: 0,
+        is_active: false,
+        timelock_duration: 86400,
+        source_chain: String::from_str(&env, "Stellar"),
+        source_tx_hash: String::from_str(&env, "SRC_TX_HASH"),
+    };
+    env.as_contract(&contract_id, || {
+        env.storage().persistent().set(&key, &plan);
+    });
+    let ping_timestamp = start + 1234;
+    env.ledger().set_timestamp(ping_timestamp);
+    client.ping(&owner);
+    let updated = client.get_plan(&owner).unwrap();
+    assert_eq!(updated.last_ping, ping_timestamp);
+    assert!(!updated.is_active);
+}
+#[test]
+fn test_ping_succeeds_while_contract_paused() {
+    // Documents current behavior: only `create_plan` checks `is_paused()`.
+    // `ping` has no pause guard, so it still works after the contract
+    // has been paused by the admin.
+    let env = Env::default();
+    env.mock_all_auths();
+    let contract_id = env.register_contract(None, InheritanceContract);
+    let client = InheritanceContractClient::new(&env, &contract_id);
+    let admin = Address::generate(&env);
+    client.initialize(&admin);
+    let owner = Address::generate(&env);
+    let key = DataKey::Plan(owner.clone());
+    let start = 1_000_000;
+    env.ledger().set_timestamp(start);
+    let plan = Plan {
+        owner: owner.clone(),
+        token: Address::generate(&env),
+        amount: 1,
+        beneficiaries: Vec::new(&env),
+        last_ping: start,
+        grace_period: 86_400,
+        earn_yield: false,
+        yield_rate_bps: 0,
+        is_active: true,
+        timelock_duration: 86400,
+        source_chain: String::from_str(&env, "Stellar"),
+        source_tx_hash: String::from_str(&env, "SRC_TX_HASH"),
+    };
+    env.as_contract(&contract_id, || {
+        env.storage().persistent().set(&key, &plan);
+    });
+    client.pause_contract(&admin);
+    assert!(client.is_paused());
+    let ping_timestamp = start + 1234;
+    env.ledger().set_timestamp(ping_timestamp);
+    client.ping(&owner);
+    let updated = client.get_plan(&owner).unwrap();
+    assert_eq!(updated.last_ping, ping_timestamp);
+}
 
 #[test]
 fn test_create_plan_insufficient_balance() {
