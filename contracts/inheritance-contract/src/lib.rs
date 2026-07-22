@@ -10,6 +10,7 @@ const PLAN_TTL_THRESHOLD: u32 = 500;
 const PLAN_TTL_LEEWAY: u32 = 100;
 const BRIDGE_FEE_BPS: u32 = 100; // 1% bridge fee
 const STELLAR_CHAIN: &str = "Stellar";
+const MIN_GRACE_PERIOD_SECONDS: u64 = 86_400;
 
 #[contracterror]
 #[derive(Copy, Clone, Debug, Eq, PartialEq)]
@@ -30,7 +31,8 @@ pub enum Error {
     AlreadyInitialized = 14,
     DivisionByZero = 15,
     InvalidYieldRate = 16,
-    ContractPaused = 17,
+    InvalidGracePeriod = 17,
+    ContractPaused = 18,
 }
 
 #[contracttype]
@@ -82,6 +84,7 @@ pub struct BridgePayoutEvent {
 pub enum DataKey {
     Plan(Address),
     ClaimStatus(Address),
+    PaidBeneficiary(Address, Address),
     SupportedWrappedToken(Address),
     YieldState(Address),
 }
@@ -239,6 +242,10 @@ impl InheritanceContract {
             return Err(Error::NegativeAmount);
         }
 
+        if grace_period < MIN_GRACE_PERIOD_SECONDS {
+            return Err(Error::InvalidGracePeriod);
+        }
+
         safe_math::validate_yield_rate(yield_rate_bps)?;
         Self::validate_beneficiaries(&env, &beneficiaries)?;
 
@@ -253,6 +260,11 @@ impl InheritanceContract {
         }
 
         let token_client = soroban_sdk::token::Client::new(&env, &token);
+
+        // Validate token by checking if it's a valid Soroban Token contract
+        // Calling decimals() will fail if the token address is not a valid token contract
+        let _ = token_client.decimals();
+
         let balance = token_client.balance(&owner);
         if balance < amount {
             return Err(Error::InsufficientBalance);
@@ -287,6 +299,9 @@ impl InheritanceContract {
             },
         );
         Self::extend_plan_ttl(&env, &yield_key);
+
+        env.events()
+            .publish((symbol_short!("PlanCrea"), owner), amount);
 
         Ok(())
     }
@@ -335,13 +350,15 @@ impl InheritanceContract {
         Ok(())
     }
 
-    fn require_admin(env: &Env, admin: &Address) -> Result<(), Error> {
-        let admin_key = InstanceDataKey::Admin;
-        let configured_admin: Address = env
-            .storage()
+    fn configured_admin(env: &Env) -> Result<Address, Error> {
+        env.storage()
             .instance()
-            .get(&admin_key)
-            .ok_or(Error::Unauthorized)?;
+            .get(&InstanceDataKey::Admin)
+            .ok_or(Error::Unauthorized)
+    }
+
+    fn require_admin(env: &Env, admin: &Address) -> Result<(), Error> {
+        let configured_admin = Self::configured_admin(env)?;
         if &configured_admin != admin {
             return Err(Error::Unauthorized);
         }
@@ -469,6 +486,31 @@ impl InheritanceContract {
         Ok(current_time >= timeout_deadline)
     }
 
+    /// Check whether a plan can have its claim triggered now.
+    ///
+    /// Returns false when the plan does not exist, is still active, has
+    /// already been claimed, or its inactivity deadline cannot be represented.
+    /// The grace period is complete at the exact deadline.
+    pub fn is_plan_claimable(env: Env, owner: Address) -> bool {
+        let Some(plan): Option<Plan> = env
+            .storage()
+            .persistent()
+            .get(&DataKey::Plan(owner.clone()))
+        else {
+            return false;
+        };
+
+        if plan.is_active || env.storage().persistent().has(&DataKey::ClaimStatus(owner)) {
+            return false;
+        }
+
+        let Some(deadline) = plan.last_ping.checked_add(plan.grace_period) else {
+            return false;
+        };
+
+        env.ledger().timestamp() >= deadline
+    }
+
     /// Get the timeout deadline timestamp for a plan.
     /// Returns the timestamp when the grace period expires (last_ping + grace_period).
     /// This is a read-only query method for external monitoring.
@@ -484,18 +526,18 @@ impl InheritanceContract {
         safe_math::safe_add_u64(plan.last_ping, plan.grace_period)
     }
 
-    /// Retrieve the current inheritance plan data.
-    /// Contributors: Query plan storage, dynamically projects the accumulated yield.
-    pub fn get_plan(env: Env, owner: Address) -> Result<InheritancePlan, Error> {
-        let key = DataKey::Plan(owner.clone());
-        if !env.storage().persistent().has(&key) {
-            return Err(Error::PlanNotFound);
-        }
+    /// Retrieve the current inheritance plan data for client RPC queries.
+    pub fn get_plan(env: Env, owner: Address) -> Option<InheritancePlan> {
+        env.storage().persistent().get(&DataKey::Plan(owner))
+    }
 
-        let plan: Plan = env.storage().persistent().get(&key).unwrap();
-        Self::extend_plan_ttl(&env, &key);
-
-        Ok(plan)
+    /// Check whether a beneficiary has already received a plan payout.
+    /// This is a read-only query method that does not modify state.
+    pub fn is_beneficiary_paid(env: Env, owner: Address, beneficiary: Address) -> bool {
+        env.storage()
+            .persistent()
+            .get(&DataKey::PaidBeneficiary(owner, beneficiary))
+            .unwrap_or(false)
     }
 
     /// Trigger payout to all beneficiaries once the plan is claimable.
@@ -533,6 +575,7 @@ impl InheritanceContract {
         let token_client = soroban_sdk::token::Client::new(&env, &plan.token);
         let n = plan.beneficiaries.len();
         let mut remaining = plan.amount;
+        let mut fee_recipient: Option<Address> = None;
 
         for (i, beneficiary) in plan.beneficiaries.iter().enumerate() {
             let share = if i == (n - 1) as usize {
@@ -543,16 +586,31 @@ impl InheritanceContract {
                 amount
             };
 
+            let paid_key = DataKey::PaidBeneficiary(owner.clone(), beneficiary.address.clone());
+            if env.storage().persistent().has(&paid_key) {
+                continue;
+            }
+
             let destination_stellar = Self::is_stellar_chain(&beneficiary.destination_chain, &env);
             let (fee_amount, net_amount) = if destination_stellar {
                 (0_i128, share)
             } else {
+                let admin = if let Some(existing) = fee_recipient.clone() {
+                    existing
+                } else {
+                    let configured = Self::configured_admin(&env)?;
+                    fee_recipient = Some(configured.clone());
+                    configured
+                };
                 let fee = share
                     .checked_mul(BRIDGE_FEE_BPS as i128)
                     .ok_or(Error::MathOverflow)?
                     .checked_div(10000)
                     .ok_or(Error::MathOverflow)?;
                 let net = share.checked_sub(fee).ok_or(Error::MathOverflow)?;
+                if fee > 0 {
+                    token_client.transfer(&env.current_contract_address(), &admin, &fee);
+                }
                 (fee, net)
             };
 
@@ -561,6 +619,8 @@ impl InheritanceContract {
                 &beneficiary.address,
                 &net_amount,
             );
+            env.storage().persistent().set(&paid_key, &true);
+            Self::extend_plan_ttl(&env, &paid_key);
 
             if !destination_stellar {
                 let event = BridgePayoutEvent {
@@ -577,6 +637,168 @@ impl InheritanceContract {
                 };
                 Self::emit_bridge_payout_event(&env, event);
             }
+        }
+
+        // A completed payout no longer needs retry markers. Removing them also
+        // prevents a later plan for the same owner from inheriting stale state.
+        for beneficiary in plan.beneficiaries.iter() {
+            env.storage().persistent().remove(&DataKey::PaidBeneficiary(
+                owner.clone(),
+                beneficiary.address,
+            ));
+        }
+
+        Ok(())
+    }
+
+    /// Distribute the full yield-bearing inheritance to every beneficiary.
+    ///
+    /// This function computes the total claimable amount as
+    /// `principal + all accrued yield`, then iterates over every beneficiary and
+    /// settles their pro-rata share (computed via `allocation_bps / 10 000`)
+    /// according to their `destination_chain`:
+    ///
+    /// * **Stellar-native** beneficiaries receive a direct on-chain token
+    ///   transfer to their `address`, and a `StelPay` event is emitted.
+    /// * **Cross-chain** beneficiaries (any `destination_chain` other than
+    ///   `"Stellar"`) are settled by *burning* their share of the wrapped token
+    ///   held by the contract and emitting a `BridgePayoutEvent` carrying the
+    ///   full bridge transfer data (`destination_chain`, `destination_address`,
+    ///   gross/net amounts, and the plan's source-chain provenance). The
+    ///   off-chain bridge consumes this event to release the equivalent value on
+    ///   the destination chain.
+    ///
+    /// Dust from integer-division rounding is absorbed by the last beneficiary in
+    /// the list, ensuring the contract never retains stranded tokens.
+    ///
+    /// # Preconditions
+    /// * A `claim` must have been registered for `owner` (i.e. `ClaimStatus`
+    ///   storage key is present).
+    /// * The timelock window (`claim_time + plan.timelock_duration`) must have
+    ///   elapsed before calling this function.
+    /// * The plan must not have been fully consumed by a prior `trigger_payout`
+    ///   call (plan storage key must still exist).
+    ///
+    /// # Errors
+    /// Returns `Error::PlanNotFound` if no plan exists for `owner`.
+    /// Returns `Error::PayoutNotTriggered` if `claim` was never called.
+    /// Returns `Error::TimelockNotExpired` if the timelock has not yet elapsed.
+    /// Returns `Error::MathOverflow` if any arithmetic overflows.
+    pub fn claim_payout(env: Env, owner: Address) -> Result<(), Error> {
+        let key = DataKey::Plan(owner.clone());
+        let plan: Plan = env
+            .storage()
+            .persistent()
+            .get(&key)
+            .ok_or(Error::PlanNotFound)?;
+
+        // Ensure claim was triggered before attempting payout.
+        let claim_key = DataKey::ClaimStatus(owner.clone());
+        let claim_time: u64 = env
+            .storage()
+            .persistent()
+            .get(&claim_key)
+            .ok_or(Error::PayoutNotTriggered)?;
+
+        // Enforce the timelock: callers must wait `timelock_duration` seconds
+        // after the claim timestamp before the payout can be executed.
+        let current_time = env.ledger().timestamp();
+        let payout_time = safe_math::safe_add_u64(claim_time, plan.timelock_duration)?;
+        if current_time < payout_time {
+            return Err(Error::TimelockNotExpired);
+        }
+
+        // Snapshot accrued yield at payout time. `checkpoint_yield` writes to
+        // storage, so we do it before the checks-effects-interactions removal
+        // to avoid losing the computed value.
+        let (_, total_yield) = Self::checkpoint_yield(&env, &plan, &owner)?;
+
+        // Total distributable amount = principal + all accrued yield.
+        let total_payout = safe_math::safe_add(plan.amount, total_yield)?;
+
+        let token_client = soroban_sdk::token::Client::new(&env, &plan.token);
+
+        let n = plan.beneficiaries.len();
+        if n == 0 {
+            // Defensive: a plan with no beneficiaries has nothing to distribute.
+            // Tear down the plan state so it cannot be re-claimed and return.
+            env.storage().persistent().remove(&key);
+            env.storage().persistent().remove(&claim_key);
+            Self::clear_yield_state(&env, &owner);
+            return Ok(());
+        }
+
+        // Checks-effects-interactions: remove plan state before any token
+        // transfers or burns to guard against re-entrancy and double-payout.
+        env.storage().persistent().remove(&key);
+        env.storage().persistent().remove(&claim_key);
+        Self::clear_yield_state(&env, &owner);
+
+        // `remaining` tracks the yet-undistributed balance. The final
+        // beneficiary in the list absorbs any integer-division dust so the
+        // contract never retains stranded tokens once every share is settled.
+        let mut remaining = total_payout;
+
+        for (i, beneficiary) in plan.beneficiaries.iter().enumerate() {
+            let share = if i == (n - 1) as usize {
+                // Last beneficiary absorbs rounding dust.
+                remaining
+            } else {
+                let s = safe_math::apply_bps(total_payout, beneficiary.allocation_bps)?;
+                remaining = safe_math::safe_sub(remaining, s)?;
+                s
+            };
+
+            let paid_key = DataKey::PaidBeneficiary(owner.clone(), beneficiary.address.clone());
+            // Skip beneficiaries that were already paid in a prior partial attempt.
+            if env.storage().persistent().has(&paid_key) {
+                continue;
+            }
+
+            if Self::is_stellar_chain(&beneficiary.destination_chain, &env) {
+                // Stellar-native: direct on-chain transfer to the beneficiary,
+                // plus a per-beneficiary settlement event for off-chain indexers.
+                token_client.transfer(
+                    &env.current_contract_address(),
+                    &beneficiary.address,
+                    &share,
+                );
+                env.events().publish(
+                    (symbol_short!("StelPay"), owner.clone()),
+                    (beneficiary.address.clone(), share),
+                );
+            } else {
+                // Cross-chain: burn the beneficiary's share of the wrapped token
+                // held by the contract and emit a BridgePayoutEvent so the
+                // off-chain bridge can release the equivalent value on the
+                // destination chain.
+                token_client.burn(&env.current_contract_address(), &share);
+                let event = BridgePayoutEvent {
+                    owner: plan.owner.clone(),
+                    token: plan.token.clone(),
+                    beneficiary: beneficiary.address.clone(),
+                    destination_chain: beneficiary.destination_chain.clone(),
+                    destination_address: beneficiary.destination_address.clone(),
+                    gross_amount: share,
+                    fee_amount: 0,
+                    net_amount: share,
+                    source_chain: plan.source_chain.clone(),
+                    source_tx_hash: plan.source_tx_hash.clone(),
+                };
+                Self::emit_bridge_payout_event(&env, event);
+            }
+
+            env.storage().persistent().set(&paid_key, &true);
+            Self::extend_plan_ttl(&env, &paid_key);
+        }
+
+        // Clean up per-beneficiary paid markers once the full payout is complete,
+        // so stale state cannot bleed into a future plan by the same owner.
+        for beneficiary in plan.beneficiaries.iter() {
+            env.storage().persistent().remove(&DataKey::PaidBeneficiary(
+                owner.clone(),
+                beneficiary.address,
+            ));
         }
 
         Ok(())
