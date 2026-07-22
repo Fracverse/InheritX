@@ -3698,5 +3698,4 @@ fn test_claim_payout_burns_full_amount_for_all_cross_chain_plan() {
 
     // The plan is fully consumed and removed from storage.
     assert_eq!(client.get_plan(&owner), None);
->>>>>>> upstream/master
 }
