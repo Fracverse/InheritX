@@ -76,3 +76,8 @@ prometheus = { version = "0.13", features = ["process"], optional = true }
 
 # Optional: PDF report generation
 printpdf = { version = "0.7", optional = true }
+
+[dev-dependencies]
+# WebSocket client for integration-level WebSocket tests
+tokio-tungstenite = { version = "0.24", features = [] }
+futures-util = { version = "0.3", default-features = false, features = ["sink", "std"] }
