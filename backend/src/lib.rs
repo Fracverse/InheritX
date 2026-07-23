@@ -37,6 +37,7 @@ pub mod metrics;
 pub mod middleware;
 pub mod notifications;
 pub mod pagination;
+pub mod pdf;
 pub mod price_feed;
 pub mod price_feed_handlers;
 pub mod reputation;

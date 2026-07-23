@@ -233,7 +233,7 @@ impl TemplateEngine {
 
 /// Builds a minimal valid PDF containing the will text.
 /// Uses raw PDF syntax — no external crate required.
-fn build_pdf(content: &str) -> Vec<u8> {
+pub(crate) fn build_pdf(content: &str) -> Vec<u8> {
     // Escape special PDF string characters
     let escaped = content
         .replace('\\', "\\\\")

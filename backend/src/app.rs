@@ -230,6 +230,7 @@ pub async fn create_app(
             get(get_due_for_claim_plan),
         )
         .route("/api/plans/:plan_id/claim", post(claim_plan))
+        .route("/api/plans/:plan_id/report", get(generate_plan_report))
         .route("/api/plans/:plan_id", get(get_plan))
         .route("/api/plans", post(create_plan))
         .route(
@@ -1775,6 +1776,37 @@ async fn generate_will_document(
 
     let doc = WillPdfService::generate(&state.db, user.user_id, &input).await?;
     Ok(Json(json!({ "status": "success", "data": doc })))
+}
+
+// ─── Plan Report PDF (Issue #941) ────────────────────────────────────────────
+
+/// Generate a PDF report for a plan containing assets, yield, and beneficiary lists.
+///
+/// `GET /api/plans/:plan_id/report`
+async fn generate_plan_report(
+    State(state): State<Arc<AppState>>,
+    Path(plan_id): Path<Uuid>,
+    AuthenticatedUser(user): AuthenticatedUser,
+) -> Result<axum::response::Response, ApiError> {
+    use axum::body::Body;
+    use axum::http::{header, Response, StatusCode};
+
+    let pdf_bytes =
+        crate::pdf::PlanReportService::generate_plan_report(&state.db, plan_id, user.user_id)
+            .await?;
+
+    let filename = format!("plan_report_{plan_id}.pdf");
+
+    Response::builder()
+        .status(StatusCode::OK)
+        .header(header::CONTENT_TYPE, "application/pdf")
+        .header(
+            header::CONTENT_DISPOSITION,
+            format!("attachment; filename=\"{filename}\""),
+        )
+        .header(header::CACHE_CONTROL, "no-cache, no-store, must-revalidate")
+        .body(Body::from(pdf_bytes))
+        .map_err(|e| ApiError::Internal(anyhow::anyhow!("Failed to build response: {e}")))
 }
 
 async fn get_will_document(
