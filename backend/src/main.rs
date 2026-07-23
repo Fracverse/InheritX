@@ -89,8 +89,30 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         });
     }
 
+    // Rate limiter: 100 requests per IP per 60 seconds
+    let rate_limit_store = inheritx_backend::middleware::RateLimitStore::new();
+    let rate_limit_config = std::sync::Arc::new(
+        inheritx_backend::middleware::RateLimitConfig::default(),
+    );
+
+    // Background cron: flush expired IP records from the in-memory rate limit
+    // store every 60 seconds so the map does not grow unbounded.
+    {
+        let store = rate_limit_store.clone();
+        let window = rate_limit_config.window;
+        tokio::spawn(async move {
+            let mut interval =
+                tokio::time::interval(std::time::Duration::from_secs(60));
+            interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+            loop {
+                interval.tick().await;
+                store.flush_expired(window);
+            }
+        });
+    }
+
     // Create Axum application
-    let app = create_router(state);
+    let app = create_router(state, rate_limit_store, rate_limit_config);
 
     // Start server
     let addr = SocketAddr::from(([0, 0, 0, 0], config.port));

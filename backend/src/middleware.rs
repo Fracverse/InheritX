@@ -63,6 +63,14 @@ impl RateLimitStore {
         entry.count += 1;
         entry.count <= cfg.max_requests
     }
+
+    /// Remove entries whose rate-limit window has fully expired.
+    /// Called periodically by a background task to prevent memory
+    /// unbounded growth from stale IP records.
+    pub fn flush_expired(&self, window: Duration) {
+        let now = Instant::now();
+        self.0.retain(|_ip, state| now.duration_since(state.window_start) < window);
+    }
 }
 
 /// Axum middleware function for rate limiting.

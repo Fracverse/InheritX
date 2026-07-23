@@ -125,7 +125,11 @@ struct ApiError {
     error: String,
 }
 
-pub fn create_router(state: Arc<AppState>) -> Router {
+pub fn create_router(
+    state: Arc<AppState>,
+    rate_limit_store: RateLimitStore,
+    rate_limit_config: Arc<RateLimitConfig>,
+) -> Router {
     // Strict CORS: only allow specific origins, methods, and headers
     let cors = CorsLayer::new()
         .allow_origin(
@@ -141,8 +145,8 @@ pub fn create_router(state: Arc<AppState>) -> Router {
         .max_age(std::time::Duration::from_secs(3600));
 
     // Rate limiter: 100 requests per IP per 60 seconds
-    let store = RateLimitStore::new();
-    let config = Arc::new(RateLimitConfig::default());
+    let store = rate_limit_store;
+    let config = rate_limit_config;
 
     // User routes requiring signature verification
     let user_routes = Router::new()

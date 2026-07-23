@@ -3,7 +3,10 @@ use axum::{
     http::{self, Request, StatusCode},
 };
 use ed25519_dalek::{Signer, SigningKey};
-use inheritx_backend::{create_router, AppState, PlanCache, PlanResponse};
+use inheritx_backend::{
+    create_router, middleware::RateLimitConfig, middleware::RateLimitStore, AppState, PlanCache,
+    PlanResponse,
+};
 use serde_json::json;
 use std::sync::Arc;
 use std::time::Duration;
@@ -49,7 +52,9 @@ fn setup_app_with_cache(plan_cache: PlanCache) -> axum::Router {
         apy_config: inheritx_backend::yield_calculator::ApyConfig::default(),
         plan_cache,
     });
-    create_router(state)
+    let rate_limit_store = RateLimitStore::new();
+    let rate_limit_config = Arc::new(RateLimitConfig::default());
+    create_router(state, rate_limit_store, rate_limit_config)
 }
 
 #[tokio::test]
