@@ -1,8 +1,11 @@
+use rust_decimal::Decimal;
+
 pub struct Config {
     pub port: u16,
     pub database_url: String,
     pub redis_url: Option<String>,
     pub plan_cache_ttl_secs: u64,
+    pub fiat_daily_limit_default: Decimal,
 }
 
 impl Config {
@@ -21,12 +24,18 @@ impl Config {
             .ok()
             .and_then(|value| value.parse().ok())
             .unwrap_or(15);
+        let fiat_daily_limit_default = std::env::var("FIAT_DAILY_LIMIT_DEFAULT")
+            .ok()
+            .and_then(|v| v.parse::<f64>().ok())
+            .and_then(|v| Decimal::from_f64(v))
+            .unwrap_or(Decimal::ZERO);
 
         Ok(Config {
             port,
             database_url,
             redis_url,
             plan_cache_ttl_secs,
+            fiat_daily_limit_default,
         })
     }
 }

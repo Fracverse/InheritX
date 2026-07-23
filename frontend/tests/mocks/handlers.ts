@@ -109,6 +109,7 @@ export const plansHandlers = [
       wallet_address: b.address as string,
       allocation_bps: b.allocation_bps as number,
       fiat_anchor_info: b.fiat_anchor_info as string || "",
+      fiat_daily_limit: "0",
     }));
 
     return HttpResponse.json(

@@ -76,6 +76,8 @@ export interface BeneficiaryResponse {
   allocation_bps: number;
   /** Fiat anchor / off-ramp reference */
   fiat_anchor_info: string;
+  /** Daily fiat payout limit (0 = unlimited) */
+  fiat_daily_limit: string;
 }
 
 export interface PlanResponse {

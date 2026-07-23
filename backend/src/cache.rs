@@ -325,6 +325,7 @@ mod tests {
                 wallet_address: beneficiary.to_string(),
                 allocation_bps: 10_000,
                 fiat_anchor_info: "bank-usd".to_string(),
+                fiat_daily_limit: rust_decimal::Decimal::ZERO,
             }],
         }
     }
