@@ -57,7 +57,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let state = Arc::new(AppState {
         anchor: Arc::new(inheritx_backend::stellar_anchor::AnchorRegistry::new()),
         db_pool: db_pool.clone(),
-        kyc_webhook_secret: std::env::var("KYC_WEBHOOK_SECRET").ok(),
+        kyc_webhook_secret: config.kyc_webhook_secret.clone(),
         apy_config: inheritx_backend::yield_calculator::ApyConfig::from_env(),
         plan_cache: plan_cache.clone(),
         kyc_tx: kyc_tx.clone(),

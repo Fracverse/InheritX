@@ -6,6 +6,8 @@ pub struct Config {
     pub redis_url: Option<String>,
     pub plan_cache_ttl_secs: u64,
     pub fiat_daily_limit_default: Decimal,
+    pub kyc_webhook_secret: Option<String>,
+    pub stellar_horizon_url: String,
 }
 
 impl Config {
@@ -29,6 +31,15 @@ impl Config {
             .and_then(|v| v.parse::<f64>().ok())
             .and_then(|v| Decimal::from_f64(v))
             .unwrap_or(Decimal::ZERO);
+        let kyc_webhook_secret = std::env::var("KYC_WEBHOOK_SECRET")
+            .ok()
+            .map(|value| value.trim().to_string())
+            .filter(|value| !value.is_empty());
+        let stellar_horizon_url = std::env::var("STELLAR_HORIZON_URL")
+            .ok()
+            .map(|value| value.trim().to_string())
+            .filter(|value| !value.is_empty())
+            .unwrap_or_else(|| "https://horizon-testnet.stellar.org".to_string());
 
         Ok(Config {
             port,
@@ -36,6 +47,8 @@ impl Config {
             redis_url,
             plan_cache_ttl_secs,
             fiat_daily_limit_default,
+            kyc_webhook_secret,
+            stellar_horizon_url,
         })
     }
 }
