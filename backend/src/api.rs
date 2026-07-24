@@ -1777,24 +1777,25 @@ pub async fn get_plan_report(
     };
 
     // 2. Fetch beneficiaries
-    let beneficiary_rows =
-        match sqlx::query_as::<_, BeneficiaryRow>(
-            "SELECT id, plan_id, wallet_address, allocation_bps, fiat_anchor_info, fiat_daily_limit \
+    let beneficiary_rows = match sqlx::query_as::<_, BeneficiaryRow>(
+        "SELECT id, plan_id, wallet_address, allocation_bps, fiat_anchor_info, fiat_daily_limit \
           FROM beneficiaries WHERE plan_id = $1 ORDER BY allocation_bps DESC",
-        )
-        .bind(plan_id)
-        .fetch_all(&state.db_pool)
-        .await
-        {
-            Ok(rows) => rows,
-            Err(e) => return (
+    )
+    .bind(plan_id)
+    .fetch_all(&state.db_pool)
+    .await
+    {
+        Ok(rows) => rows,
+        Err(e) => {
+            return (
                 StatusCode::INTERNAL_SERVER_ERROR,
                 Json(
                     serde_json::json!({ "error": format!("Failed to load beneficiaries: {}", e) }),
                 ),
             )
-                .into_response(),
-        };
+                .into_response()
+        }
+    };
 
     // 3. Fetch ping logs
     let ping_rows = match sqlx::query_as::<_, PingLogRow>(
