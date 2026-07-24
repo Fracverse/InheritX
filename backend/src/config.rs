@@ -6,6 +6,7 @@ pub struct Config {
     /// Shared secret used to verify HMAC-SHA256 signatures on inbound KYC
     /// provider webhooks. When unset, `/api/kyc/webhook` rejects every request.
     pub kyc_webhook_secret: Option<String>,
+    pub stellar_horizon_url: String,
 }
 
 impl Config {
@@ -28,6 +29,11 @@ impl Config {
             .ok()
             .map(|value| value.trim().to_string())
             .filter(|value| !value.is_empty());
+        let stellar_horizon_url = std::env::var("STELLAR_HORIZON_URL")
+            .ok()
+            .map(|value| value.trim().to_string())
+            .filter(|value| !value.is_empty())
+            .unwrap_or_else(|| "https://horizon-testnet.stellar.org".to_string());
 
         Ok(Config {
             port,
@@ -35,6 +41,7 @@ impl Config {
             redis_url,
             plan_cache_ttl_secs,
             kyc_webhook_secret,
+            stellar_horizon_url,
         })
     }
 }
