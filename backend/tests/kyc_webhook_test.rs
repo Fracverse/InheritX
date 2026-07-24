@@ -55,16 +55,62 @@ async fn test_webhook_rejects_invalid_signature() {
 }
 
 #[tokio::test]
-async fn test_webhook_rejects_invalid_json() {
-    // No secret set — signature check skipped, parse check runs
-    let app = inheritx_backend::create_router(test_state(None));
+async fn test_webhook_rejects_missing_signature_header() {
+    let app = inheritx_backend::create_router(test_state(Some("test-secret")));
     let response = app
         .oneshot(
             Request::builder()
                 .method("POST")
                 .uri("/api/kyc/webhook")
                 .header("content-type", "application/json")
-                .body(Body::from("not valid json"))
+                .body(Body::from(valid_payload()))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
+}
+
+#[tokio::test]
+async fn test_webhook_rejects_signature_for_a_different_body() {
+    // Signature is valid, but for a payload other than the one sent.
+    let secret = "test-secret";
+    let sig = sign_payload(secret, br#"{"wallet_address":"GDOTHER","status":"rejected"}"#);
+
+    let app = inheritx_backend::create_router(test_state(Some(secret)));
+    let response = app
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/api/kyc/webhook")
+                .header("content-type", "application/json")
+                .header("x-kyc-signature", sig)
+                .body(Body::from(valid_payload()))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
+}
+
+#[tokio::test]
+async fn test_webhook_rejects_invalid_json() {
+    // Correctly signed, so the request gets past auth and fails on parsing.
+    let secret = "test-secret";
+    let body = "not valid json";
+    let sig = sign_payload(secret, body.as_bytes());
+
+    let app = inheritx_backend::create_router(test_state(Some(secret)));
+    let response = app
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/api/kyc/webhook")
+                .header("content-type", "application/json")
+                .header("x-kyc-signature", sig)
+                .body(Body::from(body))
                 .unwrap(),
         )
         .await
@@ -93,13 +139,15 @@ async fn test_valid_signature_accepted() {
         .await
         .unwrap();
 
-    // Signature valid — not 401
+    // Signature valid — request is authenticated and reaches the handler body.
     assert_ne!(response.status(), StatusCode::UNAUTHORIZED);
-    std::env::remove_var("KYC_WEBHOOK_SECRET");
 }
 
 #[tokio::test]
-async fn test_webhook_no_secret_skips_signature_check() {
+async fn test_webhook_fails_closed_when_secret_not_configured() {
+    // Without a configured secret nothing can be verified, so the endpoint must
+    // reject rather than accept unauthenticated KYC updates.
+    let body = valid_payload();
     let app = inheritx_backend::create_router(test_state(None));
     let response = app
         .oneshot(
@@ -107,12 +155,12 @@ async fn test_webhook_no_secret_skips_signature_check() {
                 .method("POST")
                 .uri("/api/kyc/webhook")
                 .header("content-type", "application/json")
-                .body(Body::from(valid_payload()))
+                .header("x-kyc-signature", sign_payload("any-secret", body.as_bytes()))
+                .body(Body::from(body))
                 .unwrap(),
         )
         .await
         .unwrap();
 
-    // No secret — signature check skipped, not 401
-    assert_ne!(response.status(), StatusCode::UNAUTHORIZED);
+    assert_eq!(response.status(), StatusCode::SERVICE_UNAVAILABLE);
 }
