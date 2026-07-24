@@ -79,7 +79,10 @@ async fn test_webhook_rejects_missing_signature_header() {
 async fn test_webhook_rejects_signature_for_a_different_body() {
     // Signature is valid, but for a payload other than the one sent.
     let secret = "test-secret";
-    let sig = sign_payload(secret, br#"{"wallet_address":"GDOTHER","status":"rejected"}"#);
+    let sig = sign_payload(
+        secret,
+        br#"{"wallet_address":"GDOTHER","status":"rejected"}"#,
+    );
 
     let app = inheritx_backend::create_router(test_state(Some(secret)));
     let response = app
@@ -158,7 +161,10 @@ async fn test_webhook_fails_closed_when_secret_not_configured() {
                 .method("POST")
                 .uri("/api/kyc/webhook")
                 .header("content-type", "application/json")
-                .header("x-kyc-signature", sign_payload("any-secret", body.as_bytes()))
+                .header(
+                    "x-kyc-signature",
+                    sign_payload("any-secret", body.as_bytes()),
+                )
                 .body(Body::from(body))
                 .unwrap(),
         )

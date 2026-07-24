@@ -145,11 +145,9 @@ pub async fn kyc_webhook_handler(
 
     // Verify before parsing: an unauthenticated caller must not reach the
     // deserializer, the database, or the WebSocket broadcast.
-    if let Err(err) = verify_webhook_signature(
-        state.kyc_webhook_secret.as_deref(),
-        &body,
-        signature,
-    ) {
+    if let Err(err) =
+        verify_webhook_signature(state.kyc_webhook_secret.as_deref(), &body, signature)
+    {
         warn!(reason = ?err, "KYC webhook rejected");
         return (
             err.status(),
@@ -342,7 +340,11 @@ mod tests {
     #[test]
     fn rejects_malformed_signature() {
         // Not hex, and a hex digest of the wrong length.
-        for signature in ["sha256=not-hex-at-all", "sha256=abcd", &sign(SECRET, BODY)[..62]] {
+        for signature in [
+            "sha256=not-hex-at-all",
+            "sha256=abcd",
+            &sign(SECRET, BODY)[..62],
+        ] {
             assert_eq!(
                 verify_webhook_signature(Some(SECRET), BODY, Some(signature)),
                 Err(SignatureError::MalformedSignature),

@@ -53,9 +53,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     };
 
     if config.kyc_webhook_secret.is_none() {
-        warn!(
-            "KYC_WEBHOOK_SECRET is not set — /api/kyc/webhook will reject all requests with 503"
-        );
+        warn!("KYC_WEBHOOK_SECRET is not set — /api/kyc/webhook will reject all requests with 503");
     }
 
     let (kyc_tx, _) = tokio::sync::broadcast::channel(100);
