@@ -51,6 +51,9 @@ fn setup_app_with_cache(plan_cache: PlanCache) -> axum::Router {
         kyc_webhook_secret: None,
         apy_config: inheritx_backend::yield_calculator::ApyConfig::default(),
         plan_cache,
+        stellar_submit: inheritx_backend::stellar_submit::StellarSubmitClient::new(
+            "https://horizon-testnet.stellar.org".to_string(),
+        ),
     });
     let rate_limit_store = RateLimitStore::new();
     let rate_limit_config = Arc::new(RateLimitConfig::default());
@@ -178,6 +181,55 @@ async fn test_create_plan_validation_negative_amount() {
         .unwrap();
 
     assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
+}
+
+#[tokio::test]
+async fn test_create_plan_validation_too_many_beneficiaries() {
+    let app = setup_app();
+
+    let mut beneficiaries = Vec::new();
+    for i in 0..101 {
+        beneficiaries.push(json!({
+            "address": format!("beneficiary_{}", i),
+            "name": format!("B{}", i),
+            "allocation_bps": 99,
+            "fiat_anchor_info": ""
+        }));
+    }
+
+    let body = json!({
+        "owner": "owner_address",
+        "token": "USDC",
+        "amount": 100.0,
+        "grace_period": 3600,
+        "earn_yield": false,
+        "yield_rate_bps": 0,
+        "last_ping": 0,
+        "is_active": true,
+        "beneficiaries": beneficiaries
+    })
+    .to_string();
+
+    let (public_key, signature) = generate_valid_signature(
+        &body,
+        "0x1234567890abcdef1234567890abcdef1234567890abcdef1234567890abcdef",
+    );
+
+    let response = app
+        .oneshot(
+            Request::builder()
+                .method(http::Method::POST)
+                .uri("/api/plans")
+                .header(http::header::CONTENT_TYPE, "application/json")
+                .header("X-Public-Key", public_key)
+                .header("X-Signature", signature)
+                .body(Body::from(body))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(response.status(), StatusCode::BAD_REQUEST);
 }
 
 #[tokio::test]

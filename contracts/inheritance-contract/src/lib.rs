@@ -104,6 +104,7 @@ pub struct YieldState {
 pub enum InstanceDataKey {
     Admin,
     Paused,
+    SupportedAssetYieldApy(Address),
 }
 
 #[contract]
@@ -185,8 +186,11 @@ impl InheritanceContract {
 
     /// Sums beneficiary allocations with checked math and validates bridge
     /// metadata; returns InvalidBasisPoints when the sum overflows or
-    /// deviates from 100%.
+    /// deviates from 100%, and TooManyBeneficiaries when exceeding 100.
     fn validate_beneficiaries(env: &Env, beneficiaries: &Vec<Beneficiary>) -> Result<(), Error> {
+        if beneficiaries.len() > MAX_BENEFICIARIES {
+            return Err(Error::TooManyBeneficiaries);
+        }
         let mut total_bps: u32 = 0;
         let empty = String::from_str(env, "");
         for beneficiary in beneficiaries.iter() {
@@ -408,6 +412,34 @@ impl InheritanceContract {
 
     pub fn is_supported_wrapped_token(env: Env, token: Address) -> Result<bool, Error> {
         Ok(Self::supported_wrapped_token(&env, &token))
+    }
+
+    /// Update the yield APY parameter (in basis points) for a supported asset in instance storage.
+    /// Restricted to the administrator.
+    pub fn update_supported_asset_yield_apy(
+        env: Env,
+        admin: Address,
+        asset: Address,
+        yield_rate_bps: u32,
+    ) -> Result<(), Error> {
+        admin.require_auth();
+        Self::require_admin(&env, &admin)?;
+        safe_math::validate_yield_rate(yield_rate_bps)?;
+
+        let key = InstanceDataKey::SupportedAssetYieldApy(asset.clone());
+        env.storage().instance().set(&key, &yield_rate_bps);
+
+        env.events()
+            .publish((symbol_short!("YieldApy"), asset), yield_rate_bps);
+
+        Ok(())
+    }
+
+    /// Retrieve the supported asset yield APY parameter (in basis points) from instance storage.
+    /// Returns 0 if no specific APY parameter has been configured for the asset.
+    pub fn get_supported_asset_yield_apy(env: Env, asset: Address) -> Result<u32, Error> {
+        let key = InstanceDataKey::SupportedAssetYieldApy(asset);
+        Ok(env.storage().instance().get(&key).unwrap_or(0))
     }
 
     /// Claim payout once the plan owner has been inactive beyond the grace period.

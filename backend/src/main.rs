@@ -52,15 +52,22 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         }
     };
 
+    if config.kyc_webhook_secret.is_none() {
+        warn!("KYC_WEBHOOK_SECRET is not set — /api/kyc/webhook will reject all requests with 503");
+    }
+
     let (kyc_tx, _) = tokio::sync::broadcast::channel(100);
     // Initialize state
     let state = Arc::new(AppState {
         anchor: Arc::new(inheritx_backend::stellar_anchor::AnchorRegistry::new()),
         db_pool: db_pool.clone(),
-        kyc_webhook_secret: std::env::var("KYC_WEBHOOK_SECRET").ok(),
+        kyc_webhook_secret: config.kyc_webhook_secret.clone(),
         apy_config: inheritx_backend::yield_calculator::ApyConfig::from_env(),
         plan_cache: plan_cache.clone(),
         kyc_tx: kyc_tx.clone(),
+        stellar_submit: inheritx_backend::stellar_submit::StellarSubmitClient::new(
+            config.stellar_horizon_url.clone(),
+        ),
     });
 
     // Start inactivity watchdog

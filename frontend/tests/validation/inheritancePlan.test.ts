@@ -92,4 +92,16 @@ describe("inheritance plan validation", () => {
   it("converts allocation percentages to basis points", () => {
     expect(percentageToBasisPoints(12.5)).toBe(1250);
   });
+
+  it("rejects drafts exceeding 100 beneficiaries", () => {
+    const beneficiaries = Array.from({ length: 101 }, (_, i) => ({
+      address: VALID_BENEFICIARY,
+      name: `Beneficiary ${i}`,
+      allocationPercentage: 1,
+    }));
+
+    const result = validateInheritancePlanDraft(validDraft({ beneficiaries }));
+    expect(result.isValid).toBe(false);
+    expect(result.errors.beneficiaries).toContain("100");
+  });
 });

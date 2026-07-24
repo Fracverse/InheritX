@@ -2071,6 +2071,136 @@ fn test_update_plan_rejects_excessive_yield_rate() {
 }
 
 #[test]
+fn test_create_plan_rejects_more_than_max_beneficiaries() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let contract_id = env.register_contract(None, InheritanceContract);
+    let client = InheritanceContractClient::new(&env, &contract_id);
+    let token_id = env.register_contract(None, mock_token::MockToken);
+    let token_client = mock_token::MockTokenClient::new(&env, &token_id);
+
+    let owner = Address::generate(&env);
+    token_client.mint(&owner, &2000);
+
+    let mut beneficiaries = Vec::new(&env);
+    for _ in 0..101 {
+        beneficiaries.push_back(Beneficiary {
+            address: Address::generate(&env),
+            allocation_bps: 99,
+            fiat_anchor_info: String::from_str(&env, "NGN_BANK"),
+            destination_chain: String::from_str(&env, "Stellar"),
+            destination_address: String::from_str(&env, "GDESTADDR"),
+        });
+    }
+
+    let result = client.try_create_plan(
+        &owner,
+        &token_id,
+        &1500,
+        &beneficiaries,
+        &86_400,
+        &true,
+        &500,
+        &86400,
+        &String::from_str(&env, "Stellar"),
+        &String::from_str(&env, "SRC_TX_HASH"),
+    );
+
+    assert_eq!(result, Err(Ok(Error::TooManyBeneficiaries)));
+}
+
+#[test]
+fn test_create_plan_accepts_max_beneficiaries() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let contract_id = env.register_contract(None, InheritanceContract);
+    let client = InheritanceContractClient::new(&env, &contract_id);
+    let token_id = env.register_contract(None, mock_token::MockToken);
+    let token_client = mock_token::MockTokenClient::new(&env, &token_id);
+
+    let owner = Address::generate(&env);
+    token_client.mint(&owner, &2000);
+
+    let mut beneficiaries = Vec::new(&env);
+    for _ in 0..100 {
+        beneficiaries.push_back(Beneficiary {
+            address: Address::generate(&env),
+            allocation_bps: 100,
+            fiat_anchor_info: String::from_str(&env, "NGN_BANK"),
+            destination_chain: String::from_str(&env, "Stellar"),
+            destination_address: String::from_str(&env, "GDESTADDR"),
+        });
+    }
+
+    let result = client.try_create_plan(
+        &owner,
+        &token_id,
+        &1500,
+        &beneficiaries,
+        &86_400,
+        &true,
+        &500,
+        &86400,
+        &String::from_str(&env, "Stellar"),
+        &String::from_str(&env, "SRC_TX_HASH"),
+    );
+
+    assert!(result.is_ok());
+    let plan = client.get_plan(&owner).unwrap();
+    assert_eq!(plan.beneficiaries.len(), 100);
+}
+
+#[test]
+fn test_update_plan_rejects_more_than_max_beneficiaries() {
+    let env = Env::default();
+    let start = 1_000_000u64;
+    env.ledger().set_timestamp(start);
+    let (client, _token, owner, _bene, _cid) = setup_yield_plan(&env, 1_000_000_000, true, 500);
+
+    let mut beneficiaries = Vec::new(&env);
+    for _ in 0..101 {
+        beneficiaries.push_back(Beneficiary {
+            address: Address::generate(&env),
+            allocation_bps: 99,
+            fiat_anchor_info: String::from_str(&env, "NGN_BANK"),
+            destination_chain: String::from_str(&env, "Stellar"),
+            destination_address: String::from_str(&env, "GDESTADDR"),
+        });
+    }
+
+    let result = client.try_update_plan(&owner, &beneficiaries, &None, &None, &None);
+
+    assert_eq!(result, Err(Ok(Error::TooManyBeneficiaries)));
+}
+
+#[test]
+fn test_update_plan_accepts_max_beneficiaries() {
+    let env = Env::default();
+    let start = 1_000_000u64;
+    env.ledger().set_timestamp(start);
+    let (client, _token, owner, _bene, _cid) = setup_yield_plan(&env, 1_000_000_000, true, 500);
+
+    let mut beneficiaries = Vec::new(&env);
+    for _ in 0..100 {
+        beneficiaries.push_back(Beneficiary {
+            address: Address::generate(&env),
+            allocation_bps: 100,
+            fiat_anchor_info: String::from_str(&env, "NGN_BANK"),
+            destination_chain: String::from_str(&env, "Stellar"),
+            destination_address: String::from_str(&env, "GDESTADDR"),
+        });
+    }
+
+    let result = client.try_update_plan(&owner, &beneficiaries, &None, &None, &None);
+
+    assert!(result.is_ok());
+    let plan = client.get_plan(&owner).unwrap();
+    assert_eq!(plan.beneficiaries.len(), 100);
+}
+
+#[test]
 fn test_create_plan_allocation_bps_overflow_returns_invalid_basis_points() {
     let env = Env::default();
     env.mock_all_auths();
@@ -3775,4 +3905,277 @@ fn test_claim_payout_burns_full_amount_for_all_cross_chain_plan() {
 
     // The plan is fully consumed and removed from storage.
     assert_eq!(client.get_plan(&owner), None);
+}
+
+#[test]
+fn test_create_plan_too_many_beneficiaries() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let contract_id = env.register_contract(None, InheritanceContract);
+    let client = InheritanceContractClient::new(&env, &contract_id);
+    let token_id = env.register_contract(None, mock_token::MockToken);
+    let token_client = mock_token::MockTokenClient::new(&env, &token_id);
+
+    let owner = Address::generate(&env);
+    token_client.mint(&owner, &10_000);
+
+    let make_beneficiary = || Beneficiary {
+        address: Address::generate(&env),
+        allocation_bps: 99,
+        fiat_anchor_info: String::from_str(&env, "NGN_BANK"),
+        destination_chain: String::from_str(&env, "Stellar"),
+        destination_address: String::from_str(&env, "GDESTADDR"),
+    };
+
+    let mut beneficiaries = Vec::new(&env);
+    for _ in 0..101 {
+        beneficiaries.push_back(make_beneficiary());
+    }
+
+    let result = client.try_create_plan(
+        &owner,
+        &token_id,
+        &1500,
+        &beneficiaries,
+        &86_400,
+        &true,
+        &500,
+        &86400,
+        &String::from_str(&env, "Stellar"),
+        &String::from_str(&env, "SRC_TX_HASH"),
+    );
+    assert_eq!(result, Err(Ok(Error::TooManyBeneficiaries)));
+}
+
+#[test]
+fn test_create_plan_max_beneficiaries_boundary() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let contract_id = env.register_contract(None, InheritanceContract);
+    let client = InheritanceContractClient::new(&env, &contract_id);
+    let token_id = env.register_contract(None, mock_token::MockToken);
+    let token_client = mock_token::MockTokenClient::new(&env, &token_id);
+
+    let owner = Address::generate(&env);
+    token_client.mint(&owner, &10_000);
+
+    let mut beneficiaries = Vec::new(&env);
+    for _ in 0..100 {
+        beneficiaries.push_back(Beneficiary {
+            address: Address::generate(&env),
+            allocation_bps: 100,
+            fiat_anchor_info: String::from_str(&env, "NGN_BANK"),
+            destination_chain: String::from_str(&env, "Stellar"),
+            destination_address: String::from_str(&env, "GDESTADDR"),
+        });
+    }
+
+    client.create_plan(
+        &owner,
+        &token_id,
+        &1500,
+        &beneficiaries,
+        &86_400,
+        &true,
+        &500,
+        &86400,
+        &String::from_str(&env, "Stellar"),
+        &String::from_str(&env, "SRC_TX_HASH"),
+    );
+
+    let plan = client.get_plan(&owner).unwrap();
+    assert_eq!(plan.beneficiaries.len(), 100);
+}
+
+#[test]
+fn test_update_plan_too_many_beneficiaries() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let contract_id = env.register_contract(None, InheritanceContract);
+    let client = InheritanceContractClient::new(&env, &contract_id);
+    let token_id = env.register_contract(None, mock_token::MockToken);
+    let token_client = mock_token::MockTokenClient::new(&env, &token_id);
+
+    let owner = Address::generate(&env);
+    token_client.mint(&owner, &10_000);
+
+    let initial_beneficiary = Beneficiary {
+        address: Address::generate(&env),
+        allocation_bps: 10000,
+        fiat_anchor_info: String::from_str(&env, "NGN_BANK"),
+        destination_chain: String::from_str(&env, "Stellar"),
+        destination_address: String::from_str(&env, "GDESTADDR"),
+    };
+
+    client.create_plan(
+        &owner,
+        &token_id,
+        &1500,
+        &Vec::from_array(&env, [initial_beneficiary]),
+        &86_400,
+        &true,
+        &500,
+        &86400,
+        &String::from_str(&env, "Stellar"),
+        &String::from_str(&env, "SRC_TX_HASH"),
+    );
+
+    let mut excessive_beneficiaries = Vec::new(&env);
+    for _ in 0..101 {
+        excessive_beneficiaries.push_back(Beneficiary {
+            address: Address::generate(&env),
+            allocation_bps: 99,
+            fiat_anchor_info: String::from_str(&env, "NGN_BANK"),
+            destination_chain: String::from_str(&env, "Stellar"),
+            destination_address: String::from_str(&env, "GDESTADDR"),
+        });
+    }
+
+    let result = client.try_update_plan(&owner, &excessive_beneficiaries, &None, &None, &None);
+    assert_eq!(result, Err(Ok(Error::TooManyBeneficiaries)));
+}
+
+#[test]
+fn test_update_plan_max_beneficiaries_boundary() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let contract_id = env.register_contract(None, InheritanceContract);
+    let client = InheritanceContractClient::new(&env, &contract_id);
+    let token_id = env.register_contract(None, mock_token::MockToken);
+    let token_client = mock_token::MockTokenClient::new(&env, &token_id);
+
+    let owner = Address::generate(&env);
+    token_client.mint(&owner, &10_000);
+
+    let initial_beneficiary = Beneficiary {
+        address: Address::generate(&env),
+        allocation_bps: 10000,
+        fiat_anchor_info: String::from_str(&env, "NGN_BANK"),
+        destination_chain: String::from_str(&env, "Stellar"),
+        destination_address: String::from_str(&env, "GDESTADDR"),
+    };
+
+    client.create_plan(
+        &owner,
+        &token_id,
+        &1500,
+        &Vec::from_array(&env, [initial_beneficiary]),
+        &86_400,
+        &true,
+        &500,
+        &86400,
+        &String::from_str(&env, "Stellar"),
+        &String::from_str(&env, "SRC_TX_HASH"),
+    );
+
+    let mut max_beneficiaries = Vec::new(&env);
+    for _ in 0..100 {
+        max_beneficiaries.push_back(Beneficiary {
+            address: Address::generate(&env),
+            allocation_bps: 100,
+            fiat_anchor_info: String::from_str(&env, "NGN_BANK"),
+            destination_chain: String::from_str(&env, "Stellar"),
+            destination_address: String::from_str(&env, "GDESTADDR"),
+        });
+    }
+
+    client.update_plan(&owner, &max_beneficiaries, &None, &None, &None);
+
+    let plan = client.get_plan(&owner).unwrap();
+    assert_eq!(plan.beneficiaries.len(), 100);
+}
+
+#[test]
+fn test_trigger_payout_max_beneficiaries_100() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let contract_id = env.register_contract(None, InheritanceContract);
+    let client = InheritanceContractClient::new(&env, &contract_id);
+    let token_id = env.register_contract(None, mock_token::MockToken);
+    let token_client = mock_token::MockTokenClient::new(&env, &token_id);
+
+    let owner = Address::generate(&env);
+    token_client.mint(&owner, &100_000);
+
+    let mut beneficiaries = Vec::new(&env);
+    let mut addrs = Vec::new(&env);
+
+    for _ in 0..100 {
+        let addr = Address::generate(&env);
+        addrs.push_back(addr.clone());
+        beneficiaries.push_back(Beneficiary {
+            address: addr,
+            allocation_bps: 100, // 100 * 100 bps = 10,000 bps (100%)
+            fiat_anchor_info: String::from_str(&env, "NGN_BANK"),
+            destination_chain: String::from_str(&env, "Stellar"),
+            destination_address: String::from_str(&env, "GDESTADDR"),
+        });
+    }
+
+    client.create_plan(
+        &owner,
+        &token_id,
+        &10_000,
+        &beneficiaries,
+        &86_400,
+        &false,
+        &0,
+        &86400,
+        &String::from_str(&env, "Stellar"),
+        &String::from_str(&env, "SRC_TX_HASH"),
+    );
+
+    deactivate_plan_for_testing(&env, &contract_id, &owner);
+
+    // Fast-forward time past grace period
+    env.ledger()
+        .set_timestamp(env.ledger().timestamp() + 86_400 + 1);
+
+    client.claim(&owner);
+
+    // Fast-forward time past timelock duration (86400)
+    env.ledger()
+        .set_timestamp(env.ledger().timestamp() + 86400 + 1);
+
+    client.trigger_payout(&owner);
+
+    // Verify first and last beneficiary received 100 tokens and contract balance is empty
+    assert_eq!(token_client.balance(&addrs.get(0).unwrap()), 100);
+    assert_eq!(token_client.balance(&addrs.get(99).unwrap()), 100);
+    assert_eq!(token_client.balance(&contract_id), 0);
+}
+
+#[test]
+fn test_create_plan_empty_beneficiaries_returns_invalid_basis_points() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let contract_id = env.register_contract(None, InheritanceContract);
+    let client = InheritanceContractClient::new(&env, &contract_id);
+    let token_id = env.register_contract(None, mock_token::MockToken);
+    let token_client = mock_token::MockTokenClient::new(&env, &token_id);
+
+    let owner = Address::generate(&env);
+    token_client.mint(&owner, &10_000);
+
+    let empty_beneficiaries = Vec::new(&env);
+
+    let result = client.try_create_plan(
+        &owner,
+        &token_id,
+        &1500,
+        &empty_beneficiaries,
+        &86_400,
+        &true,
+        &500,
+        &86400,
+        &String::from_str(&env, "Stellar"),
+        &String::from_str(&env, "SRC_TX_HASH"),
+    );
+    assert_eq!(result, Err(Ok(Error::InvalidBasisPoints)));
 }

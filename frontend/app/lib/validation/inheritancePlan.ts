@@ -122,6 +122,8 @@ export function validateInheritancePlanDraft(draft: InheritancePlanDraft): Valid
 
   if (draft.beneficiaries.length === 0) {
     errors.beneficiaries = "Add at least one beneficiary.";
+  } else if (draft.beneficiaries.length > 100) {
+    errors.beneficiaries = "Cannot exceed 100 beneficiaries.";
   }
 
   let allocationTotal = 0;

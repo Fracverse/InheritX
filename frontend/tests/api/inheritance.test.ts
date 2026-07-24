@@ -278,6 +278,8 @@ describe("InheritanceAPI", () => {
       expect(result.page).toBe(1);
       expect(result.page_size).toBe(20);
       expect(typeof result.total).toBe("number");
+      expect(typeof result.total_pages).toBe("number");
+      expect(result.total_pages).toBeGreaterThanOrEqual(1);
 
       if (result.data.length > 0) {
         const payout = result.data[0];
@@ -311,6 +313,7 @@ describe("InheritanceAPI", () => {
       expect(result.page).toBe(1);
       expect(result.page_size).toBe(2);
       expect(result.data.length).toBeLessThanOrEqual(2);
+      expect(result.total_pages).toBeGreaterThanOrEqual(1);
     });
 
     it("returns empty data when no matching payouts", async () => {
@@ -320,6 +323,7 @@ describe("InheritanceAPI", () => {
 
       expect(result.data).toEqual([]);
       expect(result.total).toBe(0);
+      expect(result.total_pages).toBe(0);
     });
   });
 });

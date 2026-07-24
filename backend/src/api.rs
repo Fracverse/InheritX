@@ -22,13 +22,16 @@ use tower_http::cors::CorsLayer;
 use tracing::error;
 use uuid::Uuid;
 
-use crate::auth::{jwt_auth_middleware, signature_auth_middleware};
+use crate::auth::{jwt_auth_middleware, signature_auth_middleware, Claims};
 use crate::cache::PlanCache;
 use crate::kyc_webhook::kyc_webhook_handler;
 #[cfg(feature = "metrics")]
 use crate::metrics::{latency_middleware, metrics_handler};
+use crate::password;
 use crate::stellar_anchor::AnchorRegistry;
+use crate::stellar_submit::{StellarSubmitClient, StellarSubmitError};
 use crate::ws::ws_handler;
+use crate::xdr::validate_transaction_xdr;
 use crate::yield_calculator;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -59,6 +62,7 @@ pub struct AppState {
     pub apy_config: yield_calculator::ApyConfig,
     pub plan_cache: PlanCache,
     pub kyc_tx: tokio::sync::broadcast::Sender<crate::ws::KycUpdateEvent>,
+    pub stellar_submit: StellarSubmitClient,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -118,6 +122,7 @@ pub struct PayoutStatusResponse {
     pub page: i64,
     pub page_size: i64,
     pub total: i64,
+    pub total_pages: i64,
 }
 
 #[derive(Serialize)]
@@ -125,11 +130,30 @@ struct ApiError {
     error: String,
 }
 
-pub fn create_router(
-    state: Arc<AppState>,
-    rate_limit_store: RateLimitStore,
-    rate_limit_config: Arc<RateLimitConfig>,
-) -> Router {
+#[derive(Debug, Deserialize)]
+pub struct SubmitXdrRequest {
+    pub xdr: String,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct AdminLoginRequest {
+    pub email: String,
+    pub password: String,
+}
+
+#[derive(Debug, Serialize)]
+pub struct AdminLoginResponse {
+    pub token: String,
+    pub expires_at: i64,
+}
+
+#[derive(Debug, sqlx::FromRow)]
+struct AdminRow {
+    id: Uuid,
+    password_hash: String,
+}
+
+pub fn create_router(state: Arc<AppState>) -> Router {
     // Strict CORS: only allow specific origins, methods, and headers
     let cors = CorsLayer::new()
         .allow_origin(
@@ -171,6 +195,8 @@ pub fn create_router(
         .route("/api/kyc/upload", post(upload_kyc_document))
         .route("/api/kyc/required", get(is_kyc_required))
         .route("/api/kyc/requirements", get(get_kyc_requirements))
+        .route("/api/transactions/submit", post(submit_transaction))
+        .route("/api/admin/login", post(admin_login))
         .route("/ws/kyc", get(ws_handler));
     let router = Router::new()
         .merge(user_routes)
@@ -448,6 +474,13 @@ async fn create_plan(
         )
             .into_response();
     }
+    if payload.beneficiaries.len() > 100 {
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(serde_json::json!({ "error": "Cannot exceed 100 beneficiaries" })),
+        )
+            .into_response();
+    }
     let mut total_bps = 0;
     for b in &payload.beneficiaries {
         if b.address.trim().is_empty() {
@@ -627,6 +660,13 @@ async fn update_plan(
 ) -> impl IntoResponse {
     // 1. Validate beneficiary allocation_bps sum to exactly 10000
     if !payload.beneficiaries.is_empty() {
+        if payload.beneficiaries.len() > 100 {
+            return (
+                StatusCode::BAD_REQUEST,
+                Json(serde_json::json!({ "error": "Cannot exceed 100 beneficiaries" })),
+            )
+                .into_response();
+        }
         let mut total_bps = 0;
         for b in &payload.beneficiaries {
             if b.address.trim().is_empty() {
@@ -1488,6 +1528,8 @@ async fn get_anchor_payouts(
         }
     };
 
+    let total_pages = (total as f64 / page_size as f64).ceil() as i64;
+
     (
         StatusCode::OK,
         Json(PayoutStatusResponse {
@@ -1495,6 +1537,7 @@ async fn get_anchor_payouts(
             page,
             page_size,
             total,
+            total_pages,
         }),
     )
         .into_response()
@@ -1791,6 +1834,139 @@ pub async fn get_plan_report(_state: State<Arc<AppState>>, _plan_id: Path<uuid::
         Json(serde_json::json!({
             "error": "PDF report generation is not enabled in this build. Recompile with --features pdf."
         })),
+    )
+        .into_response()
+}
+
+// Handler: Submit raw XDR transaction
+// Validates the XDR envelope's format before forwarding it to the Stellar
+// network (Horizon). The XDR must already carry a valid signature — this
+// endpoint does not sign anything, it only checks shape/sanity and relays.
+async fn submit_transaction(
+    State(state): State<Arc<AppState>>,
+    Json(payload): Json<SubmitXdrRequest>,
+) -> impl IntoResponse {
+    if let Err(e) = validate_transaction_xdr(&payload.xdr) {
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(serde_json::json!({ "error": e.to_string() })),
+        )
+            .into_response();
+    }
+
+    match state.stellar_submit.submit(&payload.xdr).await {
+        Ok(result) => (StatusCode::OK, Json(result)).into_response(),
+        Err(StellarSubmitError::Rejected(body)) => {
+            (StatusCode::BAD_REQUEST, Json(body)).into_response()
+        }
+        Err(e) => {
+            error!(error = %e, "Failed to submit transaction to Stellar network");
+            (
+                StatusCode::BAD_GATEWAY,
+                Json(serde_json::json!({ "error": e.to_string() })),
+            )
+                .into_response()
+        }
+    }
+}
+
+// Handler: Admin login
+// Verifies admin credentials against an Argon2id password hash and, on
+// success, issues the JWT that `jwt_auth_middleware` expects for admin
+// routes.
+async fn admin_login(
+    State(state): State<Arc<AppState>>,
+    Json(payload): Json<AdminLoginRequest>,
+) -> impl IntoResponse {
+    let email = payload.email.trim().to_lowercase();
+    if email.is_empty() || payload.password.is_empty() {
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(serde_json::json!({ "error": "Email and password are required" })),
+        )
+            .into_response();
+    }
+
+    let admin = match sqlx::query_as::<_, AdminRow>(
+        "SELECT id, password_hash FROM admins WHERE email = $1",
+    )
+    .bind(&email)
+    .fetch_optional(&state.db_pool)
+    .await
+    {
+        Ok(row) => row,
+        Err(e) => {
+            error!(error = %e, "Database error during admin login");
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(serde_json::json!({ "error": "Internal server error" })),
+            )
+                .into_response();
+        }
+    };
+
+    // Always run an Argon2 verification, even when no admin matches the
+    // email, so response timing doesn't reveal which emails are registered.
+    let (is_valid, admin_id) = match &admin {
+        Some(row) => (
+            password::verify_password(&payload.password, &row.password_hash).unwrap_or(false),
+            row.id,
+        ),
+        None => {
+            let _ = password::verify_password(&payload.password, password::dummy_hash());
+            (false, Uuid::nil())
+        }
+    };
+
+    if !is_valid {
+        return (
+            StatusCode::UNAUTHORIZED,
+            Json(serde_json::json!({ "error": "Invalid email or password" })),
+        )
+            .into_response();
+    }
+
+    let secret = match std::env::var("JWT_SECRET") {
+        Ok(s) => s,
+        Err(_) => {
+            error!("JWT_SECRET is not configured");
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(serde_json::json!({ "error": "Internal server error" })),
+            )
+                .into_response();
+        }
+    };
+
+    let expires_at = chrono::Utc::now() + chrono::Duration::hours(24);
+    let claims = Claims {
+        sub: admin_id.to_string(),
+        role: "admin".to_string(),
+        exp: expires_at.timestamp() as usize,
+    };
+
+    let token = match jsonwebtoken::encode(
+        &jsonwebtoken::Header::new(jsonwebtoken::Algorithm::HS256),
+        &claims,
+        &jsonwebtoken::EncodingKey::from_secret(secret.as_ref()),
+    ) {
+        Ok(t) => t,
+        Err(e) => {
+            error!(error = %e, "Failed to sign admin JWT");
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(serde_json::json!({ "error": "Internal server error" })),
+            )
+                .into_response();
+        }
+    };
+
+    (
+        StatusCode::OK,
+        Json(AdminLoginResponse {
+            token,
+            expires_at: expires_at.timestamp(),
+        }),
     )
         .into_response()
 }
