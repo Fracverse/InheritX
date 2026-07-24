@@ -3,7 +3,9 @@ use axum::{
     http::{Request, StatusCode},
 };
 use hmac::{Hmac, Mac};
+use inheritx_backend::middleware::{RateLimitConfig, RateLimitStore};
 use sha2::Sha256;
+use std::sync::Arc;
 use tower::ServiceExt;
 
 type HmacSha256 = Hmac<Sha256>;
@@ -16,6 +18,10 @@ fn sign_payload(secret: &str, body: &[u8]) -> String {
 
 fn valid_payload() -> &'static str {
     r#"{"wallet_address":"GDTEST123","status":"approved","event_type":"kyc.status_update","provider_reference":"ref-001"}"#
+}
+
+fn rate_limit_layer() -> (RateLimitStore, Arc<RateLimitConfig>) {
+    (RateLimitStore::new(), Arc::new(RateLimitConfig::default()))
 }
 
 fn test_state(secret: Option<&str>) -> std::sync::Arc<inheritx_backend::AppState> {
@@ -40,7 +46,8 @@ fn test_state(secret: Option<&str>) -> std::sync::Arc<inheritx_backend::AppState
 }
 #[tokio::test]
 async fn test_webhook_rejects_invalid_signature() {
-    let app = inheritx_backend::create_router(test_state(Some("test-secret")));
+    let (store, config) = rate_limit_layer();
+    let app = inheritx_backend::create_router(test_state(Some("test-secret")), store, config);
     let response = app
         .oneshot(
             Request::builder()
@@ -131,7 +138,8 @@ async fn test_valid_signature_accepted() {
     let body = valid_payload();
     let sig = sign_payload(secret, body.as_bytes());
 
-    let app = inheritx_backend::create_router(test_state(Some(secret)));
+    let (store, config) = rate_limit_layer();
+    let app = inheritx_backend::create_router(test_state(Some(secret)), store, config);
     let response = app
         .oneshot(
             Request::builder()
