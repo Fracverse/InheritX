@@ -4,7 +4,7 @@ use crate::middleware::{
 };
 use axum::http::{HeaderValue, Method};
 use axum::{
-    extract::{Path, Query, State},
+    extract::{Multipart, Path, Query, State},
     http::{header::HeaderName, StatusCode},
     middleware::from_fn,
     response::{IntoResponse, Response},
@@ -1578,21 +1578,120 @@ async fn submit_kyc(Json(_payload): Json<KYCSubmitRequest>) -> impl IntoResponse
     (StatusCode::OK, Json(response))
 }
 
+/// Maximum allowed upload size: 10 MiB.
+const MAX_UPLOAD_BYTES: usize = 10 * 1024 * 1024;
+
+/// MIME types accepted for KYC documents.
+const ALLOWED_MIME_TYPES: &[&str] = &["image/jpeg", "image/png", "application/pdf"];
+
 // Upload KYC document
-async fn upload_kyc_document() -> impl IntoResponse {
-    // In a real implementation, this would:
-    // 1. Receive multipart form data with file and document_type
-    // 2. Validate file (size, type)
-    // 3. Upload to cloud storage (S3, etc.)
-    // 4. Store metadata in database
-    // 5. Return document_id and URL
+//
+// Expects a multipart/form-data body with a single field named "file".
+// Validates:
+//   • Content-Type is image/jpeg, image/png, or application/pdf
+//   • File size does not exceed MAX_UPLOAD_BYTES (10 MiB)
+//
+// Returns 400 if validation fails, 200 with a document_id on success.
+async fn upload_kyc_document(mut multipart: Multipart) -> impl IntoResponse {
+    // Iterate multipart fields looking for the "file" field.
+    loop {
+        let field = match multipart.next_field().await {
+            Ok(Some(f)) => f,
+            Ok(None) => {
+                // All fields consumed without finding "file".
+                return (
+                    StatusCode::BAD_REQUEST,
+                    Json(serde_json::json!({ "error": "Missing 'file' field in multipart body" })),
+                )
+                    .into_response();
+            }
+            Err(e) => {
+                error!("Failed to read multipart field: {e}");
+                return (
+                    StatusCode::BAD_REQUEST,
+                    Json(serde_json::json!({ "error": "Malformed multipart request" })),
+                )
+                    .into_response();
+            }
+        };
 
-    let response = KYCDocumentResponse {
-        document_id: Uuid::new_v4().to_string(),
-        url: "https://example.com/documents/doc-001".to_string(),
-    };
+        // Only process the field named "file"; skip everything else.
+        if field.name() != Some("file") {
+            continue;
+        }
 
-    (StatusCode::OK, Json(response))
+        // --- MIME type validation ---
+        let content_type = field
+            .content_type()
+            .unwrap_or("")
+            .split(';')          // strip parameters like "; charset=…"
+            .next()
+            .unwrap_or("")
+            .trim()
+            .to_ascii_lowercase();
+
+        if !ALLOWED_MIME_TYPES.contains(&content_type.as_str()) {
+            return (
+                StatusCode::UNSUPPORTED_MEDIA_TYPE,
+                Json(serde_json::json!({
+                    "error": format!(
+                        "Unsupported file type '{}'. Allowed types: JPEG, PNG, PDF.",
+                        content_type
+                    )
+                })),
+            )
+                .into_response();
+        }
+
+        // --- Size validation (streaming, no full buffering beyond the limit) ---
+        let mut bytes_read: usize = 0;
+        let mut buf: Vec<u8> = Vec::with_capacity(MAX_UPLOAD_BYTES.min(64 * 1024));
+
+        // Consume field bytes in chunks, bailing early if the cap is exceeded.
+        let mut field = field;
+        loop {
+            match field.chunk().await {
+                Ok(Some(chunk)) => {
+                    bytes_read += chunk.len();
+                    if bytes_read > MAX_UPLOAD_BYTES {
+                        return (
+                            StatusCode::PAYLOAD_TOO_LARGE,
+                            Json(serde_json::json!({
+                                "error": format!(
+                                    "File exceeds the maximum allowed size of {} MiB.",
+                                    MAX_UPLOAD_BYTES / (1024 * 1024)
+                                )
+                            })),
+                        )
+                            .into_response();
+                    }
+                    buf.extend_from_slice(&chunk);
+                }
+                Ok(None) => break,
+                Err(e) => {
+                    error!("Error while reading multipart chunk: {e}");
+                    return (
+                        StatusCode::BAD_REQUEST,
+                        Json(serde_json::json!({ "error": "Failed to read uploaded file" })),
+                    )
+                        .into_response();
+                }
+            }
+        }
+        let field_data = buf;
+
+        // All validations passed.
+        // TODO: upload `field_data` to object storage (S3 / GCS) and persist
+        //       metadata to the database before returning the real URL.
+        let _ = field_data; // suppress unused-variable warning until storage is wired up
+
+        let response = KYCDocumentResponse {
+            document_id: Uuid::new_v4().to_string(),
+            url: "https://example.com/documents/doc-001".to_string(),
+        };
+
+        return (StatusCode::OK, Json(response)).into_response();
+    }
 }
 
 // Check if KYC is required
