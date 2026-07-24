@@ -474,6 +474,13 @@ async fn create_plan(
         )
             .into_response();
     }
+    if payload.beneficiaries.len() > 100 {
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(serde_json::json!({ "error": "Cannot exceed 100 beneficiaries" })),
+        )
+            .into_response();
+    }
     let mut total_bps = 0;
     for b in &payload.beneficiaries {
         if b.address.trim().is_empty() {
@@ -653,6 +660,13 @@ async fn update_plan(
 ) -> impl IntoResponse {
     // 1. Validate beneficiary allocation_bps sum to exactly 10000
     if !payload.beneficiaries.is_empty() {
+        if payload.beneficiaries.len() > 100 {
+            return (
+                StatusCode::BAD_REQUEST,
+                Json(serde_json::json!({ "error": "Cannot exceed 100 beneficiaries" })),
+            )
+                .into_response();
+        }
         let mut total_bps = 0;
         for b in &payload.beneficiaries {
             if b.address.trim().is_empty() {

@@ -185,8 +185,11 @@ impl InheritanceContract {
 
     /// Sums beneficiary allocations with checked math and validates bridge
     /// metadata; returns InvalidBasisPoints when the sum overflows or
-    /// deviates from 100%.
+    /// deviates from 100%, and TooManyBeneficiaries when exceeding 100.
     fn validate_beneficiaries(env: &Env, beneficiaries: &Vec<Beneficiary>) -> Result<(), Error> {
+        if beneficiaries.len() > MAX_BENEFICIARIES {
+            return Err(Error::TooManyBeneficiaries);
+        }
         let mut total_bps: u32 = 0;
         let empty = String::from_str(env, "");
         for beneficiary in beneficiaries.iter() {
