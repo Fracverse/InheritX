@@ -5,4 +5,7 @@ target
 .soroban
 
 # Test snapshots
-inheritance-contract/test_snapshots/
+**/test_snapshots/
+test_snapshots/
+*.proptest-regressions
+

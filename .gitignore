@@ -19,6 +19,10 @@
 /coverage
 /playwright-report
 /test-results
+**/test_snapshots/
+test_snapshots/
+*.proptest-regressions
+
 
 # next.js
 /.next/

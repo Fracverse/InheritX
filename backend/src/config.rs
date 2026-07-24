@@ -5,7 +5,8 @@ pub struct Config {
     pub database_url: String,
     pub redis_url: Option<String>,
     pub plan_cache_ttl_secs: u64,
-    pub fiat_daily_limit_default: Decimal,
+    /// Shared secret used to verify HMAC-SHA256 signatures on inbound KYC
+    /// provider webhooks. When unset, `/api/kyc/webhook` rejects every request.
     pub kyc_webhook_secret: Option<String>,
     pub stellar_horizon_url: String,
 }
@@ -26,11 +27,6 @@ impl Config {
             .ok()
             .and_then(|value| value.parse().ok())
             .unwrap_or(15);
-        let fiat_daily_limit_default = std::env::var("FIAT_DAILY_LIMIT_DEFAULT")
-            .ok()
-            .and_then(|v| v.parse::<f64>().ok())
-            .and_then(|v| Decimal::from_f64(v))
-            .unwrap_or(Decimal::ZERO);
         let kyc_webhook_secret = std::env::var("KYC_WEBHOOK_SECRET")
             .ok()
             .map(|value| value.trim().to_string())
@@ -46,7 +42,6 @@ impl Config {
             database_url,
             redis_url,
             plan_cache_ttl_secs,
-            fiat_daily_limit_default,
             kyc_webhook_secret,
             stellar_horizon_url,
         })

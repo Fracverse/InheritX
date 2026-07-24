@@ -146,6 +146,8 @@ export interface PayoutStatusResponse {
   page_size: number;
   /** Total number of records matching the query */
   total: number;
+  /** Total number of pages */
+  total_pages: number;
 }
 
 // ─── Query params ────────────────────────────────────────────────────────────
