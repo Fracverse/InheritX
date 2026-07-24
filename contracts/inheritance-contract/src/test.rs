@@ -3776,3 +3776,147 @@ fn test_claim_payout_burns_full_amount_for_all_cross_chain_plan() {
     // The plan is fully consumed and removed from storage.
     assert_eq!(client.get_plan(&owner), None);
 }
+
+#[test]
+fn test_admin_update_supported_asset_yield_apy() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let contract_id = env.register_contract(None, InheritanceContract);
+    let client = InheritanceContractClient::new(&env, &contract_id);
+    let admin = Address::generate(&env);
+    client.initialize(&admin);
+
+    let asset = Address::generate(&env);
+
+    // Initial APY should be 0 (default)
+    assert_eq!(client.get_supported_asset_yield_apy(&asset), 0);
+
+    // Admin updates yield APY for asset to 500 bps (5% APY)
+    client.update_supported_asset_yield_apy(&admin, &asset, &500);
+    assert_eq!(client.get_supported_asset_yield_apy(&asset), 500);
+
+    // Admin dynamically updates yield APY for asset to 1000 bps (10% APY)
+    client.update_supported_asset_yield_apy(&admin, &asset, &1000);
+    assert_eq!(client.get_supported_asset_yield_apy(&asset), 1000);
+}
+
+#[test]
+fn test_update_supported_asset_yield_apy_unauthorized() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let contract_id = env.register_contract(None, InheritanceContract);
+    let client = InheritanceContractClient::new(&env, &contract_id);
+    let admin = Address::generate(&env);
+    let non_admin = Address::generate(&env);
+    client.initialize(&admin);
+
+    let asset = Address::generate(&env);
+
+    // Non-admin attempting to update asset yield APY should fail
+    let res = client.try_update_supported_asset_yield_apy(&non_admin, &asset, &500);
+    assert_eq!(res, Err(Ok(Error::Unauthorized)));
+}
+
+#[test]
+fn test_update_supported_asset_yield_apy_invalid_rate() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let contract_id = env.register_contract(None, InheritanceContract);
+    let client = InheritanceContractClient::new(&env, &contract_id);
+    let admin = Address::generate(&env);
+    client.initialize(&admin);
+
+    let asset = Address::generate(&env);
+
+    // Exceeding MAX_YIELD_RATE_BPS (10,000 bps) should fail
+    let res = client.try_update_supported_asset_yield_apy(&admin, &asset, &10_001);
+    assert_eq!(res, Err(Ok(Error::InvalidYieldRate)));
+}
+
+#[test]
+fn test_update_supported_asset_yield_apy_multiple_assets() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let contract_id = env.register_contract(None, InheritanceContract);
+    let client = InheritanceContractClient::new(&env, &contract_id);
+    let admin = Address::generate(&env);
+    client.initialize(&admin);
+
+    let asset1 = Address::generate(&env);
+    let asset2 = Address::generate(&env);
+
+    client.update_supported_asset_yield_apy(&admin, &asset1, &350);
+    client.update_supported_asset_yield_apy(&admin, &asset2, &850);
+
+    // Assert that asset settings are stored independently
+    assert_eq!(client.get_supported_asset_yield_apy(&asset1), 350);
+    assert_eq!(client.get_supported_asset_yield_apy(&asset2), 850);
+}
+
+#[test]
+fn test_update_supported_asset_yield_apy_zero_and_max_boundary() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let contract_id = env.register_contract(None, InheritanceContract);
+    let client = InheritanceContractClient::new(&env, &contract_id);
+    let admin = Address::generate(&env);
+    client.initialize(&admin);
+
+    let asset = Address::generate(&env);
+
+    // Boundary: 0 bps
+    client.update_supported_asset_yield_apy(&admin, &asset, &0);
+    assert_eq!(client.get_supported_asset_yield_apy(&asset), 0);
+
+    // Boundary: MAX_YIELD_RATE_BPS (10,000 bps = 100%)
+    client.update_supported_asset_yield_apy(&admin, &asset, &10_000);
+    assert_eq!(client.get_supported_asset_yield_apy(&asset), 10_000);
+}
+
+#[test]
+fn test_update_supported_asset_yield_apy_emits_event() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let contract_id = env.register_contract(None, InheritanceContract);
+    let client = InheritanceContractClient::new(&env, &contract_id);
+    let admin = Address::generate(&env);
+    client.initialize(&admin);
+
+    let asset = Address::generate(&env);
+
+    client.update_supported_asset_yield_apy(&admin, &asset, &650);
+
+    let yield_event = env
+        .events()
+        .all()
+        .iter()
+        .find(|(emitter, topics, _)| {
+            *emitter == contract_id
+                && *topics == (symbol_short!("YieldApy"), asset.clone()).into_val(&env)
+        })
+        .expect("YieldApy event should be emitted");
+
+    let event_val: u32 = u32::from_val(&env, &yield_event.2);
+    assert_eq!(event_val, 650);
+}
+
+#[test]
+fn test_update_supported_asset_yield_apy_before_initialization() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let contract_id = env.register_contract(None, InheritanceContract);
+    let client = InheritanceContractClient::new(&env, &contract_id);
+    let caller = Address::generate(&env);
+    let asset = Address::generate(&env);
+
+    // Calling before contract initialization must return Unauthorized
+    let res = client.try_update_supported_asset_yield_apy(&caller, &asset, &500);
+    assert_eq!(res, Err(Ok(Error::Unauthorized)));
+}
