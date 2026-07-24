@@ -1511,6 +1511,7 @@ pub struct KYCStatusResponse {
 
 #[derive(Debug, Deserialize)]
 pub struct KYCSubmitRequest {
+    pub wallet_address: String,
     pub full_name: String,
     pub email: String,
     pub date_of_birth: String,
@@ -1541,41 +1542,190 @@ pub struct KYCRequirementsResponse {
 }
 
 // Get user's KYC status
-async fn get_kyc_status() -> impl IntoResponse {
-    // In a real implementation, this would get the user from authentication context
-    // For now, return a mock response
+#[derive(Debug, Deserialize)]
+pub struct KYCStatusQuery {
+    pub wallet_address: String,
+}
+
+async fn get_kyc_status(
+    State(state): State<Arc<AppState>>,
+    Query(query): Query<KYCStatusQuery>,
+) -> impl IntoResponse {
+    #[derive(Debug, sqlx::FromRow)]
+    struct UserKycRow {
+        wallet_address: String,
+        kyc_status: String,
+        created_at: Option<DateTime<Utc>>,
+    }
+
+    #[derive(Debug, sqlx::FromRow)]
+    struct KycRecordRow {
+        created_at: DateTime<Utc>,
+    }
+
+    let user_row = sqlx::query_as::<_, UserKycRow>(
+        r#"
+        SELECT wallet_address, kyc_status::text, created_at
+        FROM users
+        WHERE wallet_address = $1
+        "#,
+    )
+    .bind(&query.wallet_address)
+    .fetch_optional(&state.db_pool)
+    .await;
+
+    let (wallet_address, kyc_status, user_created_at) = match user_row {
+        Ok(Some(row)) => (row.wallet_address, row.kyc_status, row.created_at),
+        Ok(None) => (query.wallet_address.clone(), "pending".to_string(), None),
+        Err(e) => {
+            error!(error = %e, "Failed to fetch KYC status");
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(ApiError {
+                    error: "Database query failed".to_string(),
+                }),
+            )
+                .into_response();
+        }
+    };
+
+    let submitted_at = sqlx::query_as::<_, KycRecordRow>(
+        r#"
+        SELECT created_at
+        FROM kyc_records
+        WHERE wallet_address = $1
+        "#,
+    )
+    .bind(&wallet_address)
+    .fetch_optional(&state.db_pool)
+    .await
+    .ok()
+    .flatten()
+    .map(|r| r.created_at);
+
     let response = KYCStatusResponse {
-        wallet_address: "GDTEST123".to_string(),
-        kyc_status: "pending".to_string(),
-        submitted_at: None,
+        wallet_address,
+        kyc_status,
+        submitted_at,
         approved_at: None,
         rejected_at: None,
         rejection_reason: None,
         provider_reference: None,
     };
 
-    (StatusCode::OK, Json(response))
+    (StatusCode::OK, Json(response)).into_response()
 }
 
 // Submit KYC verification data
-async fn submit_kyc(Json(_payload): Json<KYCSubmitRequest>) -> impl IntoResponse {
-    // In a real implementation, this would:
-    // 1. Validate the request
-    // 2. Submit to third-party KYC provider
-    // 3. Store in database
-    // 4. Return reference ID
+async fn submit_kyc(
+    State(state): State<Arc<AppState>>,
+    Json(payload): Json<KYCSubmitRequest>,
+) -> impl IntoResponse {
+    let mut tx = match state.db_pool.begin().await {
+        Ok(tx) => tx,
+        Err(e) => {
+            error!(error = %e, "Failed to begin database transaction");
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(ApiError {
+                    error: "Failed to begin transaction".to_string(),
+                }),
+            )
+                .into_response();
+        }
+    };
+
+    // Insert or update kyc_records
+    if let Err(e) = sqlx::query(
+        r#"
+        INSERT INTO kyc_records (
+            wallet_address,
+            full_name,
+            date_of_birth,
+            street_address,
+            city,
+            country,
+            postal_code,
+            document_id
+        )
+        VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+        ON CONFLICT (wallet_address)
+        DO UPDATE SET
+            full_name = EXCLUDED.full_name,
+            date_of_birth = EXCLUDED.date_of_birth,
+            street_address = EXCLUDED.street_address,
+            city = EXCLUDED.city,
+            country = EXCLUDED.country,
+            postal_code = EXCLUDED.postal_code,
+            document_id = EXCLUDED.document_id
+        "#,
+    )
+    .bind(&payload.wallet_address)
+    .bind(&payload.full_name)
+    .bind(&payload.date_of_birth)
+    .bind(&payload.street_address)
+    .bind(&payload.city)
+    .bind(&payload.country)
+    .bind(&payload.postal_code)
+    .bind(&payload.document_id)
+    .execute(&mut *tx)
+    .await
+    {
+        error!(error = %e, "Failed to insert KYC record");
+        return (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(ApiError {
+                error: "Failed to save KYC data".to_string(),
+            }),
+        )
+            .into_response();
+    }
+
+    // Update users table with 'submitted' status
+    if let Err(e) = sqlx::query(
+        r#"
+        INSERT INTO users (wallet_address, kyc_status)
+        VALUES ($1, 'submitted'::kyc_status)
+        ON CONFLICT (wallet_address)
+        DO UPDATE SET kyc_status = 'submitted'::kyc_status
+        "#,
+    )
+    .bind(&payload.wallet_address)
+    .execute(&mut *tx)
+    .await
+    {
+        error!(error = %e, "Failed to update user KYC status");
+        return (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(ApiError {
+                error: "Failed to update KYC status".to_string(),
+            }),
+        )
+            .into_response();
+    }
+
+    if let Err(e) = tx.commit().await {
+        error!(error = %e, "Failed to commit database transaction");
+        return (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(ApiError {
+                error: "Failed to commit transaction".to_string(),
+            }),
+        )
+            .into_response();
+    }
 
     let response = KYCStatusResponse {
-        wallet_address: "GDTEST123".to_string(),
+        wallet_address: payload.wallet_address.clone(),
         kyc_status: "submitted".to_string(),
         submitted_at: Some(Utc::now()),
         approved_at: None,
         rejected_at: None,
         rejection_reason: None,
-        provider_reference: Some("ref-001".to_string()),
+        provider_reference: None,
     };
 
-    (StatusCode::OK, Json(response))
+    (StatusCode::OK, Json(response)).into_response()
 }
 
 // Upload KYC document
