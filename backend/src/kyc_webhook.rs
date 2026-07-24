@@ -16,6 +16,90 @@ use crate::ws::KycUpdateEvent;
 
 type HmacSha256 = Hmac<Sha256>;
 
+/// Header the KYC provider carries the request signature in.
+pub const KYC_SIGNATURE_HEADER: &str = "x-kyc-signature";
+
+/// Length of an HMAC-SHA256 digest in bytes.
+const SIGNATURE_LEN: usize = 32;
+
+/// Why a webhook request failed signature verification.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SignatureError {
+    /// No `kyc_webhook_secret` is configured, so nothing can be verified.
+    SecretNotConfigured,
+    /// The signature header is absent or not valid UTF-8.
+    MissingSignature,
+    /// The header is present but is not a hex-encoded HMAC-SHA256 digest.
+    MalformedSignature,
+    /// The signature does not match the body under the configured secret.
+    Mismatch,
+}
+
+impl SignatureError {
+    /// A missing secret is our misconfiguration, not the caller's: answer 503 so
+    /// the provider retries once the deployment is fixed rather than dropping
+    /// the event as permanently rejected.
+    pub fn status(&self) -> StatusCode {
+        match self {
+            SignatureError::SecretNotConfigured => StatusCode::SERVICE_UNAVAILABLE,
+            _ => StatusCode::UNAUTHORIZED,
+        }
+    }
+
+    /// Message returned to the caller. Deliberately coarse — a caller must not
+    /// be able to tell a malformed signature from a wrong one.
+    pub fn client_message(&self) -> &'static str {
+        match self {
+            SignatureError::SecretNotConfigured => "Webhook verification is not configured",
+            _ => "Invalid webhook signature",
+        }
+    }
+}
+
+/// Verify an inbound webhook against the configured shared secret.
+///
+/// The signature is an HMAC-SHA256 of the **raw** request body, hex encoded and
+/// optionally prefixed with `sha256=`. Verification fails closed: a missing or
+/// blank secret rejects every request instead of waving it through.
+pub fn verify_webhook_signature(
+    secret: Option<&str>,
+    body: &[u8],
+    signature: Option<&str>,
+) -> Result<(), SignatureError> {
+    let secret = secret
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .ok_or(SignatureError::SecretNotConfigured)?;
+
+    let signature = signature
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .ok_or(SignatureError::MissingSignature)?;
+
+    let hex_digest = strip_sha256_prefix(signature);
+    let expected = hex::decode(hex_digest).map_err(|_| SignatureError::MalformedSignature)?;
+    if expected.len() != SIGNATURE_LEN {
+        return Err(SignatureError::MalformedSignature);
+    }
+
+    let mut mac =
+        HmacSha256::new_from_slice(secret.as_bytes()).map_err(|_| SignatureError::Mismatch)?;
+    mac.update(body);
+    // `verify_slice` is constant time, so this leaks nothing about the digest.
+    mac.verify_slice(&expected)
+        .map_err(|_| SignatureError::Mismatch)
+}
+
+fn strip_sha256_prefix(signature: &str) -> &str {
+    const PREFIX: &[u8] = b"sha256=";
+    // Compare as bytes: a non-ASCII header would make byte-index slicing panic
+    // on a char boundary, and matching the ASCII prefix proves byte 7 is one.
+    match signature.as_bytes().get(..PREFIX.len()) {
+        Some(head) if head.eq_ignore_ascii_case(PREFIX) => &signature[PREFIX.len()..],
+        _ => signature,
+    }
+}
+
 #[derive(Debug, Deserialize, Serialize, Clone)]
 #[serde(rename_all = "lowercase")]
 pub enum KycStatusPayload {
@@ -50,37 +134,28 @@ pub struct WebhookResponse {
     pub message: String,
 }
 
-fn verify_signature(secret: &str, body: &[u8], signature: &str) -> bool {
-    let sig_bytes = match hex::decode(signature.trim_start_matches("sha256=")) {
-        Ok(b) => b,
-        Err(_) => return false,
-    };
-    let mut mac = match HmacSha256::new_from_slice(secret.as_bytes()) {
-        Ok(m) => m,
-        Err(_) => return false,
-    };
-    mac.update(body);
-    mac.verify_slice(&sig_bytes).is_ok()
-}
-
 pub async fn kyc_webhook_handler(
     State(state): State<Arc<AppState>>,
     headers: HeaderMap,
     body: Bytes,
 ) -> impl IntoResponse {
-    let secret = state.kyc_webhook_secret.as_deref().unwrap_or("");
     let signature = headers
-        .get("x-kyc-signature")
-        .and_then(|v| v.to_str().ok())
-        .unwrap_or("");
+        .get(KYC_SIGNATURE_HEADER)
+        .and_then(|v| v.to_str().ok());
 
-    if !secret.is_empty() && !verify_signature(secret, &body, signature) {
-        warn!(signature = %signature, "KYC webhook rejected: invalid signature");
+    // Verify before parsing: an unauthenticated caller must not reach the
+    // deserializer, the database, or the WebSocket broadcast.
+    if let Err(err) = verify_webhook_signature(
+        state.kyc_webhook_secret.as_deref(),
+        &body,
+        signature,
+    ) {
+        warn!(reason = ?err, "KYC webhook rejected");
         return (
-            StatusCode::UNAUTHORIZED,
+            err.status(),
             Json(WebhookResponse {
                 success: false,
-                message: "Invalid webhook signature".to_string(),
+                message: err.client_message().to_string(),
             }),
         )
             .into_response();
@@ -195,5 +270,113 @@ pub async fn kyc_webhook_handler(
             }),
         )
             .into_response()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    const SECRET: &str = "kyc-webhook-secret";
+    const BODY: &[u8] = br#"{"wallet_address":"GDTEST123","status":"approved"}"#;
+
+    fn sign(secret: &str, body: &[u8]) -> String {
+        let mut mac = HmacSha256::new_from_slice(secret.as_bytes()).unwrap();
+        mac.update(body);
+        hex::encode(mac.finalize().into_bytes())
+    }
+
+    #[test]
+    fn accepts_signature_with_and_without_prefix() {
+        let digest = sign(SECRET, BODY);
+        for signature in [
+            digest.clone(),
+            format!("sha256={digest}"),
+            format!("SHA256={digest}"),
+            format!("  sha256={digest}  "),
+            format!("sha256={}", digest.to_uppercase()),
+        ] {
+            assert_eq!(
+                verify_webhook_signature(Some(SECRET), BODY, Some(&signature)),
+                Ok(()),
+                "should have accepted {signature}"
+            );
+        }
+    }
+
+    #[test]
+    fn rejects_signature_from_a_different_secret() {
+        let signature = sign("other-secret", BODY);
+        assert_eq!(
+            verify_webhook_signature(Some(SECRET), BODY, Some(&signature)),
+            Err(SignatureError::Mismatch)
+        );
+    }
+
+    #[test]
+    fn rejects_body_tampered_after_signing() {
+        let signature = sign(SECRET, BODY);
+        let tampered = br#"{"wallet_address":"GDATTACKER","status":"approved"}"#;
+        assert_eq!(
+            verify_webhook_signature(Some(SECRET), tampered, Some(&signature)),
+            Err(SignatureError::Mismatch)
+        );
+    }
+
+    #[test]
+    fn rejects_missing_or_blank_signature() {
+        assert_eq!(
+            verify_webhook_signature(Some(SECRET), BODY, None),
+            Err(SignatureError::MissingSignature)
+        );
+        assert_eq!(
+            verify_webhook_signature(Some(SECRET), BODY, Some("   ")),
+            Err(SignatureError::MissingSignature)
+        );
+        assert_eq!(
+            verify_webhook_signature(Some(SECRET), BODY, Some("sha256=")),
+            Err(SignatureError::MalformedSignature)
+        );
+    }
+
+    #[test]
+    fn rejects_malformed_signature() {
+        // Not hex, and a hex digest of the wrong length.
+        for signature in ["sha256=not-hex-at-all", "sha256=abcd", &sign(SECRET, BODY)[..62]] {
+            assert_eq!(
+                verify_webhook_signature(Some(SECRET), BODY, Some(signature)),
+                Err(SignatureError::MalformedSignature),
+                "should have rejected {signature}"
+            );
+        }
+    }
+
+    /// The whole point of the issue: no secret must mean no access, not open access.
+    #[test]
+    fn fails_closed_when_secret_is_not_configured() {
+        let signature = sign(SECRET, BODY);
+        for secret in [None, Some(""), Some("   ")] {
+            assert_eq!(
+                verify_webhook_signature(secret, BODY, Some(&signature)),
+                Err(SignatureError::SecretNotConfigured)
+            );
+        }
+    }
+
+    #[test]
+    fn error_statuses_distinguish_client_from_server_fault() {
+        assert_eq!(
+            SignatureError::SecretNotConfigured.status(),
+            StatusCode::SERVICE_UNAVAILABLE
+        );
+        for err in [
+            SignatureError::MissingSignature,
+            SignatureError::MalformedSignature,
+            SignatureError::Mismatch,
+        ] {
+            assert_eq!(err.status(), StatusCode::UNAUTHORIZED);
+            // Callers must not learn *why* the signature was rejected.
+            assert_eq!(err.client_message(), "Invalid webhook signature");
+        }
     }
 }
