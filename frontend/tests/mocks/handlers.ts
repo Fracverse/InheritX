@@ -916,11 +916,14 @@ export const anchorHandlers = [
     const offset = (page - 1) * pageSize;
     const paginated = filtered.slice(offset, offset + pageSize);
 
+    const totalPages = Math.ceil(filtered.length / pageSize);
+
     return HttpResponse.json({
       data: paginated,
       page,
       page_size: pageSize,
       total: filtered.length,
+      total_pages: totalPages,
     });
   }),
 ];
