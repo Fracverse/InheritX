@@ -10,6 +10,7 @@ pub struct Config {
     /// provider webhooks. When unset, `/api/kyc/webhook` rejects every request.
     pub kyc_webhook_secret: Option<String>,
     pub stellar_horizon_url: String,
+    pub fiat_daily_limit_default: rust_decimal::Decimal,
 }
 
 impl Config {
@@ -50,6 +51,7 @@ impl Config {
             plan_cache_ttl_secs,
             kyc_webhook_secret,
             stellar_horizon_url,
+            fiat_daily_limit_default,
         })
     }
 }
