@@ -19,15 +19,23 @@ jobs:
       run:
         working-directory: backend
 
+    env:
+      DATABASE_URL: postgres://postgres:password@localhost:5432/test
+
     services:
       postgres:
-        image: postgres:latest
+        image: postgres:16
         env:
           POSTGRES_DB: test
           POSTGRES_USER: postgres
           POSTGRES_PASSWORD: password
         ports:
           - 5432:5432
+        options: >-
+          --health-cmd pg_isready
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
 
     steps:
       - name: Checkout code
@@ -51,7 +59,7 @@ jobs:
         run: cargo clippy --all-targets --all-features -- -D warnings
 
       - name: Run tests
-        run: cargo test
+        run: cargo test --all-features
 
-      - name: Build
+      - name: Build (release)
         run: cargo build --release

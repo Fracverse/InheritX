@@ -189,6 +189,7 @@ pub fn create_router(state: Arc<AppState>) -> Router {
     let public_routes = Router::new()
         .route("/api/plans", get(get_plans))
         .route("/api/anchor/payout-status", get(get_anchor_payouts))
+        .route("/api/bridge/events", get(get_bridge_events))
         .route("/api/kyc/webhook", post(kyc_webhook_handler))
         .route("/api/kyc/status", get(get_kyc_status))
         .route("/api/kyc/submit", post(submit_kyc))
@@ -1966,6 +1967,154 @@ async fn admin_login(
         Json(AdminLoginResponse {
             token,
             expires_at: expires_at.timestamp(),
+        }),
+    )
+        .into_response()
+}
+
+// ── Bridge Events ─────────────────────────────────────────────────────────────
+
+/// Query parameters for `GET /api/bridge/events`.
+#[derive(Debug, Deserialize)]
+pub struct BridgeEventQuery {
+    /// Filter by on-chain contract address.
+    pub contract_id: Option<String>,
+    /// Filter by owner Stellar address.
+    pub owner_address: Option<String>,
+    /// Return only events at or above this ledger sequence.
+    pub from_ledger: Option<i64>,
+    /// Return only events at or below this ledger sequence.
+    pub to_ledger: Option<i64>,
+    /// Page number (1-based). Defaults to 1.
+    pub page: Option<i64>,
+    /// Results per page. Defaults to 20, max 100.
+    pub page_size: Option<i64>,
+}
+
+/// A single persisted bridge payout event returned by the API.
+#[derive(Debug, Serialize, sqlx::FromRow)]
+pub struct BridgeEventRow {
+    pub id: Uuid,
+    pub contract_id: String,
+    pub ledger_sequence: i64,
+    pub tx_hash: String,
+    pub event_index: i32,
+    pub owner_address: String,
+    pub token_address: String,
+    pub beneficiary_address: String,
+    pub destination_chain: String,
+    pub destination_address: String,
+    pub gross_amount: i64,
+    pub fee_amount: i64,
+    pub net_amount: i64,
+    pub source_chain: String,
+    pub source_tx_hash: String,
+    pub processed_at: DateTime<Utc>,
+    pub created_at: DateTime<Utc>,
+}
+
+/// Paginated response envelope for bridge events.
+#[derive(Debug, Serialize)]
+pub struct BridgeEventsResponse {
+    pub data: Vec<BridgeEventRow>,
+    pub page: i64,
+    pub page_size: i64,
+    pub total: i64,
+    pub total_pages: i64,
+}
+
+/// Handler: `GET /api/bridge/events`
+///
+/// Returns persisted `BridgePay` contract events with optional filtering by
+/// contract address, owner, and ledger range.  Pagination is cursor-free
+/// (page / page_size) so it is cheap to implement on top of the existing index.
+pub async fn get_bridge_events(
+    State(state): State<Arc<AppState>>,
+    Query(q): Query<BridgeEventQuery>,
+) -> Response {
+    let page = q.page.unwrap_or(1).max(1);
+    let page_size = q.page_size.unwrap_or(20).clamp(1, 100);
+    let offset = (page - 1) * page_size;
+
+    // Build a dynamic WHERE clause.  sqlx does not support fully dynamic
+    // queries well, so we enumerate the small set of filter combinations.
+    let count_res: Result<(i64,), sqlx::Error> = sqlx::query_as(
+        r#"
+        SELECT COUNT(*)::BIGINT
+        FROM bridge_payout_events
+        WHERE ($1::TEXT IS NULL OR contract_id    = $1)
+          AND ($2::TEXT IS NULL OR owner_address  = $2)
+          AND ($3::BIGINT IS NULL OR ledger_sequence >= $3)
+          AND ($4::BIGINT IS NULL OR ledger_sequence <= $4)
+        "#,
+    )
+    .bind(&q.contract_id)
+    .bind(&q.owner_address)
+    .bind(q.from_ledger)
+    .bind(q.to_ledger)
+    .fetch_one(&state.db_pool)
+    .await;
+
+    let total = match count_res {
+        Ok((n,)) => n,
+        Err(e) => {
+            error!("bridge_events count query failed: {e}");
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(serde_json::json!({ "error": "Failed to query bridge events" })),
+            )
+                .into_response();
+        }
+    };
+
+    let rows_res: Result<Vec<BridgeEventRow>, sqlx::Error> = sqlx::query_as(
+        r#"
+        SELECT id, contract_id, ledger_sequence, tx_hash, event_index,
+               owner_address, token_address, beneficiary_address,
+               destination_chain, destination_address,
+               gross_amount, fee_amount, net_amount,
+               source_chain, source_tx_hash,
+               processed_at, created_at
+        FROM bridge_payout_events
+        WHERE ($1::TEXT   IS NULL OR contract_id   = $1)
+          AND ($2::TEXT   IS NULL OR owner_address = $2)
+          AND ($3::BIGINT IS NULL OR ledger_sequence >= $3)
+          AND ($4::BIGINT IS NULL OR ledger_sequence <= $4)
+        ORDER BY ledger_sequence DESC, event_index ASC
+        LIMIT $5 OFFSET $6
+        "#,
+    )
+    .bind(&q.contract_id)
+    .bind(&q.owner_address)
+    .bind(q.from_ledger)
+    .bind(q.to_ledger)
+    .bind(page_size)
+    .bind(offset)
+    .fetch_all(&state.db_pool)
+    .await;
+
+    let data = match rows_res {
+        Ok(rows) => rows,
+        Err(e) => {
+            error!("bridge_events rows query failed: {e}");
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(serde_json::json!({ "error": "Failed to query bridge events" })),
+            )
+                .into_response();
+        }
+    };
+
+    let total_pages = (total + page_size - 1) / page_size;
+
+    (
+        StatusCode::OK,
+        Json(BridgeEventsResponse {
+            data,
+            page,
+            page_size,
+            total,
+            total_pages,
         }),
     )
         .into_response()

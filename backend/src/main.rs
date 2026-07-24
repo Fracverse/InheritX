@@ -1,8 +1,8 @@
 #[cfg(feature = "metrics")]
 use inheritx_backend::metrics;
 use inheritx_backend::{
-    create_router, telemetry, AppState, Config, DbManager, InactivityWatchdogConfig,
-    InactivityWatchdogService,
+    create_router, telemetry, AppState, BridgeEventListenerService, BridgeListenerConfig, Config,
+    DbManager, InactivityWatchdogConfig, InactivityWatchdogService,
 };
 use std::net::SocketAddr;
 use std::sync::Arc;
@@ -17,8 +17,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     #[cfg(feature = "metrics")]
     metrics::init();
 
-    //loading the .env
-
+    // Load the .env file if present
     dotenvy::dotenv().ok();
 
     // Load configuration
@@ -53,11 +52,18 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     };
 
     if config.kyc_webhook_secret.is_none() {
-        warn!("KYC_WEBHOOK_SECRET is not set — /api/kyc/webhook will reject all requests with 503");
+        warn!(
+            "KYC_WEBHOOK_SECRET is not set — /api/kyc/webhook will reject all requests with 503"
+        );
     }
 
+    // Shared shutdown channel: sending `true` (or dropping the sender) stops
+    // all background daemons gracefully.
+    let (shutdown_tx, shutdown_rx) = tokio::sync::watch::channel(false);
+
     let (kyc_tx, _) = tokio::sync::broadcast::channel(100);
-    // Initialize state
+
+    // Initialize app state
     let state = Arc::new(AppState {
         anchor: Arc::new(inheritx_backend::stellar_anchor::AnchorRegistry::new()),
         db_pool: db_pool.clone(),
@@ -78,10 +84,24 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     ));
     inactivity_watchdog.start();
 
+    // Start webhook dispatcher
     let webhook_dispatcher = Arc::new(inheritx_backend::WebhookDispatcherService::new(
         db_pool.clone(),
     ));
     webhook_dispatcher.start();
+
+    // Start bridge event listener (only when STELLAR_CONTRACT_ID is configured)
+    if let Some(bridge_cfg) = BridgeListenerConfig::from_env(&config.stellar_horizon_url) {
+        info!(
+            contract_id = %bridge_cfg.contract_id,
+            "Starting Bridge event listener daemon"
+        );
+        let bridge_listener =
+            Arc::new(BridgeEventListenerService::new(db_pool.clone(), bridge_cfg));
+        bridge_listener.start(shutdown_rx.clone());
+    } else {
+        info!("STELLAR_CONTRACT_ID not set — Bridge event listener is disabled");
+    }
 
     // Periodically refresh DB pool metrics
     #[cfg(feature = "metrics")]
@@ -101,10 +121,22 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     // Start server
     let addr = SocketAddr::from(([0, 0, 0, 0], config.port));
-    info!("Starting rebranded INHERITX backend skeleton on {}", addr);
+    info!("Starting InheritX backend on {}", addr);
 
     let listener = tokio::net::TcpListener::bind(addr).await?;
-    axum::serve(listener, app).await?;
+
+    // Graceful shutdown: signal background daemons when the server stops.
+    let serve = axum::serve(listener, app);
+    serve
+        .with_graceful_shutdown(async move {
+            tokio::signal::ctrl_c()
+                .await
+                .expect("failed to install Ctrl-C handler");
+            info!("Shutdown signal received — stopping background daemons");
+            // Broadcast shutdown to all watch receivers.
+            let _ = shutdown_tx.send(true);
+        })
+        .await?;
 
     Ok(())
 }
