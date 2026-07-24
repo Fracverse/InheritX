@@ -3,6 +3,7 @@ pub struct Config {
     pub database_url: String,
     pub redis_url: Option<String>,
     pub plan_cache_ttl_secs: u64,
+    pub stellar_horizon_url: String,
 }
 
 impl Config {
@@ -21,12 +22,18 @@ impl Config {
             .ok()
             .and_then(|value| value.parse().ok())
             .unwrap_or(15);
+        let stellar_horizon_url = std::env::var("STELLAR_HORIZON_URL")
+            .ok()
+            .map(|value| value.trim().to_string())
+            .filter(|value| !value.is_empty())
+            .unwrap_or_else(|| "https://horizon-testnet.stellar.org".to_string());
 
         Ok(Config {
             port,
             database_url,
             redis_url,
             plan_cache_ttl_secs,
+            stellar_horizon_url,
         })
     }
 }

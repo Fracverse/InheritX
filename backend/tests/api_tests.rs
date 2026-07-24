@@ -48,6 +48,9 @@ fn setup_app_with_cache(plan_cache: PlanCache) -> axum::Router {
         kyc_webhook_secret: None,
         apy_config: inheritx_backend::yield_calculator::ApyConfig::default(),
         plan_cache,
+        stellar_submit: inheritx_backend::stellar_submit::StellarSubmitClient::new(
+            "https://horizon-testnet.stellar.org".to_string(),
+        ),
     });
     create_router(state)
 }

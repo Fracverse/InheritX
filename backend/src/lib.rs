@@ -9,14 +9,17 @@ pub mod kyc_webhook;
 #[cfg(feature = "metrics")]
 pub mod metrics;
 pub mod middleware;
+pub mod password;
 
 #[cfg(feature = "pdf")]
 pub mod pdf;
 
 pub mod stellar_anchor;
+pub mod stellar_submit;
 pub mod telemetry;
 pub mod webhooks;
 pub mod ws;
+pub mod xdr;
 pub mod yield_calculator;
 
 pub use api::{create_router, AppState, PlanResponse};

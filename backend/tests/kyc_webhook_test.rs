@@ -33,6 +33,9 @@ fn test_state(secret: Option<&str>) -> std::sync::Arc<inheritx_backend::AppState
         apy_config: inheritx_backend::yield_calculator::ApyConfig::default(),
         plan_cache: inheritx_backend::PlanCache::disabled(),
         kyc_tx,
+        stellar_submit: inheritx_backend::stellar_submit::StellarSubmitClient::new(
+            "https://horizon-testnet.stellar.org".to_string(),
+        ),
     })
 }
 #[tokio::test]
