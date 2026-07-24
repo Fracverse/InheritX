@@ -61,8 +61,10 @@ sha2 = "0.10"
 hex = "0.4"
 jsonwebtoken = "9.0"
 base64 = "0.21"
-stellar-strkey = "0.0.8"
+stellar-strkey = "0.0.13"
 ed25519-dalek = { version = "2.1", features = ["pkcs8", "rand_core"] }
+stellar-xdr = { version = "27", features = ["base64"] }
+argon2 = "0.5"
 
 # Utilities
 dashmap = "6"

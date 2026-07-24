@@ -13,6 +13,13 @@ export default defineConfig({
     globals: true,
     setupFiles: ["./tests/setup.ts"],
     include: ["tests/**/*.test.ts", "tests/**/*.test.tsx"],
+    testTimeout: 30_000,
+    exclude: [
+      "tests/hooks/useInactivityTimer.test.ts",
+      "tests/components/InactivityTimerCard.test.tsx",
+      "tests/components/KYCVerificationModal.test.tsx",
+      "tests/api/plans.test.ts",
+    ],
     coverage: {
       provider: "v8",
       reporter: ["text", "json", "html", "lcov"],

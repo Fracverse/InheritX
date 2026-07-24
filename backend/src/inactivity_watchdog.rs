@@ -11,7 +11,7 @@ use crate::cache::PlanCache;
 const DEFAULT_INTERVAL_SECS: u64 = 60 * 60;
 const DEFAULT_BATCH_SIZE: i64 = 500;
 const WATCHDOG_LOCK_KEY: i64 = 820;
-const CLAIMABLE_STATUS: &str = "CLAIMABLE";
+const TRIGGERED_STATUS: &str = "TRIGGERED";
 
 #[derive(Debug, Clone, Copy)]
 pub struct InactivityWatchdogConfig {
@@ -36,8 +36,6 @@ impl InactivityWatchdogConfig {
 struct ExpiredPlan {
     id: Uuid,
     owner_address: String,
-    user_id: Uuid,
-    title: String,
     inactivity_deadline_at: DateTime<Utc>,
 }
 
@@ -66,7 +64,7 @@ impl InactivityWatchdogService {
 
                 match self.run_once().await {
                     Ok(count) if count > 0 => {
-                        info!("Inactivity watchdog marked {count} plan(s) as claimable");
+                        info!("Inactivity watchdog marked {count} plan(s) as triggered");
                     }
                     Ok(_) => {}
                     Err(e) => error!("Inactivity watchdog sweep failed: {e}"),
@@ -92,23 +90,22 @@ impl InactivityWatchdogService {
         let expired_plans = sqlx::query_as::<_, ExpiredPlan>(
             r#"
             UPDATE plans
-            SET status = $1,
-                updated_at = NOW()
+            SET status = $1
             WHERE id IN (
                 SELECT p.id
                 FROM plans p
                 WHERE COALESCE(p.is_active, true) = true
-                  AND p.status <> $1
+                  AND COALESCE(p.status, 'ACTIVE') = 'ACTIVE'
                   AND p.last_ping IS NOT NULL
                   AND p.inactivity_deadline_at <= NOW()
                 ORDER BY p.inactivity_deadline_at ASC
                 LIMIT $2
                 FOR UPDATE SKIP LOCKED
             )
-            RETURNING id, owner_address, user_id, title, inactivity_deadline_at
+            RETURNING id, owner_address, inactivity_deadline_at
             "#,
         )
-        .bind(CLAIMABLE_STATUS)
+        .bind(TRIGGERED_STATUS)
         .bind(self.config.batch_size)
         .fetch_all(&mut *tx)
         .await?;
@@ -133,7 +130,7 @@ impl InactivityWatchdogService {
                 warn!(
                     plan_id = %plan.id,
                     error = %err,
-                    "Failed to invalidate Redis plan cache for claimable plan"
+                    "Failed to invalidate Redis plan cache for triggered plan"
                 );
             }
         }
@@ -141,25 +138,21 @@ impl InactivityWatchdogService {
         for plan in &expired_plans {
             warn!(
                 plan_id = %plan.id,
-                user_id = %plan.user_id,
-                title = %plan.title,
                 inactivity_deadline_at = %plan.inactivity_deadline_at,
-                "Plan marked claimable by inactivity watchdog"
+                "Plan marked triggered by inactivity watchdog"
             );
 
-            // enqueue webhook for claimable/claimed plans
             let payload = serde_json::json!({
                 "plan_id": plan.id,
-                "user_id": plan.user_id,
-                "title": plan.title,
+                "owner_address": plan.owner_address,
                 "inactivity_deadline_at": plan.inactivity_deadline_at,
             });
 
             if let Err(e) =
-                crate::WebhookDispatcherService::enqueue_event(&self.db, "plan.claimable", &payload)
+                crate::WebhookDispatcherService::enqueue_event(&self.db, "plan.triggered", &payload)
                     .await
             {
-                warn!("Failed to enqueue webhook for plan.claimable: {:?}", e);
+                warn!("Failed to enqueue webhook for plan.triggered: {:?}", e);
             }
         }
 
