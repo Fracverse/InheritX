@@ -929,15 +929,21 @@ async fn get_plans(
     // Build the query dynamically based on filters
     let rows: Vec<PlanRow> = match (&query.owner, &query.beneficiary) {
         (Some(owner), None) => {
-            // Filter by owner only
+            // Filter by a user address: match the plan owner or any listed beneficiary
             match sqlx::query_as::<_, PlanRow>(
                 r#"
                 SELECT id, owner_address, token_address, amount, grace_period,
                        grace_period_seconds, earn_yield, last_ping, is_active,
                        status, yield_rate_bps, accrued_yield, created_at
-                FROM plans
-                WHERE owner_address = $1
-                ORDER BY created_at DESC
+                FROM plans p
+                WHERE p.owner_address = $1
+                   OR EXISTS (
+                       SELECT 1
+                       FROM beneficiaries b
+                       WHERE b.plan_id = p.id
+                         AND b.wallet_address = $1
+                   )
+                ORDER BY p.created_at DESC
                 "#,
             )
             .bind(owner)
@@ -957,15 +963,20 @@ async fn get_plans(
             }
         }
         (None, Some(beneficiary)) => {
-            // Filter by beneficiary: plans where beneficiary address is listed
+            // Filter by a user address: match the plan owner or any listed beneficiary
             match sqlx::query_as::<_, PlanRow>(
                 r#"
-                SELECT DISTINCT p.id, p.owner_address, p.token_address, p.amount,
-                       p.grace_period, p.grace_period_seconds, p.earn_yield,
-                       p.last_ping, p.is_active, p.status, p.yield_rate_bps, p.accrued_yield, p.created_at
+                SELECT id, owner_address, token_address, amount, grace_period,
+                       grace_period_seconds, earn_yield, last_ping, is_active,
+                       status, yield_rate_bps, accrued_yield, created_at
                 FROM plans p
-                INNER JOIN beneficiaries b ON b.plan_id = p.id
-                WHERE b.wallet_address = $1
+                WHERE p.owner_address = $1
+                   OR EXISTS (
+                       SELECT 1
+                       FROM beneficiaries b
+                       WHERE b.plan_id = p.id
+                         AND b.wallet_address = $1
+                   )
                 ORDER BY p.created_at DESC
                 "#,
             )
@@ -986,15 +997,31 @@ async fn get_plans(
             }
         }
         (Some(owner), Some(beneficiary)) => {
-            // Filter by both owner and beneficiary
+            // Filter by both addresses: each address must match the plan owner or a listed beneficiary
             match sqlx::query_as::<_, PlanRow>(
                 r#"
-                SELECT DISTINCT p.id, p.owner_address, p.token_address, p.amount,
-                       p.grace_period, p.grace_period_seconds, p.earn_yield,
-                       p.last_ping, p.is_active, p.status, p.yield_rate_bps, p.accrued_yield, p.created_at
+                SELECT id, owner_address, token_address, amount, grace_period,
+                       grace_period_seconds, earn_yield, last_ping, is_active,
+                       status, yield_rate_bps, accrued_yield, created_at
                 FROM plans p
-                INNER JOIN beneficiaries b ON b.plan_id = p.id
-                WHERE p.owner_address = $1 AND b.wallet_address = $2
+                WHERE (
+                    p.owner_address = $1
+                    OR EXISTS (
+                        SELECT 1
+                        FROM beneficiaries b
+                        WHERE b.plan_id = p.id
+                          AND b.wallet_address = $1
+                    )
+                )
+                  AND (
+                    p.owner_address = $2
+                    OR EXISTS (
+                        SELECT 1
+                        FROM beneficiaries b
+                        WHERE b.plan_id = p.id
+                          AND b.wallet_address = $2
+                    )
+                )
                 ORDER BY p.created_at DESC
                 "#,
             )

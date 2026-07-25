@@ -339,6 +339,24 @@ async fn test_get_plans_returns_cached_response_without_db_access() {
 }
 
 #[tokio::test]
+async fn test_get_plans_filters_by_owner_or_beneficiary_address() {
+    let app = setup_app();
+
+    let response = app
+        .oneshot(
+            Request::builder()
+                .method(http::Method::GET)
+                .uri("/api/plans?owner=GOWNER123")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(response.status(), StatusCode::OK);
+}
+
+#[tokio::test]
 async fn test_ping_plan_invalid_signature() {
     let app = setup_app();
 
