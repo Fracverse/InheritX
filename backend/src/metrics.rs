@@ -1,8 +1,8 @@
 use axum::{extract::Request, http::StatusCode, middleware::Next, response::IntoResponse};
 use once_cell::sync::Lazy;
 use prometheus::{
-    histogram_opts, opts, register_gauge, register_histogram_vec, Encoder, Gauge, HistogramVec,
-    TextEncoder,
+    histogram_opts, opts, register_gauge, register_histogram_vec, register_int_counter_vec,
+    Encoder, Gauge, HistogramVec, IntCounterVec, TextEncoder,
 };
 use std::time::Instant;
 
@@ -13,6 +13,18 @@ pub static ACTIVE_CONNECTIONS: Lazy<Gauge> = Lazy::new(|| {
         "Number of currently active HTTP connections"
     ))
     .expect("failed to register active_connections gauge")
+});
+
+/// Total HTTP requests by method, path pattern, and status.
+pub static REQUEST_COUNT: Lazy<IntCounterVec> = Lazy::new(|| {
+    register_int_counter_vec!(
+        opts!(
+            "inheritx_http_requests_total",
+            "Total number of HTTP requests"
+        ),
+        &["method", "path", "status"]
+    )
+    .expect("failed to register request_count counter")
 });
 
 /// Per-route request latency histogram (seconds).
@@ -51,6 +63,7 @@ pub static DB_POOL_IDLE: Lazy<Gauge> = Lazy::new(|| {
 /// Call once at startup to force lazy initialization of all metrics.
 pub fn init() {
     Lazy::force(&ACTIVE_CONNECTIONS);
+    Lazy::force(&REQUEST_COUNT);
     Lazy::force(&REQUEST_LATENCY);
     Lazy::force(&DB_POOL_SIZE);
     Lazy::force(&DB_POOL_IDLE);
@@ -78,12 +91,16 @@ pub async fn metrics_handler() -> impl IntoResponse {
         .into_response()
 }
 
-/// Axum middleware: tracks active connections and records per-route latency.
+/// Axum middleware: records request count, latency, and in-flight connections.
+///
+/// Apply with [`Router::route_layer`] so [`MatchedPath`](axum::extract::MatchedPath)
+/// is available (avoids high-cardinality raw URI labels).
 pub async fn latency_middleware(req: Request, next: Next) -> impl IntoResponse {
     ACTIVE_CONNECTIONS.inc();
 
     let method = req.method().to_string();
-    // Use the matched path pattern (e.g. "/api/plans") to avoid high cardinality.
+    // Prefer the matched route pattern (e.g. "/api/plans/{id}") to avoid
+    // high-cardinality labels from path parameters.
     let path = req
         .extensions()
         .get::<axum::extract::MatchedPath>()
@@ -95,6 +112,9 @@ pub async fn latency_middleware(req: Request, next: Next) -> impl IntoResponse {
     let elapsed = start.elapsed().as_secs_f64();
 
     let status = response.status().as_u16().to_string();
+    REQUEST_COUNT
+        .with_label_values(&[&method, &path, &status])
+        .inc();
     REQUEST_LATENCY
         .with_label_values(&[&method, &path, &status])
         .observe(elapsed);

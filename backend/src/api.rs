@@ -198,10 +198,23 @@ pub fn create_router(state: Arc<AppState>) -> Router {
         .route("/api/transactions/submit", post(submit_transaction))
         .route("/api/admin/login", post(admin_login))
         .route("/ws/kyc", get(ws_handler));
-    let router = Router::new()
+
+    // API routes first so metrics can use route_layer (MatchedPath available).
+    let api_routes = Router::new()
         .merge(user_routes)
         .merge(admin_routes)
-        .merge(public_routes)
+        .merge(public_routes);
+
+    #[cfg(feature = "metrics")]
+    let api_routes = api_routes.route_layer(from_fn(latency_middleware));
+
+    let router = Router::new().merge(api_routes);
+
+    // /metrics is outside the metrics route_layer so scrapes don't inflate counts.
+    #[cfg(feature = "metrics")]
+    let router = router.route("/metrics", get(metrics_handler));
+
+    let router = router
         .layer(axum::middleware::from_fn(move |req, next| {
             rate_limit_middleware(req, next, store.clone(), config.clone())
         }))
@@ -210,11 +223,6 @@ pub fn create_router(state: Arc<AppState>) -> Router {
         .layer(x_frame_options_layer())
         .layer(csp_layer())
         .layer(hsts_layer());
-
-    #[cfg(feature = "metrics")]
-    let router = router
-        .route("/metrics", get(metrics_handler))
-        .layer(from_fn(latency_middleware));
 
     router.layer(cors).with_state(state)
 }
