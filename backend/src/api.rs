@@ -1574,7 +1574,7 @@ async fn get_kyc_status(
     .fetch_optional(&state.db_pool)
     .await;
 
-    let (wallet_address, kyc_status, user_created_at) = match user_row {
+    let (wallet_address, kyc_status, _user_created_at) = match user_row {
         Ok(Some(row)) => (row.wallet_address, row.kyc_status, row.created_at),
         Ok(None) => (query.wallet_address.clone(), "pending".to_string(), None),
         Err(e) => {
