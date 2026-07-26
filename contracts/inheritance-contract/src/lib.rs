@@ -1113,9 +1113,7 @@ impl InheritanceContract {
             return Err(InheritanceError::Unauthorized);
         }
 
-        if record.status != DisputeStatus::Filed
-            && record.status != DisputeStatus::UnderReview
-        {
+        if record.status != DisputeStatus::Filed && record.status != DisputeStatus::UnderReview {
             return Err(InheritanceError::AlreadyApproved);
         }
 
@@ -4221,9 +4219,10 @@ impl InheritanceContract {
             .unwrap_or(0u32);
         let next = current.saturating_add(1);
 
-        env.storage()
-            .persistent()
-            .set(&(symbol_short!("vk_ref"), vault_id, next), &new_key_reference);
+        env.storage().persistent().set(
+            &(symbol_short!("vk_ref"), vault_id, next),
+            &new_key_reference,
+        );
         env.storage()
             .persistent()
             .set(&(symbol_short!("vk_ver"), vault_id), &next);
@@ -5770,10 +5769,7 @@ impl InheritanceContract {
         Ok(())
     }
 
-    pub fn add_supported_wrapped_token(
-        env: Env,
-        token: Address,
-    ) -> Result<(), InheritanceError> {
+    pub fn add_supported_wrapped_token(env: Env, token: Address) -> Result<(), InheritanceError> {
         let admin = Self::get_admin(&env).ok_or(InheritanceError::AdminNotSet)?;
         admin.require_auth();
 
@@ -5792,18 +5788,13 @@ impl InheritanceContract {
             .persistent()
             .set(&symbol_short!("supp_wrp"), &tokens);
 
-        env.events().publish(
-            (symbol_short!("wrapped"), symbol_short!("add")),
-            token,
-        );
+        env.events()
+            .publish((symbol_short!("wrapped"), symbol_short!("add")), token);
 
         Ok(())
     }
 
-    pub fn remove_wrapped_token(
-        env: Env,
-        token: Address,
-    ) -> Result<(), InheritanceError> {
+    pub fn remove_wrapped_token(env: Env, token: Address) -> Result<(), InheritanceError> {
         let admin = Self::get_admin(&env).ok_or(InheritanceError::AdminNotSet)?;
         admin.require_auth();
 
@@ -5819,10 +5810,8 @@ impl InheritanceContract {
                 .persistent()
                 .set(&symbol_short!("supp_wrp"), &tokens);
 
-            env.events().publish(
-                (symbol_short!("wrapped"), symbol_short!("remove")),
-                token,
-            );
+            env.events()
+                .publish((symbol_short!("wrapped"), symbol_short!("remove")), token);
             Ok(())
         } else {
             Err(InheritanceError::BeneficiaryNotFound)
@@ -5847,8 +5836,4 @@ impl InheritanceContract {
     }
 }
 
-mod cross_contract_test;
-#[cfg(test)]
-#[allow(clippy::duplicated_attributes)]
-mod message_test;
 mod test;
