@@ -36,6 +36,7 @@ fn test_state(secret: Option<&str>) -> std::sync::Arc<inheritx_backend::AppState
         stellar_submit: inheritx_backend::stellar_submit::StellarSubmitClient::new(
             "https://horizon-testnet.stellar.org".to_string(),
         ),
+        allowed_origins: vec!["https://inheritx.vercel.app".to_string()],
     })
 }
 #[tokio::test]

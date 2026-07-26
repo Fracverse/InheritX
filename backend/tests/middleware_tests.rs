@@ -122,3 +122,58 @@ async fn test_different_ips_have_independent_limits() {
     // IP2 should still be allowed independently
     assert!(store.check_and_increment(ip2, &config));
 }
+
+#[cfg(test)]
+mod cors_tests {
+    use axum::http::HeaderValue;
+    use inheritx_backend::middleware::CorsMatcher;
+
+    #[test]
+    fn test_cors_exact_matching() {
+        let allowed = vec!["https://inheritx.vercel.app".to_string()];
+        let matcher = CorsMatcher::new(&allowed);
+
+        assert!(matcher.is_allowed(&HeaderValue::from_static("https://inheritx.vercel.app")));
+        assert!(!matcher.is_allowed(&HeaderValue::from_static("http://inheritx.vercel.app")));
+        assert!(!matcher.is_allowed(&HeaderValue::from_static("https://other.app")));
+    }
+
+    #[test]
+    fn test_cors_wildcard_matching() {
+        let allowed = vec!["https://*.inheritx.vercel.app".to_string(), "https://*.vercel.app".to_string()];
+        let matcher = CorsMatcher::new(&allowed);
+
+        // Subdomain matching
+        assert!(matcher.is_allowed(&HeaderValue::from_static("https://sub.inheritx.vercel.app")));
+        assert!(matcher.is_allowed(&HeaderValue::from_static("https://test.dev.vercel.app")));
+        assert!(matcher.is_allowed(&HeaderValue::from_static("https://vercel.app")));
+
+        // Block suffix bypasses
+        assert!(!matcher.is_allowed(&HeaderValue::from_static("https://attacker-vercel.app")));
+        assert!(!matcher.is_allowed(&HeaderValue::from_static("https://attackervercel.app")));
+    }
+
+    #[test]
+    fn test_cors_scheme_and_local_rules() {
+        // HTTP disallowed for remote hosts
+        let allowed = vec!["http://example.com".to_string(), "http://localhost".to_string(), "http://127.0.0.1".to_string()];
+        let matcher = CorsMatcher::new(&allowed);
+
+        assert!(!matcher.is_allowed(&HeaderValue::from_static("http://example.com")));
+        assert!(matcher.is_allowed(&HeaderValue::from_static("http://localhost")));
+        assert!(matcher.is_allowed(&HeaderValue::from_static("http://127.0.0.1")));
+    }
+
+    #[test]
+    fn test_cors_ports() {
+        let allowed = vec!["http://localhost:3000".to_string(), "https://example.com:8443".to_string()];
+        let matcher = CorsMatcher::new(&allowed);
+
+        assert!(matcher.is_allowed(&HeaderValue::from_static("http://localhost:3000")));
+        assert!(!matcher.is_allowed(&HeaderValue::from_static("http://localhost:3001")));
+        assert!(!matcher.is_allowed(&HeaderValue::from_static("http://localhost")));
+
+        assert!(matcher.is_allowed(&HeaderValue::from_static("https://example.com:8443")));
+        assert!(!matcher.is_allowed(&HeaderValue::from_static("https://example.com")));
+    }
+}

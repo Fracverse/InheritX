@@ -11,6 +11,7 @@ pub struct Config {
     pub kyc_webhook_secret: Option<String>,
     pub stellar_horizon_url: String,
     pub fiat_daily_limit_default: rust_decimal::Decimal,
+    pub allowed_origins: Vec<String>,
 }
 
 impl Config {
@@ -43,6 +44,15 @@ impl Config {
             .map(|value| value.trim().to_string())
             .filter(|value| !value.is_empty())
             .unwrap_or_else(|| "https://horizon-testnet.stellar.org".to_string());
+        let allowed_origins = std::env::var("ALLOWED_ORIGINS")
+            .ok()
+            .map(|val| {
+                val.split(',')
+                    .map(|s| s.trim().to_string())
+                    .filter(|s| !s.is_empty())
+                    .collect()
+            })
+            .unwrap_or_else(|| vec!["https://inheritx.vercel.app".to_string()]);
 
         Ok(Config {
             port,
@@ -52,6 +62,7 @@ impl Config {
             kyc_webhook_secret,
             stellar_horizon_url,
             fiat_daily_limit_default,
+            allowed_origins,
         })
     }
 }

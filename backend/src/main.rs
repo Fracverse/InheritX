@@ -68,6 +68,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         stellar_submit: inheritx_backend::stellar_submit::StellarSubmitClient::new(
             config.stellar_horizon_url.clone(),
         ),
+        allowed_origins: config.allowed_origins.clone(),
     });
 
     // Start inactivity watchdog

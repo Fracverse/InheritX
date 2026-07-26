@@ -51,6 +51,7 @@ fn setup_app_with_cache(plan_cache: PlanCache) -> axum::Router {
         stellar_submit: inheritx_backend::stellar_submit::StellarSubmitClient::new(
             "https://horizon-testnet.stellar.org".to_string(),
         ),
+        allowed_origins: vec!["https://inheritx.vercel.app".to_string()],
     });
     create_router(state)
 }

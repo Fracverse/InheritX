@@ -1,6 +1,7 @@
 use crate::middleware::{
     csp_layer, hsts_layer, rate_limit_middleware, referrer_policy_layer,
     x_content_type_options_layer, x_frame_options_layer, RateLimitConfig, RateLimitStore,
+    CorsMatcher,
 };
 use axum::http::{HeaderValue, Method};
 use axum::{
@@ -18,7 +19,7 @@ use chrono::{DateTime, Utc};
 use rust_decimal::Decimal;
 use serde::{Deserialize, Serialize};
 use std::sync::Arc;
-use tower_http::cors::CorsLayer;
+use tower_http::cors::{AllowOrigin, CorsLayer};
 use tracing::error;
 use uuid::Uuid;
 
@@ -63,6 +64,7 @@ pub struct AppState {
     pub plan_cache: PlanCache,
     pub kyc_tx: tokio::sync::broadcast::Sender<crate::ws::KycUpdateEvent>,
     pub stellar_submit: StellarSubmitClient,
+    pub allowed_origins: Vec<String>,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -154,13 +156,14 @@ struct AdminRow {
 }
 
 pub fn create_router(state: Arc<AppState>) -> Router {
-    // Strict CORS: only allow specific origins, methods, and headers
+    // Strict CORS: validate origin schemas and support multiple subdomains via CorsMatcher
+    let matcher = CorsMatcher::new(&state.allowed_origins);
     let cors = CorsLayer::new()
-        .allow_origin(
-            "https://inheritx.vercel.app"
-                .parse::<HeaderValue>()
-                .unwrap(),
-        )
+        .allow_origin(AllowOrigin::predicate(
+            move |origin: &HeaderValue, _parts: &axum::http::request::Parts| {
+                matcher.is_allowed(origin)
+            },
+        ))
         .allow_methods([Method::GET, Method::POST, Method::OPTIONS])
         .allow_headers([
             axum::http::header::CONTENT_TYPE,
