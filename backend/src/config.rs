@@ -11,6 +11,8 @@ pub struct Config {
     pub kyc_webhook_secret: Option<String>,
     pub stellar_horizon_url: String,
     pub fiat_daily_limit_default: rust_decimal::Decimal,
+    pub anchor_api_url: Option<String>,
+    pub anchor_api_key: Option<String>,
 }
 
 impl Config {
@@ -44,6 +46,16 @@ impl Config {
             .filter(|value| !value.is_empty())
             .unwrap_or_else(|| "https://horizon-testnet.stellar.org".to_string());
 
+        let anchor_api_url = std::env::var("ANCHOR_API_URL")
+            .ok()
+            .map(|value| value.trim().to_string())
+            .filter(|value| !value.is_empty());
+
+        let anchor_api_key = std::env::var("ANCHOR_API_KEY")
+            .ok()
+            .map(|value| value.trim().to_string())
+            .filter(|value| !value.is_empty());
+
         Ok(Config {
             port,
             database_url,
@@ -52,6 +64,8 @@ impl Config {
             kyc_webhook_secret,
             stellar_horizon_url,
             fiat_daily_limit_default,
+            anchor_api_url,
+            anchor_api_key,
         })
     }
 }

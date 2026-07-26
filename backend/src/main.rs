@@ -60,7 +60,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let (kyc_tx, _) = tokio::sync::broadcast::channel(100);
     // Initialize state
     let state = Arc::new(AppState {
-        anchor: Arc::new(inheritx_backend::stellar_anchor::AnchorRegistry::new()),
+        anchor: Arc::new(inheritx_backend::stellar_anchor::AnchorRegistry::new(
+            config.anchor_api_url.clone(),
+            config.anchor_api_key.clone(),
+        )),
         db_pool: db_pool.clone(),
         kyc_webhook_secret: config.kyc_webhook_secret.clone(),
         apy_config: inheritx_backend::yield_calculator::ApyConfig::from_env(),

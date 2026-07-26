@@ -122,6 +122,7 @@ pub struct PayoutRow {
     pub amount: String,
     pub payout_type: String,
     pub status: String,
+    pub anchor_payout_id: Option<String>,
     pub created_at: DateTime<Utc>,
 }
 
@@ -1251,8 +1252,8 @@ async fn ping_plan(
         .into_response()
 }
 // Handler: Trigger Payout
-// Contributors: Implement calculating final payout with yield, parsing fiat payout details,
-// submitting fiat payouts to AnchorRegistry, and marking the plan inactive
+// Initiates payouts for all beneficiaries — calls AnchorRegistry for fiat payouts
+// and marks the plan as PAID_OUT.
 async fn trigger_payout(
     State(state): State<Arc<AppState>>,
     Json(payload): Json<PayoutRequest>,
@@ -1404,32 +1405,7 @@ async fn trigger_payout(
             }
         }
 
-        let payout_row = match sqlx::query_as::<_, PayoutRow>(
-            r#"
-            INSERT INTO payouts (plan_id, beneficiary_address, amount, payout_type, status)
-            VALUES ($1, $2, $3, $4::payout_type, $5::payout_status)
-            RETURNING id, plan_id, beneficiary_address, amount::text, payout_type::text, status::text, created_at
-            "#,
-        )
-        .bind(plan.id)
-        .bind(&b.wallet_address)
-        .bind(share)
-        .bind(payout_type_str)
-        .bind(payout_status_str)
-        .fetch_one(&mut *tx)
-        .await {
-            Ok(row) => row,
-            Err(e) => {
-                error!(plan_id = %plan.id, beneficiary = %b.wallet_address, error = %e, "Failed to insert payout record");
-                return (
-                    StatusCode::INTERNAL_SERVER_ERROR,
-                    Json(serde_json::json!({ "error": format!("Failed to insert payout record: {}", e) })),
-                ).into_response();
-            }
-        };
-
-        // Initiate payout distribution
-        if is_fiat {
+        let anchor_payout_id: Option<String> = if is_fiat {
             let (beneficiary_name, fiat_currency, bank_name, account_number) =
                 parse_fiat_anchor_info(&b.fiat_anchor_info, &b.wallet_address);
             let token_amount_f64 = share.to_string().parse::<f64>().unwrap_or(0.0);
@@ -1442,8 +1418,56 @@ async fn trigger_payout(
                 bank_name,
                 account_number,
             };
-            state.anchor.create_payout(req);
+            match state.anchor.create_payout(req).await {
+                Ok(anchor_payout) => {
+                    info!(
+                        anchor_payout_id = %anchor_payout.id,
+                        beneficiary = %b.wallet_address,
+                        plan_id = %plan.id,
+                        "Anchor payout initiated"
+                    );
+                    Some(anchor_payout.id)
+                }
+                Err(e) => {
+                    error!(
+                        error = %e,
+                        beneficiary = %b.wallet_address,
+                        plan_id = %plan.id,
+                        "Failed to initiate anchor payout"
+                    );
+                    None
+                }
+            }
+        } else {
+            None
+        };
 
+        let payout_row = match sqlx::query_as::<_, PayoutRow>(
+            r#"
+            INSERT INTO payouts (plan_id, beneficiary_address, amount, payout_type, status, anchor_payout_id)
+            VALUES ($1, $2, $3, $4::payout_type, $5::payout_status, $6)
+            RETURNING id, plan_id, beneficiary_address, amount::text, payout_type::text, status::text, anchor_payout_id, created_at
+            "#,
+        )
+        .bind(plan.id)
+        .bind(&b.wallet_address)
+        .bind(share)
+        .bind(payout_type_str)
+        .bind(payout_status_str)
+        .bind(&anchor_payout_id)
+        .fetch_one(&mut *tx)
+        .await {
+            Ok(row) => row,
+            Err(e) => {
+                error!(plan_id = %plan.id, beneficiary = %b.wallet_address, error = %e, "Failed to insert payout record");
+                return (
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    Json(serde_json::json!({ "error": format!("Failed to insert payout record: {}", e) })),
+                ).into_response();
+            }
+        };
+
+        if is_fiat {
             if b.fiat_daily_limit > Decimal::ZERO {
                 let today = chrono::Utc::now().naive_utc().date();
                 if let Err(e) = sqlx::query(
@@ -1659,6 +1683,7 @@ async fn get_anchor_payouts(
             amount::text      AS amount,
             payout_type::text AS payout_type,
             status::text      AS status,
+            anchor_payout_id,
             created_at
         FROM payouts
         WHERE ($1::text IS NULL OR beneficiary_address = $1)

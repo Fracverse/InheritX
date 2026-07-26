@@ -42,7 +42,10 @@ fn setup_app_with_cache(plan_cache: PlanCache) -> axum::Router {
         .connect_lazy(&database_url)
         .unwrap();
     let state = Arc::new(AppState {
-        anchor: Arc::new(inheritx_backend::stellar_anchor::AnchorRegistry::new()),
+        anchor: Arc::new(inheritx_backend::stellar_anchor::AnchorRegistry::new(
+            None,
+            None,
+        )),
         db_pool,
         kyc_tx: tokio::sync::broadcast::channel(16).0,
         kyc_webhook_secret: None,

@@ -27,7 +27,7 @@ fn test_state(secret: Option<&str>) -> std::sync::Arc<inheritx_backend::AppState
             .unwrap();
 
     std::sync::Arc::new(inheritx_backend::AppState {
-        anchor: std::sync::Arc::new(AnchorRegistry::new()),
+        anchor: std::sync::Arc::new(AnchorRegistry::new(None, None)),
         db_pool: pool,
         kyc_webhook_secret: secret.map(str::to_string),
         apy_config: inheritx_backend::yield_calculator::ApyConfig::default(),
