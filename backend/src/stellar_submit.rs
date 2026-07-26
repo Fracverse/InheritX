@@ -49,4 +49,16 @@ impl StellarSubmitClient {
             Err(StellarSubmitError::Rejected(body))
         }
     }
+
+    /// Health-check: probes the Stellar Horizon root endpoint to verify
+    /// network reachability of the RPC node.
+    pub async fn health_check(&self) -> bool {
+        let url = format!("{}/", self.horizon_url.trim_end_matches('/'));
+        self.client
+            .get(&url)
+            .send()
+            .await
+            .map(|r| r.status().is_success())
+            .unwrap_or(false)
+    }
 }
