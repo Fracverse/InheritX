@@ -2104,9 +2104,7 @@ async fn submit_transaction(
 
 /// Handler: GET /api/health
 /// Verifies PostgreSQL and Stellar RPC connectivity.
-async fn health_check(
-    State(state): State<Arc<AppState>>,
-) -> impl IntoResponse {
+async fn health_check(State(state): State<Arc<AppState>>) -> impl IntoResponse {
     let postgresql_ok = sqlx::query("SELECT 1")
         .fetch_one(&state.db_pool)
         .await
@@ -2138,8 +2136,16 @@ async fn health_check(
 
     let response = HealthResponse {
         status: overall_status.to_string(),
-        postgresql: if postgresql_ok { "up".to_string() } else { "down".to_string() },
-        stellar_rpc: if stellar_rpc_ok { "up".to_string() } else { "down".to_string() },
+        postgresql: if postgresql_ok {
+            "up".to_string()
+        } else {
+            "down".to_string()
+        },
+        stellar_rpc: if stellar_rpc_ok {
+            "up".to_string()
+        } else {
+            "down".to_string()
+        },
     };
 
     (status_code, Json(response)).into_response()

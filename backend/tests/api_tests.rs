@@ -490,8 +490,14 @@ async fn test_health_endpoint_returns_json_with_expected_structure() {
 
     assert!(body.is_object());
     assert!(body.get("status").is_some(), "missing 'status' field");
-    assert!(body.get("postgresql").is_some(), "missing 'postgresql' field");
-    assert!(body.get("stellar_rpc").is_some(), "missing 'stellar_rpc' field");
+    assert!(
+        body.get("postgresql").is_some(),
+        "missing 'postgresql' field"
+    );
+    assert!(
+        body.get("stellar_rpc").is_some(),
+        "missing 'stellar_rpc' field"
+    );
 }
 
 #[tokio::test]
