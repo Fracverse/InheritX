@@ -567,7 +567,7 @@ pub enum DataKey {
     InheritanceContract,
     GovernanceContract,
     RateModel,
-    Token, // Underlying token address for insurance operations
+    Token,                             // Underlying token address for insurance operations
     WhitelistedFlashReceiver(Address), // Approved flash loan receiver contracts
 }
 
@@ -1529,9 +1529,7 @@ impl LendingContract {
         // Emit late fee event if any late fees were charged
         if late_fee > 0 {
             let current_time = env.ledger().timestamp();
-            let days_overdue = current_time
-                .saturating_sub(grace_period_end)
-                / (24 * 60 * 60);
+            let days_overdue = current_time.saturating_sub(grace_period_end) / (24 * 60 * 60);
 
             env.events().publish(
                 (symbol_short!("POOL"), symbol_short!("LATEFEE")),
@@ -4145,10 +4143,8 @@ impl LendingContract {
         tokens.push_back(token.clone());
         env.storage().persistent().set(&key, &tokens);
 
-        env.events().publish(
-            (symbol_short!("wrapped"), symbol_short!("add")),
-            token,
-        );
+        env.events()
+            .publish((symbol_short!("wrapped"), symbol_short!("add")), token);
 
         Ok(())
     }
@@ -4185,10 +4181,8 @@ impl LendingContract {
 
         env.storage().persistent().set(&key, &updated);
 
-        env.events().publish(
-            (symbol_short!("wrapped"), symbol_short!("remove")),
-            token,
-        );
+        env.events()
+            .publish((symbol_short!("wrapped"), symbol_short!("remove")), token);
 
         Ok(())
     }
