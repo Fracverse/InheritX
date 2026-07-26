@@ -530,7 +530,6 @@ async fn test_health_endpoint_without_db_yields_service_unavailable() {
     let status_str = body["status"].as_str().unwrap();
     assert!(
         status_str == "degraded" || status_str == "unhealthy",
-        "expected status to be 'degraded' or 'unhealthy', got '{}'",
-        status_str
+        "expected status to be 'degraded' or 'unhealthy', got '{status_str}'"
     );
 }
