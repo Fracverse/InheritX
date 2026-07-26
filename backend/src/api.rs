@@ -61,6 +61,7 @@ pub struct AppState {
     pub kyc_webhook_secret: Option<String>,
     pub apy_config: yield_calculator::ApyConfig,
     pub plan_cache: PlanCache,
+    pub apy_cache: dashmap::DashMap<String, u32>,
     pub kyc_tx: tokio::sync::broadcast::Sender<crate::ws::KycUpdateEvent>,
     pub stellar_submit: StellarSubmitClient,
 }
@@ -197,6 +198,7 @@ pub fn create_router(state: Arc<AppState>) -> Router {
     let public_routes = Router::new()
         .route("/api/plans", get(get_plans))
         .route("/api/anchor/payout-status", get(get_anchor_payouts))
+        .route("/api/lending/current-rate", get(get_current_lending_rate))
         .route("/api/kyc/webhook", post(kyc_webhook_handler))
         .route("/api/kyc/status", get(get_kyc_status))
         .route("/api/kyc/submit", post(submit_kyc))
@@ -1538,6 +1540,32 @@ fn parse_fiat_anchor_info(info: &str, wallet_address: &str) -> (String, String, 
         account_number,
     )
 }
+
+/// Query APY configurations from database with caching in Axum state.
+pub async fn get_apy_rate(state: &AppState, token_address: &str) -> u32 {
+    if let Some(rate) = state.apy_cache.get(token_address) {
+        return *rate;
+    }
+
+    let rate: i32 =
+        sqlx::query_scalar("SELECT rate_bps FROM apy_configurations WHERE token_address = $1")
+            .bind(token_address)
+            .fetch_optional(&state.db_pool)
+            .await
+            .unwrap_or(None)
+            .unwrap_or(0);
+
+    let rate_u32 = rate as u32;
+    state.apy_cache.insert(token_address.to_string(), rate_u32);
+    rate_u32
+}
+
+async fn get_current_lending_rate(State(state): State<Arc<AppState>>) -> impl IntoResponse {
+    let rate_bps = get_apy_rate(&state, "USDC").await;
+    let apy_percentage = rate_bps as f64 / 100.0;
+    Json(serde_json::json!({ "apy": apy_percentage }))
+}
+
 //
 // Handler: Get Anchor Payouts
 // Queries the payouts table filtered by beneficiary_address with pagination.
