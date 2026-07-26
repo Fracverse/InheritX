@@ -502,7 +502,23 @@ async fn test_health_endpoint_returns_json_with_expected_structure() {
 
 #[tokio::test]
 async fn test_health_endpoint_without_db_yields_service_unavailable() {
-    let app = setup_app();
+    // Use a bogus database URL that will always fail to connect
+    let db_pool = sqlx::postgres::PgPoolOptions::new()
+        .acquire_timeout(Duration::from_secs(1))
+        .connect_lazy("postgres://localhost:1/nonexistent")
+        .unwrap();
+    let state = Arc::new(AppState {
+        anchor: Arc::new(inheritx_backend::stellar_anchor::AnchorRegistry::new()),
+        db_pool,
+        kyc_tx: tokio::sync::broadcast::channel(16).0,
+        kyc_webhook_secret: None,
+        apy_config: inheritx_backend::yield_calculator::ApyConfig::default(),
+        plan_cache: PlanCache::disabled(),
+        stellar_submit: inheritx_backend::stellar_submit::StellarSubmitClient::new(
+            "https://horizon-testnet.stellar.org".to_string(),
+        ),
+    });
+    let app = create_router(state);
 
     let response = app
         .oneshot(
