@@ -446,3 +446,85 @@ async fn test_trigger_payout_valid_signature_not_found() {
     // and reached the handler.
     assert_eq!(response.status(), StatusCode::INTERNAL_SERVER_ERROR);
 }
+
+// --- Health check endpoint tests ---
+
+#[tokio::test]
+async fn test_health_endpoint_is_public() {
+    let app = setup_app();
+
+    let response = app
+        .oneshot(
+            Request::builder()
+                .method(http::Method::GET)
+                .uri("/api/health")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+
+    // Should not require auth
+    assert_ne!(response.status(), StatusCode::UNAUTHORIZED);
+}
+
+#[tokio::test]
+async fn test_health_endpoint_returns_json_with_expected_structure() {
+    let app = setup_app();
+
+    let response = app
+        .oneshot(
+            Request::builder()
+                .method(http::Method::GET)
+                .uri("/api/health")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+
+    let body_bytes = axum::body::to_bytes(response.into_body(), usize::MAX)
+        .await
+        .unwrap();
+    let body: serde_json::Value = serde_json::from_slice(&body_bytes).unwrap();
+
+    assert!(body.is_object());
+    assert!(body.get("status").is_some(), "missing 'status' field");
+    assert!(body.get("postgresql").is_some(), "missing 'postgresql' field");
+    assert!(body.get("stellar_rpc").is_some(), "missing 'stellar_rpc' field");
+}
+
+#[tokio::test]
+async fn test_health_endpoint_without_db_yields_service_unavailable() {
+    let app = setup_app();
+
+    let response = app
+        .oneshot(
+            Request::builder()
+                .method(http::Method::GET)
+                .uri("/api/health")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+
+    let status = response.status();
+    let body_bytes = axum::body::to_bytes(response.into_body(), usize::MAX)
+        .await
+        .unwrap();
+    let body: serde_json::Value = serde_json::from_slice(&body_bytes).unwrap();
+
+    // Without a real database, postgresql should be "down"
+    assert_eq!(body["postgresql"], "down");
+
+    // With PostgreSQL down, the handler always returns 503
+    assert_eq!(status, StatusCode::SERVICE_UNAVAILABLE);
+
+    let status_str = body["status"].as_str().unwrap();
+    assert!(
+        status_str == "degraded" || status_str == "unhealthy",
+        "expected status to be 'degraded' or 'unhealthy', got '{}'",
+        status_str
+    );
+}

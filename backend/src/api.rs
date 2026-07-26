@@ -19,7 +19,7 @@ use rust_decimal::Decimal;
 use serde::{Deserialize, Serialize};
 use std::sync::Arc;
 use tower_http::cors::CorsLayer;
-use tracing::error;
+use tracing::{error, warn};
 use uuid::Uuid;
 
 use crate::auth::{jwt_auth_middleware, signature_auth_middleware, Claims};
@@ -103,6 +103,14 @@ pub struct AnchorQuery {
     pub beneficiary_address: Option<String>,
     pub page: Option<i64>,
     pub page_size: Option<i64>,
+}
+
+/// Response for the /api/health endpoint.
+#[derive(Debug, Serialize)]
+pub struct HealthResponse {
+    pub status: String,
+    pub postgresql: String,
+    pub stellar_rpc: String,
 }
 
 #[derive(Debug, Serialize, sqlx::FromRow)]
@@ -195,6 +203,7 @@ pub fn create_router(state: Arc<AppState>) -> Router {
         .route("/api/kyc/upload", post(upload_kyc_document))
         .route("/api/kyc/required", get(is_kyc_required))
         .route("/api/kyc/requirements", get(get_kyc_requirements))
+        .route("/api/health", get(health_check))
         .route("/api/transactions/submit", post(submit_transaction))
         .route("/api/admin/login", post(admin_login))
         .route("/ws/kyc", get(ws_handler));
@@ -2091,6 +2100,51 @@ async fn submit_transaction(
 
 // Handler: Admin login
 // Verifies admin credentials against an Argon2id password hash and, on
+// --- Health Check ---
+
+/// Handler: GET /api/health
+/// Verifies PostgreSQL and Stellar RPC connectivity.
+async fn health_check(
+    State(state): State<Arc<AppState>>,
+) -> impl IntoResponse {
+    let postgresql_ok = sqlx::query("SELECT 1")
+        .fetch_one(&state.db_pool)
+        .await
+        .is_ok();
+
+    if !postgresql_ok {
+        warn!("Health check: PostgreSQL is down");
+    }
+
+    let stellar_rpc_ok = state.stellar_submit.health_check().await;
+
+    if !stellar_rpc_ok {
+        warn!("Health check: Stellar RPC is unreachable");
+    }
+
+    let overall_status = if postgresql_ok && stellar_rpc_ok {
+        "healthy"
+    } else if postgresql_ok || stellar_rpc_ok {
+        "degraded"
+    } else {
+        "unhealthy"
+    };
+
+    let status_code = if overall_status == "healthy" {
+        StatusCode::OK
+    } else {
+        StatusCode::SERVICE_UNAVAILABLE
+    };
+
+    let response = HealthResponse {
+        status: overall_status.to_string(),
+        postgresql: if postgresql_ok { "up".to_string() } else { "down".to_string() },
+        stellar_rpc: if stellar_rpc_ok { "up".to_string() } else { "down".to_string() },
+    };
+
+    (status_code, Json(response)).into_response()
+}
+
 // success, issues the JWT that `jwt_auth_middleware` expects for admin
 // routes.
 async fn admin_login(
