@@ -379,11 +379,13 @@ async fn test_trigger_payout_invalid_signature() {
     })
     .to_string();
 
-    // Generate a valid signature for a different body
+    // Generate a valid signature for the actual body
     let (public_key, _correct_sig) = generate_valid_signature(
         &body,
         "0x1234567890abcdef1234567890abcdef1234567890abcdef1234567890abcdef",
     );
+    
+    // Generate a signature for a different body to create an invalid signature
     let (_different_pub_key, invalid_signature) = generate_valid_signature(
         "different body",
         "0x1234567890abcdef1234567890abcdef1234567890abcdef1234567890abcdef",
@@ -395,7 +397,7 @@ async fn test_trigger_payout_invalid_signature() {
                 .method(http::Method::POST)
                 .uri("/api/plans/payout")
                 .header(http::header::CONTENT_TYPE, "application/json")
-                .header("X-Public-Key", public_key)
+                .header("X-Public-Key", public_key.clone())
                 .header("X-Signature", invalid_signature)
                 .body(Body::from(body))
                 .unwrap(),
@@ -403,14 +405,7 @@ async fn test_trigger_payout_invalid_signature() {
         .await
         .unwrap();
 
-    let status = response.status();
-    if status != StatusCode::UNAUTHORIZED {
-        let body_bytes = axum::body::to_bytes(response.into_body(), usize::MAX)
-            .await
-            .unwrap();
-        let body_str = String::from_utf8(body_bytes.to_vec()).unwrap();
-        panic!("Expected 401 Unauthorized, got {status}. Response body: {body_str}");
-    }
+    assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
 }
 
 #[tokio::test]
