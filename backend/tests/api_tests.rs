@@ -48,6 +48,7 @@ fn setup_app_with_cache(plan_cache: PlanCache) -> axum::Router {
         kyc_webhook_secret: None,
         apy_config: inheritx_backend::yield_calculator::ApyConfig::default(),
         plan_cache,
+        apy_cache: dashmap::DashMap::new(),
         stellar_submit: inheritx_backend::stellar_submit::StellarSubmitClient::new(
             "https://horizon-testnet.stellar.org".to_string(),
         ),
@@ -514,6 +515,7 @@ async fn test_health_endpoint_without_db_yields_service_unavailable() {
         kyc_webhook_secret: None,
         apy_config: inheritx_backend::yield_calculator::ApyConfig::default(),
         plan_cache: PlanCache::disabled(),
+        apy_cache: dashmap::DashMap::new(),
         stellar_submit: inheritx_backend::stellar_submit::StellarSubmitClient::new(
             "https://horizon-testnet.stellar.org".to_string(),
         ),
@@ -548,4 +550,46 @@ async fn test_health_endpoint_without_db_yields_service_unavailable() {
         status_str == "degraded" || status_str == "unhealthy",
         "expected status to be 'degraded' or 'unhealthy', got '{status_str}'"
     );
+}
+
+#[tokio::test]
+async fn test_get_current_rate_cached() {
+    let plan_cache = PlanCache::disabled();
+    let db_pool = sqlx::postgres::PgPoolOptions::new()
+        .acquire_timeout(Duration::from_secs(1))
+        .connect_lazy("postgres://postgres:password@localhost:5432/test")
+        .unwrap();
+    let state = Arc::new(AppState {
+        anchor: Arc::new(inheritx_backend::stellar_anchor::AnchorRegistry::new()),
+        db_pool,
+        kyc_tx: tokio::sync::broadcast::channel(16).0,
+        kyc_webhook_secret: None,
+        apy_config: inheritx_backend::yield_calculator::ApyConfig::default(),
+        plan_cache,
+        apy_cache: dashmap::DashMap::new(),
+        stellar_submit: inheritx_backend::stellar_submit::StellarSubmitClient::new(
+            "https://horizon-testnet.stellar.org".to_string(),
+        ),
+    });
+
+    state.apy_cache.insert("USDC".to_string(), 300);
+
+    let app = create_router(state);
+    let response = app
+        .oneshot(
+            Request::builder()
+                .method(http::Method::GET)
+                .uri("/api/lending/current-rate")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(response.status(), StatusCode::OK);
+    let body_bytes = axum::body::to_bytes(response.into_body(), usize::MAX)
+        .await
+        .unwrap();
+    let body_json: serde_json::Value = serde_json::from_slice(&body_bytes).unwrap();
+    assert_eq!(body_json["apy"], 3.0);
 }
