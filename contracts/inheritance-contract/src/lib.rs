@@ -8,6 +8,19 @@ use soroban_sdk::{
 mod disputes;
 use disputes::{DisputeRecord, DisputeStatus};
 
+mod safe_math;
+
+/// Error type used by the safe_math arithmetic module.
+/// These are internal overflow/arithmetic errors not surfaced to contract callers
+/// directly — they are mapped to InheritanceError variants at the call site.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum Error {
+    MathOverflow,
+    DivisionByZero,
+    NegativeAmount,
+    InvalidYieldRate,
+}
+
 /// Current contract version - bump this on each upgrade
 const CONTRACT_VERSION: u32 = 1;
 
@@ -123,6 +136,9 @@ pub enum InheritanceError {
     WillAlreadyLinked = 48,
     WillAlreadyFinalized = 49,
     WillVersionNotFound = 50,
+    PlanAlreadyClosed = 51,
+    TokenNotSet = 52,
+    InvalidYieldRate = 53,
 }
 
 #[contracttype]
@@ -178,6 +194,9 @@ pub enum DataKey {
     Dispute(u64),      // dispute_id -> DisputeRecord
     PlanDisputes(u64), // plan_id -> Vec<u64> (dispute ids)
     Arbitrators,       // Vec<Address>
+    // Close plan
+    PlanToken(u64),     // plan_id -> Address (token contract used at creation)
+    PlanYieldRate(u64), // plan_id -> u32 (annual yield rate in bps; 0 = no yield)
 }
 
 #[contracttype]
@@ -689,6 +708,17 @@ pub struct LegalHold {
     pub added_at: u64,
     pub reason: String,
     pub added_by: Address,
+}
+
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct PlanClosedEvent {
+    pub plan_id: u64,
+    pub owner: Address,
+    pub principal_returned: u64,
+    pub yield_returned: u64,
+    pub total_returned: u64,
+    pub closed_at: u64,
 }
 
 #[contracttype]
@@ -1860,6 +1890,12 @@ impl InheritanceContract {
         // Store the plan
         Self::store_plan(&env, plan_id, &plan);
 
+        // Persist the token address so close_plan can transfer without requiring
+        // the caller to re-supply it.
+        env.storage()
+            .persistent()
+            .set(&DataKey::PlanToken(plan_id), &token);
+
         // Add to user's plan list
         Self::add_plan_to_user(&env, owner.clone(), plan_id);
 
@@ -2524,6 +2560,230 @@ impl InheritanceContract {
             },
         );
 
+        Ok(())
+    }
+
+    // ─── Plan token helpers ───────────────────────────────────────────────
+
+    /// Returns the token address persisted when the plan was created.
+    fn get_plan_token(env: &Env, plan_id: u64) -> Option<Address> {
+        env.storage()
+            .persistent()
+            .get(&DataKey::PlanToken(plan_id))
+    }
+
+    /// Returns the annual yield rate (bps) configured for the plan; 0 if none.
+    fn get_plan_yield_rate(env: &Env, plan_id: u64) -> u32 {
+        env.storage()
+            .persistent()
+            .get(&DataKey::PlanYieldRate(plan_id))
+            .unwrap_or(0u32)
+    }
+
+    // ─── Yield rate configuration ─────────────────────────────────────────
+
+    /// Configure the annual yield rate for a plan.  Admin-only because yield
+    /// accruals change how much is returned to the owner on `close_plan`.
+    ///
+    /// # Arguments
+    /// * `admin`     - Admin address (must authorize)
+    /// * `plan_id`   - Target plan
+    /// * `rate_bps`  - Annual rate in basis points (0 – 10 000; 500 = 5 % APY)
+    ///
+    /// # Errors
+    /// - `NotAdmin`      – caller is not the contract admin
+    /// - `PlanNotFound`  – plan does not exist
+    /// - `InvalidYieldRate` – rate exceeds 100 % (10 000 bps)
+    pub fn set_plan_yield_rate(
+        env: Env,
+        admin: Address,
+        plan_id: u64,
+        rate_bps: u32,
+    ) -> Result<(), InheritanceError> {
+        Self::require_admin(&env, &admin)?;
+        Self::check_not_paused(&env);
+
+        // Confirm plan exists before persisting the rate.
+        if Self::get_plan(&env, plan_id).is_none() {
+            return Err(InheritanceError::PlanNotFound);
+        }
+
+        // Reuse the safe_math cap validator (returns Error::InvalidYieldRate).
+        safe_math::validate_yield_rate(rate_bps)
+            .map_err(|_| InheritanceError::InvalidYieldRate)?;
+
+        env.storage()
+            .persistent()
+            .set(&DataKey::PlanYieldRate(plan_id), &rate_bps);
+
+        env.events().publish(
+            (symbol_short!("PLAN"), symbol_short!("YLDSET")),
+            (plan_id, rate_bps),
+        );
+
+        Ok(())
+    }
+
+    /// Permanently close an inheritance plan and return all locked principal
+    /// plus any accumulated yield to the plan owner.
+    ///
+    /// The plan must still be active (not yet triggered for inheritance) and
+    /// must not be frozen or under a legal hold.  No partial closes: the full
+    /// escrowed balance is returned in a single transfer.
+    ///
+    /// Yield is calculated with daily compounding from `created_at` to the
+    /// current ledger timestamp using the rate stored by `set_plan_yield_rate`
+    /// (defaults to zero if never set, so only principal is returned).
+    ///
+    /// # Arguments
+    /// * `owner`   - Plan owner address (must authorize)
+    /// * `plan_id` - ID of the plan to close
+    ///
+    /// # Errors
+    /// - `Unauthorized`         – caller is not the plan owner
+    /// - `PlanNotFound`         – plan does not exist
+    /// - `PlanNotActive`        – plan is frozen or under legal hold
+    /// - `PlanAlreadyClosed`    – plan was already deactivated or closed
+    /// - `InheritanceAlreadyTriggered` – inheritance has been triggered; closing
+    ///                            is no longer permitted
+    /// - `TokenNotSet`          – token address was never persisted (should not
+    ///                            happen for any plan created by this contract)
+    /// - `FeeTransferFailed`    – on-chain token transfer failed
+    pub fn close_plan(
+        env: Env,
+        owner: Address,
+        plan_id: u64,
+    ) -> Result<(), InheritanceError> {
+        owner.require_auth();
+        Self::check_not_paused(&env);
+        Self::enter_guard(&env);
+
+        let mut plan = Self::get_plan(&env, plan_id).ok_or(InheritanceError::PlanNotFound)?;
+
+        // Only the plan creator/owner may close.
+        if plan.owner != owner {
+            return Err(InheritanceError::Unauthorized);
+        }
+
+        // Plan must still be active — deactivated or previously closed plans
+        // are not eligible.
+        if !plan.is_active {
+            return Err(InheritanceError::PlanAlreadyClosed);
+        }
+
+        // Block closure if inheritance was already triggered.
+        if Self::get_trigger_info(&env, plan_id).is_some() {
+            return Err(InheritanceError::InheritanceAlreadyTriggered);
+        }
+
+        // Block closure if the plan is frozen (dispute / admin freeze).
+        if env
+            .storage()
+            .persistent()
+            .has(&DataKey::FreezePlan(plan_id))
+        {
+            return Err(InheritanceError::PlanNotActive);
+        }
+
+        // Block closure if the plan is under a legal hold.
+        if env.storage().persistent().has(&DataKey::LegalHold(plan_id)) {
+            return Err(InheritanceError::PlanNotActive);
+        }
+
+        // ── Calculate total payout: principal + compounded yield ──────────
+
+        let principal = plan.total_amount;
+        let now = env.ledger().timestamp();
+        let elapsed = now.saturating_sub(plan.created_at);
+        let rate_bps = Self::get_plan_yield_rate(&env, plan_id);
+
+        // safe_math::accrued_interest compounds daily and returns 0 for zero
+        // rate or zero elapsed days, so this is always safe.
+        let accrued_yield = safe_math::accrued_interest(principal as i128, rate_bps, elapsed)
+            .unwrap_or(0)
+            .max(0) as u64;
+
+        let total_return = principal.saturating_add(accrued_yield);
+
+        // ── Retrieve the token address ─────────────────────────────────────
+
+        let token = Self::get_plan_token(&env, plan_id).ok_or(InheritanceError::TokenNotSet)?;
+
+        // ── Transfer tokens back to the owner ─────────────────────────────
+
+        let contract_id = env.current_contract_address();
+        let total_i128 = total_return as i128;
+
+        // Only the principal was escrowed in the contract; yield in excess of
+        // that must be funded by a separate protocol yield reserve in a full
+        // production system.  For this MVP the contract only guarantees the
+        // return of the escrowed principal — accrued yield is paid out only
+        // if the contract holds sufficient balance (checked implicitly by the
+        // token contract; if it fails, we fall back to principal-only).
+        let transfer_result = {
+            let args: Vec<Val> = vec![
+                &env,
+                contract_id.clone().into_val(&env),
+                owner.clone().into_val(&env),
+                total_i128.into_val(&env),
+            ];
+            env.try_invoke_contract::<(), InvokeError>(&token, &symbol_short!("transfer"), args)
+        };
+
+        // If the full transfer (principal + yield) fails, fall back to
+        // returning only the locked principal, which must be available.
+        let (principal_returned, yield_returned) = if transfer_result.is_err() {
+            let fallback_args: Vec<Val> = vec![
+                &env,
+                contract_id.clone().into_val(&env),
+                owner.clone().into_val(&env),
+                (principal as i128).into_val(&env),
+            ];
+            let fallback = env.try_invoke_contract::<(), InvokeError>(
+                &token,
+                &symbol_short!("transfer"),
+                fallback_args,
+            );
+            if fallback.is_err() {
+                Self::exit_guard(&env);
+                return Err(InheritanceError::FeeTransferFailed);
+            }
+            (principal, 0u64)
+        } else {
+            (principal, accrued_yield)
+        };
+
+        // ── Mark plan as closed ────────────────────────────────────────────
+
+        plan.is_active = false;
+        plan.total_amount = 0;
+        Self::store_plan(&env, plan_id, &plan);
+        Self::add_plan_to_deactivated(&env, plan_id);
+
+        // ── Emit event ─────────────────────────────────────────────────────
+
+        let total_returned = principal_returned.saturating_add(yield_returned);
+        env.events().publish(
+            (symbol_short!("PLAN"), symbol_short!("CLOSED")),
+            PlanClosedEvent {
+                plan_id,
+                owner: owner.clone(),
+                principal_returned,
+                yield_returned,
+                total_returned,
+                closed_at: now,
+            },
+        );
+
+        log!(
+            &env,
+            "Plan {} closed by owner; returned principal={} yield={}",
+            plan_id,
+            principal_returned,
+            yield_returned
+        );
+
+        Self::exit_guard(&env);
         Ok(())
     }
 
