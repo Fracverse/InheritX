@@ -572,30 +572,104 @@ impl InheritanceContract {
             .unwrap_or(false)
     }
 
-    /// Trigger payout to all beneficiaries once the plan is claimable.
-    /// Iterates over beneficiaries, computes pro-rata token allocations
-    /// using the stored basis points, and transfers tokens safely.
-    /// Remaining dust from integer division is allocated to the last beneficiary.
-    /// Aborts the entire transaction if any single transfer fails.
+    /// Trigger payout to all beneficiaries once the liveness timer has expired.
+    ///
+    /// This function is the single external entry-point for the full payout
+    /// lifecycle. It performs three steps in order, completing them within the
+    /// same transaction when possible:
+    ///
+    /// 1. **Liveness check** – verifies that `current_ledger_timestamp >
+    ///    last_ping + grace_period`. Returns `Error::InactivityPeriodNotMet`
+    ///    if the owner's grace period has not yet elapsed.
+    ///
+    /// 2. **Claimable transition** – if the plan is still marked active, sets
+    ///    `plan.is_active = false` and records the current timestamp in the
+    ///    `ClaimStatus` storage key, marking the plan claimable. If `ClaimStatus`
+    ///    was already written by a prior call, that recorded timestamp is reused
+    ///    so the timelock window is not reset. A `Claimable` event is emitted
+    ///    only on the first transition. When the timelock window has not yet
+    ///    elapsed, the function **returns `Ok(())`** after persisting the state
+    ///    change so that the transition is committed on-chain (Soroban reverts
+    ///    all storage writes when a contract returns an error).
+    ///
+    /// 3. **Timelock enforcement + distribution** – once
+    ///    `claim_time + plan.timelock_duration` has elapsed, distributes token
+    ///    balances pro-rata across all beneficiaries. Remaining dust from
+    ///    integer division is absorbed by the last beneficiary so no tokens are
+    ///    stranded in the contract.
+    ///
+    /// # Call pattern
+    /// ```
+    /// // First call: starts the timelock window (if not yet started).
+    /// contract.trigger_payout(owner);   // Ok – plan is now claimable
+    ///
+    /// // … wait for timelock_duration seconds …
+    ///
+    /// // Second call: timelock has elapsed, full payout is executed.
+    /// contract.trigger_payout(owner);   // Ok – beneficiaries paid out
+    /// ```
+    ///
+    /// # Errors
+    /// * `Error::PlanNotFound` – no plan exists for `owner`.
+    /// * `Error::InactivityPeriodNotMet` – grace period has not yet expired.
+    /// * `Error::MathOverflow` – an arithmetic operation overflowed.
     pub fn trigger_payout(env: Env, owner: Address) -> Result<(), Error> {
         let key = DataKey::Plan(owner.clone());
-        let plan: Plan = env
+        let mut plan: Plan = env
             .storage()
             .persistent()
             .get(&key)
             .ok_or(Error::PlanNotFound)?;
 
+        let current_time = env.ledger().timestamp();
+
+        // --- Step 1: liveness check -------------------------------------------
+        // The grace period must have fully elapsed before any payout can occur.
+        let inactivity_deadline = safe_math::safe_add_u64(plan.last_ping, plan.grace_period)?;
+        if current_time <= inactivity_deadline {
+            return Err(Error::InactivityPeriodNotMet);
+        }
+
+        // --- Step 2: claimable transition -------------------------------------
+        // If no ClaimStatus entry exists yet, deactivate the plan and record the
+        // current timestamp as the claim time (which starts the timelock window).
+        // If ClaimStatus was already set by a prior call, preserve the original
+        // claim timestamp so the timelock window is not extended.
         let claim_key = DataKey::ClaimStatus(owner.clone());
-        let claim_time: u64 = env
+        let claim_time: u64 = if let Some(existing) = env
             .storage()
             .persistent()
-            .get(&claim_key)
-            .ok_or(Error::PayoutNotTriggered)?;
+            .get::<DataKey, u64>(&claim_key)
+        {
+            // Already claimable; reuse the recorded timestamp.
+            existing
+        } else {
+            // First time: mark the plan inactive and record the claim time.
+            plan.is_active = false;
+            env.storage().persistent().set(&key, &plan);
+            Self::extend_plan_ttl(&env, &key);
 
-        let current_time = env.ledger().timestamp();
+            env.storage()
+                .persistent()
+                .set(&claim_key, &current_time);
+            Self::extend_plan_ttl(&env, &claim_key);
+
+            env.events()
+                .publish((symbol_short!("Claimable"), owner.clone()), current_time);
+
+            current_time
+        };
+
+        // --- Step 3: timelock enforcement -------------------------------------
+        // If the timelock window has not yet elapsed, commit the claimable state
+        // and return Ok. The state changes (is_active=false, ClaimStatus) are
+        // persisted on-chain. The caller should invoke trigger_payout again once
+        // claim_time + timelock_duration has passed to complete the distribution.
+        // NOTE: returning an error here would cause Soroban to roll back the
+        // storage writes above, losing the claimable state transition.
         let payout_time = safe_math::safe_add_u64(claim_time, plan.timelock_duration)?;
         if current_time < payout_time {
-            return Err(Error::TimelockNotExpired);
+            return Ok(());
         }
 
         // Checks-effects-interactions: remove plan before transfers

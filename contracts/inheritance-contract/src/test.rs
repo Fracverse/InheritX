@@ -1035,10 +1035,16 @@ fn test_cancel_claim_success() {
     // Cancel payout
     client.cancel_claim(&owner);
 
-    // Attempting trigger_payout should now fail since the payout has been cancelled
+    // Attempting trigger_payout should now fail since the payout has been cancelled.
+    // After cancel_claim, plan.last_ping is reset to the current time and
+    // is_active = true, so the grace period begins anew. The trigger_payout
+    // call must fail with InactivityPeriodNotMet because not enough time has
+    // passed since the new last_ping.
     env.ledger().set_timestamp(env.ledger().timestamp() + 86400);
     let result = client.try_trigger_payout(&owner);
-    assert_eq!(result, Err(Ok(Error::PayoutNotTriggered)));
+    // After cancel, the grace period of 86_400 seconds has not yet elapsed from
+    // the new last_ping, so trigger_payout returns InactivityPeriodNotMet.
+    assert_eq!(result, Err(Ok(Error::InactivityPeriodNotMet)));
 }
 
 #[test]
@@ -1634,11 +1640,15 @@ fn test_trigger_payout_after_grace_period_and_timelock_expiry() {
     env.ledger().set_timestamp(start + grace_period + 100);
     client.claim(&owner);
 
-    // Jump to before timelock ends - trigger should fail
+    // Jump to before timelock ends - trigger_payout returns Ok but does not pay
+    // out yet (timelock window not yet elapsed; plan remains in storage).
     env.ledger()
         .set_timestamp(start + grace_period + timelock_duration - 100);
-    let trigger_too_early = client.try_trigger_payout(&owner);
-    assert_eq!(trigger_too_early, Err(Ok(Error::TimelockNotExpired)));
+    let trigger_too_early = client.trigger_payout(&owner);
+    // Plan must still exist — no tokens transferred yet.
+    assert!(client.get_plan(&owner).is_some());
+    assert_eq!(token_client.balance(&alice), 0);
+    assert_eq!(token_client.balance(&bob), 0);
 
     // Jump past timelock - now trigger should succeed
     env.ledger()
@@ -4178,4 +4188,219 @@ fn test_create_plan_empty_beneficiaries_returns_invalid_basis_points() {
         &String::from_str(&env, "SRC_TX_HASH"),
     );
     assert_eq!(result, Err(Ok(Error::InvalidBasisPoints)));
+}
+
+// ──────────────────────────────────────────────────────────────────────────
+// trigger_payout liveness check & claimable transition tests
+// ──────────────────────────────────────────────────────────────────────────
+
+/// Helper that sets up a fresh plan and returns (contract_id, client,
+/// token_client, owner, beneficiary_addr).  No deactivation is done; the
+/// plan is still active with `is_active = true`.
+fn setup_plan_for_trigger_tests(
+    env: &Env,
+    amount: i128,
+    grace_period: u64,
+    timelock_duration: u64,
+    start_ts: u64,
+) -> (Address, InheritanceContractClient, mock_token::MockTokenClient, Address, Address) {
+    let contract_id = env.register_contract(None, InheritanceContract);
+    let client = InheritanceContractClient::new(env, &contract_id);
+    let token_id = env.register_contract(None, mock_token::MockToken);
+    let token_client = mock_token::MockTokenClient::new(env, &token_id);
+
+    let owner = Address::generate(env);
+    let beneficiary = Address::generate(env);
+
+    token_client.mint(&owner, &(amount + 1000));
+    env.ledger().set_timestamp(start_ts);
+
+    let b = Beneficiary {
+        address: beneficiary.clone(),
+        allocation_bps: 10000,
+        fiat_anchor_info: String::from_str(env, "USD_BANK"),
+        destination_chain: String::from_str(env, "Stellar"),
+        destination_address: String::from_str(env, "GDESTADDR"),
+    };
+
+    client.create_plan(
+        &owner,
+        &token_id,
+        &amount,
+        &Vec::from_array(env, [b]),
+        &grace_period,
+        &false,
+        &0,
+        &timelock_duration,
+        &String::from_str(env, "Stellar"),
+        &String::from_str(env, "SRC_TX_HASH"),
+    );
+
+    (contract_id, client, token_client, owner, beneficiary)
+}
+
+/// trigger_payout must return InactivityPeriodNotMet when the grace period
+/// has not yet elapsed (current_time <= last_ping + grace_period).
+#[test]
+fn test_trigger_payout_liveness_timer_not_met_returns_inactivity_error() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let grace_period: u64 = 86_400; // 24 h
+    let start: u64 = 1_000_000;
+    let (_, client, _, owner, _) =
+        setup_plan_for_trigger_tests(&env, 1000, grace_period, 0, start);
+
+    // Only 86_399 seconds have passed – one second short of the deadline.
+    env.ledger().set_timestamp(start + grace_period - 1);
+
+    let result = client.try_trigger_payout(&owner);
+    assert_eq!(result, Err(Ok(Error::InactivityPeriodNotMet)));
+}
+
+/// trigger_payout must also return InactivityPeriodNotMet at the exact
+/// deadline (current_time == last_ping + grace_period) because the
+/// condition is strictly greater-than.
+#[test]
+fn test_trigger_payout_liveness_timer_at_exact_deadline_returns_inactivity_error() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let grace_period: u64 = 86_400;
+    let start: u64 = 1_000_000;
+    let (_, client, _, owner, _) =
+        setup_plan_for_trigger_tests(&env, 1000, grace_period, 0, start);
+
+    // Exactly at deadline – condition requires strictly greater-than.
+    env.ledger().set_timestamp(start + grace_period);
+
+    let result = client.try_trigger_payout(&owner);
+    assert_eq!(result, Err(Ok(Error::InactivityPeriodNotMet)));
+}
+
+/// When the grace period has elapsed but the timelock window has not,
+/// trigger_payout must set is_active=false and write ClaimStatus (marking
+/// the plan claimable), then return TimelockNotExpired.  Calling it again
+/// once the timelock window closes must succeed and pay out the
+/// beneficiary.
+#[test]
+fn test_trigger_payout_marks_plan_claimable_when_timer_met_then_pays_after_timelock() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let grace_period: u64 = 86_400; // 24 h
+    let timelock: u64 = 3_600; // 1 h
+    let start: u64 = 1_000_000;
+    let amount: i128 = 500;
+
+    let (contract_id, client, token_client, owner, beneficiary) =
+        setup_plan_for_trigger_tests(&env, amount, grace_period, timelock, start);
+
+    // ── First call: timer met but timelock not yet expired ──────────────
+    let just_after_grace = start + grace_period + 1;
+    env.ledger().set_timestamp(just_after_grace);
+
+    // When the timelock hasn't elapsed, trigger_payout marks the plan claimable
+    // and returns Ok (not an error) so the state changes are persisted.
+    client.trigger_payout(&owner);
+
+    // The plan must now be marked inactive.
+    let plan = client.get_plan(&owner).expect("plan must still exist");
+    assert!(!plan.is_active, "plan must be inactive after liveness check");
+
+    // ClaimStatus must be present in storage.
+    let claim_status_present: bool = env.as_contract(&contract_id, || {
+        env.storage()
+            .persistent()
+            .has(&DataKey::ClaimStatus(owner.clone()))
+    });
+    assert!(claim_status_present, "ClaimStatus must be written");
+
+    // ── Second call: after timelock window ──────────────────────────────
+    env.ledger().set_timestamp(just_after_grace + timelock + 1);
+    client.trigger_payout(&owner);
+
+    // Beneficiary receives full amount; contract is emptied.
+    assert_eq!(token_client.balance(&beneficiary), amount);
+    assert_eq!(token_client.balance(&contract_id), 0);
+    // Plan must be removed.
+    assert!(client.get_plan(&owner).is_none());
+}
+
+/// When trigger_payout is called after the grace period has elapsed and
+/// the timelock is zero, the plan transitions to claimable and the payout
+/// is executed in the same call.
+#[test]
+fn test_trigger_payout_full_flow_no_timelock() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let grace_period: u64 = 86_400;
+    let timelock: u64 = 0; // no timelock
+    let start: u64 = 2_000_000;
+    let amount: i128 = 750;
+
+    let (contract_id, client, token_client, owner, beneficiary) =
+        setup_plan_for_trigger_tests(&env, amount, grace_period, timelock, start);
+
+    // Advance past the grace period.
+    env.ledger().set_timestamp(start + grace_period + 1);
+
+    // Single call should both mark claimable and complete the payout.
+    client.trigger_payout(&owner);
+
+    assert_eq!(token_client.balance(&beneficiary), amount);
+    assert_eq!(token_client.balance(&contract_id), 0);
+    assert!(client.get_plan(&owner).is_none());
+}
+
+/// Calling trigger_payout multiple times while inside the timelock window
+/// must not reset the claim_time, so the timelock window does not
+/// extend with each call.
+#[test]
+fn test_trigger_payout_repeated_calls_do_not_extend_timelock() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let grace_period: u64 = 86_400;
+    let timelock: u64 = 3_600;
+    let start: u64 = 1_000_000;
+    let amount: i128 = 200;
+
+    let (_, client, token_client, owner, beneficiary) =
+        setup_plan_for_trigger_tests(&env, amount, grace_period, timelock, start);
+
+    let just_after_grace = start + grace_period + 1;
+
+    // First call – sets ClaimStatus with timestamp = just_after_grace.
+    // Returns Ok (state persisted), not an error.
+    env.ledger().set_timestamp(just_after_grace);
+    client.trigger_payout(&owner);
+
+    // Second call one second later – still inside timelock.
+    // Also returns Ok (plan is already claimable, reuses original claim_time).
+    env.ledger().set_timestamp(just_after_grace + 1);
+    client.trigger_payout(&owner);
+
+    // Once `just_after_grace + timelock` passes the payout should succeed,
+    // proving the timelock was anchored to the *first* call, not the last.
+    env.ledger().set_timestamp(just_after_grace + timelock + 1);
+    client.trigger_payout(&owner);
+
+    assert_eq!(token_client.balance(&beneficiary), amount);
+}
+
+/// trigger_payout must return PlanNotFound when no plan exists for the
+/// given owner.
+#[test]
+fn test_trigger_payout_liveness_no_plan_returns_plan_not_found() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let contract_id = env.register_contract(None, InheritanceContract);
+    let client = InheritanceContractClient::new(&env, &contract_id);
+    let owner = Address::generate(&env);
+
+    let result = client.try_trigger_payout(&owner);
+    assert_eq!(result, Err(Ok(Error::PlanNotFound)));
 }
