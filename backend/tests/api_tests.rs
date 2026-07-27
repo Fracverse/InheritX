@@ -446,3 +446,22 @@ async fn test_trigger_payout_valid_signature_not_found() {
     // and reached the handler.
     assert_eq!(response.status(), StatusCode::INTERNAL_SERVER_ERROR);
 }
+
+#[tokio::test]
+async fn test_get_anchor_payout_by_id_not_found() {
+    let app = setup_app();
+
+    let response = app
+        .oneshot(
+            Request::builder()
+                .method(http::Method::GET)
+                .uri("/api/anchor/payouts/non_existent_id")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(response.status(), StatusCode::NOT_FOUND);
+}
+

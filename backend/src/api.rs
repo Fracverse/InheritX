@@ -189,6 +189,7 @@ pub fn create_router(state: Arc<AppState>) -> Router {
     let public_routes = Router::new()
         .route("/api/plans", get(get_plans))
         .route("/api/anchor/payout-status", get(get_anchor_payouts))
+        .route("/api/anchor/payouts/{id}", get(get_anchor_payout_by_id))
         .route("/api/kyc/webhook", post(kyc_webhook_handler))
         .route("/api/kyc/status", get(get_kyc_status))
         .route("/api/kyc/submit", post(submit_kyc))
@@ -1609,6 +1610,22 @@ async fn get_anchor_payouts(
         }),
     )
         .into_response()
+}
+
+// Handler: Get Anchor Payout Detail by ID
+async fn get_anchor_payout_by_id(
+    State(state): State<Arc<AppState>>,
+    Path(id): Path<String>,
+) -> impl IntoResponse {
+    if let Some(payout) = state.anchor.get_payout(&id) {
+        (StatusCode::OK, Json(serde_json::json!(payout))).into_response()
+    } else {
+        (
+            StatusCode::NOT_FOUND,
+            Json(serde_json::json!({ "error": "Anchor payout not found" })),
+        )
+            .into_response()
+    }
 }
 
 // --- KYC Endpoints ---
