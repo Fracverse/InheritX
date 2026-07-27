@@ -274,11 +274,11 @@ pub fn get_contract_version(env: &Env) -> u32 {
 /// Verify that a cross-contract call target has a compatible version.
 /// Returns `error` if the target contract version is outside the acceptable range.
 pub fn check_contract_version<E: Into<soroban_sdk::Error> + Copy>(
-    env: &Env,
-    target_contract: &Address,
-    min_version: u32,
-    max_version: u32,
-    error: E,
+    _env: &Env,
+    _target_contract: &Address,
+    _min_version: u32,
+    _max_version: u32,
+    _error: E,
 ) -> Result<(), E> {
     // For now, skip version checking to avoid compilation issues
     // TODO: Implement proper cross-contract version checking

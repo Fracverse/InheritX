@@ -1,4 +1,5 @@
 #![cfg(test)]
+#![allow(clippy::all)]
 
 use crate::{LendingContract, LendingContractClient};
 use soroban_sdk::{testutils::Address as _, Address, Env};

@@ -1,4 +1,5 @@
 #![cfg(test)]
+#![allow(clippy::all)]
 
 use super::*;
 use mock_token::MockToken;

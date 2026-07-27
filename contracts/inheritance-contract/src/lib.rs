@@ -1031,7 +1031,7 @@ impl InheritanceContract {
             .persistent()
             .get(&DataKey::Arbitrators)
             .unwrap_or(Vec::new(&env));
-        if list.len() > 0 {
+        if !list.is_empty() {
             arbitrator = list.get(0).unwrap();
         }
 
@@ -1118,7 +1118,7 @@ impl InheritanceContract {
         }
 
         let mut record = record;
-        record.status = new_status.clone();
+        record.status = new_status;
         record.resolution_notes = resolution_notes;
         if new_status == DisputeStatus::Resolved || new_status == DisputeStatus::Rejected {
             record.resolved_at = env.ledger().timestamp();
@@ -1155,7 +1155,7 @@ impl InheritanceContract {
                 disputes::DisputeResolvedEvent {
                     dispute_id,
                     plan_id: record.plan_id,
-                    status: record.status.clone(),
+                    status: record.status,
                     arbitrator: arbitrator.clone(),
                     resolved_at: record.resolved_at,
                 },
@@ -1181,6 +1181,7 @@ impl InheritanceContract {
         Ok(())
     }
 
+    #[allow(clippy::too_many_arguments)]
     fn create_beneficiary(
         env: &Env,
         plan_id: u64,
@@ -1591,7 +1592,7 @@ impl InheritanceContract {
         let beneficiary = Self::create_beneficiary(
             &env,
             plan_id,
-            plan.beneficiaries.len() as u32,
+            plan.beneficiaries.len(),
             beneficiary_input.name,
             beneficiary_input.email.clone(),
             beneficiary_input.claim_code,
@@ -4970,7 +4971,7 @@ impl InheritanceContract {
             match Self::create_beneficiary(
                 &env,
                 plan_id,
-                plan.beneficiaries.len() as u32,
+                plan.beneficiaries.len(),
                 input.name.clone(),
                 input.email.clone(),
                 input.claim_code,
@@ -5476,14 +5477,17 @@ impl InheritanceContract {
         env.storage().instance().get(&DataKey::GovernanceContract)
     }
 
+    #[allow(dead_code)]
     fn require_lending_contract(env: &Env) -> Result<Address, InheritanceError> {
         Self::get_lending_contract(env.clone()).ok_or(InheritanceError::AdminNotSet)
     }
 
+    #[allow(dead_code)]
     fn require_governance_contract(env: &Env) -> Result<Address, InheritanceError> {
         Self::get_governance_contract(env.clone()).ok_or(InheritanceError::AdminNotSet)
     }
 
+    #[allow(dead_code)]
     fn invoke_lending_contract<R>(
         env: &Env,
         method: Symbol,
@@ -5498,6 +5502,7 @@ impl InheritanceContract {
             .map_err(|_| InheritanceError::FeeTransferFailed)
     }
 
+    #[allow(dead_code)]
     fn invoke_governance_contract<R>(
         env: &Env,
         method: Symbol,
