@@ -20,7 +20,7 @@ use rust_decimal::Decimal;
 use serde::{Deserialize, Serialize};
 use std::sync::Arc;
 use tower_http::cors::{AllowOrigin, CorsLayer};
-use tracing::error;
+use tracing::{error, warn};
 use uuid::Uuid;
 
 use crate::auth::{jwt_auth_middleware, signature_auth_middleware, Claims};
