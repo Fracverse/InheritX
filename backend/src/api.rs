@@ -163,13 +163,64 @@ struct AdminRow {
 }
 
 pub fn create_router(state: Arc<AppState>) -> Router {
-    // Strict CORS: only allow specific origins, methods, and headers
+    // Secure CORS validation: verify origin schemas and support multiple subdomains of inheritx.vercel.app
+    // and localhost for development environments.
     let cors = CorsLayer::new()
-        .allow_origin(
-            "https://inheritx.vercel.app"
-                .parse::<HeaderValue>()
-                .unwrap(),
-        )
+        .allow_origin(tower_http::cors::AllowOrigin::predicate(
+            |origin: &HeaderValue, _parts| {
+                let origin_str = match origin.to_str() {
+                    Ok(s) => s,
+                    Err(_) => return false,
+                };
+
+                let uri = match origin_str.parse::<axum::http::uri::Uri>() {
+                    Ok(u) => u,
+                    Err(_) => return false,
+                };
+
+                let scheme = match uri.scheme_str() {
+                    Some(s) => s,
+                    None => return false,
+                };
+
+                let host = match uri.host() {
+                    Some(h) => h,
+                    None => return false,
+                };
+
+                // Strict URI validation: reject paths, queries, and fragments in Origin header
+                if !uri.path().is_empty() && uri.path() != "/" {
+                    return false;
+                }
+                if uri.query().is_some() {
+                    return false;
+                }
+
+                // Check for localhost / loopback addresses for development
+                let is_localhost =
+                    host == "localhost" || host == "127.0.0.1" || host == "[::1]" || host == "::1";
+
+                if is_localhost {
+                    // Local development allows http or https schemes
+                    scheme == "http" || scheme == "https"
+                } else {
+                    // Production environments require secure https scheme
+                    if scheme != "https" {
+                        return false;
+                    }
+
+                    // Verify exact domain or subdomains
+                    if host == "inheritx.vercel.app" {
+                        true
+                    } else if host.ends_with(".inheritx.vercel.app") {
+                        // Ensure it's a valid subdomain of inheritx.vercel.app and not a substring match
+                        host.len() > ".inheritx.vercel.app".len()
+                    } else {
+                        false
+                    }
+                }
+            },
+        ))
         .allow_methods([Method::GET, Method::POST, Method::OPTIONS])
         .allow_headers([
             axum::http::header::CONTENT_TYPE,

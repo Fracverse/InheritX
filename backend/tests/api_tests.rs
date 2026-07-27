@@ -593,3 +593,79 @@ async fn test_get_current_rate_cached() {
     let body_json: serde_json::Value = serde_json::from_slice(&body_bytes).unwrap();
     assert_eq!(body_json["apy"], 3.0);
 }
+
+#[tokio::test]
+async fn test_cors_origins() {
+    let app = setup_app();
+
+    let allowed_origins = vec![
+        "https://inheritx.vercel.app",
+        "https://staging.inheritx.vercel.app",
+        "https://api.inheritx.vercel.app",
+        "http://localhost:3000",
+        "http://127.0.0.1:8080",
+        "http://[::1]:5173",
+        "https://localhost:443",
+    ];
+
+    for origin in allowed_origins {
+        let response = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method(http::Method::GET)
+                    .uri("/api/health")
+                    .header(http::header::ORIGIN, origin)
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        let acao = response
+            .headers()
+            .get(http::header::ACCESS_CONTROL_ALLOW_ORIGIN);
+        assert!(
+            acao.is_some(),
+            "Expected origin {origin} to be allowed, but it was denied"
+        );
+        assert_eq!(
+            acao.unwrap().to_str().unwrap(),
+            origin,
+            "Expected Access-Control-Allow-Origin header to match {origin}"
+        );
+    }
+
+    let denied_origins = vec![
+        "http://inheritx.vercel.app", // Non-secure scheme for production domain
+        "https://fakeinheritx.vercel.app", // Prefix spoofing
+        "https://inheritx.vercel.app.attacker.com", // Suffix spoofing
+        "https://inheritx.vercel.app/path", // Path suffix in origin
+        "http://localhost.attacker.com", // Spoofing localhost
+        "http://127.0.0.1.attacker.com", // Spoofing 127.0.0.1
+        "null",                       // null origin
+    ];
+
+    for origin in denied_origins {
+        let response = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method(http::Method::GET)
+                    .uri("/api/health")
+                    .header(http::header::ORIGIN, origin)
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        let acao = response
+            .headers()
+            .get(http::header::ACCESS_CONTROL_ALLOW_ORIGIN);
+        assert!(
+            acao.is_none(),
+            "Expected origin {origin} to be denied, but it was allowed"
+        );
+    }
+}
