@@ -307,7 +307,9 @@ impl AnchorRegistry {
                         beneficiary_address: tx.stellar_account.clone().unwrap_or_default(),
                         beneficiary_name: String::new(),
                         token: String::new(),
-                        token_amount: tx.amount_in.as_deref()
+                        token_amount: tx
+                            .amount_in
+                            .as_deref()
                             .and_then(|v| v.parse().ok())
                             .unwrap_or(0.0),
                         fiat_currency: String::new(),
@@ -315,10 +317,14 @@ impl AnchorRegistry {
                         account_number: String::new(),
                     },
                     exchange_rate: 1.0,
-                    fiat_amount: tx.amount_out.as_deref()
+                    fiat_amount: tx
+                        .amount_out
+                        .as_deref()
                         .and_then(|v| v.parse().ok())
                         .unwrap_or(0.0),
-                    anchor_fee_usd: tx.amount_fee.as_deref()
+                    anchor_fee_usd: tx
+                        .amount_fee
+                        .as_deref()
                         .and_then(|v| v.parse().ok())
                         .unwrap_or(0.0),
                     status: map_anchor_status(&tx.status),
@@ -381,7 +387,9 @@ impl AnchorRegistry {
                             beneficiary_address: String::new(),
                             beneficiary_name: String::new(),
                             token: String::new(),
-                            token_amount: tx.amount_in.as_deref()
+                            token_amount: tx
+                                .amount_in
+                                .as_deref()
                                 .and_then(|v| v.parse().ok())
                                 .unwrap_or(0.0),
                             fiat_currency: String::new(),
@@ -389,7 +397,9 @@ impl AnchorRegistry {
                             account_number: String::new(),
                         },
                         exchange_rate: 1.0,
-                        fiat_amount: tx.amount_out.as_deref()
+                        fiat_amount: tx
+                            .amount_out
+                            .as_deref()
                             .and_then(|v| v.parse().ok())
                             .unwrap_or(0.0),
                         anchor_fee_usd: 0.0,

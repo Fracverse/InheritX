@@ -43,8 +43,7 @@ fn setup_app_with_cache(plan_cache: PlanCache) -> axum::Router {
         .unwrap();
     let state = Arc::new(AppState {
         anchor: Arc::new(inheritx_backend::stellar_anchor::AnchorRegistry::new(
-            None,
-            None,
+            None, None,
         )),
         db_pool,
         kyc_tx: tokio::sync::broadcast::channel(16).0,
