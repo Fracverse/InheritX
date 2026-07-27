@@ -65,6 +65,7 @@ fn test_transfer() {
     };
 
     client.mint(&user1, &metadata);
+    client.set_transferable(&2, &true);
     client.transfer(&user1, &user2, &2);
 
     assert_eq!(client.owner_of(&2), Some(user2.clone()));
@@ -98,6 +99,7 @@ fn test_approve_and_transfer_from() {
 
     client.mint(&user1, &metadata);
 
+    client.set_transferable(&3, &true);
     client.approve(&user1, &operator, &3);
     assert_eq!(client.get_approved(&3), Some(operator.clone()));
 
@@ -133,6 +135,7 @@ fn test_approval_for_all() {
     };
     client.mint(&user1, &metadata);
 
+    client.set_transferable(&4, &true);
     client.set_approval_for_all(&user1, &operator, &true);
     assert!(client.is_approved_for_all(&user1, &operator));
 
@@ -238,6 +241,7 @@ fn test_transfer_events_use_standard_names() {
         due_date: 0,
     };
     client.mint(&owner, &metadata);
+    client.set_transferable(&46, &true);
     client.approve(&owner, &operator, &46);
     client.set_approval_for_all(&owner, &operator, &true);
     client.transfer_from(&operator, &owner, &recipient, &46);
