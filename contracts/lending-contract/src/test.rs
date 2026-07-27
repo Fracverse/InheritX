@@ -353,7 +353,6 @@ fn test_get_loan_returns_none_when_no_loan() {
     let no_loan_addr = Address::generate(&env);
     let loan = client.get_loan(&no_loan_addr);
     assert!(loan.is_none());
-
 }
 
 #[test]
@@ -1872,12 +1871,7 @@ fn test_flash_loan_success() {
     let pool_before = client.get_pool_state(&token_addr);
 
     let initiator = Address::generate(&env);
-    client.flash_loan(
-        &initiator,
-        &receiver_id,
-        &token_addr,
-        &flash_loan_amount,
-    );
+    client.flash_loan(&initiator, &receiver_id, &token_addr, &flash_loan_amount);
 
     let pool_after = client.get_pool_state(&token_addr);
     assert_eq!(
