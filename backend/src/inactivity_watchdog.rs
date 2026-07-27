@@ -2,6 +2,7 @@ use chrono::{DateTime, Utc};
 use sqlx::PgPool;
 use std::sync::Arc;
 use std::time::Duration;
+use tokio::sync::watch;
 use tokio::time::MissedTickBehavior;
 use tracing::{error, info, warn};
 use uuid::Uuid;
@@ -54,13 +55,19 @@ impl InactivityWatchdogService {
         }
     }
 
-    pub fn start(self: Arc<Self>) {
+    pub fn start(self: Arc<Self>, mut shutdown_rx: watch::Receiver<bool>) {
         tokio::spawn(async move {
             let mut interval = tokio::time::interval(self.config.interval);
             interval.set_missed_tick_behavior(MissedTickBehavior::Delay);
 
             loop {
-                interval.tick().await;
+                tokio::select! {
+                    _ = interval.tick() => {}
+                    _ = shutdown_rx.changed() => {
+                        info!("Inactivity watchdog shutting down");
+                        return;
+                    }
+                }
 
                 match self.run_once().await {
                     Ok(count) if count > 0 => {

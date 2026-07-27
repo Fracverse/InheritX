@@ -5,6 +5,7 @@ use sha2::Sha256;
 use sqlx::PgPool;
 use std::sync::Arc;
 use std::time::Duration;
+use tokio::sync::watch;
 use tokio::time::sleep;
 use tracing::{error, info, warn};
 
@@ -25,14 +26,21 @@ impl WebhookDispatcherService {
         }
     }
 
-    pub fn start(self: Arc<Self>) {
+    pub fn start(self: Arc<Self>, mut shutdown_rx: watch::Receiver<bool>) {
         tokio::spawn(async move {
             loop {
+                tokio::select! {
+                    biased;
+                    _ = shutdown_rx.changed() => {
+                        info!("Webhook dispatcher shutting down");
+                        return;
+                    }
+                    _ = sleep(Duration::from_secs(5)) => {}
+                }
+
                 if let Err(e) = self.run_once().await {
                     error!("Webhook dispatcher run failed: {e}");
                 }
-
-                sleep(Duration::from_secs(5)).await;
             }
         });
     }
