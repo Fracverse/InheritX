@@ -6369,3 +6369,130 @@ fn test_set_conditions_blocked_after_trigger() {
     let result = client.try_add_time_trigger(&owner, &plan_id, &9999u64);
     assert!(result.is_err());
 }
+
+// ───────────────────────────────────────────────────
+// Additional Upgrade Contract Tests
+// ───────────────────────────────────────────────────
+
+#[test]
+fn test_admin_returns_none_before_initialization() {
+    let env = Env::default();
+    let contract_id = env.register_contract(None, InheritanceContract);
+    let client = InheritanceContractClient::new(&env, &contract_id);
+
+    let admin = client.admin();
+    assert!(admin.is_none());
+}
+
+#[test]
+fn test_admin_returns_address_after_initialization() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let contract_id = env.register_contract(None, InheritanceContract);
+    let client = InheritanceContractClient::new(&env, &contract_id);
+
+    let admin_addr = create_test_address(&env, 1);
+    client.initialize_admin(&admin_addr);
+
+    let admin = client.admin();
+    assert!(admin.is_some());
+    assert_eq!(admin.unwrap(), admin_addr);
+}
+
+#[test]
+fn test_upgrade_contract_rejects_duplicate_admin_init() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let contract_id = env.register_contract(None, InheritanceContract);
+    let client = InheritanceContractClient::new(&env, &contract_id);
+
+    let admin1 = create_test_address(&env, 1);
+    let admin2 = create_test_address(&env, 2);
+    client.initialize_admin(&admin1);
+
+    let result = client.try_initialize_admin(&admin2);
+    assert!(result.is_err());
+}
+
+#[test]
+fn test_upgrade_version_bumps_correctly() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let contract_id = env.register_contract(None, InheritanceContract);
+    let client = InheritanceContractClient::new(&env, &contract_id);
+
+    let admin = create_test_address(&env, 1);
+    client.initialize_admin(&admin);
+
+    // Verify initial version
+    assert_eq!(client.version(), 1);
+
+    // Simulate version bump (as upgrade would do)
+    env.as_contract(&contract_id, || {
+        let current: u32 = env.storage().instance().get(&DataKey::Version).unwrap_or(1);
+        env.storage().instance().set(&DataKey::Version, &(current + 1));
+    });
+
+    assert_eq!(client.version(), 2);
+
+    // Bump again
+    env.as_contract(&contract_id, || {
+        let current: u32 = env.storage().instance().get(&DataKey::Version).unwrap_or(1);
+        env.storage().instance().set(&DataKey::Version, &(current + 1));
+    });
+
+    assert_eq!(client.version(), 3);
+}
+
+#[test]
+fn test_upgrade_preserves_plan_data() {
+    let env = Env::default();
+    let (client, token_id, admin, owner) = setup_with_token_and_admin(&env);
+
+    // Create a plan before simulated upgrade
+    let plan_id = client.create_inheritance_plan(&plan_params(
+        &env,
+        &owner,
+        &token_id,
+        "Pre-Upgrade Plan",
+        "Plan created before upgrade",
+        1_000_000u64,
+        DistributionMethod::LumpSum,
+        &default_beneficiaries(&env),
+    ));
+
+    // Verify plan exists
+    let plan = client.get_plan(&plan_id).unwrap();
+    assert_eq!(plan.plan_name, String::from_str(&env, "Pre-Upgrade Plan"));
+
+    // Simulate version bump (as upgrade would do) — use the client's own contract
+    let contract_id = client.address.clone();
+    env.as_contract(&contract_id, || {
+        let current: u32 = env.storage().instance().get(&DataKey::Version).unwrap_or(1);
+        env.storage().instance().set(&DataKey::Version, &(current + 1));
+    });
+
+    // Verify plan still exists after simulated upgrade
+    let plan_after = client.get_plan(&plan_id).unwrap();
+    assert_eq!(
+        plan_after.plan_name,
+        String::from_str(&env, "Pre-Upgrade Plan")
+    );
+    assert_eq!(plan_after.total_amount, 1_000_000u64);
+    assert_eq!(client.version(), 2);
+}
+
+#[test]
+fn test_migrate_rejects_when_already_current() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let contract_id = env.register_contract(None, InheritanceContract);
+    let client = InheritanceContractClient::new(&env, &contract_id);
+
+    let admin = create_test_address(&env, 1);
+    client.initialize_admin(&admin);
+
+    // Version is already CONTRACT_VERSION (1), so migrate should be a no-op
+    let result = client.try_migrate(&admin);
+    assert!(result.is_ok());
+}

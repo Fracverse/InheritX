@@ -851,6 +851,13 @@ impl InheritanceContract {
         env.storage().instance().get(&key)
     }
 
+    /// Get the current contract admin address.
+    ///
+    /// Returns the admin address if one has been initialized, otherwise None.
+    pub fn admin(env: Env) -> Option<Address> {
+        Self::get_admin(&env)
+    }
+
     fn require_admin(env: &Env, admin: &Address) -> Result<(), InheritanceError> {
         admin.require_auth();
         access_control::require_role(env, admin, Role::Admin, InheritanceError::NotAdmin)
@@ -5672,34 +5679,6 @@ impl InheritanceContract {
         }
 
         Ok(unacknowledged)
-    }
-
-    pub fn upgrade_contract(
-        env: Env,
-        admin: Address,
-        new_wasm_hash: BytesN<32>,
-    ) -> Result<(), InheritanceError> {
-        Self::require_admin(&env, &admin)?;
-        env.deployer()
-            .update_current_contract_wasm(new_wasm_hash.clone());
-
-        let old_version = env.storage().instance().get(&DataKey::Version).unwrap_or(0);
-        let new_version = old_version + 1;
-        env.storage()
-            .instance()
-            .set(&DataKey::Version, &new_version);
-
-        env.events().publish(
-            (symbol_short!("UPGRADE"), admin.clone()),
-            ContractUpgradedEvent {
-                old_version,
-                new_version,
-                new_wasm_hash,
-                admin,
-                upgraded_at: env.ledger().timestamp(),
-            },
-        );
-        Ok(())
     }
 
     /// Transfer ownership of an inheritance plan to another address.
