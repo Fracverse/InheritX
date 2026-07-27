@@ -76,10 +76,9 @@ pub struct RefinanceTerms {
 
 #[contracttype]
 #[derive(Clone, Debug, Eq, PartialEq)]
-pub struct LoanMetadata {
+pub struct NftLoanMetadata {
     pub loan_id: u64,
     pub borrower: Address,
-    pub asset: Address, // Asset being borrowed
     pub principal: u64,
     pub collateral_amount: u64,
     pub collateral_token: Address,
@@ -110,9 +109,9 @@ pub struct InsuranceFund {
 #[soroban_sdk::contractclient(name = "LoanNFTClient")]
 pub trait LoanNFTInterface {
     fn initialize(env: Env, admin: Address);
-    fn mint(env: Env, to: Address, metadata: LoanMetadata);
+    fn mint(env: Env, to: Address, metadata: NftLoanMetadata);
     fn burn(env: Env, loan_id: u64);
-    fn get_metadata(env: Env, loan_id: u64) -> Option<LoanMetadata>;
+    fn get_metadata(env: Env, loan_id: u64) -> Option<NftLoanMetadata>;
     fn owner_of(env: Env, loan_id: u64) -> Option<Address>;
 }
 
@@ -643,6 +642,23 @@ impl LendingContract {
             },
         );
 
+        // Initialize insurance fund
+        env.storage().instance().set(
+            &DataKey::InsuranceFund,
+            &InsuranceFund {
+                total_premiums_collected: 0,
+                total_claims_paid: 0,
+                available_balance: 0,
+            },
+        );
+
+        // Initialize insurance premium rate
+        env.storage().instance().set(
+            &DataKey::InsurancePremiumRate,
+            &DEFAULT_INSURANCE_PREMIUM_RATE_BPS,
+        );
+
+        access_control::assign_role(&env, &admin, Role::Admin);
         Ok(())
     }
 
@@ -707,23 +723,6 @@ impl LendingContract {
             },
         );
 
-        // Initialize insurance fund
-        env.storage().instance().set(
-            &DataKey::InsuranceFund,
-            &InsuranceFund {
-                total_premiums_collected: 0,
-                total_claims_paid: 0,
-                available_balance: 0,
-            },
-        );
-
-        // Initialize insurance premium rate
-        env.storage().instance().set(
-            &DataKey::InsurancePremiumRate,
-            &DEFAULT_INSURANCE_PREMIUM_RATE_BPS,
-        );
-
-        access_control::assign_role(&env, &admin, Role::Admin);
         Ok(())
     }
 
@@ -1408,14 +1407,13 @@ impl LendingContract {
             let nft_client = LoanNFTClient::new(&env, &nft_token);
             nft_client.mint(
                 &borrower,
-                &LoanMetadata {
+                &NftLoanMetadata {
+                    loan_id,
                     borrower: borrower.clone(),
-                    asset: asset.clone(),
+                    principal: amount,
                     collateral_amount,
                     collateral_token: collateral_token.clone(),
                     due_date,
-                    loan_id,
-                    principal: amount,
                 },
             );
         }
@@ -2648,14 +2646,13 @@ impl LendingContract {
             let nft_client = LoanNFTClient::new(&env, &nft_token);
             nft_client.mint(
                 &borrower,
-                &LoanMetadata {
+                &NftLoanMetadata {
+                    loan_id: new_loan_id,
                     borrower: borrower.clone(),
-                    asset: new_loan.asset.clone(),
+                    principal: new_loan.principal,
                     collateral_amount: new_loan.collateral_amount,
                     collateral_token: new_loan.collateral_token.clone(),
                     due_date: new_loan.due_date,
-                    loan_id: new_loan_id,
-                    principal: new_loan.principal,
                 },
             );
         }
@@ -2855,14 +2852,13 @@ impl LendingContract {
             let nft_client = LoanNFTClient::new(&env, &nft_token);
             nft_client.mint(
                 &borrower,
-                &LoanMetadata {
+                &NftLoanMetadata {
+                    loan_id: new_loan_id,
                     borrower: borrower.clone(),
-                    asset: consolidation_asset.clone(),
+                    principal: new_loan.principal,
                     collateral_amount: new_loan.collateral_amount,
                     collateral_token: new_loan.collateral_token.clone(),
                     due_date: new_loan.due_date,
-                    loan_id: new_loan_id,
-                    principal: new_loan.principal,
                 },
             );
         }
@@ -3007,14 +3003,13 @@ impl LendingContract {
                 let nft_client = LoanNFTClient::new(&env, &nft_token);
                 nft_client.mint(
                     &borrower,
-                    &LoanMetadata {
+                    &NftLoanMetadata {
+                        loan_id: new_loan_id,
                         borrower: borrower.clone(),
-                        asset: old_loan.asset.clone(),
+                        principal: new_loan.principal,
                         collateral_amount: new_loan.collateral_amount,
                         collateral_token: new_loan.collateral_token.clone(),
                         due_date: new_loan.due_date,
-                        loan_id: new_loan_id,
-                        principal: new_loan.principal,
                     },
                 );
             }
@@ -3313,7 +3308,7 @@ impl LendingContract {
         let loan_key = DataKey::LoanById(loan_id);
         let loan = env
             .storage()
-            .instance()
+            .persistent()
             .get::<_, LoanRecord>(&loan_key)
             .ok_or(LendingError::LoanNotFound)?; // Loan not found
 
@@ -3393,7 +3388,6 @@ impl LendingContract {
         admin: Address,
         premium_rate_bps: u32,
     ) -> Result<(), LendingError> {
-        admin.require_auth();
         Self::require_admin(&env, &admin)?;
 
         if premium_rate_bps > 10000 {
@@ -3427,7 +3421,7 @@ impl LendingContract {
         let loan_key = DataKey::LoanById(loan_id);
         let loan = env
             .storage()
-            .instance()
+            .persistent()
             .get::<_, LoanRecord>(&loan_key)
             .ok_or(LendingError::LoanNotFound)?;
 
@@ -3460,13 +3454,8 @@ impl LendingContract {
 
         // Transfer premium from borrower to insurance fund (using underlying token)
         let token: Address = env.storage().instance().get(&DataKey::Token).unwrap();
-        let token_client = token::Client::new(&env, &token);
-
-        token_client.transfer(
-            &borrower,
-            &env.current_contract_address(),
-            &(premium as i128),
-        );
+        let contract_id = env.current_contract_address();
+        Self::transfer(&env, &token, &borrower, &contract_id, premium)?;
 
         // Coverage is 100% of principal
         let coverage_amount = loan.principal;
@@ -3582,7 +3571,7 @@ impl LendingContract {
         let loan_key = DataKey::LoanById(loan_id);
         let loan = env
             .storage()
-            .instance()
+            .persistent()
             .get::<_, LoanRecord>(&loan_key)
             .ok_or(LendingError::LoanNotFound)?;
 
@@ -3592,10 +3581,6 @@ impl LendingContract {
         // Insurance can only be claimed after the grace period expires.
         if current_time <= grace_period_end {
             return Err(LendingError::InvalidAmount);
-        }
-
-        if current_time <= insurance.expires_at {
-            return Err(LendingError::InsuranceExpired);
         }
 
         // Get insurance fund and verify sufficient balance
@@ -3765,7 +3750,6 @@ impl LendingContract {
         admin: Address,
         amount: u64,
     ) -> Result<(), LendingError> {
-        admin.require_auth();
         Self::require_admin(&env, &admin)?;
 
         if amount == 0 {
@@ -3776,8 +3760,8 @@ impl LendingContract {
 
         // Transfer from admin to contract
         let token: Address = env.storage().instance().get(&DataKey::Token).unwrap();
-        let token_client = token::Client::new(&env, &token);
-        token_client.transfer(&admin, &env.current_contract_address(), &(amount as i128));
+        let contract_id = env.current_contract_address();
+        Self::transfer(&env, &token, &admin, &contract_id, amount)?;
 
         // Update insurance fund balance
         let mut fund: InsuranceFund = env
@@ -3809,7 +3793,6 @@ impl LendingContract {
         admin: Address,
         amount: u64,
     ) -> Result<(), LendingError> {
-        admin.require_auth();
         Self::require_admin(&env, &admin)?;
 
         if amount == 0 {
@@ -4124,7 +4107,6 @@ impl LendingContract {
         admin: Address,
         token: Address,
     ) -> Result<(), LendingError> {
-        admin.require_auth();
         Self::require_admin(&env, &admin)?;
 
         let key = symbol_short!("supp_wrp");
@@ -4154,7 +4136,6 @@ impl LendingContract {
         admin: Address,
         token: Address,
     ) -> Result<(), LendingError> {
-        admin.require_auth();
         Self::require_admin(&env, &admin)?;
 
         let key = symbol_short!("supp_wrp");

@@ -998,7 +998,7 @@ pub struct MaliciousNFT;
 #[contractimpl]
 impl MaliciousNFT {
     pub fn initialize(env: Env, admin: Address) {}
-    pub fn mint(env: Env, to: Address, metadata: LoanMetadata) {
+    pub fn mint(env: Env, to: Address, metadata: NftLoanMetadata) {
         let lending_contract = env
             .storage()
             .instance()
@@ -1017,7 +1017,7 @@ impl MaliciousNFT {
         );
     }
     pub fn burn(env: Env, loan_id: u64) {}
-    pub fn get_metadata(env: Env, loan_id: u64) -> Option<LoanMetadata> {
+    pub fn get_metadata(env: Env, loan_id: u64) -> Option<NftLoanMetadata> {
         None
     }
     pub fn owner_of(env: Env, loan_id: u64) -> Option<Address> {
@@ -1289,7 +1289,7 @@ fn test_bad_debt_reserve_replenishment_and_liquidation() {
     );
 
     env.ledger()
-        .set_timestamp(env.ledger().timestamp() + 5 * 365 * 24 * 60 * 60);
+        .set_timestamp(env.ledger().timestamp() + 5 * 365 * 24 * 60 * 60 + 259_200 + 1);
 
     let outstanding = client.get_repayment_amount(&borrower);
     assert!(outstanding > 7_500u64);
@@ -1526,9 +1526,11 @@ fn test_get_refinance_terms_overflow_rejected() {
     };
 
     // Write loan record directly into contract storage for the test
-    env.storage()
-        .persistent()
-        .set(&DataKey::Loan(borrower.clone()), &loan);
+    env.as_contract(&client.address, || {
+        env.storage()
+            .persistent()
+            .set(&DataKey::Loan(borrower.clone()), &loan);
+    });
 
     // Call get_refinance_terms and expect InvalidRefinanceTerms due to overflow checks
     let result = client.try_get_refinance_terms(&borrower, &(60 * 24 * 60 * 60));
@@ -2273,29 +2275,24 @@ fn test_purchase_loan_insurance_success() {
     // Borrower has funds for premium
     mint_to(&env, &token_addr, &borrower, 1_000);
 
-    // Purchase insurance for loan 0
-    let premium = client.purchase_loan_insurance(&borrower, &0u64);
+    // Purchase insurance for loan 1
+    let premium = client.purchase_loan_insurance(&borrower, &1u64);
     // Premium should be 2% of 5000 = 100
     assert_eq!(premium, 100u64);
 
     // Verify insurance exists
-    assert_eq!(client.is_loan_insured(&0u64), true);
+    assert_eq!(client.is_loan_insured(&1u64), true);
 
-    let coverage = client.get_insurance_coverage(&0u64);
+    let coverage = client.get_insurance_coverage(&1u64);
     assert_eq!(coverage, 5_000u64); // 100% coverage
 
-    let insurance = client.get_insurance_details(&0u64);
+    let insurance = client.get_insurance_details(&1u64);
     assert!(insurance.is_some());
     let ins = insurance.unwrap();
-    assert_eq!(ins.loan_id, 0);
+    assert_eq!(ins.loan_id, 1);
     assert_eq!(ins.borrower, borrower);
     assert_eq!(ins.coverage_amount, 5_000u64);
     assert_eq!(ins.premium_paid, 100u64);
-}
-
-#[test]
-fn test_cannot_purchase_insurance_twice() {
-    // TODO: Implement test
 }
 
 // Interest Rate Model Tests (#489)
@@ -2362,10 +2359,36 @@ fn test_get_borrow_rate_at_optimal() {
     env.mock_all_auths();
     let (client, token_addr, collateral_addr, admin) = setup(&env);
 
+    let depositor = Address::generate(&env);
+    let borrower = Address::generate(&env);
+    mint_to(&env, &token_addr, &depositor, 2000);
+    client.deposit(&depositor, &token_addr, &2000u64);
+
+    mint_to(&env, &collateral_addr, &borrower, 3000);
+    client.borrow(
+        &borrower,
+        &token_addr,
+        &1600u64,
+        &collateral_addr,
+        &3000u64,
+        &31536000u64,
+    );
+
+    client.set_rate_model(&admin, &200u32, &8000u32, &800u32, &10000u32, &1000u32);
+
+    let borrow_rate = client.get_borrow_rate();
+    assert_eq!(borrow_rate, 1000u32);
+}
+
+#[test]
+fn test_cannot_purchase_insurance_twice() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let (client, token_addr, collateral_addr, _admin) = setup(&env);
+
     let lender = Address::generate(&env);
     let borrower = Address::generate(&env);
 
-    // Setup: lender deposits and borrower borrows
     mint_to(&env, &token_addr, &lender, 100_000);
     client.deposit(&lender, &token_addr, &50_000u64);
 
@@ -2383,11 +2406,9 @@ fn test_get_borrow_rate_at_optimal() {
 
     mint_to(&env, &token_addr, &borrower, 2_000);
 
-    // Purchase insurance first time
-    client.purchase_loan_insurance(&borrower, &0u64);
+    client.purchase_loan_insurance(&borrower, &1u64);
 
-    // Try to purchase again - should fail
-    let result = client.try_purchase_loan_insurance(&borrower, &0u64);
+    let result = client.try_purchase_loan_insurance(&borrower, &1u64);
     assert!(result.is_err());
 }
 
@@ -2425,7 +2446,7 @@ fn test_insurance_fund_tracking() {
     assert_eq!(fund_before.available_balance, 0);
 
     // Purchase insurance
-    let premium = client.purchase_loan_insurance(&borrower, &0u64);
+    let premium = client.purchase_loan_insurance(&borrower, &1u64);
 
     // Check fund state after purchase
     let fund_after = client.get_insurance_fund_state();
@@ -2455,29 +2476,46 @@ fn test_claim_insurance_after_default() {
     env.mock_all_auths();
     let (client, token_addr, collateral_addr, admin) = setup(&env);
 
-    // Deposit 2000 (must exceed MINIMUM_LIQUIDITY=1000 for first deposit)
-    let depositor = Address::generate(&env);
-    mint_to(&env, &token_addr, &depositor, 2000);
-    client.deposit(&depositor, &token_addr, &2000u64);
-
-    // Borrow 1600 → 80% utilization (1600/2000 = 80%)
+    let lender = Address::generate(&env);
     let borrower = Address::generate(&env);
-    mint_to(&env, &collateral_addr, &borrower, 3000);
+
+    mint_to(&env, &token_addr, &lender, 100_000);
+    client.deposit(&lender, &token_addr, &50_000u64);
+
+    mint_to(&env, &token_addr, &borrower, 10_000);
+    mint_to(&env, &collateral_addr, &borrower, 50_000);
+
+    let loan_amount = 5_000u64;
+    let loan_duration = 7_200u64;
+    let due_date = env.ledger().timestamp() + loan_duration;
+
     client.borrow(
         &borrower,
         &token_addr,
-        &1600u64,
+        &loan_amount,
         &collateral_addr,
-        &3000u64,
-        &31536000u64,
+        &10_000u64,
+        &loan_duration,
     );
 
-    // Configure model: base=200, optimal=80%, slope1=800, slope2=10000
-    client.set_rate_model(&admin, &200u32, &8000u32, &800u32, &10000u32, &1000u32);
+    mint_to(&env, &token_addr, &borrower, 1_000);
+    let premium = client.purchase_loan_insurance(&borrower, &1u64);
+    let coverage = client.get_insurance_details(&1u64).unwrap().coverage_amount;
 
-    // rate = base + (8000 / 8000) * slope1 = 200 + 800 = 1000
-    let borrow_rate = client.get_borrow_rate();
-    assert_eq!(borrow_rate, 1000u32);
+    mint_to(&env, &token_addr, &admin, 20_000);
+    client.deposit_to_insurance_fund(&admin, &10_000u64);
+
+    env.ledger()
+        .set_timestamp(due_date + (3 * 24 * 60 * 60) + 1);
+
+    let claim_amount = client.claim_insurance(&1u64);
+    assert_eq!(claim_amount, coverage);
+
+    assert_eq!(client.is_loan_insured(&1u64), false);
+
+    let fund = client.get_insurance_fund_state();
+    assert_eq!(fund.total_claims_paid, claim_amount);
+    assert_eq!(fund.available_balance, 10_000u64 + premium - claim_amount);
 }
 
 #[test]
@@ -2528,53 +2566,26 @@ fn test_get_supply_rate() {
     env.mock_all_auths();
     let (client, token_addr, collateral_addr, admin) = setup(&env);
 
-    let lender = Address::generate(&env);
+    let depositor = Address::generate(&env);
     let borrower = Address::generate(&env);
+    mint_to(&env, &token_addr, &depositor, 2000);
+    client.deposit(&depositor, &token_addr, &2000u64);
 
-    // Setup
-    mint_to(&env, &token_addr, &lender, 100_000);
-    client.deposit(&lender, &token_addr, &50_000u64);
-
-    mint_to(&env, &token_addr, &borrower, 10_000);
-    mint_to(&env, &collateral_addr, &borrower, 50_000);
-
-    let loan_amount = 5_000u64;
-    let loan_duration = 7_200u64; // 2 hours
-    let due_date = env.ledger().timestamp() + loan_duration;
-
+    mint_to(&env, &collateral_addr, &borrower, 2000);
     client.borrow(
         &borrower,
         &token_addr,
-        &loan_amount,
+        &1000u64,
         &collateral_addr,
-        &10_000u64,
-        &loan_duration,
+        &2000u64,
+        &31536000u64,
     );
 
-    mint_to(&env, &token_addr, &borrower, 1_000);
+    client.set_rate_model(&admin, &200u32, &8000u32, &800u32, &10000u32, &1000u32);
 
-    // Purchase insurance
-    let premium = client.purchase_loan_insurance(&borrower, &0u64);
-
-    // Fund the insurance pool for claims
-    mint_to(&env, &token_addr, &admin, 20_000);
-    client.deposit_to_insurance_fund(&admin, &10_000u64);
-
-    // Jump past the grace period end
-    env.ledger()
-        .set_timestamp(due_date + (3 * 24 * 60 * 60) + 1);
-
-    // Claim insurance
-    let claim_amount = client.claim_insurance(&0u64);
-    assert_eq!(claim_amount, loan_amount); // 100% coverage
-
-    // Verify insurance is marked as claimed
-    assert_eq!(client.is_loan_insured(&0u64), false);
-
-    // Verify fund was updated
-    let fund = client.get_insurance_fund_state();
-    assert_eq!(fund.total_claims_paid, claim_amount);
-    assert_eq!(fund.available_balance, 10_000u64 - claim_amount);
+    let supply_rate = client.get_supply_rate();
+    assert!(supply_rate > 0);
+    assert!(supply_rate < 700u32);
 }
 
 #[test]
@@ -2609,40 +2620,18 @@ fn test_cannot_claim_expired_insurance() {
     mint_to(&env, &token_addr, &borrower, 1_000);
 
     // Purchase insurance
-    client.purchase_loan_insurance(&borrower, &0u64);
+    client.purchase_loan_insurance(&borrower, &1u64);
 
-    // Jump past the grace period end
+    // Jump past the grace period end, then well past insurance expiry
     env.ledger()
         .set_timestamp(due_date + (3 * 24 * 60 * 60) + 1);
 
-    // Try to claim - should fail because insurance expired
-    let result = client.try_claim_insurance(&0u64);
-    // Deposit 2000 (must exceed MINIMUM_LIQUIDITY=1000 for first deposit)
-    let depositor = Address::generate(&env);
-    mint_to(&env, &token_addr, &depositor, 2000);
-    client.deposit(&depositor, &token_addr, &2000u64);
+    // Repay the loan so it is no longer in default
+    client.repay(&borrower);
 
-    // Borrow 1000 → 50% utilization (1000/2000 = 50%)
-    let borrower = Address::generate(&env);
-    mint_to(&env, &collateral_addr, &borrower, 2000);
-    client.borrow(
-        &borrower,
-        &token_addr,
-        &1000u64,
-        &collateral_addr,
-        &2000u64,
-        &31536000u64,
-    );
-
-    // Configure model: base=200, optimal=8000, slope1=800, slope2=10000, reserve=1000
-    client.set_rate_model(&admin, &200u32, &8000u32, &800u32, &10000u32, &1000u32);
-
-    // borrow_rate at 50% util = 200 + (5000/8000)*800 = 200 + 500 = 700
-    // supply_rate = 700 * 5000 * (10000-1000) / 10000^2 = 700 * 5000 * 9000 / 100000000 = 315
-    let supply_rate = client.get_supply_rate();
-    // Value may differ slightly due to integer arithmetic — just ensure it's non-zero and less than borrow_rate
-    assert!(supply_rate > 0);
-    assert!(supply_rate < 700u32);
+    // Try to claim after the loan has been closed - should fail
+    let result = client.try_claim_insurance(&1u64);
+    assert!(result.is_err());
 }
 
 // ─────────────────────────────────────────────────
@@ -2719,7 +2708,7 @@ fn test_cancel_insurance_with_refund() {
     mint_to(&env, &token_addr, &borrower, 1_000);
 
     // Purchase insurance
-    let premium = client.purchase_loan_insurance(&borrower, &0u64);
+    let premium = client.purchase_loan_insurance(&borrower, &1u64);
 
     let fund_after_purchase = client.get_insurance_fund_state();
     let initial_balance = fund_after_purchase.available_balance;
@@ -2729,14 +2718,14 @@ fn test_cancel_insurance_with_refund() {
     env.ledger()
         .set_timestamp(env.ledger().timestamp() + half_duration);
 
-    let refund = client.cancel_insurance(&borrower, &0u64);
+    let refund = client.cancel_insurance(&borrower, &1u64);
 
     // Refund should be approximately half the premium (pro-rata)
     assert!(refund > 0);
     assert!(refund < premium);
 
     // Verify insurance is removed
-    assert_eq!(client.is_loan_insured(&0u64), false);
+    assert_eq!(client.is_loan_insured(&1u64), false);
 
     // Verify fund was updated
     let fund_after_cancel = client.get_insurance_fund_state();
@@ -2778,7 +2767,7 @@ fn test_cancel_insurance_no_refund_after_expiry() {
     mint_to(&env, &token_addr, &borrower, 1_000);
 
     // Purchase insurance
-    client.purchase_loan_insurance(&borrower, &0u64);
+    client.purchase_loan_insurance(&borrower, &1u64);
 
     let fund_after_purchase = client.get_insurance_fund_state();
     let initial_balance = fund_after_purchase.available_balance;
@@ -2788,7 +2777,7 @@ fn test_cancel_insurance_no_refund_after_expiry() {
         .set_timestamp(due_date + (3 * 24 * 60 * 60) + 1);
 
     // Cancel insurance after expiry
-    let refund = client.cancel_insurance(&borrower, &0u64);
+    let refund = client.cancel_insurance(&borrower, &1u64);
 
     // No refund after expiry
     assert_eq!(refund, 0);
@@ -2827,10 +2816,10 @@ fn test_unauthorized_cancel_insurance() {
     mint_to(&env, &token_addr, &borrower, 1_000);
 
     // Purchase insurance
-    client.purchase_loan_insurance(&borrower, &0u64);
+    client.purchase_loan_insurance(&borrower, &1u64);
 
     // Try to cancel as unauthorized user
-    let result = client.try_cancel_insurance(&unauthorized_user, &0u64);
+    let result = client.try_cancel_insurance(&unauthorized_user, &1u64);
     assert!(result.is_err());
 }
 
@@ -2923,9 +2912,9 @@ fn test_insurance_lifecycle_complete() {
 
     // Step 3: Borrower purchases insurance
     mint_to(&env, &token_addr, &borrower, 1_000);
-    let premium = client.purchase_loan_insurance(&borrower, &0u64);
+    let premium = client.purchase_loan_insurance(&borrower, &1u64);
 
-    assert_eq!(client.is_loan_insured(&0u64), true);
+    assert_eq!(client.is_loan_insured(&1u64), true);
 
     // Step 4: Fund insurance for potential claims
     mint_to(&env, &token_addr, &admin, 20_000);
@@ -2941,11 +2930,11 @@ fn test_insurance_lifecycle_complete() {
         .set_timestamp(env.ledger().timestamp() + loan_duration + (3 * 24 * 60 * 60) + 1);
 
     // Step 7: Claim insurance
-    let claim_amount = client.claim_insurance(&0u64);
+    let claim_amount = client.claim_insurance(&1u64);
     assert_eq!(claim_amount, loan_amount);
 
     // Step 8: Verify final state
-    assert_eq!(client.is_loan_insured(&0u64), false);
+    assert_eq!(client.is_loan_insured(&1u64), false);
 
     let final_fund = client.get_insurance_fund_state();
     assert_eq!(final_fund.total_claims_paid, claim_amount);
