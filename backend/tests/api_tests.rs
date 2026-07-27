@@ -622,7 +622,9 @@ async fn test_cors_origins() {
             .await
             .unwrap();
 
-        let acao = response.headers().get(http::header::ACCESS_CONTROL_ALLOW_ORIGIN);
+        let acao = response
+            .headers()
+            .get(http::header::ACCESS_CONTROL_ALLOW_ORIGIN);
         assert!(
             acao.is_some(),
             "Expected origin {} to be allowed, but it was denied",
@@ -637,13 +639,13 @@ async fn test_cors_origins() {
     }
 
     let denied_origins = vec![
-        "http://inheritx.vercel.app",             // Non-secure scheme for production domain
-        "https://fakeinheritx.vercel.app",        // Prefix spoofing
+        "http://inheritx.vercel.app", // Non-secure scheme for production domain
+        "https://fakeinheritx.vercel.app", // Prefix spoofing
         "https://inheritx.vercel.app.attacker.com", // Suffix spoofing
-        "https://inheritx.vercel.app/path",       // Path suffix in origin
-        "http://localhost.attacker.com",          // Spoofing localhost
-        "http://127.0.0.1.attacker.com",          // Spoofing 127.0.0.1
-        "null",                                   // null origin
+        "https://inheritx.vercel.app/path", // Path suffix in origin
+        "http://localhost.attacker.com", // Spoofing localhost
+        "http://127.0.0.1.attacker.com", // Spoofing 127.0.0.1
+        "null",                       // null origin
     ];
 
     for origin in denied_origins {
@@ -660,7 +662,9 @@ async fn test_cors_origins() {
             .await
             .unwrap();
 
-        let acao = response.headers().get(http::header::ACCESS_CONTROL_ALLOW_ORIGIN);
+        let acao = response
+            .headers()
+            .get(http::header::ACCESS_CONTROL_ALLOW_ORIGIN);
         assert!(
             acao.is_none(),
             "Expected origin {} to be denied, but it was allowed",

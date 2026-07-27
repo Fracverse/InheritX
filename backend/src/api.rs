@@ -197,7 +197,8 @@ pub fn create_router(state: Arc<AppState>) -> Router {
                 }
 
                 // Check for localhost / loopback addresses for development
-                let is_localhost = host == "localhost" || host == "127.0.0.1" || host == "[::1]" || host == "::1";
+                let is_localhost =
+                    host == "localhost" || host == "127.0.0.1" || host == "[::1]" || host == "::1";
 
                 if is_localhost {
                     // Local development allows http or https schemes
