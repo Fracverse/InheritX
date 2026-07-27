@@ -40,7 +40,12 @@ fn setup_app() -> axum::Router {
 
 async fn metrics_body(app: axum::Router) -> String {
     let response = app
-        .oneshot(Request::builder().uri("/metrics").body(Body::empty()).unwrap())
+        .oneshot(
+            Request::builder()
+                .uri("/metrics")
+                .body(Body::empty())
+                .unwrap(),
+        )
         .await
         .unwrap();
 

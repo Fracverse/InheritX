@@ -384,7 +384,7 @@ async fn test_trigger_payout_invalid_signature() {
         &body,
         "0x1234567890abcdef1234567890abcdef1234567890abcdef1234567890abcdef",
     );
-    
+
     // Generate a signature for a different body to create an invalid signature
     let (_different_pub_key, invalid_signature) = generate_valid_signature(
         "different body",
