@@ -627,14 +627,12 @@ async fn test_cors_origins() {
             .get(http::header::ACCESS_CONTROL_ALLOW_ORIGIN);
         assert!(
             acao.is_some(),
-            "Expected origin {} to be allowed, but it was denied",
-            origin
+            "Expected origin {origin} to be allowed, but it was denied"
         );
         assert_eq!(
             acao.unwrap().to_str().unwrap(),
             origin,
-            "Expected Access-Control-Allow-Origin header to match {}",
-            origin
+            "Expected Access-Control-Allow-Origin header to match {origin}"
         );
     }
 
@@ -667,8 +665,7 @@ async fn test_cors_origins() {
             .get(http::header::ACCESS_CONTROL_ALLOW_ORIGIN);
         assert!(
             acao.is_none(),
-            "Expected origin {} to be denied, but it was allowed",
-            origin
+            "Expected origin {origin} to be denied, but it was allowed"
         );
     }
 }
