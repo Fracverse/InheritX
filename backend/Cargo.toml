@@ -76,3 +76,8 @@ prometheus = { version = "0.13", features = ["process"], optional = true }
 
 # Optional: PDF report generation
 printpdf = { version = "0.7", optional = true }
+
+[dev-dependencies]
+# WebSocket client used in ws_kyc_test.rs integration tests
+tokio-tungstenite = { version = "0.24", features = ["rustls-tls-native-roots"] }
+futures-util = "0.3"
