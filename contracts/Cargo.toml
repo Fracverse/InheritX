@@ -1,9 +1,14 @@
 [workspace]
 resolver = "2"
 members = [
+  "access-control",
   "inheritance-contract",
+  "lending-contract",
+  "loan-nft",
   "mock-token",
 ]
+
+
 
 [workspace.dependencies]
 soroban-sdk = "21.7.7"

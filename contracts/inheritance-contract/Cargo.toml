@@ -9,8 +9,10 @@ crate-type = ["cdylib"]
 doctest = false
 
 [dependencies]
+access-control = { path = "../access-control" }
 mock_token = { path = "../mock-token" }
 soroban-sdk = { workspace = true }
+
 
 [dev-dependencies]
 soroban-sdk = { workspace = true, features = ["testutils"] }
