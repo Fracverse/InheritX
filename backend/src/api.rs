@@ -150,6 +150,18 @@ pub struct AdminLoginRequest {
     pub password: String,
 }
 
+#[derive(Debug, Deserialize)]
+pub struct YieldCalculateRequest {
+    pub amount: f64,
+    pub yield_rate_bps: u32,
+    pub elapsed_secs: u64,
+}
+
+#[derive(Debug, Serialize)]
+pub struct YieldCalculateResponse {
+    pub accrued_yield: f64,
+}
+
 #[derive(Debug, Serialize)]
 pub struct AdminLoginResponse {
     pub token: String,
@@ -205,6 +217,7 @@ pub fn create_router(state: Arc<AppState>) -> Router {
         .route("/api/kyc/upload", post(upload_kyc_document))
         .route("/api/kyc/required", get(is_kyc_required))
         .route("/api/kyc/requirements", get(get_kyc_requirements))
+        .route("/api/yield/calculate", post(calculate_yield_handler))
         .route("/api/health", get(health_check))
         .route("/api/transactions/submit", post(submit_transaction))
         .route("/api/admin/login", post(admin_login))
@@ -2276,4 +2289,11 @@ async fn admin_login(
         }),
     )
         .into_response()
+}
+
+pub async fn calculate_yield_handler(
+    Json(payload): Json<YieldCalculateRequest>,
+) -> impl IntoResponse {
+    let accrued = yield_calculator::calculate_yield(payload.amount, payload.yield_rate_bps, payload.elapsed_secs);
+    (StatusCode::OK, Json(YieldCalculateResponse { accrued_yield: accrued }))
 }
