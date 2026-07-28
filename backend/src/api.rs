@@ -1048,15 +1048,16 @@ async fn get_plans(
             }
         }
         (Some(owner), Some(beneficiary)) => {
-            // Filter by both owner and beneficiary
+            // Filter by owner OR beneficiary: return plans where the address
+            // is either the creator or listed as a beneficiary.
             match sqlx::query_as::<_, PlanRow>(
                 r#"
                 SELECT DISTINCT p.id, p.owner_address, p.token_address, p.amount,
                        p.grace_period, p.grace_period_seconds, p.earn_yield,
                        p.last_ping, p.is_active, p.status, p.yield_rate_bps, p.accrued_yield, p.created_at
                 FROM plans p
-                INNER JOIN beneficiaries b ON b.plan_id = p.id
-                WHERE p.owner_address = $1 AND b.wallet_address = $2
+                LEFT JOIN beneficiaries b ON b.plan_id = p.id
+                WHERE p.owner_address = $1 OR b.wallet_address = $2
                 ORDER BY p.created_at DESC
                 "#,
             )
