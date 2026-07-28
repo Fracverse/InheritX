@@ -140,10 +140,7 @@ pub struct AnchorRegistry {
 }
 
 impl AnchorRegistry {
-    pub fn new(
-        api_url: Option<String>,
-        api_key: Option<String>,
-    ) -> Self {
+    pub fn new(api_url: Option<String>, api_key: Option<String>) -> Self {
         Self {
             client: reqwest::Client::new(),
             api_url,
@@ -158,7 +155,10 @@ impl AnchorRegistry {
         let api_url = match &self.api_url {
             Some(url) => url.trim_end_matches('/').to_string(),
             None => {
-                warn!("Anchor API not configured — returning simulated payout for {}", req.beneficiary_address);
+                warn!(
+                    "Anchor API not configured — returning simulated payout for {}",
+                    req.beneficiary_address
+                );
                 return Ok(simulated_payout(req));
             }
         };
@@ -269,9 +269,7 @@ impl AnchorRegistry {
             None => return Err(AnchorError::NotConfigured),
         };
 
-        let mut request_builder = self
-            .client
-            .get(format!("{}/transactions/{}", api_url, id));
+        let mut request_builder = self.client.get(format!("{}/transactions/{}", api_url, id));
 
         if let Some(key) = &self.api_key {
             request_builder = request_builder.header("Authorization", format!("Bearer {}", key));
