@@ -68,6 +68,8 @@ pub struct InheritancePlan {
     pub is_lendable: bool,
     pub total_loaned: u64,
     pub waterfall_enabled: bool,
+    pub grace_period: u64,
+    pub earn_yield: bool,
 }
 
 #[contracterror]
@@ -1855,6 +1857,8 @@ impl InheritanceContract {
             is_lendable,
             total_loaned: 0,
             waterfall_enabled: false,
+            grace_period: 0,
+            earn_yield: false,
         };
 
         // Store the plan
