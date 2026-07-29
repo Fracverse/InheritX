@@ -78,6 +78,7 @@ struct AnchorTransactionResponse {
     #[serde(default)]
     amount_fee: Option<String>,
     #[serde(default)]
+    #[allow(dead_code)]
     stellar_transaction_id: Option<String>,
 }
 
@@ -179,11 +180,11 @@ impl AnchorRegistry {
 
         let mut request_builder = self
             .client
-            .post(format!("{}/transactions", api_url))
+            .post(format!("{api_url}/transactions"))
             .json(&payload);
 
         if let Some(key) = &self.api_key {
-            request_builder = request_builder.header("Authorization", format!("Bearer {}", key));
+            request_builder = request_builder.header("Authorization", format!("Bearer {key}"));
         }
 
         let response = match request_builder.send().await {
@@ -269,10 +270,10 @@ impl AnchorRegistry {
             None => return Err(AnchorError::NotConfigured),
         };
 
-        let mut request_builder = self.client.get(format!("{}/transactions/{}", api_url, id));
+        let mut request_builder = self.client.get(format!("{api_url}/transactions/{id}"));
 
         if let Some(key) = &self.api_key {
-            request_builder = request_builder.header("Authorization", format!("Bearer {}", key));
+            request_builder = request_builder.header("Authorization", format!("Bearer {key}"));
         }
 
         let response = match request_builder.send().await {
@@ -346,14 +347,14 @@ impl AnchorRegistry {
             None => return Err(AnchorError::NotConfigured),
         };
 
-        let mut request_builder = self.client.get(format!("{}/transactions", api_url));
+        let mut request_builder = self.client.get(format!("{api_url}/transactions"));
 
         if let Some(ref addr) = address {
             request_builder = request_builder.query(&[("sender_id", addr.as_str())]);
         }
 
         if let Some(key) = &self.api_key {
-            request_builder = request_builder.header("Authorization", format!("Bearer {}", key));
+            request_builder = request_builder.header("Authorization", format!("Bearer {key}"));
         }
 
         let response = match request_builder.send().await {
