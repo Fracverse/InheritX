@@ -9,6 +9,7 @@ pub struct PlanReportData {
     pub earn_yield: bool,
     pub yield_rate_bps: i32,
     pub accrued_yield: String,
+    pub projected_accrued_yield: String,
     pub created_at: String,
     pub grace_period_seconds: i64,
     pub beneficiaries: Vec<BeneficiaryData>,
@@ -67,28 +68,7 @@ pub fn generate(data: PlanReportData) -> Result<Vec<u8>, String> {
         9.0,
         format!("Owner:            {}", data.owner_address)
     );
-    line!(
-        regular,
-        9.0,
-        format!("Token:            {}", data.token_address)
-    );
-    line!(regular, 9.0, format!("Amount:           {}", data.amount));
     line!(regular, 9.0, format!("Status:           {}", data.status));
-    line!(
-        regular,
-        9.0,
-        format!("Earn Yield:       {}", data.earn_yield)
-    );
-    line!(
-        regular,
-        9.0,
-        format!("Yield Rate (bps): {}", data.yield_rate_bps)
-    );
-    line!(
-        regular,
-        9.0,
-        format!("Accrued Yield:    {}", data.accrued_yield)
-    );
     line!(
         regular,
         9.0,
@@ -98,6 +78,47 @@ pub fn generate(data: PlanReportData) -> Result<Vec<u8>, String> {
         regular,
         9.0,
         format!("Created At:       {}", data.created_at)
+    );
+    y -= section_gap;
+
+    // Assets
+    line!(bold, 11.0, "Assets");
+    line!(
+        regular,
+        9.0,
+        format!("Token Address:    {}", data.token_address)
+    );
+    line!(regular, 9.0, format!("Locked Amount:    {}", data.amount));
+    y -= section_gap;
+
+    // Yield Details
+    let apy_pct = data.yield_rate_bps as f32 / 100.0;
+    line!(bold, 11.0, "Yield Details");
+    line!(
+        regular,
+        9.0,
+        format!("Earn Yield:       {}", data.earn_yield)
+    );
+    line!(
+        regular,
+        9.0,
+        format!(
+            "Yield Rate:       {} bps ({:.2}% APY)",
+            data.yield_rate_bps, apy_pct
+        )
+    );
+    line!(
+        regular,
+        9.0,
+        format!("Accrued Yield:    {} (snapshotted)", data.accrued_yield)
+    );
+    line!(
+        regular,
+        9.0,
+        format!(
+            "Projected Yield:  {} (real-time)",
+            data.projected_accrued_yield
+        )
     );
     y -= section_gap;
 
