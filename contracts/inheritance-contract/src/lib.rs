@@ -1281,7 +1281,7 @@ impl InheritanceContract {
             }
 
             // Issue #932: Prevent duplicate beneficiary addresses (emails)
-            if emails.contains(email) {
+            if emails.contains(&email) {
                 return Err(InheritanceError::InvalidBeneficiaryData);
             }
             emails.push_back(email.clone());

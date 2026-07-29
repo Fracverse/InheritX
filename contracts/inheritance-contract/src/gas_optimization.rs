@@ -1272,8 +1272,19 @@ impl InheritanceContract {
         // Validate allocation basis points total to 10000 (100%)
         let mut total_allocation: u32 = 0;
         let mut priorities = Vec::new(env);
+        let mut emails = Vec::new(env);
 
-        for (_, _, _, _, bp, priority) in beneficiaries_data.iter() {
+        for (name, email, _, _, bp, priority) in beneficiaries_data.iter() {
+            // Issue #961: Require non-empty beneficiary names
+            if name.is_empty() {
+                return Err(InheritanceError::InvalidBeneficiaryData);
+            }
+
+            // Issue #932: Prevent duplicate beneficiary addresses (emails)
+            if emails.contains(&email) {
+                return Err(InheritanceError::InvalidBeneficiaryData);
+            }
+            emails.push_back(email.clone());
             total_allocation = total_allocation
                 .checked_add(bp)
                 .ok_or(InheritanceError::AllocationPercentageMismatch)?;
