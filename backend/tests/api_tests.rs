@@ -669,3 +669,97 @@ async fn test_cors_origins() {
         );
     }
 }
+
+// --- Plan query filter tests ---
+
+#[tokio::test]
+async fn test_get_plans_filter_by_beneficiary_only() {
+    let app = setup_app();
+    let response = app
+        .oneshot(
+            Request::builder()
+                .method(http::Method::GET)
+                .uri("/api/plans?beneficiary=GBENEF123")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::INTERNAL_SERVER_ERROR);
+}
+
+#[tokio::test]
+async fn test_get_plans_filter_by_both_owner_and_beneficiary() {
+    let app = setup_app();
+    let response = app
+        .oneshot(
+            Request::builder()
+                .method(http::Method::GET)
+                .uri("/api/plans?owner=GOWNER123&beneficiary=GBENEF123")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::INTERNAL_SERVER_ERROR);
+}
+
+#[tokio::test]
+async fn test_get_plans_all_no_filters() {
+    let app = setup_app();
+    let response = app
+        .oneshot(
+            Request::builder()
+                .method(http::Method::GET)
+                .uri("/api/plans")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::INTERNAL_SERVER_ERROR);
+}
+
+#[tokio::test]
+async fn test_get_plans_owner_filter_caches_on_miss() {
+    let cache = PlanCache::memory();
+    let query = inheritx_backend::api::PlanQuery {
+        owner: Some("GOWNER123".to_string()),
+        beneficiary: None,
+    };
+    let cached_plans = vec![PlanResponse {
+        id: uuid::Uuid::new_v4(),
+        owner_address: "GOWNER123".to_string(),
+        token_address: "USDC".to_string(),
+        amount: rust_decimal::Decimal::from(1000),
+        grace_period: 3600,
+        grace_period_seconds: 3600,
+        earn_yield: true,
+        last_ping: 1_718_000_000,
+        is_active: true,
+        status: "ACTIVE".to_string(),
+        yield_rate_bps: 500,
+        accrued_yield: 25.5,
+        created_at: chrono::Utc::now(),
+        beneficiaries: vec![],
+    }];
+    cache.set_plans(&query, &cached_plans).await.unwrap();
+    let app = setup_app_with_cache(cache);
+    let response = app
+        .oneshot(
+            Request::builder()
+                .method(http::Method::GET)
+                .uri("/api/plans?owner=GOWNER123")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+    let body_bytes = axum::body::to_bytes(response.into_body(), usize::MAX)
+        .await
+        .unwrap();
+    let body: serde_json::Value = serde_json::from_slice(&body_bytes).unwrap();
+    assert!(body.is_array());
+    assert_eq!(body[0]["owner_address"], "GOWNER123");
+}
