@@ -511,7 +511,7 @@ async fn test_health_endpoint_without_db_yields_service_unavailable() {
         .connect_lazy("postgres://localhost:1/nonexistent")
         .unwrap();
     let state = Arc::new(AppState {
-        anchor: Arc::new(inheritx_backend::stellar_anchor::AnchorRegistry::new()),
+        anchor: Arc::new(inheritx_backend::stellar_anchor::AnchorRegistry::new(None, None)),
         db_pool,
         kyc_tx: tokio::sync::broadcast::channel(16).0,
         kyc_webhook_secret: None,
@@ -562,7 +562,7 @@ async fn test_get_current_rate_cached() {
         .connect_lazy("postgres://postgres:password@localhost:5432/test")
         .unwrap();
     let state = Arc::new(AppState {
-        anchor: Arc::new(inheritx_backend::stellar_anchor::AnchorRegistry::new()),
+        anchor: Arc::new(inheritx_backend::stellar_anchor::AnchorRegistry::new(None, None)),
         db_pool,
         kyc_tx: tokio::sync::broadcast::channel(16).0,
         kyc_webhook_secret: None,
