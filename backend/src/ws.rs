@@ -48,10 +48,35 @@ async fn handle_socket(mut socket: WebSocket, state: Arc<AppState>) {
                     }
                     Err(tokio::sync::broadcast::error::RecvError::Lagged(n)) => {
                         warn!("WebSocket receiver lagged by {} messages", n);
+                        continue;
                     }
                     Err(_) => break,
                 }
             }
+            msg = socket.recv() => {
+                match msg {
+                    Some(Ok(Message::Close(_))) => {
+                        info!("WebSocket client sent close frame");
+                        break;
+                    }
+                    Some(Ok(Message::Ping(data))) => {
+                        if socket.send(Message::Pong(data)).await.is_err() {
+                            break;
+                        }
+                    }
+                    Some(Err(e)) => {
+                        warn!(error = %e, "WebSocket error");
+                        break;
+                    }
+                    None => {
+                        info!("WebSocket client disconnected");
+                        break;
+                    }
+                    _ => {}
+                }
+            }
         }
     }
+
+    info!("WebSocket client disconnected from KYC updates");
 }
