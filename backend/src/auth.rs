@@ -6,7 +6,8 @@ use axum::{
     Json,
 };
 use ed25519_dalek::{Signature, Verifier, VerifyingKey};
-use jsonwebtoken::{decode, Algorithm, DecodingKey, Validation};
+use chrono::{Duration, Utc};
+use jsonwebtoken::{decode, encode, errors::ErrorKind, Algorithm, DecodingKey, EncodingKey, Header, Validation};
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
@@ -60,6 +61,57 @@ impl IntoResponse for AuthError {
     }
 }
 
+fn jwt_validation() -> Validation {
+    let mut validation = Validation::new(Algorithm::HS256);
+    validation.validate_exp = true;
+    validation
+}
+
+fn map_jwt_decode_error(err: jsonwebtoken::errors::Error) -> AuthError {
+    match err.kind() {
+        ErrorKind::ExpiredSignature => AuthError::TokenExpired,
+        _ => AuthError::InvalidToken,
+    }
+}
+
+/// Signs an HS256 admin JWT with a fixed role and expiration.
+pub fn generate_admin_jwt(
+    admin_id: impl Into<String>,
+    secret: &str,
+    ttl: Duration,
+) -> Result<(String, i64), jsonwebtoken::errors::Error> {
+    let expires_at = Utc::now() + ttl;
+    let claims = Claims {
+        sub: admin_id.into(),
+        role: "admin".to_string(),
+        exp: expires_at.timestamp() as usize,
+    };
+
+    let token = encode(
+        &Header::new(Algorithm::HS256),
+        &claims,
+        &EncodingKey::from_secret(secret.as_ref()),
+    )?;
+
+    Ok((token, expires_at.timestamp()))
+}
+
+/// Validates a Bearer JWT for admin routes (signature, expiry, admin role).
+pub fn validate_admin_jwt(token: &str, secret: &str) -> Result<Claims, AuthError> {
+    let token_data = decode::<Claims>(
+        token,
+        &DecodingKey::from_secret(secret.as_ref()),
+        &jwt_validation(),
+    )
+    .map_err(map_jwt_decode_error)?;
+
+    if token_data.claims.role != "admin" {
+        return Err(AuthError::Unauthorized);
+    }
+
+    Ok(token_data.claims)
+}
+
 pub async fn jwt_auth_middleware(
     mut req: Request<Body>,
     next: Next,
@@ -83,22 +135,11 @@ pub async fn jwt_auth_middleware(
     }
 
     let secret = std::env::var("JWT_SECRET").map_err(|_| AuthError::InvalidToken)?;
-
-    let validation = Validation::new(Algorithm::HS256);
-    let token_data = decode::<Claims>(
-        token,
-        &DecodingKey::from_secret(secret.as_ref()),
-        &validation,
-    )
-    .map_err(|_| AuthError::InvalidToken)?;
-
-    if token_data.claims.role != "admin" {
-        return Err(AuthError::Unauthorized);
-    }
+    let claims = validate_admin_jwt(token, &secret)?;
 
     let user_context = UserContext {
-        user_id: token_data.claims.sub,
-        role: token_data.claims.role,
+        user_id: claims.sub,
+        role: claims.role,
     };
 
     req.extensions_mut().insert(user_context);
@@ -169,4 +210,108 @@ pub async fn signature_auth_middleware(
 }
 
 #[cfg(test)]
-mod tests {}
+mod tests {
+    use super::*;
+    use axum::middleware::from_fn;
+    use axum::routing::get;
+    use axum::Router;
+    use tower::ServiceExt;
+
+    const TEST_SECRET: &str = "inheritx-jwt-test-secret";
+
+    fn encode_token(claims: &Claims) -> String {
+        encode(
+            &Header::new(Algorithm::HS256),
+            claims,
+            &EncodingKey::from_secret(TEST_SECRET.as_ref()),
+        )
+        .expect("test token should encode")
+    }
+
+    async fn jwt_middleware_status(auth_header: Option<&str>) -> StatusCode {
+        std::env::set_var("JWT_SECRET", TEST_SECRET);
+
+        let app = Router::new()
+            .route("/protected", get(|| async { "ok" }))
+            .route_layer(from_fn(jwt_auth_middleware));
+
+        let mut builder = Request::builder().uri("/protected");
+        if let Some(header) = auth_header {
+            builder = builder.header("Authorization", header);
+        }
+
+        let response = app
+            .oneshot(builder.body(Body::empty()).unwrap())
+            .await
+            .unwrap();
+
+        response.status()
+    }
+
+    #[test]
+    fn generate_admin_jwt_includes_admin_role_and_expiry() {
+        let (token, expires_at) =
+            generate_admin_jwt("admin-42", TEST_SECRET, Duration::hours(1)).unwrap();
+
+        let claims = validate_admin_jwt(&token, TEST_SECRET).unwrap();
+        assert_eq!(claims.sub, "admin-42");
+        assert_eq!(claims.role, "admin");
+        assert_eq!(claims.exp as i64, expires_at);
+    }
+
+    #[test]
+    fn validate_admin_jwt_rejects_expired_token() {
+        let token = encode_token(&Claims {
+            sub: "admin-1".to_string(),
+            role: "admin".to_string(),
+            exp: 1,
+        });
+
+        let err = validate_admin_jwt(&token, TEST_SECRET).unwrap_err();
+        assert!(matches!(err, AuthError::TokenExpired));
+    }
+
+    #[test]
+    fn validate_admin_jwt_rejects_non_admin_role() {
+        let exp = (Utc::now() + Duration::hours(1)).timestamp() as usize;
+        let token = encode_token(&Claims {
+            sub: "user-1".to_string(),
+            role: "user".to_string(),
+            exp,
+        });
+
+        let err = validate_admin_jwt(&token, TEST_SECRET).unwrap_err();
+        assert!(matches!(err, AuthError::Unauthorized));
+    }
+
+    #[tokio::test]
+    async fn jwt_middleware_accepts_valid_admin_bearer() {
+        let exp = (Utc::now() + Duration::hours(1)).timestamp() as usize;
+        let token = encode_token(&Claims {
+            sub: "admin-1".to_string(),
+            role: "admin".to_string(),
+            exp,
+        });
+
+        let status = jwt_middleware_status(Some(&format!("Bearer {token}"))).await;
+        assert_eq!(status, StatusCode::OK);
+    }
+
+    #[tokio::test]
+    async fn jwt_middleware_rejects_expired_bearer() {
+        let token = encode_token(&Claims {
+            sub: "admin-1".to_string(),
+            role: "admin".to_string(),
+            exp: 1,
+        });
+
+        let status = jwt_middleware_status(Some(&format!("Bearer {token}"))).await;
+        assert_eq!(status, StatusCode::UNAUTHORIZED);
+    }
+
+    #[tokio::test]
+    async fn jwt_middleware_rejects_missing_authorization_header() {
+        let status = jwt_middleware_status(None).await;
+        assert_eq!(status, StatusCode::UNAUTHORIZED);
+    }
+}
