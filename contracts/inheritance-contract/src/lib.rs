@@ -68,6 +68,8 @@ pub struct InheritancePlan {
     pub is_lendable: bool,
     pub total_loaned: u64,
     pub waterfall_enabled: bool,
+    pub grace_period: u64,
+    pub earn_yield: bool,
 }
 
 #[contracterror]
@@ -1270,8 +1272,20 @@ impl InheritanceContract {
         // Validate allocation basis points total to 10000 (100%)
         let mut total_allocation: u32 = 0;
         let mut priorities = Vec::new(env);
+        let mut emails = Vec::new(env);
 
-        for (_, _, _, _, bp, priority) in beneficiaries_data.iter() {
+        for (name, email, _, _, bp, priority) in beneficiaries_data.iter() {
+            // Issue #961: Require non-empty beneficiary names
+            if name.is_empty() {
+                return Err(InheritanceError::InvalidBeneficiaryData);
+            }
+
+            // Issue #932: Prevent duplicate beneficiary addresses (emails)
+            if emails.contains(&email) {
+                return Err(InheritanceError::InvalidBeneficiaryData);
+            }
+            emails.push_back(email.clone());
+
             total_allocation = total_allocation
                 .checked_add(bp)
                 .ok_or(InheritanceError::AllocationPercentageMismatch)?;
@@ -1855,6 +1869,8 @@ impl InheritanceContract {
             is_lendable,
             total_loaned: 0,
             waterfall_enabled: false,
+            grace_period: 0,
+            earn_yield: false,
         };
 
         // Store the plan
@@ -1895,6 +1911,88 @@ impl InheritanceContract {
             },
         );
         log!(&env, "Vault {} lendable set to {}", plan_id, is_lendable);
+        Ok(())
+    }
+
+    /// Update plan parameters before a claim is triggered
+    ///
+    /// # Arguments
+    /// * `env` - The environment
+    /// * `owner` - The plan owner (must authorize this call)
+    /// * `plan_id` - The ID of the plan to update
+    /// * `beneficiaries` - New beneficiaries list
+    /// * `grace_period` - New grace period in seconds
+    /// * `earn_yield` - Whether to enable yield earning
+    ///
+    /// # Returns
+    /// Ok(()) on success
+    ///
+    /// # Errors
+    /// - Unauthorized: If caller is not the plan owner
+    /// - PlanNotFound: If plan_id doesn't exist
+    /// - InheritanceAlreadyTriggered: If a claim has already been triggered
+    /// - Other validation errors from validate_beneficiaries
+    pub fn update_plan(
+        env: Env,
+        owner: Address,
+        plan_id: u64,
+        beneficiaries: Vec<(String, String, u32, Bytes, u32, u32)>,
+        grace_period: u64,
+        earn_yield: bool,
+    ) -> Result<(), InheritanceError> {
+        owner.require_auth();
+        Self::check_not_paused(&env);
+        Self::enter_guard(&env);
+
+        let mut plan = Self::get_plan(&env, plan_id).ok_or(InheritanceError::PlanNotFound)?;
+
+        // Verify caller is the plan owner
+        if plan.owner != owner {
+            return Err(InheritanceError::Unauthorized);
+        }
+
+        // Check that inheritance hasn't been triggered yet
+        let trigger_key = DataKey::InheritanceTrigger(plan_id);
+        if env.storage().persistent().has(&trigger_key) {
+            return Err(InheritanceError::InheritanceAlreadyTriggered);
+        }
+
+        // Validate new beneficiaries
+        Self::validate_beneficiaries(&env, beneficiaries.clone())?;
+
+        // Create new beneficiary objects with hashed data
+        let mut new_beneficiaries = Vec::new(&env);
+        let mut total_allocation_bp = 0u32;
+        let mut idx: u32 = 0;
+        for beneficiary_data in beneficiaries.iter() {
+            let beneficiary = Self::create_beneficiary(
+                &env,
+                plan_id,
+                idx,
+                beneficiary_data.0.clone(),
+                beneficiary_data.1.clone(),
+                beneficiary_data.2,
+                beneficiary_data.3.clone(),
+                beneficiary_data.4,
+                beneficiary_data.5,
+            )?;
+            total_allocation_bp += beneficiary_data.4;
+            new_beneficiaries.push_back(beneficiary);
+            idx = idx.saturating_add(1);
+        }
+
+        // Update plan parameters
+        plan.beneficiaries = new_beneficiaries;
+        plan.total_allocation_bp = total_allocation_bp;
+        plan.grace_period = grace_period;
+        plan.earn_yield = earn_yield;
+
+        // Store updated plan
+        Self::store_plan(&env, plan_id, &plan);
+
+        log!(&env, "Plan {} updated by owner", plan_id);
+
+        Self::exit_guard(&env);
         Ok(())
     }
 

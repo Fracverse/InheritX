@@ -68,6 +68,8 @@ pub struct InheritancePlan {
     pub is_lendable: bool,
     pub total_loaned: u64,
     pub waterfall_enabled: bool,
+    pub grace_period: u64,
+    pub earn_yield: bool,
 }
 
 #[contracterror]
@@ -1270,8 +1272,19 @@ impl InheritanceContract {
         // Validate allocation basis points total to 10000 (100%)
         let mut total_allocation: u32 = 0;
         let mut priorities = Vec::new(env);
+        let mut emails = Vec::new(env);
 
-        for (_, _, _, _, bp, priority) in beneficiaries_data.iter() {
+        for (name, email, _, _, bp, priority) in beneficiaries_data.iter() {
+            // Issue #961: Require non-empty beneficiary names
+            if name.is_empty() {
+                return Err(InheritanceError::InvalidBeneficiaryData);
+            }
+
+            // Issue #932: Prevent duplicate beneficiary addresses (emails)
+            if emails.contains(&email) {
+                return Err(InheritanceError::InvalidBeneficiaryData);
+            }
+            emails.push_back(email.clone());
             total_allocation = total_allocation
                 .checked_add(bp)
                 .ok_or(InheritanceError::AllocationPercentageMismatch)?;
@@ -1855,6 +1868,8 @@ impl InheritanceContract {
             is_lendable,
             total_loaned: 0,
             waterfall_enabled: false,
+            grace_period: 0,
+            earn_yield: false,
         };
 
         // Store the plan
