@@ -1,8 +1,8 @@
 #![no_std]
 use access_control::{self, Role};
 use soroban_sdk::{
-    contract, contractimpl, contracttype, log, symbol_short, token, vec, Address, Env, IntoVal,
-    InvokeError, Val, Vec,
+    contract, contractimpl, contracttype, log, symbol_short, token, vec, Address, BytesN, Env,
+    IntoVal, InvokeError, Val, Vec,
 };
 
 mod reserves;
@@ -23,6 +23,7 @@ const REWARD_PRECISION: u64 = 1_000_000_000; // 9 decimals for reward calculatio
 const LIQUIDATION_THRESHOLD_BPS: u32 = 15000; // 150% liquidation threshold in basis points
                                               // Insurance constants
 const DEFAULT_INSURANCE_PREMIUM_RATE_BPS: u32 = 200; // 2% premium of loan principal
+const CONTRACT_VERSION: u32 = 1; // Contract version for upgrade tracking
 
 // ─────────────────────────────────────────────────
 // Data Types
@@ -426,6 +427,16 @@ pub struct RateModelUpdatedEvent {
     pub timestamp: u64,
 }
 
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct ContractUpgradedEvent {
+    pub old_version: u32,
+    pub new_version: u32,
+    pub new_wasm_hash: BytesN<32>,
+    pub admin: Address,
+    pub upgraded_at: u64,
+}
+
 // ─────────────────────────────────────────────────
 // Errors
 // ─────────────────────────────────────────────────
@@ -568,6 +579,7 @@ pub enum DataKey {
     RateModel,
     Token,                             // Underlying token address for insurance operations
     WhitelistedFlashReceiver(Address), // Approved flash loan receiver contracts
+    Version,                           // Contract version (u32)
 }
 
 // ─────────────────────────────────────────────────
@@ -4190,6 +4202,65 @@ impl LendingContract {
             .persistent()
             .get(&key)
             .unwrap_or_else(|| Vec::new(&env))
+    }
+
+    /// Return the current contract version.
+    pub fn version(env: Env) -> u32 {
+        env.storage()
+            .instance()
+            .get(&DataKey::Version)
+            .unwrap_or(CONTRACT_VERSION)
+    }
+
+    /// Upgrade the contract to a new WASM binary. Admin-only.
+    ///
+    /// Atomically replaces contract code while preserving all on-chain storage
+    /// (pools, loans, insurance, roles, etc.). Emits a `ContractUpgradedEvent`
+    /// for audit purposes and increments the stored version number.
+    ///
+    /// # Errors
+    /// - `NotInitialized` if the contract has not been initialized yet.
+    /// - `NotAdmin` if `admin` does not hold the Admin role.
+    pub fn upgrade(
+        env: Env,
+        admin: Address,
+        new_wasm_hash: BytesN<32>,
+    ) -> Result<(), LendingError> {
+        Self::require_initialized(&env)?;
+        Self::require_admin(&env, &admin)?;
+
+        let old_version = Self::version(env.clone());
+        let new_version = old_version + 1;
+
+        // Persist new version before replacing WASM so it is readable immediately
+        // after the upgrade completes.
+        env.storage()
+            .instance()
+            .set(&DataKey::Version, &new_version);
+
+        // Emit an upgrade event for off-chain audit trail.
+        env.events().publish(
+            (symbol_short!("CONTRACT"), symbol_short!("UPGRADE")),
+            ContractUpgradedEvent {
+                old_version,
+                new_version,
+                new_wasm_hash: new_wasm_hash.clone(),
+                admin: admin.clone(),
+                upgraded_at: env.ledger().timestamp(),
+            },
+        );
+
+        log!(
+            &env,
+            "LendingContract upgraded from v{} to v{} by admin",
+            old_version,
+            new_version
+        );
+
+        // Replace the contract WASM atomically — all storage is preserved.
+        env.deployer().update_current_contract_wasm(new_wasm_hash);
+
+        Ok(())
     }
 }
 
