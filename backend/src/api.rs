@@ -4,7 +4,8 @@ use crate::middleware::{
 };
 use axum::http::{HeaderValue, Method};
 use axum::{
-    extract::{Path, Query, State},
+    body::Body,
+    extract::{Multipart, Path, Query, State},
     http::{header::HeaderName, StatusCode},
     middleware::from_fn,
     response::{IntoResponse, Response},
@@ -13,7 +14,7 @@ use axum::{
 };
 // These imports are only used by the PDF report handler
 #[cfg(feature = "pdf")]
-use axum::{body::Body, http::header};
+use axum::http::header;
 use chrono::{DateTime, Utc};
 use rust_decimal::Decimal;
 use serde::{Deserialize, Serialize};
@@ -1933,20 +1934,70 @@ async fn submit_kyc(
 }
 
 // Upload KYC document
-async fn upload_kyc_document() -> impl IntoResponse {
-    // In a real implementation, this would:
-    // 1. Receive multipart form data with file and document_type
-    // 2. Validate file (size, type)
-    // 3. Upload to cloud storage (S3, etc.)
-    // 4. Store metadata in database
-    // 5. Return document_id and URL
+async fn upload_kyc_document(mut multipart: Multipart) -> impl IntoResponse {
+    const MAX_FILE_SIZE: usize = 10 * 1024 * 1024; // 10MB
+    const ALLOWED_MIME_TYPES: [&str; 4] = [
+        "image/jpeg",
+        "image/jpg",
+        "image/png",
+        "application/pdf",
+    ];
 
-    let response = KYCDocumentResponse {
-        document_id: Uuid::new_v4().to_string(),
-        url: "https://example.com/documents/doc-001".to_string(),
-    };
-
-    (StatusCode::OK, Json(response))
+    // Process multipart form data
+    while let Some(field) = multipart.next_field().await.unwrap() {
+        let name = field.name().unwrap();
+        
+        if name == "document" {
+            let file_name = field.file_name().unwrap_or("unknown").to_string();
+            let content_type = field.content_type().unwrap_or("").to_string();
+            let file_data = field.bytes().await.unwrap();
+            
+            // Validate file size
+            if file_data.len() > MAX_FILE_SIZE {
+                let error_response = serde_json::json!({
+                    "success": false,
+                    "error": "File size exceeds 10MB limit"
+                });
+                return (StatusCode::PAYLOAD_TOO_LARGE, Json(error_response)).into_response();
+            }
+            
+            // Validate file type
+            if !ALLOWED_MIME_TYPES.contains(&content_type.as_str()) {
+                let error_response = serde_json::json!({
+                    "success": false,
+                    "error": "Invalid file type. Only JPEG, PNG, and PDF files are allowed"
+                });
+                return (StatusCode::UNSUPPORTED_MEDIA_TYPE, Json(error_response)).into_response();
+            }
+            
+            // In a real implementation, upload to cloud storage here
+            // For now, return success with mock data
+            let response = KYCDocumentResponse {
+                document_id: Uuid::new_v4().to_string(),
+                url: format!("https://example.com/documents/{}", Uuid::new_v4()),
+            };
+            
+            let success_response = serde_json::json!({
+                "success": true,
+                "message": "File uploaded successfully",
+                "data": {
+                    "document_id": response.document_id,
+                    "url": response.url,
+                    "file_name": file_name,
+                    "content_type": content_type,
+                    "file_size": file_data.len()
+                }
+            });
+            
+            return (StatusCode::OK, Json(success_response)).into_response();
+        }
+    }
+    
+    let error_response = serde_json::json!({
+        "success": false,
+        "error": "No document field found in request"
+    });
+    (StatusCode::BAD_REQUEST, Json(error_response)).into_response()
 }
 
 // Check if KYC is required
