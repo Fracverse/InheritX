@@ -402,7 +402,7 @@ impl AnchorRegistry {
                             .unwrap_or(0.0),
                         anchor_fee_usd: 0.0,
                         status: map_anchor_status(&tx.status),
-                        created_at: tx.created_at.unwrap_or_else(|| now.clone()),
+                        created_at: tx.created_at.clone().unwrap_or_else(|| now.clone()),
                         updated_at: tx.created_at.unwrap_or(now.clone()),
                     })
                     .collect();
