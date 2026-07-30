@@ -76,6 +76,9 @@ impl AnchorRegistry {
                 if resp.status().is_success() {
                     match resp.json::<AnchorApiResponse>().await {
                         Ok(api_resp) => {
+                            if let Some(msg) = &api_resp.message {
+                                warn!(message = %msg, "Anchor API response message");
+                            }
                             let status = match api_resp.status.as_deref() {
                                 Some("completed") => AnchorPayoutStatus::Completed,
                                 Some("processing") | Some("pending") => {
