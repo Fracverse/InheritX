@@ -275,8 +275,8 @@ pub fn create_router(state: Arc<AppState>) -> Router {
 
     #[cfg(feature = "metrics")]
     let router = router
-        .route("/metrics", get(metrics_handler))
-        .layer(from_fn(latency_middleware));
+        .layer(from_fn(latency_middleware))
+        .route("/metrics", get(metrics_handler));
 
     router.layer(cors).with_state(state)
 }

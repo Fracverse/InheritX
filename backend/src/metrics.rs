@@ -1,10 +1,23 @@
 use axum::{extract::Request, http::StatusCode, middleware::Next, response::IntoResponse};
 use once_cell::sync::Lazy;
 use prometheus::{
-    histogram_opts, opts, register_gauge, register_histogram_vec, Encoder, Gauge, HistogramVec,
-    TextEncoder,
+    histogram_opts, opts, register_counter_vec, register_gauge, register_histogram_vec, CounterVec,
+    Encoder, Gauge, HistogramVec, TextEncoder,
 };
 use std::time::Instant;
+
+/// Total number of HTTP requests received.
+/// Labels: method, path, status
+pub static REQUEST_COUNT: Lazy<CounterVec> = Lazy::new(|| {
+    register_counter_vec!(
+        opts!(
+            "inheritx_http_requests_total",
+            "Total number of HTTP requests"
+        ),
+        &["method", "path", "status"]
+    )
+    .expect("failed to register request_count counter")
+});
 
 /// Tracks number of in-flight HTTP connections.
 pub static ACTIVE_CONNECTIONS: Lazy<Gauge> = Lazy::new(|| {
@@ -50,6 +63,7 @@ pub static DB_POOL_IDLE: Lazy<Gauge> = Lazy::new(|| {
 
 /// Call once at startup to force lazy initialization of all metrics.
 pub fn init() {
+    Lazy::force(&REQUEST_COUNT);
     Lazy::force(&ACTIVE_CONNECTIONS);
     Lazy::force(&REQUEST_LATENCY);
     Lazy::force(&DB_POOL_SIZE);
@@ -78,7 +92,7 @@ pub async fn metrics_handler() -> impl IntoResponse {
         .into_response()
 }
 
-/// Axum middleware: tracks active connections and records per-route latency.
+/// Axum middleware: tracks active connections, request count, and records per-route latency.
 pub async fn latency_middleware(req: Request, next: Next) -> impl IntoResponse {
     ACTIVE_CONNECTIONS.inc();
 
@@ -95,6 +109,9 @@ pub async fn latency_middleware(req: Request, next: Next) -> impl IntoResponse {
     let elapsed = start.elapsed().as_secs_f64();
 
     let status = response.status().as_u16().to_string();
+    REQUEST_COUNT
+        .with_label_values(&[&method, &path, &status])
+        .inc();
     REQUEST_LATENCY
         .with_label_values(&[&method, &path, &status])
         .observe(elapsed);
