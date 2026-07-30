@@ -106,6 +106,21 @@ pub struct AnchorQuery {
     pub page_size: Option<i64>,
 }
 
+#[derive(Debug, Deserialize)]
+pub struct YieldCalculateQuery {
+    pub amount: f64,
+    pub yield_rate_bps: Option<u32>,
+    pub elapsed_secs: u64,
+}
+
+#[derive(Debug, Serialize)]
+pub struct YieldCalculateResponse {
+    pub amount: f64,
+    pub yield_rate_bps: u32,
+    pub elapsed_secs: u64,
+    pub accrued_yield: f64,
+}
+
 /// Response for the /api/health endpoint.
 #[derive(Debug, Serialize)]
 pub struct HealthResponse {
@@ -259,6 +274,7 @@ pub fn create_router(state: Arc<AppState>) -> Router {
         .route("/api/health", get(health_check))
         .route("/api/transactions/submit", post(submit_transaction))
         .route("/api/admin/login", post(admin_login))
+        .route("/api/yield/calculate", get(calculate_yield))
         .route("/ws/kyc", get(ws_handler));
     let router = Router::new()
         .merge(user_routes)
@@ -2229,6 +2245,35 @@ async fn health_check(State(state): State<Arc<AppState>>) -> impl IntoResponse {
     };
 
     (status_code, Json(response)).into_response()
+}
+
+async fn calculate_yield(
+    State(state): State<Arc<AppState>>,
+    Query(query): Query<YieldCalculateQuery>,
+) -> impl IntoResponse {
+    let yield_rate_bps = query.yield_rate_bps.unwrap_or(state.apy_config.rate_bps);
+
+    if query.amount < 0.0 {
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(serde_json::json!({"error": "Amount must be non-negative"})),
+        )
+            .into_response();
+    }
+
+    let accrued_yield =
+        yield_calculator::calculate_yield(query.amount, yield_rate_bps, query.elapsed_secs);
+
+    (
+        StatusCode::OK,
+        Json(YieldCalculateResponse {
+            amount: query.amount,
+            yield_rate_bps,
+            elapsed_secs: query.elapsed_secs,
+            accrued_yield,
+        }),
+    )
+        .into_response()
 }
 
 // success, issues the JWT that `jwt_auth_middleware` expects for admin

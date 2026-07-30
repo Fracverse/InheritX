@@ -669,3 +669,94 @@ async fn test_cors_origins() {
         );
     }
 }
+
+#[tokio::test]
+async fn test_calculate_yield_with_rate() {
+    let app = setup_app();
+    let response = app
+        .oneshot(
+            Request::builder()
+                .method(http::Method::GET)
+                .uri("/api/yield/calculate?amount=10000&yield_rate_bps=500&elapsed_secs=31557600")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(response.status(), StatusCode::OK);
+    let body_bytes = axum::body::to_bytes(response.into_body(), usize::MAX)
+        .await
+        .unwrap();
+    let body_json: serde_json::Value = serde_json::from_slice(&body_bytes).unwrap();
+    assert_eq!(body_json["amount"], 10000.0);
+    assert_eq!(body_json["yield_rate_bps"], 500);
+    assert_eq!(body_json["elapsed_secs"], 31557600);
+    let accrued = body_json["accrued_yield"].as_f64().unwrap();
+    assert!(
+        (accrued - 500.0).abs() < 0.01,
+        "expected ~500, got {accrued}"
+    );
+}
+
+#[tokio::test]
+async fn test_calculate_yield_default_rate() {
+    let app = setup_app();
+    let response = app
+        .oneshot(
+            Request::builder()
+                .method(http::Method::GET)
+                .uri("/api/yield/calculate?amount=2000&elapsed_secs=31557600")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(response.status(), StatusCode::OK);
+    let body_bytes = axum::body::to_bytes(response.into_body(), usize::MAX)
+        .await
+        .unwrap();
+    let body_json: serde_json::Value = serde_json::from_slice(&body_bytes).unwrap();
+    assert_eq!(body_json["yield_rate_bps"], 0);
+    assert_eq!(body_json["accrued_yield"], 0.0);
+}
+
+#[tokio::test]
+async fn test_calculate_yield_zero_elapsed() {
+    let app = setup_app();
+    let response = app
+        .oneshot(
+            Request::builder()
+                .method(http::Method::GET)
+                .uri("/api/yield/calculate?amount=5000&yield_rate_bps=1000&elapsed_secs=0")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(response.status(), StatusCode::OK);
+    let body_bytes = axum::body::to_bytes(response.into_body(), usize::MAX)
+        .await
+        .unwrap();
+    let body_json: serde_json::Value = serde_json::from_slice(&body_bytes).unwrap();
+    assert_eq!(body_json["accrued_yield"], 0.0);
+}
+
+#[tokio::test]
+async fn test_calculate_yield_invalid_amount() {
+    let app = setup_app();
+    let response = app
+        .oneshot(
+            Request::builder()
+                .method(http::Method::GET)
+                .uri("/api/yield/calculate?amount=-100&yield_rate_bps=500&elapsed_secs=1000")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+}
