@@ -1458,7 +1458,7 @@ async fn trigger_payout(
                 bank_name,
                 account_number,
             };
-            state.anchor.create_payout(req);
+            state.anchor.create_payout(req).await;
 
             if b.fiat_daily_limit > Decimal::ZERO {
                 let today = chrono::Utc::now().naive_utc().date();
