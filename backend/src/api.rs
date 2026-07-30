@@ -2082,7 +2082,7 @@ pub async fn get_plan_report(
         earn_yield: plan.earn_yield,
         yield_rate_bps: plan.yield_rate_bps,
         accrued_yield: plan.accrued_yield.to_string(),
-        projected_accrued_yield: format!("{:.7}", projected_yield),
+        projected_accrued_yield: format!("{projected_yield:.7}"),
         created_at: plan.created_at.to_rfc3339(),
         grace_period_seconds: plan.grace_period_seconds,
         beneficiaries: beneficiary_rows
