@@ -2085,7 +2085,10 @@ pub async fn get_plan_report(
         }
     };
 
-    // 4. Build PDF data structs (owned, so they can cross the thread boundary)
+    // 4. Compute projected yield (real-time accrued yield since last ping)
+    let projected_yield = compute_projected_accrued_yield(&plan);
+
+    // 5. Build PDF data structs (owned, so they can cross the thread boundary)
     let report_data = crate::pdf::PlanReportData {
         plan_id: plan.id.to_string(),
         owner_address: plan.owner_address.clone(),
@@ -2095,6 +2098,7 @@ pub async fn get_plan_report(
         earn_yield: plan.earn_yield,
         yield_rate_bps: plan.yield_rate_bps,
         accrued_yield: plan.accrued_yield.to_string(),
+        projected_accrued_yield: format!("{projected_yield:.7}"),
         created_at: plan.created_at.to_rfc3339(),
         grace_period_seconds: plan.grace_period_seconds,
         beneficiaries: beneficiary_rows
@@ -2114,7 +2118,7 @@ pub async fn get_plan_report(
             .collect(),
     };
 
-    // 5. Generate PDF in a blocking thread (printpdf is CPU-bound / not async)
+    // 6. Generate PDF in a blocking thread (printpdf is CPU-bound / not async)
     let pdf_bytes =
         match tokio::task::spawn_blocking(move || crate::pdf::generate(report_data)).await {
             Ok(Ok(bytes)) => bytes,
@@ -2134,7 +2138,7 @@ pub async fn get_plan_report(
             }
         };
 
-    // 6. Return the PDF as a downloadable attachment
+    // 7. Return the PDF as a downloadable attachment
     let filename = format!("plan-{plan_id}-report.pdf");
     (
         StatusCode::OK,
