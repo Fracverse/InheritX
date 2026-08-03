@@ -22,7 +22,7 @@ use tower_http::cors::CorsLayer;
 use tracing::{error, warn};
 use uuid::Uuid;
 
-use crate::auth::{jwt_auth_middleware, signature_auth_middleware, Claims};
+use crate::auth::{generate_admin_jwt, jwt_auth_middleware, signature_auth_middleware};
 use crate::cache::PlanCache;
 use crate::kyc_webhook::kyc_webhook_handler;
 #[cfg(feature = "metrics")]
@@ -2346,19 +2346,12 @@ async fn admin_login(
         }
     };
 
-    let expires_at = chrono::Utc::now() + chrono::Duration::hours(24);
-    let claims = Claims {
-        sub: admin_id.to_string(),
-        role: "admin".to_string(),
-        exp: expires_at.timestamp() as usize,
-    };
-
-    let token = match jsonwebtoken::encode(
-        &jsonwebtoken::Header::new(jsonwebtoken::Algorithm::HS256),
-        &claims,
-        &jsonwebtoken::EncodingKey::from_secret(secret.as_ref()),
+    let (token, expires_at) = match generate_admin_jwt(
+        admin_id.to_string(),
+        &secret,
+        chrono::Duration::hours(24),
     ) {
-        Ok(t) => t,
+        Ok(pair) => pair,
         Err(e) => {
             error!(error = %e, "Failed to sign admin JWT");
             return (
@@ -2373,7 +2366,7 @@ async fn admin_login(
         StatusCode::OK,
         Json(AdminLoginResponse {
             token,
-            expires_at: expires_at.timestamp(),
+            expires_at,
         }),
     )
         .into_response()
