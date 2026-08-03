@@ -106,6 +106,21 @@ pub struct AnchorQuery {
     pub page_size: Option<i64>,
 }
 
+#[derive(Debug, Deserialize)]
+pub struct YieldCalculateQuery {
+    pub amount: f64,
+    pub yield_rate_bps: Option<u32>,
+    pub elapsed_secs: u64,
+}
+
+#[derive(Debug, Serialize)]
+pub struct YieldCalculateResponse {
+    pub amount: f64,
+    pub yield_rate_bps: u32,
+    pub elapsed_secs: u64,
+    pub accrued_yield: f64,
+}
+
 /// Response for the /api/health endpoint.
 #[derive(Debug, Serialize)]
 pub struct HealthResponse {
@@ -259,6 +274,7 @@ pub fn create_router(state: Arc<AppState>) -> Router {
         .route("/api/health", get(health_check))
         .route("/api/transactions/submit", post(submit_transaction))
         .route("/api/admin/login", post(admin_login))
+        .route("/api/yield/calculate", get(calculate_yield))
         .route("/ws/kyc", get(ws_handler));
     let router = Router::new()
         .merge(user_routes)
@@ -275,8 +291,8 @@ pub fn create_router(state: Arc<AppState>) -> Router {
 
     #[cfg(feature = "metrics")]
     let router = router
-        .route("/metrics", get(metrics_handler))
-        .layer(from_fn(latency_middleware));
+        .layer(from_fn(latency_middleware))
+        .route("/metrics", get(metrics_handler));
 
     router.layer(cors).with_state(state)
 }
@@ -1442,7 +1458,7 @@ async fn trigger_payout(
                 bank_name,
                 account_number,
             };
-            state.anchor.create_payout(req);
+            state.anchor.create_payout(req).await;
 
             if b.fiat_daily_limit > Decimal::ZERO {
                 let today = chrono::Utc::now().naive_utc().date();
@@ -2069,7 +2085,10 @@ pub async fn get_plan_report(
         }
     };
 
-    // 4. Build PDF data structs (owned, so they can cross the thread boundary)
+    // 4. Compute projected yield (real-time accrued yield since last ping)
+    let projected_yield = compute_projected_accrued_yield(&plan);
+
+    // 5. Build PDF data structs (owned, so they can cross the thread boundary)
     let report_data = crate::pdf::PlanReportData {
         plan_id: plan.id.to_string(),
         owner_address: plan.owner_address.clone(),
@@ -2079,6 +2098,7 @@ pub async fn get_plan_report(
         earn_yield: plan.earn_yield,
         yield_rate_bps: plan.yield_rate_bps,
         accrued_yield: plan.accrued_yield.to_string(),
+        projected_accrued_yield: format!("{projected_yield:.7}"),
         created_at: plan.created_at.to_rfc3339(),
         grace_period_seconds: plan.grace_period_seconds,
         beneficiaries: beneficiary_rows
@@ -2098,7 +2118,7 @@ pub async fn get_plan_report(
             .collect(),
     };
 
-    // 5. Generate PDF in a blocking thread (printpdf is CPU-bound / not async)
+    // 6. Generate PDF in a blocking thread (printpdf is CPU-bound / not async)
     let pdf_bytes =
         match tokio::task::spawn_blocking(move || crate::pdf::generate(report_data)).await {
             Ok(Ok(bytes)) => bytes,
@@ -2118,7 +2138,7 @@ pub async fn get_plan_report(
             }
         };
 
-    // 6. Return the PDF as a downloadable attachment
+    // 7. Return the PDF as a downloadable attachment
     let filename = format!("plan-{plan_id}-report.pdf");
     (
         StatusCode::OK,
@@ -2229,6 +2249,35 @@ async fn health_check(State(state): State<Arc<AppState>>) -> impl IntoResponse {
     };
 
     (status_code, Json(response)).into_response()
+}
+
+async fn calculate_yield(
+    State(state): State<Arc<AppState>>,
+    Query(query): Query<YieldCalculateQuery>,
+) -> impl IntoResponse {
+    let yield_rate_bps = query.yield_rate_bps.unwrap_or(state.apy_config.rate_bps);
+
+    if query.amount < 0.0 {
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(serde_json::json!({"error": "Amount must be non-negative"})),
+        )
+            .into_response();
+    }
+
+    let accrued_yield =
+        yield_calculator::calculate_yield(query.amount, yield_rate_bps, query.elapsed_secs);
+
+    (
+        StatusCode::OK,
+        Json(YieldCalculateResponse {
+            amount: query.amount,
+            yield_rate_bps,
+            elapsed_secs: query.elapsed_secs,
+            accrued_yield,
+        }),
+    )
+        .into_response()
 }
 
 // success, issues the JWT that `jwt_auth_middleware` expects for admin
