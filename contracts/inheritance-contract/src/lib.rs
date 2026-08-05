@@ -2158,18 +2158,18 @@ impl InheritanceContract {
     }
 
     /// Emergency exit: withdraw entire plan and return all locked principal plus accumulated yield
-    /// 
+    ///
     /// # Arguments
     /// * `env` - The contract environment
     /// * `caller` - The address calling the function (must be plan owner)
     /// * `token` - The token address to transfer
     /// * `plan_id` - The plan identifier
-    /// 
+    ///
     /// # Requirements
     /// - Caller must be the plan owner (owner signature)
     /// - Plan must be active
     /// - Current time must be before liveness expiration
-    /// 
+    ///
     /// # Effects
     /// - Transfers total_amount + any yield back to owner
     /// - Deactivates the plan
@@ -2182,7 +2182,7 @@ impl InheritanceContract {
         caller.require_auth();
         Self::check_not_paused(&env);
         Self::enter_guard(&env);
-        
+
         let mut plan = Self::get_plan(&env, plan_id).ok_or(InheritanceError::PlanNotFound)?;
 
         // Owner signature verification
