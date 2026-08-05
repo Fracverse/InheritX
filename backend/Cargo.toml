@@ -19,8 +19,8 @@ pdf = ["dep:printpdf"]
 # Async runtime — only the features we actually use
 tokio = { version = "1.0", features = ["rt-multi-thread", "net", "sync", "time", "macros", "signal"] }
 
-# HTTP server — multipart removed (no multipart upload handlers exist)
-axum = { version = "0.8", features = ["json", "macros", "ws"] }
+# HTTP server — multipart support for KYC file upload
+axum = { version = "0.8", features = ["json", "macros", "ws", "multipart"] }
 
 # Middleware / utilities
 tower = { version = "0.5", features = ["util"] }

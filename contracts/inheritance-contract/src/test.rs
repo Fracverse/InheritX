@@ -6367,5 +6367,147 @@ fn test_set_conditions_blocked_after_trigger() {
     client.auto_trigger_check(&plan_id);
 
     let result = client.try_add_time_trigger(&owner, &plan_id, &9999u64);
+}
+
+// --- withdraw_plan emergency exit tests ---
+
+#[test]
+fn test_withdraw_plan_success_before_liveness_expiration() {
+    let env = Env::default();
+    env.ledger().set_timestamp(1000);
+    let (client, token, _admin, owner) = setup_with_token_and_admin(&env);
+    
+    let plan_id = client.create_inheritance_plan(&CreateInheritancePlanParams {
+        owner: owner.clone(),
+        token: token.clone(),
+        plan_name: String::from_str(&env, "Test Plan"),
+        description: String::from_str(&env, "Test Description"),
+        total_amount: 100_000u64,
+        distribution_method: DistributionMethod::LumpSum,
+        beneficiaries_data: Vec::from_array(&env, [
+            (String::from_str(&env, "John"), String::from_str(&env, "john@example.com"), 123456u32, Bytes::from_array(&env, &[1u8; 10]), 10000u32, 1u32),
+        ]),
+        is_lendable: false,
+    }).unwrap();
+    
+    let initial_balance = TestTokenHelper::new(&env, &token).balance(&owner);
+    
+    // Withdraw plan before liveness expiration
+    let result = client.withdraw_plan(&owner, &token, &plan_id);
+    assert!(result.is_ok());
+    
+    let final_balance = TestTokenHelper::new(&env, &token).balance(&owner);
+    assert!(final_balance > initial_balance);
+    
+    // Plan should be deactivated
+    let plan = client.get_plan_details(&plan_id).unwrap();
+    assert!(!plan.is_active);
+}
+
+#[test]
+fn test_withdraw_plan_fails_after_liveness_expiration() {
+    let env = Env::default();
+    env.ledger().set_timestamp(1000);
+    let (client, token, _admin, owner) = setup_with_token_and_admin(&env);
+    
+    let plan_id = client.create_inheritance_plan(&CreateInheritancePlanParams {
+        owner: owner.clone(),
+        token: token.clone(),
+        plan_name: String::from_str(&env, "Test Plan"),
+        description: String::from_str(&env, "Test Description"),
+        total_amount: 100_000u64,
+        distribution_method: DistributionMethod::LumpSum,
+        beneficiaries_data: Vec::from_array(&env, [
+            (String::from_str(&env, "John"), String::from_str(&env, "john@example.com"), 123456u32, Bytes::from_array(&env, &[1u8; 10]), 10000u32, 1u32),
+        ]),
+        is_lendable: false,
+    }).unwrap();
+    
+    // Advance time past liveness expiration (30 days = 2,592,000 seconds)
+    env.ledger().set_timestamp(3_000_000);
+    
+    let result = client.try_withdraw_plan(&owner, &token, &plan_id);
     assert!(result.is_err());
+    assert_eq!(result.err().unwrap(), InheritanceError::LivenessExpired);
+}
+
+#[test]
+fn test_withdraw_plan_fails_unauthorized() {
+    let env = Env::default();
+    env.ledger().set_timestamp(1000);
+    let (client, token, _admin, owner) = setup_with_token_and_admin(&env);
+    let unauthorized = create_test_address(&env, 999);
+    
+    let plan_id = client.create_inheritance_plan(&CreateInheritancePlanParams {
+        owner: owner.clone(),
+        token: token.clone(),
+        plan_name: String::from_str(&env, "Test Plan"),
+        description: String::from_str(&env, "Test Description"),
+        total_amount: 100_000u64,
+        distribution_method: DistributionMethod::LumpSum,
+        beneficiaries_data: Vec::from_array(&env, [
+            (String::from_str(&env, "John"), String::from_str(&env, "john@example.com"), 123456u32, Bytes::from_array(&env, &[1u8; 10]), 10000u32, 1u32),
+        ]),
+        is_lendable: false,
+    }).unwrap();
+    
+    let result = client.try_withdraw_plan(&unauthorized, &token, &plan_id);
+    assert!(result.is_err());
+    assert_eq!(result.err().unwrap(), InheritanceError::Unauthorized);
+}
+
+#[test]
+fn test_withdraw_plan_fails_plan_not_active() {
+    let env = Env::default();
+    env.ledger().set_timestamp(1000);
+    let (client, token, _admin, owner) = setup_with_token_and_admin(&env);
+    
+    let plan_id = client.create_inheritance_plan(&CreateInheritancePlanParams {
+        owner: owner.clone(),
+        token: token.clone(),
+        plan_name: String::from_str(&env, "Test Plan"),
+        description: String::from_str(&env, "Test Description"),
+        total_amount: 100_000u64,
+        distribution_method: DistributionMethod::LumpSum,
+        beneficiaries_data: Vec::from_array(&env, [
+            (String::from_str(&env, "John"), String::from_str(&env, "john@example.com"), 123456u32, Bytes::from_array(&env, &[1u8; 10]), 10000u32, 1u32),
+        ]),
+        is_lendable: false,
+    }).unwrap();
+    
+    // Deactivate plan first
+    client.deactivate_plan(&owner, &plan_id);
+    
+    let result = client.try_withdraw_plan(&owner, &token, &plan_id);
+    assert!(result.is_err());
+    assert_eq!(result.err().unwrap(), InheritanceError::PlanNotActive);
+}
+
+#[test]
+fn test_withdraw_plan_emits_event() {
+    let env = Env::default();
+    env.ledger().set_timestamp(1000);
+    let (client, token, _admin, owner) = setup_with_token_and_admin(&env);
+    
+    let plan_id = client.create_inheritance_plan(&CreateInheritancePlanParams {
+        owner: owner.clone(),
+        token: token.clone(),
+        plan_name: String::from_str(&env, "Test Plan"),
+        description: String::from_str(&env, "Test Description"),
+        total_amount: 100_000u64,
+        distribution_method: DistributionMethod::LumpSum,
+        beneficiaries_data: Vec::from_array(&env, [
+            (String::from_str(&env, "John"), String::from_str(&env, "john@example.com"), 123456u32, Bytes::from_array(&env, &[1u8; 10]), 10000u32, 1u32),
+        ]),
+        is_lendable: false,
+    }).unwrap();
+    
+    client.withdraw_plan(&owner, &token, &plan_id);
+    
+    let events = env.events().all();
+    let withdraw_event = events.iter().find(|e| {
+        e.topics[0] == soroban_sdk::Symbol::new(&env, "PLAN") 
+        && e.topics[1] == soroban_sdk::Symbol::new(&env, "WITHDRAWN")
+    });
+    assert!(withdraw_event.is_some());
 }
