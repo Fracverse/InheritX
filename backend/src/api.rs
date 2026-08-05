@@ -1946,12 +1946,12 @@ async fn upload_kyc_document(mut multipart: Multipart) -> impl IntoResponse {
     // Process multipart form data
     while let Some(field) = multipart.next_field().await.unwrap() {
         let name = field.name().unwrap();
-        
+
         if name == "document" {
             let file_name = field.file_name().unwrap_or("unknown").to_string();
             let content_type = field.content_type().unwrap_or("").to_string();
             let file_data = field.bytes().await.unwrap();
-            
+
             // Validate file size
             if file_data.len() > MAX_FILE_SIZE {
                 let error_response = serde_json::json!({
@@ -1960,7 +1960,7 @@ async fn upload_kyc_document(mut multipart: Multipart) -> impl IntoResponse {
                 });
                 return (StatusCode::PAYLOAD_TOO_LARGE, Json(error_response)).into_response();
             }
-            
+
             // Validate file type
             if !ALLOWED_MIME_TYPES.contains(&content_type.as_str()) {
                 let error_response = serde_json::json!({
@@ -1969,14 +1969,14 @@ async fn upload_kyc_document(mut multipart: Multipart) -> impl IntoResponse {
                 });
                 return (StatusCode::UNSUPPORTED_MEDIA_TYPE, Json(error_response)).into_response();
             }
-            
+
             // In a real implementation, upload to cloud storage here
             // For now, return success with mock data
             let response = KYCDocumentResponse {
                 document_id: Uuid::new_v4().to_string(),
                 url: format!("https://example.com/documents/{}", Uuid::new_v4()),
             };
-            
+
             let success_response = serde_json::json!({
                 "success": true,
                 "message": "File uploaded successfully",
@@ -1988,11 +1988,11 @@ async fn upload_kyc_document(mut multipart: Multipart) -> impl IntoResponse {
                     "file_size": file_data.len()
                 }
             });
-            
+
             return (StatusCode::OK, Json(success_response)).into_response();
         }
     }
-    
+
     let error_response = serde_json::json!({
         "success": false,
         "error": "No document field found in request"
