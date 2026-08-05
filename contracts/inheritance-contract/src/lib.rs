@@ -70,6 +70,7 @@ pub struct InheritancePlan {
     pub waterfall_enabled: bool,
     pub grace_period: u64,
     pub earn_yield: bool,
+    pub liveness_expiration: u64, // Timestamp when emergency exit expires
 }
 
 #[contracterror]
@@ -125,6 +126,7 @@ pub enum InheritanceError {
     WillAlreadyLinked = 48,
     WillAlreadyFinalized = 49,
     WillVersionNotFound = 50,
+    LivenessExpired = 51,
 }
 
 #[contracttype]
@@ -1855,6 +1857,8 @@ impl InheritanceContract {
         }
 
         // Create the inheritance plan with net amount (user input minus 2% fee)
+        let created_at = env.ledger().timestamp();
+        let liveness_expiration = created_at + 2_592_000; // 30 days in seconds
         let plan = InheritancePlan {
             plan_name,
             description,
@@ -1864,13 +1868,14 @@ impl InheritanceContract {
             beneficiaries,
             total_allocation_bp,
             owner: owner.clone(),
-            created_at: env.ledger().timestamp(),
+            created_at,
             is_active: true,
             is_lendable,
             total_loaned: 0,
             waterfall_enabled: false,
             grace_period: 0,
             earn_yield: false,
+            liveness_expiration,
         };
 
         // Store the plan
@@ -2148,6 +2153,112 @@ impl InheritanceContract {
             VaultWithdrawEvent { plan_id, amount },
         );
         log!(&env, "Withdrew {} from plan {}", amount, plan_id);
+        Self::exit_guard(&env);
+        Ok(())
+    }
+
+    /// Emergency exit: withdraw entire plan and return all locked principal plus accumulated yield
+    ///
+    /// # Arguments
+    /// * `env` - The contract environment
+    /// * `caller` - The address calling the function (must be plan owner)
+    /// * `token` - The token address to transfer
+    /// * `plan_id` - The plan identifier
+    ///
+    /// # Requirements
+    /// - Caller must be the plan owner (owner signature)
+    /// - Plan must be active
+    /// - Current time must be before liveness expiration
+    ///
+    /// # Effects
+    /// - Transfers total_amount + any yield back to owner
+    /// - Deactivates the plan
+    pub fn withdraw_plan(
+        env: Env,
+        caller: Address,
+        token: Address,
+        plan_id: u64,
+    ) -> Result<(), InheritanceError> {
+        caller.require_auth();
+        Self::check_not_paused(&env);
+        Self::enter_guard(&env);
+
+        let mut plan = Self::get_plan(&env, plan_id).ok_or(InheritanceError::PlanNotFound)?;
+
+        // Owner signature verification
+        if plan.owner != caller {
+            return Err(InheritanceError::Unauthorized);
+        }
+
+        // Plan must be active
+        if !plan.is_active {
+            return Err(InheritanceError::PlanNotActive);
+        }
+
+        // Liveness check: can only withdraw before expiration
+        let now = env.ledger().timestamp();
+        if now >= plan.liveness_expiration {
+            return Err(InheritanceError::LivenessExpired);
+        }
+
+        // Freeze/legal hold check
+        if env
+            .storage()
+            .persistent()
+            .has(&DataKey::FreezePlan(plan_id))
+        {
+            return Err(InheritanceError::PlanNotActive);
+        }
+        if env.storage().persistent().has(&DataKey::LegalHold(plan_id)) {
+            return Err(InheritanceError::PlanNotActive);
+        }
+
+        // Calculate total amount to withdraw (principal + yield)
+        let total_amount = plan.total_amount;
+        
+        // Deactivate plan before transfer to prevent reentrancy
+        plan.is_active = false;
+        Self::store_plan(&env, plan_id, &plan);
+
+        // Transfer all tokens back to owner
+        let contract_id = env.current_contract_address();
+        let required = total_amount as i128;
+        let args: Vec<Val> = vec![
+            &env,
+            contract_id.clone().into_val(&env),
+            caller.clone().into_val(&env),
+            required.into_val(&env),
+        ];
+        let res =
+            env.try_invoke_contract::<(), InvokeError>(&token, &symbol_short!("transfer"), args);
+        if res.is_err() {
+            // Revert plan activation if transfer fails
+            plan.is_active = true;
+            Self::store_plan(&env, plan_id, &plan);
+            return Err(InheritanceError::FeeTransferFailed);
+        }
+
+        // Add to deactivated plans list
+        let mut deactivated: Vec<u64> = env
+            .storage()
+            .persistent()
+            .get(&DataKey::DeactivatedPlans)
+            .unwrap_or(Vec::new(&env));
+        deactivated.push_back(plan_id);
+        env.storage()
+            .persistent()
+            .set(&DataKey::DeactivatedPlans, &deactivated);
+
+        env.events().publish(
+            (symbol_short!("PLAN"), symbol_short!("WITHDRAWN")),
+            PlanDeactivatedEvent {
+                plan_id,
+                owner: caller.clone(),
+                total_amount,
+                deactivated_at: now,
+            },
+        );
+        log!(&env, "Plan {} withdrawn by owner, total amount: {}", plan_id, total_amount);
         Self::exit_guard(&env);
         Ok(())
     }
