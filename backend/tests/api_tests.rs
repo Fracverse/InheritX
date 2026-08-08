@@ -42,7 +42,9 @@ fn setup_app_with_cache(plan_cache: PlanCache) -> axum::Router {
         .connect_lazy(&database_url)
         .unwrap();
     let state = Arc::new(AppState {
-        anchor: Arc::new(inheritx_backend::stellar_anchor::AnchorRegistry::new()),
+        anchor: Arc::new(inheritx_backend::stellar_anchor::AnchorRegistry::new(
+            "http://localhost:8081".to_string(),
+        )),
         db_pool,
         kyc_tx: tokio::sync::broadcast::channel(16).0,
         kyc_webhook_secret: None,
@@ -509,7 +511,9 @@ async fn test_health_endpoint_without_db_yields_service_unavailable() {
         .connect_lazy("postgres://localhost:1/nonexistent")
         .unwrap();
     let state = Arc::new(AppState {
-        anchor: Arc::new(inheritx_backend::stellar_anchor::AnchorRegistry::new()),
+        anchor: Arc::new(inheritx_backend::stellar_anchor::AnchorRegistry::new(
+            "http://localhost:8081".to_string(),
+        )),
         db_pool,
         kyc_tx: tokio::sync::broadcast::channel(16).0,
         kyc_webhook_secret: None,
@@ -560,7 +564,9 @@ async fn test_get_current_rate_cached() {
         .connect_lazy("postgres://postgres:password@localhost:5432/test")
         .unwrap();
     let state = Arc::new(AppState {
-        anchor: Arc::new(inheritx_backend::stellar_anchor::AnchorRegistry::new()),
+        anchor: Arc::new(inheritx_backend::stellar_anchor::AnchorRegistry::new(
+            "http://localhost:8081".to_string(),
+        )),
         db_pool,
         kyc_tx: tokio::sync::broadcast::channel(16).0,
         kyc_webhook_secret: None,
@@ -674,12 +680,15 @@ async fn test_cors_origins() {
 
 #[tokio::test]
 async fn test_get_plans_filter_by_beneficiary_only() {
+#[tokio::test]
+async fn test_calculate_yield_with_rate() {
     let app = setup_app();
     let response = app
         .oneshot(
             Request::builder()
                 .method(http::Method::GET)
                 .uri("/api/plans?beneficiary=GBENEF123")
+                .uri("/api/yield/calculate?amount=10000&yield_rate_bps=500&elapsed_secs=31557600")
                 .body(Body::empty())
                 .unwrap(),
         )
@@ -690,12 +699,31 @@ async fn test_get_plans_filter_by_beneficiary_only() {
 
 #[tokio::test]
 async fn test_get_plans_filter_by_both_owner_and_beneficiary() {
+
+    assert_eq!(response.status(), StatusCode::OK);
+    let body_bytes = axum::body::to_bytes(response.into_body(), usize::MAX)
+        .await
+        .unwrap();
+    let body_json: serde_json::Value = serde_json::from_slice(&body_bytes).unwrap();
+    assert_eq!(body_json["amount"], 10000.0);
+    assert_eq!(body_json["yield_rate_bps"], 500);
+    assert_eq!(body_json["elapsed_secs"], 31557600);
+    let accrued = body_json["accrued_yield"].as_f64().unwrap();
+    assert!(
+        (accrued - 500.0).abs() < 0.01,
+        "expected ~500, got {accrued}"
+    );
+}
+
+#[tokio::test]
+async fn test_calculate_yield_default_rate() {
     let app = setup_app();
     let response = app
         .oneshot(
             Request::builder()
                 .method(http::Method::GET)
                 .uri("/api/plans?owner=GOWNER123&beneficiary=GBENEF123")
+                .uri("/api/yield/calculate?amount=2000&elapsed_secs=31557600")
                 .body(Body::empty())
                 .unwrap(),
         )
@@ -706,12 +734,25 @@ async fn test_get_plans_filter_by_both_owner_and_beneficiary() {
 
 #[tokio::test]
 async fn test_get_plans_all_no_filters() {
+
+    assert_eq!(response.status(), StatusCode::OK);
+    let body_bytes = axum::body::to_bytes(response.into_body(), usize::MAX)
+        .await
+        .unwrap();
+    let body_json: serde_json::Value = serde_json::from_slice(&body_bytes).unwrap();
+    assert_eq!(body_json["yield_rate_bps"], 0);
+    assert_eq!(body_json["accrued_yield"], 0.0);
+}
+
+#[tokio::test]
+async fn test_calculate_yield_zero_elapsed() {
     let app = setup_app();
     let response = app
         .oneshot(
             Request::builder()
                 .method(http::Method::GET)
                 .uri("/api/plans")
+                .uri("/api/yield/calculate?amount=5000&yield_rate_bps=1000&elapsed_secs=0")
                 .body(Body::empty())
                 .unwrap(),
         )
@@ -745,11 +786,24 @@ async fn test_get_plans_owner_filter_caches_on_miss() {
     }];
     cache.set_plans(&query, &cached_plans).await.unwrap();
     let app = setup_app_with_cache(cache);
+
+    assert_eq!(response.status(), StatusCode::OK);
+    let body_bytes = axum::body::to_bytes(response.into_body(), usize::MAX)
+        .await
+        .unwrap();
+    let body_json: serde_json::Value = serde_json::from_slice(&body_bytes).unwrap();
+    assert_eq!(body_json["accrued_yield"], 0.0);
+}
+
+#[tokio::test]
+async fn test_calculate_yield_invalid_amount() {
+    let app = setup_app();
     let response = app
         .oneshot(
             Request::builder()
                 .method(http::Method::GET)
                 .uri("/api/plans?owner=GOWNER123")
+                .uri("/api/yield/calculate?amount=-100&yield_rate_bps=500&elapsed_secs=1000")
                 .body(Body::empty())
                 .unwrap(),
         )
@@ -762,4 +816,6 @@ async fn test_get_plans_owner_filter_caches_on_miss() {
     let body: serde_json::Value = serde_json::from_slice(&body_bytes).unwrap();
     assert!(body.is_array());
     assert_eq!(body[0]["owner_address"], "GOWNER123");
+
+    assert_eq!(response.status(), StatusCode::BAD_REQUEST);
 }
