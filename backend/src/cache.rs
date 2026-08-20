@@ -319,6 +319,7 @@ mod tests {
             yield_rate_bps: 500,
             accrued_yield: 42.5,
             created_at: Utc::now(),
+            onchain_plan_id: Some(7),
             beneficiaries: vec![BeneficiaryResponse {
                 id: Uuid::new_v4(),
                 plan_id: Uuid::new_v4(),

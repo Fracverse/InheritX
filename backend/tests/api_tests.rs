@@ -317,6 +317,7 @@ async fn test_get_plans_returns_cached_response_without_db_access() {
         yield_rate_bps: 500,
         accrued_yield: 25.5,
         created_at: chrono::Utc::now(),
+        onchain_plan_id: Some(7),
         beneficiaries: vec![],
     }];
     cache.set_plans(&query, &cached_plans).await.unwrap();

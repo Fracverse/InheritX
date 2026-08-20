@@ -28,6 +28,11 @@ jobs:
           POSTGRES_PASSWORD: password
         ports:
           - 5432:5432
+        options: >-
+          --health-cmd pg_isready
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
 
     steps:
       - name: Checkout code
@@ -52,6 +57,12 @@ jobs:
 
       - name: Run tests
         run: cargo test
+        env:
+          # Opts the inactivity watchdog into the database-backed tests, which
+          # also verify the migration chain applies from scratch. Deliberately
+          # not DATABASE_URL: other tests assert behaviour when the database is
+          # unreachable.
+          WATCHDOG_TEST_DATABASE_URL: postgres://postgres:password@localhost:5432/test
 
       - name: Build
         run: cargo build --release

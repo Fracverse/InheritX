@@ -61,6 +61,21 @@ pub static DB_POOL_IDLE: Lazy<Gauge> = Lazy::new(|| {
     .expect("failed to register db_pool_idle gauge")
 });
 
+/// Outcome of every on-chain inheritance trigger the inactivity watchdog
+/// attempts. Alert on the `failure` series: it means an expired plan reached
+/// its deadline without its funds being unlocked on-chain.
+/// Labels: outcome
+pub static WATCHDOG_ONCHAIN_TRIGGERS: Lazy<CounterVec> = Lazy::new(|| {
+    register_counter_vec!(
+        opts!(
+            "inheritx_watchdog_onchain_triggers_total",
+            "Inheritance triggers attempted by the inactivity watchdog, by outcome"
+        ),
+        &["outcome"]
+    )
+    .expect("failed to register watchdog_onchain_triggers counter")
+});
+
 /// Call once at startup to force lazy initialization of all metrics.
 pub fn init() {
     Lazy::force(&REQUEST_COUNT);
@@ -68,6 +83,7 @@ pub fn init() {
     Lazy::force(&REQUEST_LATENCY);
     Lazy::force(&DB_POOL_SIZE);
     Lazy::force(&DB_POOL_IDLE);
+    Lazy::force(&WATCHDOG_ONCHAIN_TRIGGERS);
 }
 
 /// Updates DB pool gauges from the current sqlx pool state.

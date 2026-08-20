@@ -1,6 +1,8 @@
 use rust_decimal::prelude::FromPrimitive;
 use rust_decimal::Decimal;
 
+use crate::stellar_submit::SorobanConfig;
+
 pub struct Config {
     pub port: u16,
     pub database_url: String,
@@ -12,6 +14,10 @@ pub struct Config {
     pub stellar_horizon_url: String,
     pub anchor_api_url: String,
     pub fiat_daily_limit_default: rust_decimal::Decimal,
+    /// Soroban contract settings used to execute inheritance payouts on-chain.
+    /// `None` when the deployment has not configured a signer, in which case
+    /// the inactivity watchdog only updates PostgreSQL.
+    pub soroban: Option<SorobanConfig>,
 }
 
 impl Config {
@@ -60,6 +66,7 @@ impl Config {
             stellar_horizon_url,
             anchor_api_url,
             fiat_daily_limit_default,
+            soroban: SorobanConfig::from_env(),
         })
     }
 }

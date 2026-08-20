@@ -53,6 +53,10 @@ pub struct Plan {
     pub earn_yield: bool,
     pub yield_rate_bps: u32,
     pub is_active: bool,
+    /// Identifier of this plan inside the Soroban inheritance contract.
+    /// Required for the inactivity watchdog to trigger the payout on-chain;
+    /// plans created without one can only be triggered manually.
+    pub onchain_plan_id: Option<u64>,
 }
 
 pub struct AppState {
@@ -312,6 +316,7 @@ pub struct PlanRow {
     pub yield_rate_bps: i32,
     pub accrued_yield: rust_decimal::Decimal,
     pub created_at: chrono::DateTime<chrono::Utc>,
+    pub onchain_plan_id: Option<i64>,
 }
 
 #[derive(Debug, Clone, Serialize, sqlx::FromRow)]
@@ -345,6 +350,7 @@ pub struct PlanResponse {
     pub yield_rate_bps: i32,
     pub accrued_yield: f64,
     pub created_at: chrono::DateTime<chrono::Utc>,
+    pub onchain_plan_id: Option<i64>,
     pub beneficiaries: Vec<BeneficiaryResponse>,
 }
 
@@ -432,6 +438,7 @@ fn plan_row_to_response(row: PlanRow, beneficiaries: Vec<BeneficiaryResponse>) -
         yield_rate_bps: row.yield_rate_bps,
         accrued_yield,
         created_at: row.created_at,
+        onchain_plan_id: row.onchain_plan_id,
         beneficiaries,
     }
 }
@@ -622,9 +629,10 @@ async fn create_plan(
             accrued_yield,
             last_ping,
             is_active,
-            status
-        ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
-        RETURNING id, owner_address, token_address, amount, grace_period, grace_period_seconds, earn_yield, last_ping, is_active, status, yield_rate_bps, accrued_yield, created_at
+            status,
+            onchain_plan_id
+        ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)
+        RETURNING id, owner_address, token_address, amount, grace_period, grace_period_seconds, earn_yield, last_ping, is_active, status, yield_rate_bps, accrued_yield, created_at, onchain_plan_id
         "#
     )
     .bind(&payload.owner)
@@ -638,6 +646,7 @@ async fn create_plan(
     .bind(payload.last_ping)
     .bind(payload.is_active)
     .bind("ACTIVE")
+    .bind(payload.onchain_plan_id.map(|id| id as i64))
     .fetch_one(&mut *tx)
     .await {
         Ok(row) => row,
@@ -715,6 +724,7 @@ async fn create_plan(
         yield_rate_bps: plan_row.yield_rate_bps,
         accrued_yield: 0.0, // No yield accrued at creation
         created_at: plan_row.created_at,
+        onchain_plan_id: plan_row.onchain_plan_id,
         beneficiaries: inserted_beneficiaries,
     };
 
@@ -787,7 +797,7 @@ async fn update_plan(
 
     // 3. Check if plan exists
     let _plan_row = match sqlx::query_as::<_, PlanRow>(
-        "SELECT id, owner_address, token_address, amount, grace_period, grace_period_seconds, earn_yield, last_ping, is_active, status, yield_rate_bps, accrued_yield, created_at FROM plans WHERE id = $1"
+        "SELECT id, owner_address, token_address, amount, grace_period, grace_period_seconds, earn_yield, last_ping, is_active, status, yield_rate_bps, accrued_yield, created_at, onchain_plan_id FROM plans WHERE id = $1"
     )
     .bind(plan_id)
     .fetch_optional(&mut *tx)
@@ -903,7 +913,7 @@ async fn update_plan(
 
     // 7. Fetch updated plan with beneficiaries
     let updated_plan_row = match sqlx::query_as::<_, PlanRow>(
-        "SELECT id, owner_address, token_address, amount, grace_period, grace_period_seconds, earn_yield, last_ping, is_active, status, yield_rate_bps, accrued_yield, created_at FROM plans WHERE id = $1"
+        "SELECT id, owner_address, token_address, amount, grace_period, grace_period_seconds, earn_yield, last_ping, is_active, status, yield_rate_bps, accrued_yield, created_at, onchain_plan_id FROM plans WHERE id = $1"
     )
     .bind(plan_id)
     .fetch_one(&state.db_pool)
@@ -960,6 +970,7 @@ async fn update_plan(
         yield_rate_bps: updated_plan_row.yield_rate_bps,
         accrued_yield: 0.0,
         created_at: updated_plan_row.created_at,
+        onchain_plan_id: updated_plan_row.onchain_plan_id,
         beneficiaries: inserted_beneficiaries,
     };
 
@@ -1012,7 +1023,7 @@ async fn get_plans(
                 r#"
                 SELECT id, owner_address, token_address, amount, grace_period,
                        grace_period_seconds, earn_yield, last_ping, is_active,
-                       status, yield_rate_bps, accrued_yield, created_at
+                       status, yield_rate_bps, accrued_yield, created_at, onchain_plan_id
                 FROM plans
                 WHERE owner_address = $1
                 ORDER BY created_at DESC
@@ -1040,7 +1051,7 @@ async fn get_plans(
                 r#"
                 SELECT DISTINCT p.id, p.owner_address, p.token_address, p.amount,
                        p.grace_period, p.grace_period_seconds, p.earn_yield,
-                       p.last_ping, p.is_active, p.status, p.yield_rate_bps, p.accrued_yield, p.created_at
+                       p.last_ping, p.is_active, p.status, p.yield_rate_bps, p.accrued_yield, p.created_at, p.onchain_plan_id
                 FROM plans p
                 INNER JOIN beneficiaries b ON b.plan_id = p.id
                 WHERE b.wallet_address = $1
@@ -1070,7 +1081,7 @@ async fn get_plans(
                 r#"
                 SELECT DISTINCT p.id, p.owner_address, p.token_address, p.amount,
                        p.grace_period, p.grace_period_seconds, p.earn_yield,
-                       p.last_ping, p.is_active, p.status, p.yield_rate_bps, p.accrued_yield, p.created_at
+                       p.last_ping, p.is_active, p.status, p.yield_rate_bps, p.accrued_yield, p.created_at, p.onchain_plan_id
                 FROM plans p
                 LEFT JOIN beneficiaries b ON b.plan_id = p.id
                 WHERE p.owner_address = $1 OR b.wallet_address = $2
@@ -1100,7 +1111,7 @@ async fn get_plans(
                 r#"
                 SELECT id, owner_address, token_address, amount, grace_period,
                        grace_period_seconds, earn_yield, last_ping, is_active,
-                       status, yield_rate_bps, accrued_yield, created_at
+                       status, yield_rate_bps, accrued_yield, created_at, onchain_plan_id
                 FROM plans
                 ORDER BY created_at DESC
                 "#,
@@ -1287,7 +1298,7 @@ async fn trigger_payout(
 
     // 2. Fetch the active plan for the owner
     let plan = match sqlx::query_as::<_, PlanRow>(
-        "SELECT id, owner_address, token_address, amount, grace_period, grace_period_seconds, earn_yield, last_ping, is_active, status, yield_rate_bps, accrued_yield, created_at FROM plans WHERE owner_address = $1 AND is_active = true FOR UPDATE",
+        "SELECT id, owner_address, token_address, amount, grace_period, grace_period_seconds, earn_yield, last_ping, is_active, status, yield_rate_bps, accrued_yield, created_at, onchain_plan_id FROM plans WHERE owner_address = $1 AND is_active = true FOR UPDATE",
     )
     .bind(&payload.owner)
     .fetch_optional(&mut *tx)
@@ -2020,7 +2031,7 @@ pub async fn get_plan_report(
         r#"
         SELECT id, owner_address, token_address, amount, grace_period,
                grace_period_seconds, earn_yield, last_ping, is_active,
-               status, yield_rate_bps, accrued_yield, created_at
+               status, yield_rate_bps, accrued_yield, created_at, onchain_plan_id
         FROM plans WHERE id = $1
         "#,
     )

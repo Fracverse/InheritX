@@ -57,6 +57,37 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         warn!("KYC_WEBHOOK_SECRET is not set — /api/kyc/webhook will reject all requests with 503");
     }
 
+    // Build the Stellar client once and share it between the API and the
+    // inactivity watchdog, so both talk to the same network and signer.
+    let mut stellar_submit = inheritx_backend::stellar_submit::StellarSubmitClient::new(
+        config.stellar_horizon_url.clone(),
+    );
+
+    match config.soroban.clone() {
+        Some(soroban) => {
+            let contract_id = soroban.contract_id.clone();
+            match stellar_submit.clone().with_soroban(soroban) {
+                Ok(client) => {
+                    info!(
+                        contract_id = %contract_id,
+                        "On-chain inheritance triggering enabled"
+                    );
+                    stellar_submit = client;
+                }
+                Err(e) => {
+                    // Running with a half-configured signer would silently skip
+                    // the on-chain payout, so refuse to start instead.
+                    error!("Invalid Soroban configuration: {e}");
+                    std::process::exit(1);
+                }
+            }
+        }
+        None => warn!(
+            "SOROBAN_RPC_URL, INHERITANCE_CONTRACT_ID and STELLAR_SIGNER_SECRET are not all set \
+             — expired plans will be marked TRIGGERED without executing the on-chain payout"
+        ),
+    }
+
     let (kyc_tx, _) = tokio::sync::broadcast::channel(100);
     // Initialize state
     let state = Arc::new(AppState {
@@ -69,20 +100,21 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         plan_cache: plan_cache.clone(),
         apy_cache: dashmap::DashMap::new(),
         kyc_tx: kyc_tx.clone(),
-        stellar_submit: inheritx_backend::stellar_submit::StellarSubmitClient::new(
-            config.stellar_horizon_url.clone(),
-        ),
+        stellar_submit: stellar_submit.clone(),
     });
 
     // Shutdown channel — all background tasks watch this for cancellation
     let (shutdown_tx, shutdown_rx) = tokio::sync::watch::channel(false);
 
     // Start inactivity watchdog
-    let inactivity_watchdog = Arc::new(InactivityWatchdogService::new(
-        db_pool.clone(),
-        plan_cache,
-        InactivityWatchdogConfig::from_env(),
-    ));
+    let inactivity_watchdog = Arc::new(
+        InactivityWatchdogService::new(
+            db_pool.clone(),
+            plan_cache,
+            InactivityWatchdogConfig::from_env(),
+        )
+        .with_stellar(stellar_submit),
+    );
     inactivity_watchdog.start(shutdown_rx.clone());
 
     let webhook_dispatcher = Arc::new(inheritx_backend::WebhookDispatcherService::new(
