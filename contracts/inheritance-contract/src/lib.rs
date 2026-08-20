@@ -2702,6 +2702,214 @@ impl InheritanceContract {
         Ok(())
     }
 
+    pub fn batch_claim_inheritance_plan(
+        env: Env,
+        plan_id: u64,
+        claimer: Address,
+        beneficiary_indices: Vec<u32>,
+        claim_codes: Vec<u32>,
+    ) -> Result<(), InheritanceError> {
+        claimer.require_auth();
+        Self::check_not_paused(&env);
+        Self::enter_guard(&env);
+
+        Self::check_kyc_approved(&env, &claimer)?;
+
+        let mut plan = Self::get_plan(&env, plan_id).ok_or(InheritanceError::PlanNotFound)?;
+
+        if !plan.is_active {
+            return Err(InheritanceError::PlanNotActive);
+        }
+
+        if env
+            .storage()
+            .persistent()
+            .has(&DataKey::FreezePlan(plan_id))
+        {
+            return Err(InheritanceError::PlanNotActive);
+        }
+        if env.storage().persistent().has(&DataKey::LegalHold(plan_id)) {
+            return Err(InheritanceError::PlanNotActive);
+        }
+
+        Self::check_and_record_claim_attempt(&env, plan_id, &claimer)?;
+
+        let _ = Self::auto_trigger_check(env.clone(), plan_id);
+
+        let triggered = Self::get_trigger_info(&env, plan_id).is_some();
+        if !triggered && !Self::is_claim_time_valid(&env, &plan) {
+            return Err(InheritanceError::ClaimNotAllowedYet);
+        }
+
+        if beneficiary_indices.len() != claim_codes.len() {
+            return Err(InheritanceError::InvalidBeneficiaryData);
+        }
+
+        let mut total_payout: u64 = 0;
+        let mut payouts: Vec<u64> = vec![&env];
+
+        for i in 0..beneficiary_indices.len() {
+            let index = beneficiary_indices.get(i).unwrap();
+            let claim_code = claim_codes.get(i).unwrap();
+
+            if index >= plan.beneficiaries.len() {
+                return Err(InheritanceError::InvalidBeneficiaryIndex);
+            }
+
+            let beneficiary = plan.beneficiaries.get(index).unwrap();
+
+            let claim_key = {
+                let mut data = Bytes::new(&env);
+                data.extend_from_slice(&plan_id.to_be_bytes());
+                data.extend_from_slice(&beneficiary.hashed_email.to_array());
+                DataKey::Claim(env.crypto().sha256(&data).into())
+            };
+
+            if env.storage().persistent().has(&claim_key) {
+                return Err(InheritanceError::AlreadyClaimed);
+            }
+
+            if env
+                .storage()
+                .persistent()
+                .get::<DataKey, bool>(&DataKey::FrozenBeneficiary(plan_id, index))
+                .unwrap_or(false)
+            {
+                return Err(InheritanceError::Unauthorized);
+            }
+
+            if Self::has_active_vesting_schedule(&env, plan_id, index) {
+                return Err(InheritanceError::VestingScheduleActive);
+            }
+
+            let salt: BytesN<32> = env
+                .storage()
+                .persistent()
+                .get(&DataKey::ClaimSalt(plan_id, index))
+                .unwrap_or(BytesN::<32>::from_array(&env, &[0u8; 32]));
+            let hashed_claim_code = Self::hash_claim_code_with_salt(&env, claim_code, &salt)?;
+            
+            if beneficiary.hashed_claim_code != hashed_claim_code {
+                return Err(InheritanceError::InvalidClaimCode);
+            }
+
+            if plan.waterfall_enabled {
+                let this = plan.beneficiaries.get(index).unwrap();
+                let count = plan.beneficiaries.len().min(MAX_BENEFICIARIES);
+                for j in 0..count {
+                    let b = plan.beneficiaries.get(j).unwrap();
+                    if b.priority != 0 && b.priority < this.priority && !b.is_claimed {
+                        return Err(InheritanceError::ClaimNotAllowedYet);
+                    }
+                }
+            }
+
+            let mut payout = Self::calculate_waterfall_payout(&env, &plan, index);
+            let exit_settlement = Self::get_vesting_exit_settlement(&env, plan_id, index);
+            if exit_settlement > 0 {
+                payout = payout.min(exit_settlement);
+            }
+
+            payouts.push_back(payout);
+            total_payout += payout;
+        }
+
+        if Self::is_emergency_active(&env, plan_id) {
+            let limit = (plan.total_amount as u128)
+                .checked_mul(EMERGENCY_TRANSFER_LIMIT_BP as u128)
+                .and_then(|v| v.checked_div(10000))
+                .unwrap_or(0) as u64;
+
+            if total_payout > limit {
+                return Err(InheritanceError::EmergencyCooldownActive);
+            }
+        }
+
+        let available_liquidity = plan.total_amount.saturating_sub(plan.total_loaned);
+        if !triggered && total_payout > available_liquidity {
+            return Err(InheritanceError::InsufficientLiquidity);
+        }
+
+        if total_payout == 0 {
+            return Err(InheritanceError::NothingToClaim);
+        }
+
+        for i in 0..beneficiary_indices.len() {
+            let index = beneficiary_indices.get(i).unwrap();
+            let payout = payouts.get(i).unwrap();
+            let beneficiary = plan.beneficiaries.get(index).unwrap();
+
+            let exit_settlement = Self::get_vesting_exit_settlement(&env, plan_id, index);
+            let exit_remaining_after = exit_settlement.saturating_sub(payout);
+            let exit_finalized = exit_settlement == 0 || exit_remaining_after == 0;
+
+            let mut b = plan.beneficiaries.get(index).unwrap();
+            if exit_finalized {
+                b.is_claimed = true;
+            }
+            plan.beneficiaries.set(index, b);
+
+            if exit_settlement > 0 {
+                let settle_key = DataKey::VestingExitSettlement(plan_id, index);
+                if exit_remaining_after == 0 {
+                    env.storage().persistent().remove(&settle_key);
+                } else {
+                    env.storage()
+                        .persistent()
+                        .set(&settle_key, &exit_remaining_after);
+                }
+            }
+
+            let claim_key = {
+                let mut data = Bytes::new(&env);
+                data.extend_from_slice(&plan_id.to_be_bytes());
+                data.extend_from_slice(&beneficiary.hashed_email.to_array());
+                DataKey::Claim(env.crypto().sha256(&data).into())
+            };
+
+            if exit_finalized {
+                let claim = ClaimRecord {
+                    plan_id,
+                    beneficiary_index: index,
+                    claimed_at: env.ledger().timestamp(),
+                };
+                env.storage().persistent().set(&claim_key, &claim);
+            }
+
+            env.events().publish(
+                (symbol_short!("CLAIM"), symbol_short!("SUCCESS")),
+                (plan_id, beneficiary.hashed_email.clone(), payout),
+            );
+
+            if !beneficiary.bank_account.is_empty() {
+                env.events().publish(
+                    (symbol_short!("F_PAYOUT"),),
+                    (plan_id, index, payout, symbol_short!("BANK")),
+                );
+            }
+        }
+
+        plan.total_amount = plan.total_amount.saturating_sub(total_payout);
+        Self::store_plan(&env, plan_id, &plan);
+
+        Self::add_plan_to_claimed(&env, plan.owner.clone(), plan_id);
+
+        env.events().publish(
+            (symbol_short!("B_CLAIM"),),
+            BatchClaimEvent {
+                plan_id,
+                success_count: beneficiary_indices.len(),
+                fail_count: 0,
+            },
+        );
+
+        access_control::assign_role(&env, &claimer, Role::Beneficiary);
+        log!(&env, "Batch inheritance claimed for plan {}", plan_id);
+
+        Self::exit_guard(&env);
+        Ok(())
+    }
+
     /// Record KYC submission on-chain (called after off-chain submission).
     pub fn submit_kyc(env: Env, user: Address) -> Result<(), InheritanceError> {
         user.require_auth();
