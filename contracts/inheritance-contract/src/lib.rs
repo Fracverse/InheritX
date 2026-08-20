@@ -894,6 +894,14 @@ impl InheritanceContract {
         access_control::is_contract_paused(&env)
     }
 
+    /// Version of the cross-contract call surface this contract exposes.
+    ///
+    /// Peers call this before linking to or invoking this contract; the name
+    /// must stay in sync with `access_control::VERSION_FN`.
+    pub fn get_version(env: Env) -> u32 {
+        access_control::get_contract_version(&env)
+    }
+
     pub fn initialize_admin(env: Env, admin: Address) -> Result<(), InheritanceError> {
         admin.require_auth();
         if Self::get_admin(&env).is_some() {
@@ -902,6 +910,7 @@ impl InheritanceContract {
 
         let key = DataKey::Admin;
         env.storage().instance().set(&key, &admin);
+        access_control::set_contract_version(&env, access_control::CONTRACT_VERSION);
         access_control::assign_role(&env, &admin, Role::Admin);
         Ok(())
     }
@@ -5535,6 +5544,7 @@ impl InheritanceContract {
         contract: Address,
     ) -> Result<(), InheritanceError> {
         Self::require_admin(&env, &admin)?;
+        Self::require_compatible_version(&env, &contract);
         env.storage()
             .instance()
             .set(&DataKey::LendingContract, &contract);
@@ -5558,6 +5568,7 @@ impl InheritanceContract {
         contract: Address,
     ) -> Result<(), InheritanceError> {
         Self::require_admin(&env, &admin)?;
+        Self::require_compatible_version(&env, &contract);
         env.storage()
             .instance()
             .set(&DataKey::GovernanceContract, &contract);
@@ -5573,6 +5584,24 @@ impl InheritanceContract {
 
     pub fn get_governance_contract(env: Env) -> Option<Address> {
         env.storage().instance().get(&DataKey::GovernanceContract)
+    }
+
+    /// Reject a peer contract that does not report the version this build was
+    /// written against.
+    ///
+    /// Applied when linking a peer, so a mismatch is caught at configuration
+    /// time rather than on the first cross-contract call into a surface that
+    /// has changed shape underneath us.
+    /// Panics rather than returning a typed error: `InheritanceError` sits at
+    /// the 50-case ceiling `#[contracterror]` permits, so it cannot carry a
+    /// version-mismatch variant. This matches how the contract already handles
+    /// reentrancy and pause violations. Either way the call reverts.
+    fn require_compatible_version(env: &Env, contract: &Address) {
+        access_control::assert_compatible_version_or_panic(
+            env,
+            contract,
+            access_control::CONTRACT_VERSION,
+        );
     }
 
     #[allow(dead_code)]

@@ -1,6 +1,6 @@
 #![no_std]
 
-use soroban_sdk::{contracttype, Address, Env, Vec};
+use soroban_sdk::{contracttype, Address, Env, Symbol, Val, Vec};
 
 /// The four roles recognised across all InheritX contracts.
 #[contracttype]
@@ -271,16 +271,92 @@ pub fn get_contract_version(env: &Env) -> u32 {
         .unwrap_or(1)
 }
 
+/// Version of the InheritX contract suite that this build of `access-control`
+/// speaks. Bump it whenever the cross-contract call surface changes so peers
+/// built against an older surface are rejected instead of silently misread.
+pub const CONTRACT_VERSION: u32 = 1;
+
+/// Name of the entry point every InheritX contract exposes so peers can query
+/// its version. Contracts must keep a `get_version() -> u32` function in sync
+/// with this name for cross-contract checks to succeed.
+pub const VERSION_FN: &str = "get_version";
+
+/// Query `target_contract` for the version it reports.
+///
+/// Returns `None` when the target cannot answer at all — it is not a contract,
+/// does not expose [`VERSION_FN`], traps, or returns something other than a
+/// `u32`. Callers treat that as incompatible rather than trusting an unknown
+/// peer.
+pub fn query_contract_version(env: &Env, target_contract: &Address) -> Option<u32> {
+    // `try_invoke_contract` keeps a missing or trapping target recoverable; a
+    // plain `invoke_contract` would trap this contract along with it.
+    match env.try_invoke_contract::<u32, soroban_sdk::Error>(
+        target_contract,
+        &Symbol::new(env, VERSION_FN),
+        Vec::<Val>::new(env),
+    ) {
+        Ok(Ok(version)) => Some(version),
+        _ => None,
+    }
+}
+
 /// Verify that a cross-contract call target has a compatible version.
-/// Returns `error` if the target contract version is outside the acceptable range.
+/// Returns `error` if the target contract version is outside the acceptable
+/// range, or if the target cannot report a version at all.
 pub fn check_contract_version<E: Into<soroban_sdk::Error> + Copy>(
-    _env: &Env,
-    _target_contract: &Address,
-    _min_version: u32,
-    _max_version: u32,
-    _error: E,
+    env: &Env,
+    target_contract: &Address,
+    min_version: u32,
+    max_version: u32,
+    error: E,
 ) -> Result<(), E> {
-    // For now, skip version checking to avoid compilation issues
-    // TODO: Implement proper cross-contract version checking
-    Ok(())
+    match query_contract_version(env, target_contract) {
+        Some(version) if version >= min_version && version <= max_version => Ok(()),
+        _ => Err(error),
+    }
+}
+
+/// Require that `target_contract` reports exactly `expected_version`.
+///
+/// Call this before an administrative or vault state call that crosses a
+/// contract boundary — linking a peer contract, or driving one through an
+/// upgrade — so a version mismatch reverts with the caller's own error rather
+/// than executing against a surface that has since changed shape.
+///
+/// The error is a parameter (rather than a fixed type) because `access-control`
+/// is a library shared by every InheritX contract; each passes its own error
+/// enum. Contracts whose error enum has no room for a version-mismatch variant
+/// should use [`assert_compatible_version_or_panic`] instead.
+pub fn assert_compatible_version<E: Into<soroban_sdk::Error> + Copy>(
+    env: &Env,
+    target_contract: &Address,
+    expected_version: u32,
+    error: E,
+) -> Result<(), E> {
+    check_contract_version(
+        env,
+        target_contract,
+        expected_version,
+        expected_version,
+        error,
+    )
+}
+
+/// Require that `target_contract` reports exactly `expected_version`; panics on
+/// mismatch, which Soroban surfaces as a trap that reverts the whole call.
+///
+/// Use this for contracts whose error enum is full (e.g. `InheritanceContract`,
+/// which is at the 50-case ceiling `#[contracterror]` allows and so cannot
+/// carry a dedicated version-mismatch variant) — the same reason
+/// [`reentrancy_enter_or_panic`] and [`require_not_paused_or_panic`] exist.
+pub fn assert_compatible_version_or_panic(
+    env: &Env,
+    target_contract: &Address,
+    expected_version: u32,
+) {
+    match query_contract_version(env, target_contract) {
+        Some(version) if version == expected_version => {}
+        Some(_) => panic!("incompatible contract version"),
+        None => panic!("contract version unavailable"),
+    }
 }

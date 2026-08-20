@@ -6369,3 +6369,96 @@ fn test_set_conditions_blocked_after_trigger() {
     let result = client.try_add_time_trigger(&owner, &plan_id, &9999u64);
     assert!(result.is_err());
 }
+
+// ----- Cross-contract version compatibility -----
+
+/// A peer that answers `get_version` with a version the suite does not speak,
+/// used to exercise the mismatch branch of the compatibility check.
+#[contract]
+struct StaleVersionPeer;
+
+#[contractimpl]
+impl StaleVersionPeer {
+    pub fn get_version(_env: Env) -> u32 {
+        access_control::CONTRACT_VERSION + 1
+    }
+}
+
+fn setup_versioned_contract(env: &Env) -> (InheritanceContractClient<'_>, Address) {
+    env.mock_all_auths();
+    let contract_id = env.register_contract(None, InheritanceContract);
+    let client = InheritanceContractClient::new(env, &contract_id);
+    let admin = create_test_address(env, 100);
+    client.initialize_admin(&admin);
+    (client, admin)
+}
+
+#[test]
+fn test_get_version_reports_suite_version() {
+    let env = Env::default();
+    let (client, _admin) = setup_versioned_contract(&env);
+
+    assert_eq!(client.get_version(), access_control::CONTRACT_VERSION);
+}
+
+#[test]
+fn test_get_version_defaults_before_initialization() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let contract_id = env.register_contract(None, InheritanceContract);
+    let client = InheritanceContractClient::new(&env, &contract_id);
+
+    // An uninitialized contract still reports a usable version so peers can
+    // link to it rather than failing an unrelated check.
+    assert_eq!(client.get_version(), access_control::CONTRACT_VERSION);
+}
+
+#[test]
+fn test_link_accepts_peer_on_matching_version() {
+    let env = Env::default();
+    let (client, admin) = setup_versioned_contract(&env);
+
+    // A second instance of the suite: same build, same reported version.
+    let peer_id = env.register_contract(None, InheritanceContract);
+    let peer = InheritanceContractClient::new(&env, &peer_id);
+    peer.initialize_admin(&create_test_address(&env, 101));
+
+    client.set_lending_contract(&admin, &peer_id);
+    assert_eq!(client.get_lending_contract(), Some(peer_id.clone()));
+
+    client.set_governance_contract(&admin, &peer_id);
+    assert_eq!(client.get_governance_contract(), Some(peer_id));
+}
+
+#[test]
+#[should_panic(expected = "incompatible contract version")]
+fn test_link_rejects_peer_on_version_mismatch() {
+    let env = Env::default();
+    let (client, admin) = setup_versioned_contract(&env);
+
+    let stale = env.register_contract(None, StaleVersionPeer);
+    client.set_lending_contract(&admin, &stale);
+}
+
+#[test]
+#[should_panic(expected = "contract version unavailable")]
+fn test_link_rejects_peer_that_cannot_report_a_version() {
+    let env = Env::default();
+    let (client, admin) = setup_versioned_contract(&env);
+
+    // Not a contract at all — it can never answer `get_version`.
+    let not_a_contract = create_test_address(&env, 7);
+    client.set_lending_contract(&admin, &not_a_contract);
+}
+
+#[test]
+fn test_link_leaves_peer_unset_when_version_check_fails() {
+    let env = Env::default();
+    let (client, admin) = setup_versioned_contract(&env);
+
+    let stale = env.register_contract(None, StaleVersionPeer);
+    let result = client.try_set_lending_contract(&admin, &stale);
+
+    assert!(result.is_err());
+    assert_eq!(client.get_lending_contract(), None);
+}
