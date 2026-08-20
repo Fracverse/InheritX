@@ -418,10 +418,14 @@ impl InactivityWatchdogService {
 
     /// Invalidates cached plan queries and publishes `plan.triggered`.
     async fn announce_triggered(&self, plan: &ExpiredPlan, tx_hash: Option<&str>) {
+        // Only a real submission counts towards the on-chain series; the
+        // no-signer fallback never touched the chain.
         #[cfg(feature = "metrics")]
-        crate::metrics::WATCHDOG_ONCHAIN_TRIGGERS
-            .with_label_values(&["success"])
-            .inc();
+        if tx_hash.is_some() {
+            crate::metrics::WATCHDOG_ONCHAIN_TRIGGERS
+                .with_label_values(&["success"])
+                .inc();
+        }
 
         let beneficiary_addresses: Vec<String> = match sqlx::query_scalar(
             r#"
