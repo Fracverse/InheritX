@@ -1,8 +1,13 @@
 -- Issue #820: persist proof-of-life inactivity timers for the watchdog worker.
+--
+-- `plans.last_ping` is a BIGINT of Unix seconds (see the core tables
+-- migration) and the API binds it as such, so the deadline is derived with
+-- to_timestamp() rather than by adding an INTERVAL to a timestamp.
 
 ALTER TABLE plans
-    ADD COLUMN IF NOT EXISTS status VARCHAR(32) NOT NULL DEFAULT 'ACTIVE',
-    ADD COLUMN IF NOT EXISTS last_ping TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT NOW(),
+    ADD COLUMN IF NOT EXISTS status VARCHAR(32) NOT NULL DEFAULT 'ACTIVE';
+
+ALTER TABLE plans
     ADD COLUMN IF NOT EXISTS grace_period_seconds BIGINT NOT NULL DEFAULT 7776000;
 
 ALTER TABLE plans
@@ -15,9 +20,7 @@ ALTER TABLE plans
 
 ALTER TABLE plans
     ADD COLUMN IF NOT EXISTS inactivity_deadline_at TIMESTAMP WITH TIME ZONE
-    GENERATED ALWAYS AS (
-        last_ping + (grace_period_seconds::double precision * INTERVAL '1 second')
-    ) STORED;
+    GENERATED ALWAYS AS (to_timestamp(last_ping + grace_period_seconds)) STORED;
 
 CREATE INDEX IF NOT EXISTS idx_plans_inactivity_deadline_claimable
     ON plans (inactivity_deadline_at)
