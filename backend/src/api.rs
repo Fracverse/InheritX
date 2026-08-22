@@ -2457,14 +2457,20 @@ async fn get_plan_by_id(
             error!(plan_id = %plan_id, error = %e, "Failed to load beneficiaries for plan");
             return (
                 StatusCode::INTERNAL_SERVER_ERROR,
-                Json(serde_json::json!({ "error": format!("Failed to load beneficiaries: {}", e) })),
+                Json(
+                    serde_json::json!({ "error": format!("Failed to load beneficiaries: {}", e) }),
+                ),
             )
                 .into_response();
         }
     };
 
     let response = plan_row_to_response(plan_row, beneficiaries);
-    (StatusCode::OK, Json(serde_json::json!({ "data": response }))).into_response()
+    (
+        StatusCode::OK,
+        Json(serde_json::json!({ "data": response })),
+    )
+        .into_response()
 }
 
 // Handler: GET /api/plans/due-for-claim
@@ -2624,14 +2630,20 @@ async fn get_plan_due_for_claim(
         Err(e) => {
             return (
                 StatusCode::INTERNAL_SERVER_ERROR,
-                Json(serde_json::json!({ "error": format!("Failed to load beneficiaries: {}", e) })),
+                Json(
+                    serde_json::json!({ "error": format!("Failed to load beneficiaries: {}", e) }),
+                ),
             )
                 .into_response();
         }
     };
 
     let response = plan_row_to_response(plan_row, beneficiaries);
-    (StatusCode::OK, Json(serde_json::json!({ "data": response }))).into_response()
+    (
+        StatusCode::OK,
+        Json(serde_json::json!({ "data": response })),
+    )
+        .into_response()
 }
 
 // Handler: POST /api/plans/{id}/claim
@@ -2739,7 +2751,9 @@ async fn claim_plan(
             error!(plan_id = %plan_id, error = %e, "Failed to load beneficiaries for claim");
             return (
                 StatusCode::INTERNAL_SERVER_ERROR,
-                Json(serde_json::json!({ "error": format!("Failed to load beneficiaries: {}", e) })),
+                Json(
+                    serde_json::json!({ "error": format!("Failed to load beneficiaries: {}", e) }),
+                ),
             )
                 .into_response();
         }
@@ -2756,13 +2770,12 @@ async fn claim_plan(
     // 5. Verify KYC status for each beneficiary that is configured for fiat payout
     for b in &beneficiaries_rows {
         if !b.fiat_anchor_info.trim().is_empty() {
-            let kyc_status: Option<String> = sqlx::query_scalar(
-                "SELECT kyc_status::text FROM users WHERE wallet_address = $1",
-            )
-            .bind(&b.wallet_address)
-            .fetch_optional(&state.db_pool)
-            .await
-            .unwrap_or(None);
+            let kyc_status: Option<String> =
+                sqlx::query_scalar("SELECT kyc_status::text FROM users WHERE wallet_address = $1")
+                    .bind(&b.wallet_address)
+                    .fetch_optional(&state.db_pool)
+                    .await
+                    .unwrap_or(None);
 
             match kyc_status.as_deref() {
                 Some("approved") => {}
@@ -2863,13 +2876,12 @@ async fn claim_plan(
     }
 
     // 7. Mark plan as CLAIMABLE (claim recorded; distribution is fulfilled by the payout pipeline)
-    if let Err(e) = sqlx::query(
-        "UPDATE plans SET status = 'CLAIMABLE', accrued_yield = $1 WHERE id = $2",
-    )
-    .bind(accrued_yield_dec)
-    .bind(plan_row.id)
-    .execute(&mut *tx)
-    .await
+    if let Err(e) =
+        sqlx::query("UPDATE plans SET status = 'CLAIMABLE', accrued_yield = $1 WHERE id = $2")
+            .bind(accrued_yield_dec)
+            .bind(plan_row.id)
+            .execute(&mut *tx)
+            .await
     {
         error!(plan_id = %plan_id, error = %e, "Failed to update plan status after claim");
         return (
