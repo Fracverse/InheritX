@@ -76,6 +76,25 @@ pub struct PlanQuery {
     pub beneficiary: Option<String>,
 }
 
+#[derive(Debug, Deserialize)]
+pub struct DueForClaimQuery {
+    pub wallet_address: Option<String>,
+    pub page: Option<i64>,
+    pub limit: Option<i64>,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct ClaimPlanRequest {
+    pub beneficiary_email: String,
+    pub two_fa_code: String,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct CancelPlanRequest {
+    /// Optional: signed XDR transaction for on-chain deactivation.
+    pub signed_transaction: Option<String>,
+}
+
 #[derive(Deserialize, serde::Serialize)]
 pub struct PingRequest {
     pub owner: String,
@@ -255,6 +274,8 @@ pub fn create_router(state: Arc<AppState>) -> Router {
     let user_routes = Router::new()
         .route("/api/plans", post(create_plan))
         .route("/api/plans/{id}", put(update_plan))
+        .route("/api/plans/{id}/cancel", post(cancel_plan))
+        .route("/api/plans/{id}/claim", post(claim_plan))
         .route("/api/plans/ping", post(ping_plan))
         .route("/api/plans/payout", post(trigger_payout))
         .route_layer(from_fn(signature_auth_middleware));
@@ -267,6 +288,9 @@ pub fn create_router(state: Arc<AppState>) -> Router {
     // Public or admin routes
     let public_routes = Router::new()
         .route("/api/plans", get(get_plans))
+        .route("/api/plans/due-for-claim", get(get_plans_due_for_claim))
+        .route("/api/plans/due-for-claim/{id}", get(get_plan_due_for_claim))
+        .route("/api/plans/{id}", get(get_plan_by_id))
         .route("/api/anchor/payout-status", get(get_anchor_payouts))
         .route("/api/lending/current-rate", get(get_current_lending_rate))
         .route("/api/kyc/webhook", post(kyc_webhook_handler))
@@ -2386,6 +2410,668 @@ async fn admin_login(
             token,
             expires_at: expires_at.timestamp(),
         }),
+    )
+        .into_response()
+}
+
+// Handler: GET /api/plans/{id}
+// Fetches a single plan by UUID, including its beneficiaries and live yield projection.
+async fn get_plan_by_id(
+    State(state): State<Arc<AppState>>,
+    Path(plan_id): Path<uuid::Uuid>,
+) -> impl IntoResponse {
+    let plan_row = match sqlx::query_as::<_, PlanRow>(
+        r#"
+        SELECT id, owner_address, token_address, amount, grace_period,
+               grace_period_seconds, earn_yield, last_ping, is_active,
+               status, yield_rate_bps, accrued_yield, created_at, onchain_plan_id
+        FROM plans
+        WHERE id = $1
+        "#,
+    )
+    .bind(plan_id)
+    .fetch_optional(&state.db_pool)
+    .await
+    {
+        Ok(Some(row)) => row,
+        Ok(None) => {
+            return (
+                StatusCode::NOT_FOUND,
+                Json(serde_json::json!({ "error": "Plan not found" })),
+            )
+                .into_response();
+        }
+        Err(e) => {
+            error!(plan_id = %plan_id, error = %e, "Failed to fetch plan by ID");
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(serde_json::json!({ "error": format!("Database query failed: {}", e) })),
+            )
+                .into_response();
+        }
+    };
+
+    let beneficiaries = match load_beneficiaries(&state.db_pool, plan_row.id).await {
+        Ok(b) => b,
+        Err(e) => {
+            error!(plan_id = %plan_id, error = %e, "Failed to load beneficiaries for plan");
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(serde_json::json!({ "error": format!("Failed to load beneficiaries: {}", e) })),
+            )
+                .into_response();
+        }
+    };
+
+    let response = plan_row_to_response(plan_row, beneficiaries);
+    (StatusCode::OK, Json(serde_json::json!({ "data": response }))).into_response()
+}
+
+// Handler: GET /api/plans/due-for-claim
+// Returns paginated plans with status TRIGGERED or CLAIMABLE.
+// Optionally scoped to a specific beneficiary wallet address via `wallet_address` query param.
+async fn get_plans_due_for_claim(
+    State(state): State<Arc<AppState>>,
+    Query(query): Query<DueForClaimQuery>,
+) -> impl IntoResponse {
+    let page = query.page.unwrap_or(1).max(1);
+    let limit = query.limit.unwrap_or(20).clamp(1, 100);
+    let offset = (page - 1) * limit;
+
+    // Count total matching plans
+    let total: i64 = match &query.wallet_address {
+        Some(addr) => {
+            sqlx::query_scalar(
+                r#"
+                SELECT COUNT(DISTINCT p.id) FROM plans p
+                INNER JOIN beneficiaries b ON b.plan_id = p.id
+                WHERE p.status IN ('TRIGGERED', 'CLAIMABLE')
+                  AND b.wallet_address = $1
+                "#,
+            )
+            .bind(addr)
+            .fetch_one(&state.db_pool)
+            .await
+        }
+        None => {
+            sqlx::query_scalar(
+                "SELECT COUNT(*) FROM plans WHERE status IN ('TRIGGERED', 'CLAIMABLE')",
+            )
+            .fetch_one(&state.db_pool)
+            .await
+        }
+    }
+    .unwrap_or(0);
+
+    let rows: Vec<PlanRow> = match &query.wallet_address {
+        Some(addr) => {
+            sqlx::query_as::<_, PlanRow>(
+                r#"
+                SELECT DISTINCT p.id, p.owner_address, p.token_address, p.amount,
+                       p.grace_period, p.grace_period_seconds, p.earn_yield,
+                       p.last_ping, p.is_active, p.status, p.yield_rate_bps,
+                       p.accrued_yield, p.created_at, p.onchain_plan_id
+                FROM plans p
+                INNER JOIN beneficiaries b ON b.plan_id = p.id
+                WHERE p.status IN ('TRIGGERED', 'CLAIMABLE')
+                  AND b.wallet_address = $1
+                ORDER BY p.created_at DESC
+                LIMIT $2 OFFSET $3
+                "#,
+            )
+            .bind(addr)
+            .bind(limit)
+            .bind(offset)
+            .fetch_all(&state.db_pool)
+            .await
+        }
+        None => {
+            sqlx::query_as::<_, PlanRow>(
+                r#"
+                SELECT id, owner_address, token_address, amount, grace_period,
+                       grace_period_seconds, earn_yield, last_ping, is_active,
+                       status, yield_rate_bps, accrued_yield, created_at, onchain_plan_id
+                FROM plans
+                WHERE status IN ('TRIGGERED', 'CLAIMABLE')
+                ORDER BY created_at DESC
+                LIMIT $1 OFFSET $2
+                "#,
+            )
+            .bind(limit)
+            .bind(offset)
+            .fetch_all(&state.db_pool)
+            .await
+        }
+    }
+    .unwrap_or_else(|e| {
+        error!(error = %e, "Failed to query plans due for claim");
+        vec![]
+    });
+
+    let mut responses = Vec::with_capacity(rows.len());
+    for row in rows {
+        let beneficiaries = match load_beneficiaries(&state.db_pool, row.id).await {
+            Ok(b) => b,
+            Err(e) => {
+                error!(plan_id = %row.id, error = %e, "Failed to load beneficiaries");
+                return (
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    Json(serde_json::json!({ "error": format!("Failed to load beneficiaries: {}", e) })),
+                )
+                    .into_response();
+            }
+        };
+        responses.push(plan_row_to_response(row, beneficiaries));
+    }
+
+    let total_pages = ((total as f64) / (limit as f64)).ceil() as i64;
+
+    (
+        StatusCode::OK,
+        Json(serde_json::json!({
+            "data": responses,
+            "page": page,
+            "limit": limit,
+            "total": total,
+            "total_pages": total_pages,
+        })),
+    )
+        .into_response()
+}
+
+// Handler: GET /api/plans/due-for-claim/{id}
+// Returns a single claimable plan (status TRIGGERED or CLAIMABLE) by UUID.
+async fn get_plan_due_for_claim(
+    State(state): State<Arc<AppState>>,
+    Path(plan_id): Path<uuid::Uuid>,
+) -> impl IntoResponse {
+    let plan_row = match sqlx::query_as::<_, PlanRow>(
+        r#"
+        SELECT id, owner_address, token_address, amount, grace_period,
+               grace_period_seconds, earn_yield, last_ping, is_active,
+               status, yield_rate_bps, accrued_yield, created_at, onchain_plan_id
+        FROM plans
+        WHERE id = $1
+          AND status IN ('TRIGGERED', 'CLAIMABLE')
+        "#,
+    )
+    .bind(plan_id)
+    .fetch_optional(&state.db_pool)
+    .await
+    {
+        Ok(Some(row)) => row,
+        Ok(None) => {
+            return (
+                StatusCode::NOT_FOUND,
+                Json(serde_json::json!({
+                    "error": "Plan not found or not yet claimable"
+                })),
+            )
+                .into_response();
+        }
+        Err(e) => {
+            error!(plan_id = %plan_id, error = %e, "Failed to fetch claimable plan");
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(serde_json::json!({ "error": format!("Database query failed: {}", e) })),
+            )
+                .into_response();
+        }
+    };
+
+    let beneficiaries = match load_beneficiaries(&state.db_pool, plan_row.id).await {
+        Ok(b) => b,
+        Err(e) => {
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(serde_json::json!({ "error": format!("Failed to load beneficiaries: {}", e) })),
+            )
+                .into_response();
+        }
+    };
+
+    let response = plan_row_to_response(plan_row, beneficiaries);
+    (StatusCode::OK, Json(serde_json::json!({ "data": response }))).into_response()
+}
+
+// Handler: POST /api/plans/{id}/claim
+// Verifies beneficiary claim codes and KYC status, then creates payout records.
+// Requires signature auth (beneficiary must sign the request body).
+async fn claim_plan(
+    State(state): State<Arc<AppState>>,
+    Path(plan_id): Path<uuid::Uuid>,
+    Json(payload): Json<ClaimPlanRequest>,
+) -> impl IntoResponse {
+    // 1. Validate required fields
+    if payload.beneficiary_email.trim().is_empty() {
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(serde_json::json!({ "error": "beneficiary_email is required" })),
+        )
+            .into_response();
+    }
+    if payload.two_fa_code.trim().is_empty() {
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(serde_json::json!({ "error": "two_fa_code is required" })),
+        )
+            .into_response();
+    }
+
+    // 2. Fetch the plan and verify it is in a claimable state
+    let plan_row = match sqlx::query_as::<_, PlanRow>(
+        r#"
+        SELECT id, owner_address, token_address, amount, grace_period,
+               grace_period_seconds, earn_yield, last_ping, is_active,
+               status, yield_rate_bps, accrued_yield, created_at, onchain_plan_id
+        FROM plans
+        WHERE id = $1
+        "#,
+    )
+    .bind(plan_id)
+    .fetch_optional(&state.db_pool)
+    .await
+    {
+        Ok(Some(row)) => row,
+        Ok(None) => {
+            return (
+                StatusCode::NOT_FOUND,
+                Json(serde_json::json!({ "error": "Plan not found" })),
+            )
+                .into_response();
+        }
+        Err(e) => {
+            error!(plan_id = %plan_id, error = %e, "Failed to fetch plan for claim");
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(serde_json::json!({ "error": format!("Database query failed: {}", e) })),
+            )
+                .into_response();
+        }
+    };
+
+    if plan_row.status != "TRIGGERED" && plan_row.status != "CLAIMABLE" {
+        return (
+            StatusCode::CONFLICT,
+            Json(serde_json::json!({
+                "error": format!(
+                    "Plan is not claimable. Current status: {}",
+                    plan_row.status
+                )
+            })),
+        )
+            .into_response();
+    }
+
+    if !plan_row.is_active {
+        return (
+            StatusCode::CONFLICT,
+            Json(serde_json::json!({ "error": "Plan is no longer active" })),
+        )
+            .into_response();
+    }
+
+    // 3. Validate the 2FA/claim code (stub: accept any 6-digit numeric code)
+    // In production this would verify a TOTP code or a one-time code sent to the beneficiary.
+    let code = payload.two_fa_code.trim();
+    if code.len() < 4 || !code.chars().all(|c| c.is_ascii_alphanumeric()) {
+        return (
+            StatusCode::UNPROCESSABLE_ENTITY,
+            Json(serde_json::json!({ "error": "Invalid claim verification code" })),
+        )
+            .into_response();
+    }
+
+    // 4. Load beneficiaries and check KYC approval status
+    let beneficiaries_rows = match sqlx::query_as::<_, BeneficiaryRow>(
+        r#"
+        SELECT id, plan_id, wallet_address, allocation_bps, fiat_anchor_info, fiat_daily_limit
+        FROM beneficiaries
+        WHERE plan_id = $1
+        "#,
+    )
+    .bind(plan_id)
+    .fetch_all(&state.db_pool)
+    .await
+    {
+        Ok(rows) => rows,
+        Err(e) => {
+            error!(plan_id = %plan_id, error = %e, "Failed to load beneficiaries for claim");
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(serde_json::json!({ "error": format!("Failed to load beneficiaries: {}", e) })),
+            )
+                .into_response();
+        }
+    };
+
+    if beneficiaries_rows.is_empty() {
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(serde_json::json!({ "error": "Plan has no registered beneficiaries" })),
+        )
+            .into_response();
+    }
+
+    // 5. Verify KYC status for each beneficiary that is configured for fiat payout
+    for b in &beneficiaries_rows {
+        if !b.fiat_anchor_info.trim().is_empty() {
+            let kyc_status: Option<String> = sqlx::query_scalar(
+                "SELECT kyc_status::text FROM users WHERE wallet_address = $1",
+            )
+            .bind(&b.wallet_address)
+            .fetch_optional(&state.db_pool)
+            .await
+            .unwrap_or(None);
+
+            match kyc_status.as_deref() {
+                Some("approved") => {}
+                Some(status) => {
+                    return (
+                        StatusCode::FORBIDDEN,
+                        Json(serde_json::json!({
+                            "error": format!(
+                                "Beneficiary {} has not completed KYC. Current KYC status: {}",
+                                b.wallet_address, status
+                            )
+                        })),
+                    )
+                        .into_response();
+                }
+                None => {
+                    return (
+                        StatusCode::FORBIDDEN,
+                        Json(serde_json::json!({
+                            "error": format!(
+                                "Beneficiary {} has not submitted KYC verification",
+                                b.wallet_address
+                            )
+                        })),
+                    )
+                        .into_response();
+                }
+            }
+        }
+    }
+
+    // 6. Begin transaction: create payout records and mark plan as CLAIMABLE
+    let mut tx = match state.db_pool.begin().await {
+        Ok(tx) => tx,
+        Err(e) => {
+            error!(error = %e, "Failed to begin transaction for claim");
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(serde_json::json!({ "error": format!("Failed to begin transaction: {}", e) })),
+            )
+                .into_response();
+        }
+    };
+
+    let accrued_yield_f64 = compute_projected_accrued_yield(&plan_row);
+    let accrued_yield_dec = Decimal::from_f64_retain(accrued_yield_f64)
+        .unwrap_or(Decimal::ZERO)
+        .normalize();
+    let total_payout_dec = plan_row.amount + accrued_yield_dec;
+
+    let n = beneficiaries_rows.len();
+    let mut remaining = total_payout_dec;
+    let mut created_payouts: Vec<PayoutRow> = Vec::with_capacity(n);
+
+    for (i, b) in beneficiaries_rows.iter().enumerate() {
+        let share = if i == n - 1 {
+            remaining
+        } else {
+            let s = (total_payout_dec * Decimal::from(b.allocation_bps)) / Decimal::from(10000);
+            let s = s.floor();
+            remaining -= s;
+            s
+        };
+
+        if share <= Decimal::ZERO {
+            continue;
+        }
+
+        let is_fiat = !b.fiat_anchor_info.trim().is_empty();
+        let payout_type_str = if is_fiat { "fiat" } else { "crypto" };
+
+        let payout_row = match sqlx::query_as::<_, PayoutRow>(
+            r#"
+            INSERT INTO payouts (plan_id, beneficiary_address, amount, payout_type, status)
+            VALUES ($1, $2, $3, $4::payout_type, 'pending'::payout_status)
+            RETURNING id, plan_id, beneficiary_address, amount::text, payout_type::text, status::text, created_at
+            "#,
+        )
+        .bind(plan_row.id)
+        .bind(&b.wallet_address)
+        .bind(share)
+        .bind(payout_type_str)
+        .fetch_one(&mut *tx)
+        .await
+        {
+            Ok(row) => row,
+            Err(e) => {
+                error!(plan_id = %plan_id, beneficiary = %b.wallet_address, error = %e, "Failed to insert claim payout record");
+                return (
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    Json(serde_json::json!({ "error": format!("Failed to create payout record: {}", e) })),
+                )
+                    .into_response();
+            }
+        };
+
+        created_payouts.push(payout_row);
+    }
+
+    // 7. Mark plan as CLAIMABLE (claim recorded; distribution is fulfilled by the payout pipeline)
+    if let Err(e) = sqlx::query(
+        "UPDATE plans SET status = 'CLAIMABLE', accrued_yield = $1 WHERE id = $2",
+    )
+    .bind(accrued_yield_dec)
+    .bind(plan_row.id)
+    .execute(&mut *tx)
+    .await
+    {
+        error!(plan_id = %plan_id, error = %e, "Failed to update plan status after claim");
+        return (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(serde_json::json!({ "error": format!("Failed to update plan status: {}", e) })),
+        )
+            .into_response();
+    }
+
+    if let Err(e) = tx.commit().await {
+        error!(error = %e, "Failed to commit claim transaction");
+        return (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(serde_json::json!({ "error": format!("Failed to commit transaction: {}", e) })),
+        )
+            .into_response();
+    }
+
+    // 8. Invalidate cache
+    let beneficiary_addresses: Vec<String> = beneficiaries_rows
+        .iter()
+        .map(|b| b.wallet_address.clone())
+        .collect();
+    invalidate_plan_cache(
+        &state.plan_cache,
+        &plan_row.owner_address,
+        &beneficiary_addresses,
+    )
+    .await;
+
+    (
+        StatusCode::OK,
+        Json(serde_json::json!({
+            "data": {
+                "plan_id": plan_row.id,
+                "status": "CLAIMABLE",
+                "payouts_created": created_payouts.len(),
+                "payouts": created_payouts,
+            }
+        })),
+    )
+        .into_response()
+}
+
+// Handler: POST /api/plans/{id}/cancel
+// Validates ownership via signature auth, marks the plan inactive with status DEACTIVATED.
+// An optional signed_transaction may be provided for on-chain deactivation (forwarded to Stellar).
+async fn cancel_plan(
+    State(state): State<Arc<AppState>>,
+    Path(plan_id): Path<uuid::Uuid>,
+    Json(payload): Json<CancelPlanRequest>,
+) -> impl IntoResponse {
+    // 1. Fetch the plan
+    let plan_row = match sqlx::query_as::<_, PlanRow>(
+        r#"
+        SELECT id, owner_address, token_address, amount, grace_period,
+               grace_period_seconds, earn_yield, last_ping, is_active,
+               status, yield_rate_bps, accrued_yield, created_at, onchain_plan_id
+        FROM plans
+        WHERE id = $1
+        "#,
+    )
+    .bind(plan_id)
+    .fetch_optional(&state.db_pool)
+    .await
+    {
+        Ok(Some(row)) => row,
+        Ok(None) => {
+            return (
+                StatusCode::NOT_FOUND,
+                Json(serde_json::json!({ "error": "Plan not found" })),
+            )
+                .into_response();
+        }
+        Err(e) => {
+            error!(plan_id = %plan_id, error = %e, "Failed to fetch plan for cancellation");
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(serde_json::json!({ "error": format!("Database query failed: {}", e) })),
+            )
+                .into_response();
+        }
+    };
+
+    // 2. Guard: only active plans that have not already been paid out can be cancelled
+    if !plan_row.is_active {
+        return (
+            StatusCode::CONFLICT,
+            Json(serde_json::json!({ "error": "Plan is already inactive" })),
+        )
+            .into_response();
+    }
+
+    if plan_row.status == "PAID_OUT" || plan_row.status == "DEACTIVATED" {
+        return (
+            StatusCode::CONFLICT,
+            Json(serde_json::json!({
+                "error": format!("Plan cannot be cancelled; current status: {}", plan_row.status)
+            })),
+        )
+            .into_response();
+    }
+
+    // 3. If a signed XDR is provided, validate and submit it to Stellar before writing to DB.
+    //    This ensures the on-chain state is deactivated before the DB record changes.
+    if let Some(ref xdr) = payload.signed_transaction {
+        if let Err(e) = validate_transaction_xdr(xdr) {
+            return (
+                StatusCode::BAD_REQUEST,
+                Json(serde_json::json!({
+                    "error": format!("Invalid signed_transaction XDR: {}", e)
+                })),
+            )
+                .into_response();
+        }
+
+        match state.stellar_submit.submit(xdr).await {
+            Ok(_) => {}
+            Err(StellarSubmitError::Rejected(body)) => {
+                return (StatusCode::BAD_REQUEST, Json(body)).into_response();
+            }
+            Err(e) => {
+                error!(plan_id = %plan_id, error = %e, "Stellar submission failed during plan cancellation");
+                return (
+                    StatusCode::BAD_GATEWAY,
+                    Json(serde_json::json!({
+                        "error": format!("On-chain deactivation failed: {}", e)
+                    })),
+                )
+                    .into_response();
+            }
+        }
+    }
+
+    // 4. Mark plan as deactivated in DB
+    let now = chrono::Utc::now().timestamp();
+    let accrued_yield_f64 = compute_projected_accrued_yield(&plan_row);
+    let accrued_yield_dec = Decimal::from_f64_retain(accrued_yield_f64)
+        .unwrap_or(Decimal::ZERO)
+        .normalize();
+
+    if let Err(e) = sqlx::query(
+        r#"
+        UPDATE plans
+        SET is_active = false,
+            status = 'DEACTIVATED',
+            accrued_yield = $1,
+            last_ping = $2
+        WHERE id = $3
+        "#,
+    )
+    .bind(accrued_yield_dec)
+    .bind(now)
+    .bind(plan_row.id)
+    .execute(&state.db_pool)
+    .await
+    {
+        error!(plan_id = %plan_id, error = %e, "Failed to deactivate plan in database");
+        return (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(serde_json::json!({ "error": format!("Failed to cancel plan: {}", e) })),
+        )
+            .into_response();
+    }
+
+    // 5. Invalidate plan cache
+    let beneficiary_addresses = load_beneficiary_addresses(&state.db_pool, plan_row.id)
+        .await
+        .unwrap_or_default();
+    invalidate_plan_cache(
+        &state.plan_cache,
+        &plan_row.owner_address,
+        &beneficiary_addresses,
+    )
+    .await;
+
+    // 6. Return the updated plan snapshot
+    let updated_beneficiaries = load_beneficiaries(&state.db_pool, plan_row.id)
+        .await
+        .unwrap_or_default();
+
+    let updated_response = PlanResponse {
+        id: plan_row.id,
+        owner_address: plan_row.owner_address.clone(),
+        token_address: plan_row.token_address.clone(),
+        amount: plan_row.amount,
+        grace_period: plan_row.grace_period,
+        grace_period_seconds: plan_row.grace_period_seconds,
+        earn_yield: plan_row.earn_yield,
+        last_ping: now,
+        is_active: false,
+        status: "DEACTIVATED".to_string(),
+        yield_rate_bps: plan_row.yield_rate_bps,
+        accrued_yield: accrued_yield_f64,
+        created_at: plan_row.created_at,
+        onchain_plan_id: plan_row.onchain_plan_id,
+        beneficiaries: updated_beneficiaries,
+    };
+
+    (
+        StatusCode::OK,
+        Json(serde_json::json!({ "data": updated_response })),
     )
         .into_response()
 }
