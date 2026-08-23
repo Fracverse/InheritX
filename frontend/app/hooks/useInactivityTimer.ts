@@ -4,6 +4,7 @@
  */
 import { useState, useEffect, useCallback, useRef } from "react";
 import { plansAPI } from "@/app/lib/api/plans";
+import { inheritanceAPI, type PingRequest } from "@/app/lib/api/inheritance";
 
 export interface InactivityTimerState {
   days: number;
@@ -63,7 +64,7 @@ export function useInactivityTimer(options: UseInactivityTimerOptions) {
     hours: 0,
     minutes: 0,
     seconds: 0,
-    lastPingTimestamp: Date.now(),
+    lastPingTimestamp: 0,
     isClaimable: false,
     isSoonWarning: false,
   });
@@ -110,7 +111,7 @@ export function useInactivityTimer(options: UseInactivityTimerOptions) {
 
   // Update timer every second (client-side tick)
   useEffect(() => {
-    if (!enabled || !inactivityPeriodDays) return;
+    if (!enabled) return;
 
     // Start with immediate fetch
     fetchInactivityStatus();
@@ -156,10 +157,13 @@ export function useInactivityTimer(options: UseInactivityTimerOptions) {
   }, [enabled, inactivityPeriodDays, warningThresholdHours]);
 
   const ping = useCallback(
-    async (signedTransaction?: string) => {
+    async (signedTransaction?: string | PingRequest) => {
       try {
         setError(null);
-        const updated = await plansAPI.pingKeepAlive(planId, signedTransaction);
+        const updated =
+          typeof signedTransaction === "object"
+            ? await inheritanceAPI.pingPlan(signedTransaction)
+            : await plansAPI.pingKeepAlive(planId, signedTransaction);
         // Refetch status to get updated timestamp
         await fetchInactivityStatus();
         return updated;

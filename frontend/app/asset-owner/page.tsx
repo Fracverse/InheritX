@@ -3,21 +3,20 @@
 import { useState, useEffect } from "react";
 import Link from "next/link";
 import { useWallet } from "@/context/WalletContext";
-import { plansAPI, type Plan } from "@/app/lib/api/plans";
+import { type Plan } from "@/app/lib/api/plans";
+import InactivityTimerCard from "@/components/plans/InactivityTimerCard";
+import { mockStore } from "@/lib/mockStore";
 import { formatAddress } from "@/util/address";
 import {
   TrendingUp,
   FileText,
   Users,
-  DollarSign,
   PlusCircle,
   ArrowRight,
-  Clock,
   Zap,
   ShieldCheck,
   ChevronRight,
   Activity,
-  Wallet,
   AlertCircle,
 } from "lucide-react";
 
@@ -70,12 +69,12 @@ function PlanStatusBadge({ status }: { status: string }) {
 }
 
 export default function AssetOwnerPage() {
-  const { isConnected, address, openModal } = useWallet();
+  const { isConnected, address } = useWallet();
   const [plans, setPlans] = useState<Plan[]>([]);
   const [loading, setLoading] = useState(true);
 
   useEffect(() => {
-    const mockPlans = require("@/lib/mockStore").mockStore.getPlans();
+    const mockPlans = mockStore.getPlans();
     setPlans(mockPlans);
     setLoading(false);
   }, [isConnected, address]);
@@ -118,6 +117,30 @@ export default function AssetOwnerPage() {
         <StatCard label="Yield Earned" value={loading ? "—" : `$${totalYield.toFixed(2)}`} sub="Accrued across plans" icon={TrendingUp} color="bg-emerald-500/10 text-emerald-400" loading={loading} />
         <StatCard label="Beneficiaries" value={loading ? "—" : String(totalBeneficiaries)} sub="Across all plans" icon={Users} color="bg-orange-500/10 text-orange-400" loading={loading} />
       </div>
+
+      {/* Proof-of-life controls */}
+      {!loading && activePlans.length > 0 && (
+        <section className="space-y-3" aria-labelledby="proof-of-life-heading">
+          <div className="flex items-end justify-between gap-3">
+            <div>
+              <h2 id="proof-of-life-heading" className="text-sm font-semibold text-white">
+                Proof of Life
+              </h2>
+              <p className="text-xs text-slate-500 mt-1">
+                Sign a ping to reset each plan&apos;s inactivity timer.
+              </p>
+            </div>
+            <Link href="/asset-owner/ping" className="text-xs text-[#33C5E0] hover:underline flex items-center gap-1">
+              View all <ChevronRight size={12} />
+            </Link>
+          </div>
+          <div className="grid grid-cols-1 xl:grid-cols-2 gap-4">
+            {activePlans.map((plan) => (
+              <InactivityTimerCard key={plan.id} planId={plan.id} />
+            ))}
+          </div>
+        </section>
+      )}
 
       {/* Main Content Row */}
       <div className="grid grid-cols-1 lg:grid-cols-3 gap-4">

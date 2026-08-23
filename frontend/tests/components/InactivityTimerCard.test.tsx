@@ -3,10 +3,12 @@ import { render, screen, fireEvent, waitFor } from "@testing-library/react";
 import "@testing-library/jest-dom";
 import { InactivityTimerCard } from "@/components/plans/InactivityTimerCard";
 import { plansAPI } from "@/app/lib/api/plans";
+import { inheritanceAPI } from "@/app/lib/api/inheritance";
 import * as WalletContext from "@/context/WalletContext";
 
 // Mock dependencies
 vi.mock("@/app/lib/api/plans");
+vi.mock("@/app/lib/api/inheritance");
 vi.mock("@/context/WalletContext");
 
 describe("InactivityTimerCard", () => {
@@ -30,6 +32,7 @@ describe("InactivityTimerCard", () => {
 
     vi.mocked(WalletContext.useWallet).mockReturnValue({
       kit: null,
+      signTransaction: vi.fn(),
       selectedWalletId: null,
       address: null,
       isConnected: false,
@@ -67,6 +70,7 @@ describe("InactivityTimerCard", () => {
 
     vi.mocked(WalletContext.useWallet).mockReturnValue({
       kit: null,
+      signTransaction: vi.fn(),
       selectedWalletId: null,
       address: null,
       isConnected: false,
@@ -103,6 +107,7 @@ describe("InactivityTimerCard", () => {
 
     vi.mocked(WalletContext.useWallet).mockReturnValue({
       kit: null,
+      signTransaction: vi.fn(),
       selectedWalletId: null,
       address: null,
       isConnected: false,
@@ -137,6 +142,7 @@ describe("InactivityTimerCard", () => {
 
     vi.mocked(WalletContext.useWallet).mockReturnValue({
       kit: null,
+      signTransaction: vi.fn(),
       selectedWalletId: null,
       address: null,
       isConnected: false,
@@ -180,6 +186,11 @@ describe("InactivityTimerCard", () => {
       created_at: new Date().toISOString(),
       updated_at: new Date().toISOString(),
     });
+    vi.mocked(inheritanceAPI.pingPlan).mockResolvedValue({
+      owner: "G123",
+      status: "ACTIVE",
+      virtual_balance: "1000",
+    });
 
     const mockKit = {
       signTransaction: vi
@@ -189,6 +200,7 @@ describe("InactivityTimerCard", () => {
 
     vi.mocked(WalletContext.useWallet).mockReturnValue({
       kit: mockKit as any,
+      signTransaction: vi.fn(),
       selectedWalletId: "freighter",
       address: "G123",
       isConnected: true,
@@ -216,9 +228,14 @@ describe("InactivityTimerCard", () => {
     fireEvent.click(button);
 
     await waitFor(() => {
-      expect(vi.mocked(plansAPI.pingKeepAlive)).toHaveBeenCalledWith(
-        mockPlanId,
-        "signed-xdr-123"
+      expect(vi.mocked(inheritanceAPI.pingPlan)).toHaveBeenCalledWith(
+        expect.objectContaining({
+          owner: "G123",
+          signature: "signed-xdr-123",
+          message: expect.stringMatching(
+            new RegExp(`^inheritx:proof-of-life:${mockPlanId}:\\d+$`)
+          ),
+        })
       );
     });
   });
@@ -244,6 +261,11 @@ describe("InactivityTimerCard", () => {
       created_at: new Date().toISOString(),
       updated_at: new Date().toISOString(),
     });
+    vi.mocked(inheritanceAPI.pingPlan).mockResolvedValue({
+      owner: "G123",
+      status: "ACTIVE",
+      virtual_balance: "1000",
+    });
 
     const mockKit = {
       signTransaction: vi
@@ -255,6 +277,7 @@ describe("InactivityTimerCard", () => {
 
     vi.mocked(WalletContext.useWallet).mockReturnValue({
       kit: mockKit as any,
+      signTransaction: vi.fn(),
       selectedWalletId: "freighter",
       address: "G123",
       isConnected: true,
@@ -304,7 +327,7 @@ describe("InactivityTimerCard", () => {
     );
 
     const pingError = new Error("Ping failed");
-    vi.mocked(plansAPI.pingKeepAlive).mockRejectedValue(pingError);
+    vi.mocked(inheritanceAPI.pingPlan).mockRejectedValue(pingError);
 
     const mockKit = {
       signTransaction: vi
@@ -316,6 +339,7 @@ describe("InactivityTimerCard", () => {
 
     vi.mocked(WalletContext.useWallet).mockReturnValue({
       kit: mockKit as any,
+      signTransaction: vi.fn(),
       selectedWalletId: "freighter",
       address: "G123",
       isConnected: true,

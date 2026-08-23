@@ -62,7 +62,7 @@ export function InactivityTimerCard({
   onPingSuccess,
   onPingError,
 }: InactivityTimerCardProps) {
-  const { kit, selectedWalletId } = useWallet();
+  const { kit, selectedWalletId, address } = useWallet();
   const { timerState, loading, error, ping } = useInactivityTimer({
     planId,
     enabled: true,
@@ -73,18 +73,21 @@ export function InactivityTimerCard({
   const [pingStatus, setPingStatus] = useState<PingStatus>("idle");
   const [pingError, setPingError] = useState<string>("");
 
-  const buildKeepAliveXdr = useCallback((): string => {
-    // Build unsigned XDR for keep-alive transaction
-    // In production, this would call the Soroban contract SDK
-    return `unsigned-xdr::keep-alive::${planId}::${Date.now()}`;
-  }, [planId]);
-
   const signWithWallet = useCallback(
-    async (xdr: string): Promise<string> => {
+    async (message: string): Promise<string> => {
       if (!kit || !selectedWalletId) {
         throw new Error("No wallet connected. Please connect your wallet first.");
       }
-      const result = await kit.signTransaction(xdr);
+      const wallet = kit as unknown as {
+        signMessage?: (message: string) => Promise<string | { signedMessage: string }>;
+      };
+
+      if (wallet.signMessage) {
+        const result = await wallet.signMessage(message);
+        return typeof result === "string" ? result : result.signedMessage;
+      }
+
+      const result = await kit.signTransaction(message);
       return result.signedTxXdr;
     },
     [kit, selectedWalletId]
@@ -95,16 +98,15 @@ export function InactivityTimerCard({
     setPingError("");
 
     try {
-      let signedTransaction: string | undefined;
-
-      // Try to sign with wallet
-      if (kit && selectedWalletId) {
-        const xdr = buildKeepAliveXdr();
-        signedTransaction = await signWithWallet(xdr);
+      if (!address) {
+        throw new Error("No wallet connected. Please connect your wallet first.");
       }
 
+      const message = `inheritx:proof-of-life:${planId}:${Date.now()}`;
+      const signature = await signWithWallet(message);
+
       setPingStatus("pinging");
-      await ping(signedTransaction);
+      await ping({ owner: address, signature, message });
 
       setPingStatus("success");
       onPingSuccess?.();
@@ -124,11 +126,11 @@ export function InactivityTimerCard({
         setPingError("");
       }, 3000);
     }
-  }, [kit, selectedWalletId, buildKeepAliveXdr, signWithWallet, ping, onPingSuccess, onPingError]);
+  }, [address, planId, signWithWallet, ping, onPingSuccess, onPingError]);
 
   const statusColors = getTimerStatusColor(timerState);
 
-  if (loading && timerState.lastPingTimestamp === Date.now()) {
+  if (loading) {
     return (
       <motion.div
         initial={{ opacity: 0, y: 8 }}
