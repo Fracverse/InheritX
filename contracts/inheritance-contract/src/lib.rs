@@ -2746,14 +2746,15 @@ impl InheritanceContract {
         }
 
         let mut total_payout: u64 = 0;
-        let mut payouts: Vec<u64> = vec![&env];
+        let mut valid_indices: Vec<u32> = vec![&env];
+        let mut valid_payouts: Vec<u64> = vec![&env];
 
         for i in 0..beneficiary_indices.len() {
             let index = beneficiary_indices.get(i).unwrap();
             let claim_code = claim_codes.get(i).unwrap();
 
             if index >= plan.beneficiaries.len() {
-                return Err(InheritanceError::InvalidBeneficiaryIndex);
+                continue;
             }
 
             let beneficiary = plan.beneficiaries.get(index).unwrap();
@@ -2766,7 +2767,7 @@ impl InheritanceContract {
             };
 
             if env.storage().persistent().has(&claim_key) {
-                return Err(InheritanceError::AlreadyClaimed);
+                continue;
             }
 
             if env
@@ -2775,11 +2776,11 @@ impl InheritanceContract {
                 .get::<DataKey, bool>(&DataKey::FrozenBeneficiary(plan_id, index))
                 .unwrap_or(false)
             {
-                return Err(InheritanceError::Unauthorized);
+                continue;
             }
 
             if Self::has_active_vesting_schedule(&env, plan_id, index) {
-                return Err(InheritanceError::VestingScheduleActive);
+                continue;
             }
 
             let salt: BytesN<32> = env
@@ -2787,20 +2788,28 @@ impl InheritanceContract {
                 .persistent()
                 .get(&DataKey::ClaimSalt(plan_id, index))
                 .unwrap_or(BytesN::<32>::from_array(&env, &[0u8; 32]));
-            let hashed_claim_code = Self::hash_claim_code_with_salt(&env, claim_code, &salt)?;
+            let hashed_claim_code = match Self::hash_claim_code_with_salt(&env, claim_code, &salt) {
+                Ok(h) => h,
+                Err(_) => continue,
+            };
             
             if beneficiary.hashed_claim_code != hashed_claim_code {
-                return Err(InheritanceError::InvalidClaimCode);
+                continue;
             }
 
             if plan.waterfall_enabled {
                 let this = plan.beneficiaries.get(index).unwrap();
                 let count = plan.beneficiaries.len().min(MAX_BENEFICIARIES);
+                let mut allowed = true;
                 for j in 0..count {
                     let b = plan.beneficiaries.get(j).unwrap();
                     if b.priority != 0 && b.priority < this.priority && !b.is_claimed {
-                        return Err(InheritanceError::ClaimNotAllowedYet);
+                        allowed = false;
+                        break;
                     }
+                }
+                if !allowed {
+                    continue;
                 }
             }
 
@@ -2810,7 +2819,8 @@ impl InheritanceContract {
                 payout = payout.min(exit_settlement);
             }
 
-            payouts.push_back(payout);
+            valid_indices.push_back(index);
+            valid_payouts.push_back(payout);
             total_payout += payout;
         }
 
@@ -2834,9 +2844,9 @@ impl InheritanceContract {
             return Err(InheritanceError::NothingToClaim);
         }
 
-        for i in 0..beneficiary_indices.len() {
-            let index = beneficiary_indices.get(i).unwrap();
-            let payout = payouts.get(i).unwrap();
+        for i in 0..valid_indices.len() {
+            let index = valid_indices.get(i).unwrap();
+            let payout = valid_payouts.get(i).unwrap();
             let beneficiary = plan.beneficiaries.get(index).unwrap();
 
             let exit_settlement = Self::get_vesting_exit_settlement(&env, plan_id, index);
