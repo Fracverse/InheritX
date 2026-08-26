@@ -91,10 +91,12 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let (kyc_tx, _) = tokio::sync::broadcast::channel(100);
     let (status_tx, _) = tokio::sync::broadcast::channel(100);
     // Initialize state
+    let anchor_registry = Arc::new(inheritx_backend::stellar_anchor::AnchorRegistry::new(
+        config.anchor_api_url.clone(),
+        db_pool.clone(),
+    ));
     let state = Arc::new(AppState {
-        anchor: Arc::new(inheritx_backend::stellar_anchor::AnchorRegistry::new(
-            config.anchor_api_url.clone(),
-        )),
+        anchor: anchor_registry.clone(),
         db_pool: db_pool.clone(),
         kyc_webhook_secret: config.kyc_webhook_secret.clone(),
         apy_config: inheritx_backend::yield_calculator::ApyConfig::from_env(),
@@ -124,6 +126,23 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         db_pool.clone(),
     ));
     webhook_dispatcher.start(shutdown_rx.clone());
+
+    // Start payout status polling worker
+    let anchor_registry_clone = anchor_registry.clone();
+    let mut shutdown_rx_payout = shutdown_rx.clone();
+    tokio::spawn(async move {
+        tokio::select! {
+            _ = inheritx_backend::stellar_anchor::spawn_payout_status_poller(
+                anchor_registry_clone,
+                30  // Poll every 30 seconds
+            ) => {
+                info!("Payout status poller stopped");
+            }
+            _ = shutdown_rx_payout.changed() => {
+                info!("Payout status poller shutting down");
+            }
+        }
+    });
 
     // Periodically refresh DB pool metrics
     #[cfg(feature = "metrics")]

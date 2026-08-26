@@ -178,7 +178,11 @@ pub struct PayoutRow {
     pub amount: String,
     pub payout_type: String,
     pub status: String,
+    pub exchange_rate: String,
+    pub anchor_fee_usd: String,
+    pub external_transaction_id: Option<String>,
     pub created_at: DateTime<Utc>,
+    pub updated_at: DateTime<Utc>,
 }
 
 #[derive(Serialize)]
@@ -1729,7 +1733,8 @@ async fn trigger_payout(
             r#"
             INSERT INTO payouts (plan_id, beneficiary_address, amount, payout_type, status)
             VALUES ($1, $2, $3, $4::payout_type, $5::payout_status)
-            RETURNING id, plan_id, beneficiary_address, amount::text, payout_type::text, status::text, created_at
+            RETURNING id, plan_id, beneficiary_address, amount::text, payout_type::text, status::text, 
+                      exchange_rate::text, anchor_fee_usd::text, external_transaction_id, created_at, updated_at
             "#,
         )
         .bind(plan.id)
@@ -1755,6 +1760,7 @@ async fn trigger_payout(
                 parse_fiat_anchor_info(&b.fiat_anchor_info, &b.wallet_address);
             let token_amount_f64 = share.to_string().parse::<f64>().unwrap_or(0.0);
             let req = crate::stellar_anchor::AnchorPayoutRequest {
+                plan_id: Some(plan.id),
                 beneficiary_address: b.wallet_address.clone(),
                 beneficiary_name,
                 token: plan.token_address.clone(),
@@ -2002,7 +2008,11 @@ async fn get_anchor_payouts(
             amount::text      AS amount,
             payout_type::text AS payout_type,
             status::text      AS status,
-            created_at
+            exchange_rate::text AS exchange_rate,
+            anchor_fee_usd::text AS anchor_fee_usd,
+            external_transaction_id,
+            created_at,
+            updated_at
         FROM payouts
         WHERE ($1::text IS NULL OR beneficiary_address = $1)
         ORDER BY created_at DESC

@@ -44,6 +44,7 @@ fn setup_app_with_cache(plan_cache: PlanCache) -> axum::Router {
     let state = Arc::new(AppState {
         anchor: Arc::new(inheritx_backend::stellar_anchor::AnchorRegistry::new(
             "http://localhost:8081".to_string(),
+            db_pool.clone(),
         )),
         db_pool,
         kyc_tx: tokio::sync::broadcast::channel(16).0,
@@ -516,6 +517,7 @@ async fn test_health_endpoint_without_db_yields_service_unavailable() {
     let state = Arc::new(AppState {
         anchor: Arc::new(inheritx_backend::stellar_anchor::AnchorRegistry::new(
             "http://localhost:8081".to_string(),
+            db_pool.clone(),
         )),
         db_pool,
         kyc_tx: tokio::sync::broadcast::channel(16).0,
@@ -571,6 +573,7 @@ async fn test_get_current_rate_cached() {
     let state = Arc::new(AppState {
         anchor: Arc::new(inheritx_backend::stellar_anchor::AnchorRegistry::new(
             "http://localhost:8081".to_string(),
+            db_pool.clone(),
         )),
         db_pool,
         kyc_tx: tokio::sync::broadcast::channel(16).0,
