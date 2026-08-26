@@ -2702,6 +2702,332 @@ impl InheritanceContract {
         Ok(())
     }
 
+    /// Batch claim inheritance for multiple beneficiaries in a single transaction.
+    ///
+    /// Atomically validates and processes claims for all specified beneficiaries.
+    /// If any individual claim fails, the entire batch is rolled back (Soroban's
+    /// transaction atomicity guarantees this automatically on `Err` return).
+    ///
+    /// # Arguments
+    /// * `env`                  - The Soroban environment.
+    /// * `plan_id`              - The ID of the inheritance plan to claim from.
+    /// * `claimers`             - Ordered list of claimer `Address` values, one per beneficiary.
+    /// * `emails`               - Ordered list of plain-text emails matching each claimer.
+    /// * `claim_codes`          - Ordered list of claim codes matching each claimer.
+    ///
+    /// All three vectors must be the same length. Each position `i` in the vectors
+    /// represents a single beneficiary claim `(claimers[i], emails[i], claim_codes[i])`.
+    ///
+    /// # Errors
+    /// Returns the first `InheritanceError` encountered; the entire batch is aborted
+    /// on any individual failure (atomic rollback via transaction semantics).
+    pub fn batch_claim_inheritance_plan(
+        env: Env,
+        plan_id: u64,
+        claimers: Vec<Address>,
+        emails: Vec<String>,
+        claim_codes: Vec<u32>,
+    ) -> Result<(), InheritanceError> {
+        // ------------------------------------------------------------------ //
+        // 1. Validate input lengths                                           //
+        // ------------------------------------------------------------------ //
+        let batch_len = claimers.len();
+        if batch_len == 0
+            || emails.len() != batch_len
+            || claim_codes.len() != batch_len
+        {
+            return Err(InheritanceError::InvalidBeneficiaryData);
+        }
+
+        // Hard-cap: no batch larger than the maximum beneficiaries per plan.
+        if batch_len > MAX_BENEFICIARIES {
+            return Err(InheritanceError::TooManyBeneficiaries);
+        }
+
+        // ------------------------------------------------------------------ //
+        // 2. Shared pre-flight checks (run once for the entire batch)         //
+        // ------------------------------------------------------------------ //
+        Self::check_not_paused(&env);
+        Self::enter_guard(&env);
+
+        // Fetch the plan once; all individual claims operate on the same snapshot
+        // and mutations are accumulated then written back at the end.
+        let plan = Self::get_plan(&env, plan_id).ok_or(InheritanceError::PlanNotFound)?;
+
+        if !plan.is_active {
+            Self::exit_guard(&env);
+            return Err(InheritanceError::PlanNotActive);
+        }
+
+        // Freeze / legal-hold check
+        if env
+            .storage()
+            .persistent()
+            .has(&DataKey::FreezePlan(plan_id))
+        {
+            Self::exit_guard(&env);
+            return Err(InheritanceError::PlanNotActive);
+        }
+        if env.storage().persistent().has(&DataKey::LegalHold(plan_id)) {
+            Self::exit_guard(&env);
+            return Err(InheritanceError::PlanNotActive);
+        }
+
+        // Bring trigger state up to date once for the whole batch.
+        let _ = Self::auto_trigger_check(env.clone(), plan_id);
+        let triggered = Self::get_trigger_info(&env, plan_id).is_some();
+        if !triggered && !Self::is_claim_time_valid(&env, &plan) {
+            Self::exit_guard(&env);
+            return Err(InheritanceError::ClaimNotAllowedYet);
+        }
+
+        // ------------------------------------------------------------------ //
+        // 3. Per-claimer KYC + rate-limit checks (must all pass)              //
+        // ------------------------------------------------------------------ //
+        for i in 0..batch_len {
+            let claimer = claimers.get(i).unwrap();
+            claimer.require_auth();
+            Self::check_kyc_approved(&env, &claimer)?;
+            Self::check_and_record_claim_attempt(&env, plan_id, &claimer)?;
+        }
+
+        // Emergency limit: compute once if active.
+        let emergency_limit: Option<u64> = if Self::is_emergency_active(&env, plan_id) {
+            let limit = (plan.total_amount as u128)
+                .checked_mul(EMERGENCY_TRANSFER_LIMIT_BP as u128)
+                .and_then(|v| v.checked_div(10000))
+                .unwrap_or(0) as u64;
+            Some(limit)
+        } else {
+            None
+        };
+
+        // ------------------------------------------------------------------ //
+        // 4. Validate every individual claim and collect payouts              //
+        //    (all validation before any state mutation — atomic semantics).   //
+        // ------------------------------------------------------------------ //
+
+        // We work on a mutable copy of the plan. On any error we discard it
+        // and return Err, which leaves on-chain state unchanged.
+        let mut updated_plan = plan.clone();
+        let count = plan.beneficiaries.len().min(MAX_BENEFICIARIES);
+
+        // Track claim keys so we can write them all after the validation pass.
+        let mut pending_claims: Vec<(DataKey, ClaimRecord, u32, u64, u64)> =
+            Vec::new(&env); // (claim_key, record, index, payout, exit_settlement)
+
+        for i in 0..batch_len {
+            let email = emails.get(i).unwrap();
+            let claim_code = claim_codes.get(i).unwrap();
+            let claimer = claimers.get(i).unwrap();
+
+            // Hash the email to match against stored hashes.
+            let hashed_email = Self::hash_string(&env, email.clone());
+
+            // Build the composite claim key (plan_id || hashed_email).
+            let claim_key = {
+                let mut data = Bytes::new(&env);
+                data.extend_from_slice(&plan_id.to_be_bytes());
+                data.extend_from_slice(&hashed_email.to_array());
+                DataKey::Claim(env.crypto().sha256(&data).into())
+            };
+
+            // Reject if already claimed.
+            if env.storage().persistent().has(&claim_key) {
+                Self::exit_guard(&env);
+                return Err(InheritanceError::AlreadyClaimed);
+            }
+
+            // Locate the beneficiary by email and validate the claim code.
+            let mut beneficiary_index: Option<u32> = None;
+            for j in 0..count {
+                let b = updated_plan.beneficiaries.get(j).unwrap();
+                if b.hashed_email != hashed_email {
+                    continue;
+                }
+                let salt: BytesN<32> = env
+                    .storage()
+                    .persistent()
+                    .get(&DataKey::ClaimSalt(plan_id, j))
+                    .unwrap_or(BytesN::<32>::from_array(&env, &[0u8; 32]));
+                let hashed_claim_code =
+                    Self::hash_claim_code_with_salt(&env, claim_code, &salt)?;
+                if b.hashed_claim_code == hashed_claim_code {
+                    beneficiary_index = Some(j);
+                    break;
+                }
+            }
+
+            let index = beneficiary_index.ok_or_else(|| {
+                Self::exit_guard(&env);
+                InheritanceError::BeneficiaryNotFound
+            })?;
+
+            // Frozen beneficiary check.
+            if env
+                .storage()
+                .persistent()
+                .get::<DataKey, bool>(&DataKey::FrozenBeneficiary(plan_id, index))
+                .unwrap_or(false)
+            {
+                Self::exit_guard(&env);
+                return Err(InheritanceError::Unauthorized);
+            }
+
+            // Active vesting schedule check.
+            if Self::has_active_vesting_schedule(&env, plan_id, index) {
+                Self::exit_guard(&env);
+                return Err(InheritanceError::VestingScheduleActive);
+            }
+
+            // Waterfall ordering: all higher-priority beneficiaries must have
+            // already claimed (or be claiming earlier in this very batch).
+            if updated_plan.waterfall_enabled {
+                let this_b = updated_plan.beneficiaries.get(index).unwrap();
+                for j in 0..count {
+                    let b = updated_plan.beneficiaries.get(j).unwrap();
+                    if b.priority != 0 && b.priority < this_b.priority && !b.is_claimed {
+                        Self::exit_guard(&env);
+                        return Err(InheritanceError::ClaimNotAllowedYet);
+                    }
+                }
+            }
+
+            // Calculate payout using the (possibly mutated) updated_plan so that
+            // earlier claims in the batch correctly reduce total_amount.
+            let mut payout = Self::calculate_waterfall_payout(&env, &updated_plan, index);
+
+            let exit_settlement =
+                Self::get_vesting_exit_settlement(&env, plan_id, index);
+            if exit_settlement > 0 {
+                payout = payout.min(exit_settlement);
+            }
+
+            // Emergency cap.
+            if let Some(limit) = emergency_limit {
+                if payout > limit {
+                    Self::exit_guard(&env);
+                    return Err(InheritanceError::EmergencyCooldownActive);
+                }
+            }
+
+            // Liquidity check (bypass when triggered).
+            let available = updated_plan
+                .total_amount
+                .saturating_sub(updated_plan.total_loaned);
+            if !triggered && payout > available {
+                Self::exit_guard(&env);
+                return Err(InheritanceError::InsufficientLiquidity);
+            }
+
+            if payout == 0 {
+                Self::exit_guard(&env);
+                return Err(InheritanceError::NothingToClaim);
+            }
+
+            // ---- Accumulate state mutations on the in-memory plan snapshot ----
+
+            let exit_remaining = exit_settlement.saturating_sub(payout);
+            let exit_finalized = exit_settlement == 0 || exit_remaining == 0;
+
+            let mut b = updated_plan.beneficiaries.get(index).unwrap();
+            if exit_finalized {
+                b.is_claimed = true;
+            }
+            updated_plan.beneficiaries.set(index, b);
+            updated_plan.total_amount = updated_plan.total_amount.saturating_sub(payout);
+
+            // Stash everything we need for the write pass.
+            pending_claims.push_back((
+                claim_key,
+                ClaimRecord {
+                    plan_id,
+                    beneficiary_index: index,
+                    claimed_at: env.ledger().timestamp(),
+                },
+                index,
+                payout,
+                exit_settlement,
+            ));
+
+            // Emit per-beneficiary claim event immediately (events are not rolled
+            // back on Err in Soroban, but we only reach this point inside the
+            // validation loop — actual state writes happen in pass 5 below).
+            // We defer event emission to pass 5 to keep the semantics clean.
+            let _ = claimer; // used above for auth; suppress unused warning
+        }
+
+        // ------------------------------------------------------------------ //
+        // 5. Write all accumulated state mutations (all validations passed)   //
+        // ------------------------------------------------------------------ //
+
+        // Persist the mutated plan.
+        Self::store_plan(&env, plan_id, &updated_plan);
+
+        for i in 0..pending_claims.len() {
+            let (claim_key, claim_record, index, payout, exit_settlement) =
+                pending_claims.get(i).unwrap();
+
+            // Handle vesting exit settlement bookkeeping.
+            if exit_settlement > 0 {
+                let exit_remaining = exit_settlement.saturating_sub(payout);
+                let settle_key = DataKey::VestingExitSettlement(plan_id, index);
+                if exit_remaining == 0 {
+                    env.storage().persistent().remove(&settle_key);
+                } else {
+                    env.storage()
+                        .persistent()
+                        .set(&settle_key, &exit_remaining);
+                }
+            }
+
+            // Only write claim record (and emit events) when the beneficiary is
+            // fully finalized (exit_settlement == 0 or fully consumed).
+            let exit_finalized = exit_settlement == 0
+                || exit_settlement.saturating_sub(payout) == 0;
+
+            if exit_finalized {
+                env.storage()
+                    .persistent()
+                    .set(&claim_key, &claim_record);
+                Self::add_plan_to_claimed(
+                    &env,
+                    plan.owner.clone(),
+                    plan_id,
+                );
+            }
+
+            // Grant on-chain Beneficiary role to each successful claimer.
+            let claimer = claimers.get(i).unwrap();
+            access_control::assign_role(&env, &claimer, Role::Beneficiary);
+
+            // Emit per-beneficiary CLAIM SUCCESS event.
+            let b = updated_plan.beneficiaries.get(index).unwrap();
+            env.events().publish(
+                (symbol_short!("CLAIM"), symbol_short!("SUCCESS")),
+                (plan_id, b.hashed_email, payout),
+            );
+
+            // Emit fiat payout request if bank account is set.
+            if !b.bank_account.is_empty() {
+                env.events().publish(
+                    (symbol_short!("F_PAYOUT"),),
+                    (plan_id, index, payout, symbol_short!("BANK")),
+                );
+            }
+        }
+
+        log!(
+            &env,
+            "Batch inheritance claim for plan {} processed {} claims",
+            plan_id,
+            batch_len
+        );
+
+        Self::exit_guard(&env);
+        Ok(())
+    }
+
     /// Record KYC submission on-chain (called after off-chain submission).
     pub fn submit_kyc(env: Env, user: Address) -> Result<(), InheritanceError> {
         user.require_auth();
