@@ -7,6 +7,8 @@ use soroban_sdk::{
 
 mod reserves;
 
+use reserves::{DEFAULT_KINK_UTILIZATION_BPS, DEFAULT_SLOPE2_BPS};
+
 // ─────────────────────────────────────────────────
 // Constants
 // ─────────────────────────────────────────────────
@@ -1255,27 +1257,39 @@ impl LendingContract {
 
     /// Calculate the pool utilization ratio in basis points (0 to 10000)
     fn get_utilization_bps(total_borrowed: u64, total_deposits: u64) -> u32 {
-        if total_deposits == 0 {
+        // Cash is the unborrowed portion of deposits. Therefore U is
+        // Borrows / (Cash + Borrows), not Borrows / total deposits after
+        // interest or reserve accounting.
+        let cash = total_deposits.saturating_sub(total_borrowed);
+        let denominator = (cash as u128).saturating_add(total_borrowed as u128);
+        if denominator == 0 {
             return 0;
         }
-        let utilization = (total_borrowed as u128)
-            .checked_mul(10000)
-            .and_then(|v| v.checked_div(total_deposits as u128))
-            .unwrap_or(0);
-        utilization as u32
+        ((total_borrowed as u128)
+            .saturating_mul(10_000)
+            .checked_div(denominator)
+            .unwrap_or(0)
+            .min(10_000)) as u32
     }
 
-    /// Calculate the dynamic interest rate based on utilization
+    /// Calculate the dynamic interest rate based on utilization.
+    /// The legacy pool fields are mapped to a curve with an 80% kink and a
+    /// deliberately steep second slope so liquidity becomes expensive near
+    /// exhaustion. The configured RateModel, when present, is used by the
+    /// public rate-model APIs and supply-side accounting.
     fn calculate_dynamic_rate(
         base_rate_bps: u32,
         multiplier_bps: u32,
         utilization_bps: u32,
     ) -> u32 {
-        let variable_rate = (utilization_bps as u64)
-            .checked_mul(multiplier_bps as u64)
-            .unwrap_or(0)
-            / 10000;
-        base_rate_bps.saturating_add(variable_rate as u32)
+        let model = RateModel {
+            base_rate_bps,
+            optimal_utilization_bps: DEFAULT_KINK_UTILIZATION_BPS,
+            slope1_bps: multiplier_bps,
+            slope2_bps: DEFAULT_SLOPE2_BPS,
+            reserve_factor_bps: 0,
+        };
+        Self::two_slope_rate(&model, utilization_bps)
     }
 
     // ─── Public Functions ────────────────────────────

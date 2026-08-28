@@ -555,6 +555,20 @@ fn test_small_duration_interest_rounds_up_for_contract_repayment() {
 }
 
 #[test]
+fn test_kinked_interest_rate_increases_sharply_above_80_percent() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let (client, token_addr, _collateral_addr, _admin) = setup(&env);
+
+    // With the legacy configuration, the default curve is 5% base, 20%
+    // slope through the 80% kink, then a steep 300% slope to 100%.
+    assert_eq!(client.simulate_rate(&0u32), 500u32);
+    assert_eq!(client.simulate_rate(&8000u32), 2500u32);
+    assert_eq!(client.simulate_rate(&9000u32), 17500u32);
+    assert!(client.simulate_rate(&9000u32) > client.simulate_rate(&8000u32) * 5);
+}
+
+#[test]
 fn test_dynamic_interest_rate_increases_with_utilization() {
     let env = Env::default();
     env.mock_all_auths();
@@ -570,7 +584,8 @@ fn test_dynamic_interest_rate_increases_with_utilization() {
     let borrower1 = Address::generate(&env);
     mint_to(&env, &collateral_addr, &borrower1, 100_000);
     // Borrow 2,000 (20% utilization)
-    // Dynamic rate should be 500 + (2000 * 2000 / 10000) = 500 + 400 = 900
+    // The first stage ramps from base to base + slope1 at the 80% kink.
+    // At 20% utilization: 500 + (20% / 80%) * 2000 = 1000.
     client.borrow(
         &borrower1,
         &token_addr,
@@ -580,10 +595,10 @@ fn test_dynamic_interest_rate_increases_with_utilization() {
         &(30 * 24 * 60 * 60),
     );
     let loan1 = client.get_loan(&borrower1).unwrap();
-    assert_eq!(loan1.interest_rate_bps, 900u32);
+    assert_eq!(loan1.interest_rate_bps, 1000u32);
 
-    // Now utilization is 20%. The *next* borrower will get 900.
-    assert_eq!(client.get_current_interest_rate(&token_addr), 900u32);
+    // Now utilization is 20%. The *next* borrower will get 1000.
+    assert_eq!(client.get_current_interest_rate(&token_addr), 1000u32);
 
     let borrower2 = Address::generate(&env);
     mint_to(&env, &collateral_addr, &borrower2, 100_000);
@@ -592,7 +607,7 @@ fn test_dynamic_interest_rate_increases_with_utilization() {
     // Dynamic rate for this loan should be based on previous utilization (which changes mid-transaction in real world, but our implementation updates *after* applying the new borrow amount).
     // Let's look at implementation: pool.total_borrowed += amount, THEN get_utilization_bps.
     // So for loan2, total_borrowed becomes 5,000. Utilization = 50%.
-    // Rate = 500 + (5000 * 2000 / 10000) = 500 + 1000 = 1500.
+    // At 50% utilization: 500 + (50% / 80%) * 2000 = 1750.
     client.borrow(
         &borrower2,
         &token_addr,
@@ -602,7 +617,7 @@ fn test_dynamic_interest_rate_increases_with_utilization() {
         &(30 * 24 * 60 * 60),
     );
     let loan2 = client.get_loan(&borrower2).unwrap();
-    assert_eq!(loan2.interest_rate_bps, 1500u32);
+    assert_eq!(loan2.interest_rate_bps, 1750u32);
 }
 
 #[test]
