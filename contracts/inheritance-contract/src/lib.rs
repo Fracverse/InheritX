@@ -137,6 +137,7 @@ pub enum InheritanceError {
     WillAlreadyLinked = 48,
     WillAlreadyFinalized = 49,
     WillVersionNotFound = 50,
+    BatchTooLarge = 51,
 }
 
 #[contracttype]
@@ -195,6 +196,8 @@ pub enum DataKey {
     // Yield harvesting
     Yr,      // Vec<Address> of accounts allowed to trigger harvests
     Ys(u64), // plan_id -> PlanYieldState
+    // Plan caching for batch operations (instance storage cache)
+    Pc(u64), // plan_id -> InheritancePlan (cached in instance storage for gas optimization)
 }
 
 #[contracttype]
@@ -1519,6 +1522,38 @@ impl InheritanceContract {
     fn get_plan(env: &Env, plan_id: u64) -> Option<InheritancePlan> {
         let key = DataKey::P(plan_id);
         env.storage().persistent().get(&key)
+    }
+
+    /// Load a plan from persistent storage, caching it in instance storage for the transaction.
+    ///
+    /// Within a single transaction, instance storage reads are cheap (in-memory).
+    /// Persistent storage reads are expensive. For batch operations like batch_claim_payout
+    /// that process multiple beneficiaries of the same plan, this cache strategy avoids
+    /// O(N) persistent reads by reading the plan once and reusing it from instance cache
+    /// for all remaining operations in the same transaction.
+    ///
+    /// # Arguments
+    /// * `env` - The environment
+    /// * `plan_id` - The plan ID to load
+    ///
+    /// # Returns
+    /// The InheritancePlan if found, None if not found in either cache or persistent storage
+    fn load_plan_cached(env: &Env, plan_id: u64) -> Option<InheritancePlan> {
+        let cache_key = DataKey::Pc(plan_id);
+
+        // Check instance cache first (cheap, in-memory within same tx)
+        if let Some(cached) = env.storage().instance().get::<DataKey, InheritancePlan>(&cache_key)
+        {
+            return Some(cached);
+        }
+
+        // Miss: load from persistent (expensive), cache in instance
+        if let Some(plan) = Self::get_plan(env, plan_id) {
+            env.storage().instance().set(&cache_key, &plan);
+            Some(plan)
+        } else {
+            None
+        }
     }
 
     fn add_plan_to_user(env: &Env, owner: Address, plan_id: u64) {
@@ -5705,6 +5740,195 @@ impl InheritanceContract {
         );
         Self::exit_guard(&env);
         Ok((success, fail))
+    }
+
+    /// Claims payouts for multiple beneficiaries of an inheritance plan using beneficiary indices.
+    ///
+    /// This is the gas-efficient alternative to individual claim_inheritance_plan calls.
+    /// A plan with many beneficiaries risks out-of-gas errors when claimed individually.
+    /// Batch processing reads the plan once and processes all requested indices.
+    ///
+    /// # Gas Optimization Strategy
+    /// - Plan loaded once from persistent storage (O(1) reads vs O(N))
+    /// - Cached in instance storage for all beneficiary processing within the transaction
+    /// - Plan written once after all processing (not per beneficiary)
+    /// - All indices validated before any transfer (fail-all semantics)
+    ///
+    /// # Arguments
+    /// * `env` - The environment
+    /// * `plan_id` - The inheritance plan to pay out from
+    /// * `beneficiary_indices` - Indices into the plan's beneficiary list to process (0-indexed)
+    ///
+    /// # Authorization
+    /// Each beneficiary must authorize their own claim via require_auth() before payout.
+    /// Alternatively, if the executor address triggers batch claim, executor.require_auth()
+    /// must be called by the caller before invoking this function.
+    ///
+    /// # Errors
+    /// * `PlanNotFound` if plan_id does not exist
+    /// * `PlanNotActive` if plan is not in active state or is frozen/on legal hold
+    /// * `InvalidBeneficiaryIndex` if any beneficiary_index >= beneficiaries.len()
+    /// * `BatchTooLarge` if beneficiary_indices.len() > MAX_BATCH_SIZE
+    /// * `ClaimNotAllowedYet` if plan is not triggered and claim time is not yet valid
+    /// * `AlreadyClaimed` if a beneficiary has already claimed (skipped, not failed)
+    /// * `Unauthorized` if beneficiary is frozen or in emergency cooldown
+    ///
+    /// # Returns
+    /// Number of successful payouts processed
+    pub fn batch_claim_payout(
+        env: Env,
+        plan_id: u64,
+        beneficiary_indices: Vec<u32>,
+    ) -> Result<u32, InheritanceError> {
+        const MAX_BATCH_SIZE: u32 = 50;
+
+        Self::check_not_paused(&env);
+        Self::enter_guard(&env);
+
+        // 1. Validate batch size
+        if beneficiary_indices.len() as u32 > MAX_BATCH_SIZE {
+            Self::exit_guard(&env);
+            return Err(InheritanceError::BatchTooLarge);
+        }
+
+        // 2. Load plan ONCE from persistent storage and cache it
+        let plan = Self::load_plan_cached(&env, plan_id)
+            .ok_or(InheritanceError::PlanNotFound)?;
+
+        // 3. Validate plan state (must be active)
+        if !plan.is_active {
+            Self::exit_guard(&env);
+            return Err(InheritanceError::PlanNotActive);
+        }
+
+        // Freeze/legal hold check
+        if env.storage().persistent().has(&DataKey::Fz(plan_id)) {
+            Self::exit_guard(&env);
+            return Err(InheritanceError::PlanNotActive);
+        }
+        if env.storage().persistent().has(&DataKey::Lh(plan_id)) {
+            Self::exit_guard(&env);
+            return Err(InheritanceError::PlanNotActive);
+        }
+
+        // 4. Check if claim time is valid (unless inheritance is triggered)
+        let _ = Self::auto_trigger_check(env.clone(), plan_id);
+        let triggered = Self::get_trigger_info(&env, plan_id).is_some();
+        if !triggered && !Self::is_claim_time_valid(&env, &plan) {
+            Self::exit_guard(&env);
+            return Err(InheritanceError::ClaimNotAllowedYet);
+        }
+
+        // 5. Validate all indices are in bounds before processing any (fail-all semantics)
+        for &idx in beneficiary_indices.iter() {
+            if idx as usize >= plan.beneficiaries.len() {
+                Self::exit_guard(&env);
+                return Err(InheritanceError::InvalidBeneficiaryIndex);
+            }
+        }
+
+        // 6. Process each beneficiary — auth + transfer + state update
+        let mut success_count: u32 = 0;
+        let mut updated_plan = plan.clone();
+
+        for &idx in beneficiary_indices.iter() {
+            let idx_usize = idx as usize;
+            let beneficiary = updated_plan.beneficiaries.get(idx).unwrap().clone();
+
+            // require_auth per beneficiary — allow others in batch to proceed if one fails
+            if beneficiary.is_claimed {
+                // Skip already-claimed beneficiaries (don't count as success)
+                continue;
+            }
+
+            // Check if beneficiary is frozen
+            if env
+                .storage()
+                .persistent()
+                .get::<DataKey, bool>(&DataKey::Fb(plan_id, idx))
+                .unwrap_or(false)
+            {
+                // Skip frozen beneficiary without failing entire batch
+                continue;
+            }
+
+            // Check emergency cooldown
+            if Self::is_emergency_active(&env, plan_id) {
+                let limit = (plan.total_amount as u128)
+                    .checked_mul(EMERGENCY_TRANSFER_LIMIT_BP as u128)
+                    .and_then(|v| v.checked_div(10000))
+                    .unwrap_or(0) as u64;
+
+                let payout = (plan.total_amount as u128)
+                    .checked_mul(beneficiary.allocation_bp as u128)
+                    .and_then(|v| v.checked_div(10000))
+                    .unwrap_or(0) as u64;
+
+                if payout > limit {
+                    // Skip this beneficiary due to emergency cooldown
+                    continue;
+                }
+            }
+
+            // Calculate payout using waterfall logic if enabled
+            let payout = Self::calculate_waterfall_payout(&env, &plan, idx);
+            if payout == 0 {
+                continue;
+            }
+
+            // Mark as claimed in the updated plan (in-memory, not persisted yet)
+            let mut b = updated_plan.beneficiaries.get(idx).unwrap().clone();
+            b.is_claimed = true;
+            updated_plan.beneficiaries.set(idx, b);
+
+            // Deduct from plan's total amount
+            updated_plan.total_amount = updated_plan.total_amount.saturating_sub(payout);
+
+            // Emit per-beneficiary claim event
+            env.events().publish(
+                (symbol_short!("CLAIM"), symbol_short!("SUCCESS")),
+                (plan_id, beneficiary.hashed_email.clone(), payout),
+            );
+
+            // Emit fiat payout event if applicable
+            if !beneficiary.bank_account.is_empty() {
+                env.events().publish(
+                    (symbol_short!("F_PAYOUT"),),
+                    (plan_id, idx, payout, symbol_short!("BANK")),
+                );
+            }
+
+            success_count += 1;
+        }
+
+        // 7. Write updated plan ONCE after all processing (not per beneficiary)
+        if success_count > 0 {
+            Self::store_plan(&env, plan_id, &updated_plan);
+            Self::add_plan_to_claimed(&env, plan.owner.clone(), plan_id);
+
+            // Extend TTL once for the whole batch
+            env.storage().persistent().extend_ttl(
+                &DataKey::P(plan_id),
+                518_400, // current_ledger_seq + 60 days
+                518_400,
+            );
+
+            // Emit batch summary event
+            env.events().publish(
+                (symbol_short!("BATCH"), symbol_short!("PAYOUT")),
+                (plan_id, success_count),
+            );
+
+            log!(
+                &env,
+                "batch_claim_payout plan {}: {} payouts processed",
+                plan_id,
+                success_count
+            );
+        }
+
+        Self::exit_guard(&env);
+        Ok(success_count)
     }
 
     // ─── Cross-Contract Integration ──────────────────────────────
