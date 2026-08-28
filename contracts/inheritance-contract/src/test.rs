@@ -6,7 +6,7 @@ use mock_token::MockToken;
 use mock_token::MockTokenClient;
 use soroban_sdk::{
     testutils::Address as _, testutils::Events, testutils::Ledger, token, vec, Address, Bytes, Env,
-    String, TryFromVal, Vec,
+    IntoVal, String, TryFromVal, Val, Vec,
 };
 
 /// Test helper for balance and mint (uses mock-token crate client).
@@ -1233,7 +1233,7 @@ fn test_kyc_approve_success() {
     assert!(result.is_ok());
 
     let stored: KycStatus = env.as_contract(&contract_id, || {
-        env.storage().persistent().get(&DataKey::Kyc(user)).unwrap()
+        env.storage().persistent().get(&DataKey::Ky(user)).unwrap()
     });
     assert!(stored.submitted);
     assert!(stored.approved);
@@ -1312,7 +1312,7 @@ fn test_kyc_reject_success() {
     assert!(result.is_ok());
 
     let stored: KycStatus = env.as_contract(&contract_id, || {
-        env.storage().persistent().get(&DataKey::Kyc(user)).unwrap()
+        env.storage().persistent().get(&DataKey::Ky(user)).unwrap()
     });
     assert!(stored.submitted);
     assert!(!stored.approved);
@@ -1431,7 +1431,7 @@ fn test_upgrade_version_stored_in_storage() {
 
     // Directly set version in storage to simulate upgrade version tracking
     env.as_contract(&contract_id, || {
-        env.storage().instance().set(&DataKey::Version, &5u32);
+        env.storage().instance().set(&DataKey::Ver, &5u32);
     });
 
     let version = client.version();
@@ -1450,7 +1450,7 @@ fn test_migrate_no_migration_needed() {
 
     // Set version to CONTRACT_VERSION so migration is not needed
     env.as_contract(&contract_id, || {
-        env.storage().instance().set(&DataKey::Version, &1u32);
+        env.storage().instance().set(&DataKey::Ver, &1u32);
     });
     let result = client.try_migrate(&admin);
     assert!(result.is_ok());
@@ -1483,7 +1483,7 @@ fn test_migrate_runs_when_version_outdated() {
 
     // Set stored version to 0 (older than CONTRACT_VERSION) to simulate needing migration
     env.as_contract(&contract_id, || {
-        env.storage().instance().set(&DataKey::Version, &0u32);
+        env.storage().instance().set(&DataKey::Ver, &0u32);
     });
 
     let result = client.try_migrate(&admin);
@@ -1564,7 +1564,7 @@ fn test_plan_data_survives_across_versions() {
 
     // Simulate version bump (as upgrade would do)
     env.as_contract(&contract_id, || {
-        env.storage().instance().set(&DataKey::Version, &2u32);
+        env.storage().instance().set(&DataKey::Ver, &2u32);
     });
 
     // All data still accessible (plan stores net amount after 2% fee: 5000000 * 0.98 = 4900000)
@@ -1578,7 +1578,7 @@ fn test_plan_data_survives_across_versions() {
     assert!(!deact_plan.is_active);
 
     let kyc: KycStatus = env.as_contract(&contract_id, || {
-        env.storage().persistent().get(&DataKey::Kyc(user)).unwrap()
+        env.storage().persistent().get(&DataKey::Ky(user)).unwrap()
     });
     assert!(kyc.submitted);
     assert!(kyc.approved);
@@ -2156,7 +2156,7 @@ fn test_vault_withdraw_prevents_over_withdrawal() {
     env.as_contract(&client.address, || {
         env.storage()
             .persistent()
-            .set(&DataKey::Plan(plan_id), &plan);
+            .set(&DataKey::P(plan_id), &plan);
     });
 
     let modified_plan = client.get_plan_details(&plan_id).unwrap();
@@ -2348,7 +2348,7 @@ fn test_recall_loan_success() {
     env.as_contract(&client.address, || {
         env.storage()
             .persistent()
-            .set(&DataKey::Plan(plan_id), &plan);
+            .set(&DataKey::P(plan_id), &plan);
     });
 
     // Trigger inheritance
@@ -2395,7 +2395,7 @@ fn test_recall_loan_exceeds_loaned_fails() {
     env.as_contract(&client.address, || {
         env.storage()
             .persistent()
-            .set(&DataKey::Plan(plan_id), &plan);
+            .set(&DataKey::P(plan_id), &plan);
     });
 
     client.trigger_inheritance(&admin, &plan_id);
@@ -2472,7 +2472,7 @@ fn test_liquidation_fallback_success() {
     env.as_contract(&client.address, || {
         env.storage()
             .persistent()
-            .set(&DataKey::Plan(plan_id), &plan);
+            .set(&DataKey::P(plan_id), &plan);
     });
 
     // Trigger inheritance
@@ -2556,7 +2556,7 @@ fn test_partial_recall_then_liquidation_fallback() {
     env.as_contract(&client.address, || {
         env.storage()
             .persistent()
-            .set(&DataKey::Plan(plan_id), &plan);
+            .set(&DataKey::P(plan_id), &plan);
     });
 
     client.trigger_inheritance(&admin, &plan_id);
@@ -2605,7 +2605,7 @@ fn test_inheritance_claim_not_blocked_by_loans() {
     env.as_contract(&client.address, || {
         env.storage()
             .persistent()
-            .set(&DataKey::Plan(plan_id), &plan);
+            .set(&DataKey::P(plan_id), &plan);
     });
 
     // Trigger inheritance
@@ -2697,7 +2697,7 @@ fn test_get_claimable_amount() {
     env.as_contract(&client.address, || {
         env.storage()
             .persistent()
-            .set(&DataKey::Plan(plan_id), &plan);
+            .set(&DataKey::P(plan_id), &plan);
     });
 
     let claimable = client.get_claimable_amount(&plan_id);
@@ -2733,7 +2733,7 @@ fn test_full_loan_recall_workflow() {
     env.as_contract(&client.address, || {
         env.storage()
             .persistent()
-            .set(&DataKey::Plan(plan_id), &plan);
+            .set(&DataKey::P(plan_id), &plan);
     });
 
     // Step 3: Trigger inheritance — freezes new loans
@@ -7565,4 +7565,57 @@ fn test_plan_pool_share_bps() {
         2_500
     );
     assert_eq!(client.compute_plan_pool_share_bps(&plan_id, &0u64), 0);
+}
+
+/// Snapshot benchmark for the `DataKey` gas / ledger-footprint optimization.
+///
+/// The fix swaps verbose enum-variant names (e.g. `BeneficiaryNotifiedAt`) for
+/// compact <=9-char symbols so the storage-key `Symbol` is always encoded as an
+/// 8-byte short symbol, shrinking every ledger read/write. This test records:
+///   1. the XDR-encoded size of a representative per-plan ledger key, and
+///   2. the CPU/memory budget for a plan create + read (a gas proxy).
+/// Run with: `cargo test snapshot_gas_datakey -- --nocapture`
+#[test]
+fn snapshot_gas_datakey() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let (client, token, _admin, owner) = setup_with_token_and_admin(&env);
+
+    // (1) Ledger-key footprint: the compact key must stay small.
+    let key = DataKey::P(1u64);
+    let v: Val = key.into_val(&env);
+    let key_len = v.to_xdr(&env).len();
+    log!(&env, "SNAPSHOT DataKey::P xdr_len={}", key_len);
+    assert!(key_len <= 16, "compact ledger key unexpectedly large");
+
+    // (2) Gas proxy: budget consumed by a plan create + read.
+    env.budget().reset_default();
+    let params = plan_params(
+        &env,
+        &owner,
+        &token,
+        "GasPlan",
+        "snapshot benchmark",
+        1_000_000u64,
+        DistributionMethod::LumpSum,
+        &default_beneficiaries(&env),
+    );
+    let plan_id = client.create_inheritance_plan(&params);
+    let cpu_create = env.budget().get_cpu_insns();
+    let mem_create = env.budget().get_mem_bytes();
+    log!(
+        &env,
+        "SNAPSHOT create_inheritance_plan cpu_insns={} mem_bytes={}",
+        cpu_create,
+        mem_create
+    );
+
+    env.budget().reset_default();
+    let _plan = client.get_plan_details(&plan_id);
+    let cpu_read = env.budget().get_cpu_insns();
+    log!(&env, "SNAPSHOT get_plan_details cpu_insns={}", cpu_read);
+
+    // Regression guards (generous headroom).
+    assert!(cpu_create < 50_000_000, "create plan cpu instructions regressed");
+    assert!(cpu_read < 5_000_000, "read plan cpu instructions regressed");
 }
