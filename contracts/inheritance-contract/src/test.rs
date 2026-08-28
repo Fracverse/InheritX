@@ -6416,6 +6416,45 @@ fn test_set_conditions_blocked_after_trigger() {
     assert!(result.is_err());
 }
 
+#[test]
+fn test_claim_all_assets_payout_marks_beneficiary_claimed_across_tokens() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let (client, token_id, _admin, owner) = setup_with_token_and_admin(&env);
+
+    let params = plan_params(
+        &env,
+        &owner,
+        &token_id,
+        "Basket Plan",
+        "XLM + USDC + EURC basket",
+        1_000_000u64,
+        DistributionMethod::LumpSum,
+        &vec![
+            &env,
+            (
+                String::from_str(&env, "Alice"),
+                String::from_str(&env, "alice@example.com"),
+                111111u32,
+                create_test_bytes(&env, "1111111111111111"),
+                10000u32,
+                1u32,
+            ),
+        ],
+    );
+    let plan_id = client.create_inheritance_plan(&params);
+
+    let xlm = env.register_contract(None, MockToken);
+    let eurc = env.register_contract(None, MockToken);
+    let tokens = vec![&env, token_id.clone(), xlm.clone(), eurc.clone()];
+
+    let result = client.try_claim_all_assets_payout(&plan_id, &tokens);
+    assert!(result.is_ok(), "multi-asset claim should succeed for an active basket plan");
+
+    let plan = client.get_plan_details(&plan_id).unwrap();
+    assert!(plan.beneficiaries.get(0).unwrap().is_claimed);
+}
+
 // ----- Cross-contract version compatibility -----
 
 /// A peer that answers `get_version` with a version the suite does not speak,

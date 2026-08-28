@@ -2476,6 +2476,108 @@ impl InheritanceContract {
         }
     }
 
+    pub fn claim_all_assets_payout(
+        env: Env,
+        plan_id: u64,
+        tokens: Vec<Address>,
+    ) -> Result<(), InheritanceError> {
+        Self::check_not_paused(&env);
+        Self::enter_guard(&env);
+
+        let plan = Self::get_plan(&env, plan_id).ok_or(InheritanceError::PlanNotFound)?;
+
+        if !plan.is_active {
+            return Err(InheritanceError::PlanNotActive);
+        }
+
+        if env
+            .storage()
+            .persistent()
+            .has(&DataKey::FreezePlan(plan_id))
+        {
+            return Err(InheritanceError::PlanNotActive);
+        }
+        if env.storage().persistent().has(&DataKey::LegalHold(plan_id)) {
+            return Err(InheritanceError::PlanNotActive);
+        }
+
+        if tokens.is_empty() {
+            return Err(InheritanceError::InvalidAssetType);
+        }
+
+        let triggered = Self::get_trigger_info(&env, plan_id).is_some();
+        if !triggered && !Self::is_claim_time_valid(&env, &plan) {
+            return Err(InheritanceError::ClaimNotAllowedYet);
+        }
+
+        let mut updated_plan = plan.clone();
+        let mut total_claimable: u64 = 0;
+        let token_count = tokens.len() as u64;
+
+        for i in 0..updated_plan.beneficiaries.len() {
+            let mut beneficiary = updated_plan.beneficiaries.get(i).unwrap();
+            if beneficiary.is_claimed {
+                continue;
+            }
+
+            let share = (updated_plan.total_amount as u128)
+                .checked_mul(beneficiary.allocation_bp as u128)
+                .and_then(|v| v.checked_div(10000))
+                .unwrap_or(0) as u64;
+
+            if share == 0 {
+                continue;
+            }
+
+            let per_token = share.saturating_div(token_count.max(1));
+            if per_token == 0 {
+                continue;
+            }
+
+            total_claimable = total_claimable.saturating_add(share);
+            beneficiary.is_claimed = true;
+            updated_plan.beneficiaries.set(i, beneficiary.clone());
+
+            let hashed_email = beneficiary.hashed_email.clone();
+            let claim_key = {
+                let mut data = Bytes::new(&env);
+                data.extend_from_slice(&plan_id.to_be_bytes());
+                data.extend_from_slice(&hashed_email.to_array());
+                DataKey::Claim(env.crypto().sha256(&data).into())
+            };
+            env.storage().persistent().set(
+                &claim_key,
+                &ClaimRecord {
+                    plan_id,
+                    beneficiary_index: i,
+                    claimed_at: env.ledger().timestamp(),
+                },
+            );
+
+            env.events().publish(
+                (symbol_short!("CLAIM"), symbol_short!("ASSET")),
+                (plan_id, i, share, token_count, per_token),
+            );
+        }
+
+        if total_claimable == 0 {
+            Self::exit_guard(&env);
+            return Err(InheritanceError::NothingToClaim);
+        }
+
+        updated_plan.total_amount = updated_plan.total_amount.saturating_sub(total_claimable);
+        Self::store_plan(&env, plan_id, &updated_plan);
+        Self::add_plan_to_claimed(&env, plan.owner.clone(), plan_id);
+
+        env.events().publish(
+            (symbol_short!("CLAIM"), symbol_short!("BASKET")),
+            (plan_id, total_claimable, tokens.len()),
+        );
+
+        Self::exit_guard(&env);
+        Ok(())
+    }
+
     pub fn claim_inheritance_plan(
         env: Env,
         plan_id: u64,
