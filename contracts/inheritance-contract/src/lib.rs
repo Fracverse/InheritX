@@ -144,56 +144,56 @@ pub enum InheritanceError {
 pub enum DataKey {
     Npi,
     P(u64),
-    C(BytesN<32>),           // keyed by hashed_email
-    Cs(u64, u32),         // (plan_id, beneficiary_index) -> BytesN<32>
+    C(BytesN<32>),    // keyed by hashed_email
+    Cs(u64, u32),     // (plan_id, beneficiary_index) -> BytesN<32>
     Ca(u64, Address), // (plan_id, claimer) -> ClaimAttemptWindow
-    Up(Address),          // keyed by owner Address, value is Vec<u64>
-    Uc(Address),   // keyed by owner Address, value is Vec<u64>
-    Dp,            // value is Vec<u64> of all deactivated plan IDs
-    Ac,             // value is Vec<u64> of all claimed plan IDs
+    Up(Address),      // keyed by owner Address, value is Vec<u64>
+    Uc(Address),      // keyed by owner Address, value is Vec<u64>
+    Dp,               // value is Vec<u64> of all deactivated plan IDs
+    Ac,               // value is Vec<u64> of all claimed plan IDs
     Ad,
     Ky(Address),
     Ver,
-    It(u64),          // per-plan inheritance trigger info
-    Ea(Address),         // bool, keyed by Address
-    Ela(Address),  // u64, keyed by Address
-    Eac(u64),             // per-plan emergency access record
-    Gd(u64),                   // per-plan guardian configuration
-    Eap(u64, Address), // (plan_id, trusted_contact) -> Vec<Address>
-    Ec(u64),           // per-plan emergency contacts list
-    Wh(u64),                    // plan_id -> BytesN<32> (will document hash)
-    Vw(u64),                   // plan_id -> BytesN<32> (linked will hash)
-    Bv(u64),     // plan_id -> bool (last verification result)
-    Wvc(u64),            // plan_id -> u32 (number of will versions)
-    Wv(u64, u32),            // (plan_id, version) -> WillVersion struct
+    It(u64),            // per-plan inheritance trigger info
+    Ea(Address),        // bool, keyed by Address
+    Ela(Address),       // u64, keyed by Address
+    Eac(u64),           // per-plan emergency access record
+    Gd(u64),            // per-plan guardian configuration
+    Eap(u64, Address),  // (plan_id, trusted_contact) -> Vec<Address>
+    Ec(u64),            // per-plan emergency contacts list
+    Wh(u64),            // plan_id -> BytesN<32> (will document hash)
+    Vw(u64),            // plan_id -> BytesN<32> (linked will hash)
+    Bv(u64),            // plan_id -> bool (last verification result)
+    Wvc(u64),           // plan_id -> u32 (number of will versions)
+    Wv(u64, u32),       // (plan_id, version) -> WillVersion struct
     Awv(u64),           // plan_id -> u32 (active version number)
-    Ws(u64),               // plan_id -> WillSignatureProof
-    Su(BytesN<32>),        // sig_hash -> bool (replay protection)
-    Nmi,                    // Global next message ID counter
-    Lm(u64),               // message_id -> LegacyMessageMetadata
-    Vm(u64),               // vault_id -> Vec<u64> (message IDs)
-    Wf(u64, u32),          // (plan_id, version) -> bool
-    Wfa(u64, u32),        // (plan_id, version) -> u64 timestamp
-    Ww(u64),               // plan_id -> Vec<Address>
-    Wsig(u64, Address),   // (plan_id, witness) -> u64 (signed_at)
+    Ws(u64),            // plan_id -> WillSignatureProof
+    Su(BytesN<32>),     // sig_hash -> bool (replay protection)
+    Nmi,                // Global next message ID counter
+    Lm(u64),            // message_id -> LegacyMessageMetadata
+    Vm(u64),            // vault_id -> Vec<u64> (message IDs)
+    Wf(u64, u32),       // (plan_id, version) -> bool
+    Wfa(u64, u32),      // (plan_id, version) -> u64 timestamp
+    Ww(u64),            // plan_id -> Vec<Address>
+    Wsig(u64, Address), // (plan_id, witness) -> u64 (signed_at)
     Lc,
     Gc,
     // Beneficiary notification & acknowledgment
-    Bn(u64, u32), // (plan_id, beneficiary_index) -> u64 (notified_at)
-    Ba(u64, u32), // (plan_id, beneficiary_index) -> u64 (acknowledged_at)
-    Ra(u64),     // plan_id -> bool
-    Fz(u64),                 // plan_id -> FreezeRecord
-    Lh(u64),                  // plan_id -> LegalHold
-    Fb(u64, u32),     // (plan_id, index) -> bool
-    Tc(u64),          // plan_id -> TriggerConfig
+    Bn(u64, u32),  // (plan_id, beneficiary_index) -> u64 (notified_at)
+    Ba(u64, u32),  // (plan_id, beneficiary_index) -> u64 (acknowledged_at)
+    Ra(u64),       // plan_id -> bool
+    Fz(u64),       // plan_id -> FreezeRecord
+    Lh(u64),       // plan_id -> LegalHold
+    Fb(u64, u32),  // (plan_id, index) -> bool
+    Tc(u64),       // plan_id -> TriggerConfig
     Ves(u64, u32), // (plan_id, beneficiary_index) -> exit settlement data
     // Disputes
     Ndi,     // u64
-    Ds(u64),      // dispute_id -> DisputeRecord
+    Ds(u64), // dispute_id -> DisputeRecord
     Pd(u64), // plan_id -> Vec<u64> (dispute ids)
-    Arb,       // Vec<Address>
+    Arb,     // Vec<Address>
     // Yield harvesting
-    Yr,   // Vec<Address> of accounts allowed to trigger harvests
+    Yr,      // Vec<Address> of accounts allowed to trigger harvests
     Ys(u64), // plan_id -> PlanYieldState
 }
 
@@ -1166,9 +1166,7 @@ impl InheritanceContract {
                 updated.push_back(a);
             }
         }
-        env.storage()
-            .persistent()
-            .set(&DataKey::Arb, &updated);
+        env.storage().persistent().set(&DataKey::Arb, &updated);
         Ok(())
     }
 
@@ -1252,9 +1250,7 @@ impl InheritanceContract {
     }
 
     pub fn get_dispute(env: Env, dispute_id: u64) -> Option<DisputeRecord> {
-        env.storage()
-            .persistent()
-            .get(&DataKey::Ds(dispute_id))
+        env.storage().persistent().get(&DataKey::Ds(dispute_id))
     }
 
     pub fn get_plan_disputes(env: Env, plan_id: u64) -> Vec<u64> {
@@ -1339,9 +1335,7 @@ impl InheritanceContract {
 
     pub fn unfreeze_plan(env: Env, admin: Address, plan_id: u64) -> Result<(), InheritanceError> {
         Self::require_admin(&env, &admin)?;
-        env.storage()
-            .persistent()
-            .remove(&DataKey::Fz(plan_id));
+        env.storage().persistent().remove(&DataKey::Fz(plan_id));
         env.events().publish(
             (symbol_short!("PLAN"), symbol_short!("UNFRO")),
             PlanUnfrozenEvent {
@@ -2192,11 +2186,7 @@ impl InheritanceContract {
         }
 
         // Freeze/legal hold check
-        if env
-            .storage()
-            .persistent()
-            .has(&DataKey::Fz(plan_id))
-        {
+        if env.storage().persistent().has(&DataKey::Fz(plan_id)) {
             return Err(InheritanceError::PlanNotActive);
         }
         if env.storage().persistent().has(&DataKey::Lh(plan_id)) {
@@ -2256,11 +2246,7 @@ impl InheritanceContract {
         }
 
         // Freeze/legal hold check
-        if env
-            .storage()
-            .persistent()
-            .has(&DataKey::Fz(plan_id))
-        {
+        if env.storage().persistent().has(&DataKey::Fz(plan_id)) {
             return Err(InheritanceError::PlanNotActive);
         }
         if env.storage().persistent().has(&DataKey::Lh(plan_id)) {
@@ -2500,11 +2486,7 @@ impl InheritanceContract {
         }
 
         // Freeze/legal hold check
-        if env
-            .storage()
-            .persistent()
-            .has(&DataKey::Fz(plan_id))
-        {
+        if env.storage().persistent().has(&DataKey::Fz(plan_id)) {
             return Err(InheritanceError::PlanNotActive);
         }
         if env.storage().persistent().has(&DataKey::Lh(plan_id)) {
@@ -3443,9 +3425,7 @@ impl InheritanceContract {
     }
 
     fn get_trigger_config(env: &Env, plan_id: u64) -> Option<TriggerConfig> {
-        env.storage()
-            .persistent()
-            .get(&DataKey::Tc(plan_id))
+        env.storage().persistent().get(&DataKey::Tc(plan_id))
     }
 
     fn save_trigger_config(env: &Env, plan_id: u64, config: &TriggerConfig) {
@@ -3841,11 +3821,7 @@ impl InheritanceContract {
         }
 
         // Freeze/legal hold check
-        if env
-            .storage()
-            .persistent()
-            .has(&DataKey::Fz(plan_id))
-        {
+        if env.storage().persistent().has(&DataKey::Fz(plan_id)) {
             return Err(InheritanceError::PlanNotActive);
         }
         if env.storage().persistent().has(&DataKey::Lh(plan_id)) {
@@ -4124,9 +4100,7 @@ impl InheritanceContract {
         let new_version = old_version + 1;
 
         // Store the new version before upgrading
-        env.storage()
-            .instance()
-            .set(&DataKey::Ver, &new_version);
+        env.storage().instance().set(&DataKey::Ver, &new_version);
 
         // Emit upgrade event for audit trail
         env.events().publish(
@@ -4506,9 +4480,7 @@ impl InheritanceContract {
 
     /// Retrieve the stored will signature proof for a vault.
     pub fn get_will_signature(env: Env, vault_id: u64) -> Option<WillSignatureProof> {
-        env.storage()
-            .persistent()
-            .get(&DataKey::Ws(vault_id))
+        env.storage().persistent().get(&DataKey::Ws(vault_id))
     }
 
     /// Rotate the key reference used for message encryption for a vault/plan.
@@ -4761,9 +4733,7 @@ impl InheritanceContract {
     /// * `env` - The Soroban environment
     /// * `message_id` - The unique message identifier
     pub fn get_legacy_message(env: Env, message_id: u64) -> Option<LegacyMessageMetadata> {
-        env.storage()
-            .persistent()
-            .get(&DataKey::Lm(message_id))
+        env.storage().persistent().get(&DataKey::Lm(message_id))
     }
 
     /// Get all message IDs for a specific vault
@@ -4811,9 +4781,7 @@ impl InheritanceContract {
         }
 
         // Remove message metadata
-        env.storage()
-            .persistent()
-            .remove(&DataKey::Lm(message_id));
+        env.storage().persistent().remove(&DataKey::Lm(message_id));
 
         // Remove from vault's message list
         let vault_messages: Vec<u64> = env
@@ -4979,14 +4947,11 @@ impl InheritanceContract {
 
         // Unlock each message
         for message_id in messages.iter() {
-            let mut message: LegacyMessageMetadata = match env
-                .storage()
-                .persistent()
-                .get(&DataKey::Lm(message_id))
-            {
-                Some(m) => m,
-                None => continue, // Skip if message doesn't exist
-            };
+            let mut message: LegacyMessageMetadata =
+                match env.storage().persistent().get(&DataKey::Lm(message_id)) {
+                    Some(m) => m,
+                    None => continue, // Skip if message doesn't exist
+                };
 
             if !message.is_unlocked {
                 message.is_unlocked = true;
@@ -5616,11 +5581,7 @@ impl InheritanceContract {
         }
 
         // Freeze/legal hold check
-        if env
-            .storage()
-            .persistent()
-            .has(&DataKey::Fz(plan_id))
-        {
+        if env.storage().persistent().has(&DataKey::Fz(plan_id)) {
             return Err(InheritanceError::PlanNotActive);
         }
         if env.storage().persistent().has(&DataKey::Lh(plan_id)) {
@@ -5755,9 +5716,7 @@ impl InheritanceContract {
     ) -> Result<(), InheritanceError> {
         Self::require_admin(&env, &admin)?;
         Self::require_compatible_version(&env, &contract);
-        env.storage()
-            .instance()
-            .set(&DataKey::Lc, &contract);
+        env.storage().instance().set(&DataKey::Lc, &contract);
         env.events().publish(
             (symbol_short!("LINK"), symbol_short!("LEND")),
             ContractLinkedEvent {
@@ -5779,9 +5738,7 @@ impl InheritanceContract {
     ) -> Result<(), InheritanceError> {
         Self::require_admin(&env, &admin)?;
         Self::require_compatible_version(&env, &contract);
-        env.storage()
-            .instance()
-            .set(&DataKey::Gc, &contract);
+        env.storage().instance().set(&DataKey::Gc, &contract);
         env.events().publish(
             (symbol_short!("LINK"), symbol_short!("GOV")),
             ContractLinkedEvent {
@@ -5944,9 +5901,7 @@ impl InheritanceContract {
         }
 
         relayers.push_back(relayer.clone());
-        env.storage()
-            .instance()
-            .set(&DataKey::Yr, &relayers);
+        env.storage().instance().set(&DataKey::Yr, &relayers);
 
         env.events().publish(
             (symbol_short!("YIELD"), symbol_short!("RELAYER")),
@@ -5973,9 +5928,7 @@ impl InheritanceContract {
 
         let mut updated = relayers;
         updated.remove(index);
-        env.storage()
-            .instance()
-            .set(&DataKey::Yr, &updated);
+        env.storage().instance().set(&DataKey::Yr, &updated);
 
         env.events().publish(
             (symbol_short!("YIELD"), symbol_short!("RELAYER")),
@@ -6000,15 +5953,11 @@ impl InheritanceContract {
     // ─── Yield position lifecycle ────────────────
 
     fn get_yield_state(env: &Env, plan_id: u64) -> Option<PlanYieldState> {
-        env.storage()
-            .persistent()
-            .get(&DataKey::Ys(plan_id))
+        env.storage().persistent().get(&DataKey::Ys(plan_id))
     }
 
     fn set_yield_state(env: &Env, plan_id: u64, state: &PlanYieldState) {
-        env.storage()
-            .persistent()
-            .set(&DataKey::Ys(plan_id), state);
+        env.storage().persistent().set(&DataKey::Ys(plan_id), state);
     }
 
     fn require_yield_state(env: &Env, plan_id: u64) -> Result<PlanYieldState, InheritanceError> {
@@ -6147,9 +6096,7 @@ impl InheritanceContract {
             args,
         )?;
 
-        env.storage()
-            .persistent()
-            .remove(&DataKey::Ys(plan_id));
+        env.storage().persistent().remove(&DataKey::Ys(plan_id));
 
         Ok(())
     }
@@ -7004,9 +6951,7 @@ impl InheritanceContract {
 
         let old_version = env.storage().instance().get(&DataKey::Ver).unwrap_or(0);
         let new_version = old_version + 1;
-        env.storage()
-            .instance()
-            .set(&DataKey::Ver, &new_version);
+        env.storage().instance().set(&DataKey::Ver, &new_version);
 
         env.events().publish(
             (symbol_short!("UPGRADE"), admin.clone()),
@@ -7052,11 +6997,7 @@ impl InheritanceContract {
         }
 
         // Freeze/legal hold check
-        if env
-            .storage()
-            .persistent()
-            .has(&DataKey::Fz(plan_id))
-        {
+        if env.storage().persistent().has(&DataKey::Fz(plan_id)) {
             return Err(InheritanceError::PlanNotActive);
         }
         if env.storage().persistent().has(&DataKey::Lh(plan_id)) {

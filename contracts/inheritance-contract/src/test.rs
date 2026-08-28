@@ -2154,9 +2154,7 @@ fn test_vault_withdraw_prevents_over_withdrawal() {
     plan.total_loaned = 1000;
 
     env.as_contract(&client.address, || {
-        env.storage()
-            .persistent()
-            .set(&DataKey::P(plan_id), &plan);
+        env.storage().persistent().set(&DataKey::P(plan_id), &plan);
     });
 
     let modified_plan = client.get_plan_details(&plan_id).unwrap();
@@ -2346,9 +2344,7 @@ fn test_recall_loan_success() {
     let mut plan = client.get_plan_details(&plan_id).unwrap();
     plan.total_loaned = 50_000;
     env.as_contract(&client.address, || {
-        env.storage()
-            .persistent()
-            .set(&DataKey::P(plan_id), &plan);
+        env.storage().persistent().set(&DataKey::P(plan_id), &plan);
     });
 
     // Trigger inheritance
@@ -2393,9 +2389,7 @@ fn test_recall_loan_exceeds_loaned_fails() {
     let mut plan = client.get_plan_details(&plan_id).unwrap();
     plan.total_loaned = 10_000;
     env.as_contract(&client.address, || {
-        env.storage()
-            .persistent()
-            .set(&DataKey::P(plan_id), &plan);
+        env.storage().persistent().set(&DataKey::P(plan_id), &plan);
     });
 
     client.trigger_inheritance(&admin, &plan_id);
@@ -2470,9 +2464,7 @@ fn test_liquidation_fallback_success() {
     let mut plan = client.get_plan_details(&plan_id).unwrap();
     plan.total_loaned = 30_000;
     env.as_contract(&client.address, || {
-        env.storage()
-            .persistent()
-            .set(&DataKey::P(plan_id), &plan);
+        env.storage().persistent().set(&DataKey::P(plan_id), &plan);
     });
 
     // Trigger inheritance
@@ -2554,9 +2546,7 @@ fn test_partial_recall_then_liquidation_fallback() {
     let mut plan = client.get_plan_details(&plan_id).unwrap();
     plan.total_loaned = 40_000;
     env.as_contract(&client.address, || {
-        env.storage()
-            .persistent()
-            .set(&DataKey::P(plan_id), &plan);
+        env.storage().persistent().set(&DataKey::P(plan_id), &plan);
     });
 
     client.trigger_inheritance(&admin, &plan_id);
@@ -2603,9 +2593,7 @@ fn test_inheritance_claim_not_blocked_by_loans() {
     let mut plan = client.get_plan_details(&plan_id).unwrap();
     plan.total_loaned = 50_000;
     env.as_contract(&client.address, || {
-        env.storage()
-            .persistent()
-            .set(&DataKey::P(plan_id), &plan);
+        env.storage().persistent().set(&DataKey::P(plan_id), &plan);
     });
 
     // Trigger inheritance
@@ -2695,9 +2683,7 @@ fn test_get_claimable_amount() {
     let mut plan = client.get_plan_details(&plan_id).unwrap();
     plan.total_loaned = 20_000;
     env.as_contract(&client.address, || {
-        env.storage()
-            .persistent()
-            .set(&DataKey::P(plan_id), &plan);
+        env.storage().persistent().set(&DataKey::P(plan_id), &plan);
     });
 
     let claimable = client.get_claimable_amount(&plan_id);
@@ -2731,9 +2717,7 @@ fn test_full_loan_recall_workflow() {
     let mut plan = client.get_plan_details(&plan_id).unwrap();
     plan.total_loaned = 200_000;
     env.as_contract(&client.address, || {
-        env.storage()
-            .persistent()
-            .set(&DataKey::P(plan_id), &plan);
+        env.storage().persistent().set(&DataKey::P(plan_id), &plan);
     });
 
     // Step 3: Trigger inheritance — freezes new loans
@@ -7616,6 +7600,9 @@ fn snapshot_gas_datakey() {
     log!(&env, "SNAPSHOT get_plan_details cpu_insns={}", cpu_read);
 
     // Regression guards (generous headroom).
-    assert!(cpu_create < 50_000_000, "create plan cpu instructions regressed");
+    assert!(
+        cpu_create < 50_000_000,
+        "create plan cpu instructions regressed"
+    );
     assert!(cpu_read < 5_000_000, "read plan cpu instructions regressed");
 }
