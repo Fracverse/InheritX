@@ -38,7 +38,7 @@ impl TestTokenHelper<'_> {
 fn setup_with_token_and_admin(
     env: &Env,
 ) -> (InheritanceContractClient<'_>, Address, Address, Address) {
-    env.mock_all_auths();
+    env.mock_all_auths_allowing_non_root_auth();
     let contract_id = env.register_contract(None, InheritanceContract);
     let token_id = env.register_contract(None, MockToken);
     let admin = create_test_address(env, 100);
@@ -58,7 +58,7 @@ fn setup_with_token_and_admin(
 fn setup_with_token_and_admin_no_kyc(
     env: &Env,
 ) -> (InheritanceContractClient<'_>, Address, Address, Address) {
-    env.mock_all_auths();
+    env.mock_all_auths_allowing_non_root_auth();
     let contract_id = env.register_contract(None, InheritanceContract);
     let token_id = env.register_contract(None, MockToken);
     let admin = create_test_address(env, 101);
@@ -2109,17 +2109,29 @@ fn test_vault_deposit_and_withdraw() {
 
     let plan = client.get_plan_details(&plan_id).unwrap();
     assert_eq!(plan.total_amount, 980); // 1000 - 2% fee
+    assert_eq!(plan.token, token);
+
+    let token_helper = TestTokenHelper::new(&env, &token);
+    let vault = client.get_plan_vault_address(&plan_id).unwrap();
+    assert_ne!(vault, client.address);
+    assert_eq!(token_helper.balance(&vault), 980);
+    assert_eq!(token_helper.balance(&client.address), 0);
 
     // Deposit more
     client.deposit(&owner, &token, &plan_id, &500u64);
     let plan = client.get_plan_details(&plan_id).unwrap();
     assert_eq!(plan.total_amount, 1480);
+    assert_eq!(token_helper.balance(&vault), 1480);
+    assert_eq!(token_helper.balance(&client.address), 0);
 
     // Withdraw some
+    env.mock_all_auths_allowing_non_root_auth();
     client.withdraw(&owner, &token, &plan_id, &300u64);
     let plan = client.get_plan_details(&plan_id).unwrap();
     assert_eq!(plan.total_amount, 1180);
     assert_eq!(plan.total_loaned, 0);
+    assert_eq!(token_helper.balance(&vault), 1180);
+    assert_eq!(token_helper.balance(&client.address), 0);
 
     // Unauthorized fails
     let not_owner = create_test_address(&env, 999);

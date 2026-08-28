@@ -1,0 +1,16 @@
+[package]
+name = "plan-vault"
+version = "0.0.0"
+edition = "2021"
+publish = false
+
+[lib]
+crate-type = ["cdylib", "rlib"]
+doctest = false
+
+[dependencies]
+soroban-sdk = { workspace = true }
+
+[dev-dependencies]
+mock_token = { path = "../mock-token" }
+soroban-sdk = { workspace = true, features = ["testutils"] }

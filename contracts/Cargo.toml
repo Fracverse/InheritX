@@ -6,6 +6,7 @@ members = [
   "lending-contract",
   "loan-nft",
   "mock-token",
+  "plan-vault",
 ]
 
 
