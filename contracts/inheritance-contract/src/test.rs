@@ -7566,3 +7566,170 @@ fn test_plan_pool_share_bps() {
     );
     assert_eq!(client.compute_plan_pool_share_bps(&plan_id, &0u64), 0);
 }
+
+// ── batch_ping tests (Issue #1161) ────────────────────────────────────────────
+
+/// Helper: create N plans that all belong to `owner` and set an inactivity
+/// trigger on each so that `last_activity` is tracked.
+fn setup_multi_plan_for_batch_ping(
+    env: &Env,
+    n: u32,
+) -> (InheritanceContractClient<'_>, Address, Vec<u64>) {
+    let (client, token_id, admin, owner) = setup_with_token_and_admin(env);
+    let _ = admin; // admin used only for setup
+
+    let mut plan_ids: Vec<u64> = Vec::new(env);
+    for _ in 0..n {
+        let plan_id = client.create_inheritance_plan(&plan_params(
+            env,
+            &owner,
+            &token_id,
+            "BPlan",
+            "Desc",
+            1_000_000u64,
+            DistributionMethod::LumpSum,
+            &default_beneficiaries(env),
+        ));
+        // Register an inactivity trigger so TriggerConfig is stored.
+        client.add_inactivity_trigger(&owner, &plan_id, &3600u64);
+        plan_ids.push_back(plan_id);
+    }
+    (client, owner, plan_ids)
+}
+
+#[test]
+fn test_batch_ping_updates_all_plans() {
+    let env = Env::default();
+    env.ledger().set_timestamp(1000);
+    let (client, owner, plan_ids) = setup_multi_plan_for_batch_ping(&env, 3);
+
+    let (success, fail) = client.batch_ping(&owner, &plan_ids);
+    assert_eq!(success, 3, "all three pings should succeed");
+    assert_eq!(fail, 0, "no failures expected");
+
+    // None of the plans should report trigger-met immediately after a ping.
+    for plan_id in plan_ids.iter() {
+        assert!(
+            !client.check_trigger_conditions(&plan_id),
+            "plan {plan_id} should not be triggered right after batch_ping"
+        );
+    }
+}
+
+#[test]
+fn test_batch_ping_resets_inactivity_clock() {
+    let env = Env::default();
+    env.ledger().set_timestamp(1000);
+    let (client, owner, plan_ids) = setup_multi_plan_for_batch_ping(&env, 2);
+
+    // Move forward past the inactivity window (3600 s).
+    env.ledger().set_timestamp(5000);
+    // Verify that conditions would fire without a ping.
+    for plan_id in plan_ids.iter() {
+        assert!(client.check_trigger_conditions(&plan_id));
+    }
+
+    // Now batch_ping resets the clock.
+    let (success, fail) = client.batch_ping(&owner, &plan_ids);
+    assert_eq!(success, 2);
+    assert_eq!(fail, 0);
+
+    // Conditions should no longer be met immediately after the ping.
+    for plan_id in plan_ids.iter() {
+        assert!(!client.check_trigger_conditions(&plan_id));
+    }
+}
+
+#[test]
+fn test_batch_ping_rejects_wrong_owner() {
+    let env = Env::default();
+    env.ledger().set_timestamp(1000);
+    let (client, _owner, plan_ids) = setup_multi_plan_for_batch_ping(&env, 2);
+
+    // A different address tries to ping plans they don't own.
+    let impersonator = Address::generate(&env);
+    let (success, fail) = client.batch_ping(&impersonator, &plan_ids);
+    assert_eq!(success, 0, "impersonator should have 0 successes");
+    assert_eq!(fail, 2, "both plans should be counted as failures");
+}
+
+#[test]
+fn test_batch_ping_partial_ownership() {
+    let env = Env::default();
+    env.ledger().set_timestamp(1000);
+
+    // Build two plans owned by `owner` and one owned by `other`.
+    let (client, token_id, admin, owner) = setup_with_token_and_admin(&env);
+
+    // Mint tokens and approve KYC for `other` so they can create a plan.
+    let other = Address::generate(&env);
+    TestTokenHelper::new(&env, &token_id).mint(&other, &10_000_000i128);
+    client.submit_kyc(&other);
+    client.approve_kyc(&admin, &other);
+
+    let mut plan_ids: Vec<u64> = Vec::new(&env);
+
+    // Two plans for `owner`.
+    for _ in 0..2 {
+        let pid = client.create_inheritance_plan(&plan_params(
+            &env,
+            &owner,
+            &token_id,
+            "OwnPlan",
+            "Desc",
+            1_000_000u64,
+            DistributionMethod::LumpSum,
+            &default_beneficiaries(&env),
+        ));
+        client.add_inactivity_trigger(&owner, &pid, &3600u64);
+        plan_ids.push_back(pid);
+    }
+
+    // One plan owned by `other` — included in the batch sent by `owner`.
+    let foreign_pid = client.create_inheritance_plan(&plan_params(
+        &env,
+        &other,
+        &token_id,
+        "ForeignPlan",
+        "Desc",
+        1_000_000u64,
+        DistributionMethod::LumpSum,
+        &default_beneficiaries(&env),
+    ));
+    client.add_inactivity_trigger(&other, &foreign_pid, &3600u64);
+    plan_ids.push_back(foreign_pid);
+
+    let (success, fail) = client.batch_ping(&owner, &plan_ids);
+    assert_eq!(success, 2, "only owner's two plans should succeed");
+    assert_eq!(fail, 1, "the foreign plan should fail");
+}
+
+#[test]
+fn test_batch_ping_exceeds_limit_returns_error() {
+    let env = Env::default();
+    env.ledger().set_timestamp(1000);
+    // BATCH_LIMIT is 20; submit 21 plan IDs (all 0 — plan existence is checked
+    // after the limit guard, so the error fires before any lookup).
+    let mut too_many: Vec<u64> = Vec::new(&env);
+    for i in 0..21u64 {
+        too_many.push_back(i);
+    }
+
+    let (client, _token_id, _admin, owner) = setup_with_token_and_admin(&env);
+    let result = client.try_batch_ping(&owner, &too_many);
+    assert!(result.is_err(), "batch > BATCH_LIMIT should return an error");
+}
+
+#[test]
+fn test_batch_ping_nonexistent_plan_counted_as_failure() {
+    let env = Env::default();
+    env.ledger().set_timestamp(1000);
+    let (client, owner, mut plan_ids) = setup_multi_plan_for_batch_ping(&env, 2);
+
+    // Append a plan ID that has never been created.
+    plan_ids.push_back(999_999u64);
+
+    let (success, fail) = client.batch_ping(&owner, &plan_ids);
+    assert_eq!(success, 2, "real plans should still succeed");
+    assert_eq!(fail, 1, "nonexistent plan should be counted as failure");
+}

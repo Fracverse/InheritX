@@ -738,6 +738,16 @@ pub struct BatchClaimEvent {
     pub fail_count: u32,
 }
 
+/// Emitted after a batch_ping call (Issue #1161).
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct BatchPingEvent {
+    pub owner: Address,
+    pub success_count: u32,
+    pub fail_count: u32,
+    pub pinged_at: u64,
+}
+
 #[contracttype]
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct WillSignatureProof {
@@ -3703,6 +3713,83 @@ impl InheritanceContract {
         config.last_activity = env.ledger().timestamp();
         Self::save_trigger_config(&env, plan_id, &config);
         Ok(())
+    }
+
+    /// Batch proof-of-life ping for institutional owners managing many plans.
+    ///
+    /// Updates `last_activity` for every supplied `plan_id` in a single
+    /// transaction, saving the gas overhead of 50+ individual calls.
+    ///
+    /// Rules:
+    /// - Caller must be the authenticated owner of **every** plan in the list.
+    /// - The list may not exceed `BATCH_LIMIT` entries (20).
+    /// - Plans that are not found or are not owned by the caller are counted as
+    ///   failures; the rest are still updated (best-effort).
+    ///
+    /// Returns `(success_count, fail_count)` so the caller can detect partial
+    /// failures without reverting the whole transaction. Closes #1161.
+    pub fn batch_ping(
+        env: Env,
+        owner: Address,
+        plan_ids: Vec<u64>,
+    ) -> Result<(u32, u32), InheritanceError> {
+        owner.require_auth();
+
+        if plan_ids.len() > Self::BATCH_LIMIT {
+            return Err(InheritanceError::TooManyBeneficiaries);
+        }
+
+        let now = env.ledger().timestamp();
+        let mut success: u32 = 0;
+        let mut fail: u32 = 0;
+
+        for plan_id in plan_ids.iter() {
+            // Verify the plan exists and belongs to the caller.
+            let plan = match Self::get_plan(&env, plan_id) {
+                Some(p) => p,
+                None => {
+                    fail += 1;
+                    continue;
+                }
+            };
+            if plan.owner != owner {
+                fail += 1;
+                continue;
+            }
+
+            // Only update if a TriggerConfig exists (inactivity tracking is set up).
+            match Self::get_trigger_config(&env, plan_id) {
+                Some(mut config) => {
+                    config.last_activity = now;
+                    Self::save_trigger_config(&env, plan_id, &config);
+                    success += 1;
+                }
+                None => {
+                    // Plan exists but has no trigger config — count as failure.
+                    fail += 1;
+                }
+            }
+        }
+
+        env.events().publish(
+            (symbol_short!("BATCH"), symbol_short!("PING")),
+            BatchPingEvent {
+                owner: owner.clone(),
+                success_count: success,
+                fail_count: fail,
+                pinged_at: now,
+            },
+        );
+
+        log!(
+            &env,
+            "batch_ping owner {}: {} ok, {} failed",
+            owner,
+            success,
+            fail
+        );
+
+        Ok((success, fail))
     }
 
     pub fn submit_oracle_trigger(
