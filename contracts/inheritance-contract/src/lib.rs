@@ -361,6 +361,7 @@ pub struct PlanYieldState {
     pub harvest_count: u32,
     pub last_harvest_amount: u64,
     pub registered_principal: u64,
+    pub shares_balance: u64,
     pub pending_credit: u64,
     pub paused: bool,
     pub config: YieldConfig,
@@ -6841,6 +6842,61 @@ impl InheritanceContract {
         );
 
         Ok((success, fail, total))
+    }
+
+    /// Deposit idle vault liquidity into a Soroban yield pool.
+    ///
+    /// Transfers `amount` of the plan's yield asset from this contract to
+    /// `pool_address` and records the resulting shares on the plan's yield
+    /// state. The caller must be the plan owner and the plan must have yield
+    /// earning enabled.
+    pub fn deposit_to_yield_pool(
+        env: Env,
+        caller: Address,
+        plan_id: u64,
+        pool_address: Address,
+        amount: i128,
+    ) -> Result<(), InheritanceError> {
+        caller.require_auth();
+        Self::check_not_paused(&env);
+
+        if amount <= 0 {
+            return Err(InheritanceError::InvalidTotalAmount);
+        }
+        let amount_u64 = u64::try_from(amount)
+            .map_err(|_| InheritanceError::InvalidTotalAmount)?;
+
+        let plan = Self::get_plan(&env, plan_id).ok_or(InheritanceError::PlanNotFound)?;
+        if plan.owner != caller {
+            return Err(InheritanceError::Unauthorized);
+        }
+        if !plan.is_active || !plan.earn_yield {
+            return Err(InheritanceError::PlanNotActive);
+        }
+
+        let mut state = Self::require_yield_state(&env, plan_id)?;
+        if state.paused {
+            return Err(InheritanceError::PlanNotActive);
+        }
+
+        let contract_id = env.current_contract_address();
+        let token_client = token::Client::new(&env, &state.asset);
+        token_client.transfer(&contract_id, &pool_address, &amount);
+
+        state.registered_principal =
+            yield_math::safe_add(state.registered_principal, amount_u64)?;
+        state.shares_balance = yield_math::safe_add(state.shares_balance, amount_u64)?;
+        Self::set_yield_state(&env, plan_id, &state);
+
+        log!(
+            &env,
+            "Deposited {} into yield pool for plan {}; shares {}",
+            amount_u64,
+            plan_id,
+            state.shares_balance
+        );
+
+        Ok(())
     }
 
     // ─── Beneficiary Notification & Acknowledgment ────
