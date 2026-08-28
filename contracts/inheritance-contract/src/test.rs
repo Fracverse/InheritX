@@ -5,8 +5,8 @@ use super::*;
 use mock_token::MockToken;
 use mock_token::MockTokenClient;
 use soroban_sdk::{
-    testutils::Address as _, testutils::Events, testutils::Ledger, token, vec, Address, Bytes, Env,
-    IntoVal, String, TryFromVal, Val, Vec,
+    testutils::Address as _, testutils::Events, testutils::Ledger, token, vec, xdr::ToXdr, Address,
+    Bytes, Env, IntoVal, String, TryFromVal, Val, Vec,
 };
 
 /// Test helper for balance and mint (uses mock-token crate client).
@@ -7566,11 +7566,19 @@ fn snapshot_gas_datakey() {
     let (client, token, _admin, owner) = setup_with_token_and_admin(&env);
 
     // (1) Ledger-key footprint: the compact key must stay small.
+    // `DataKey::P(1)` serializes as `ScVal::Vec([Symbol("P"), U64(1)])`, which
+    // XDR-encodes to 36 bytes today: ScvVec tag (4) + Option marker (4) + vec
+    // length (4) + Symbol (4 + 4 + 4 padded) + U64 (4 + 8). Keeping every
+    // variant name a short symbol (<= 9 chars) caps the key at 44 bytes; a
+    // longer symbol or an extra payload field pushes it past that bound.
     let key = DataKey::P(1u64);
     let v: Val = key.into_val(&env);
     let key_len = v.to_xdr(&env).len();
     log!(&env, "SNAPSHOT DataKey::P xdr_len={}", key_len);
-    assert!(key_len <= 16, "compact ledger key unexpectedly large");
+    assert!(
+        key_len <= 44,
+        "compact ledger key unexpectedly large (variant symbol must stay <=9 chars)"
+    );
 
     // (2) Gas proxy: budget consumed by a plan create + read.
     env.budget().reset_default();
@@ -7585,8 +7593,8 @@ fn snapshot_gas_datakey() {
         &default_beneficiaries(&env),
     );
     let plan_id = client.create_inheritance_plan(&params);
-    let cpu_create = env.budget().get_cpu_insns();
-    let mem_create = env.budget().get_mem_bytes();
+    let cpu_create = env.budget().cpu_instruction_cost();
+    let mem_create = env.budget().memory_bytes_cost();
     log!(
         &env,
         "SNAPSHOT create_inheritance_plan cpu_insns={} mem_bytes={}",
@@ -7596,7 +7604,7 @@ fn snapshot_gas_datakey() {
 
     env.budget().reset_default();
     let _plan = client.get_plan_details(&plan_id);
-    let cpu_read = env.budget().get_cpu_insns();
+    let cpu_read = env.budget().cpu_instruction_cost();
     log!(&env, "SNAPSHOT get_plan_details cpu_insns={}", cpu_read);
 
     // Regression guards (generous headroom).
