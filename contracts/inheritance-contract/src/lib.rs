@@ -32,6 +32,11 @@ const MAX_YIELD_BATCH: u32 = 25;
 /// Emergency cooldown period in seconds (24 hours)
 const EMERGENCY_COOLDOWN_PERIOD: u64 = 86400;
 
+/// How long a primary beneficiary has to claim after inheritance is
+/// triggered ("post-expiration") before their configured contingency
+/// address becomes eligible to claim in their place. 180 days.
+const CONTINGENCY_CLAIM_DELAY: u64 = 180 * 24 * 60 * 60;
+
 #[contracttype]
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum DistributionMethod {
@@ -51,6 +56,14 @@ pub struct Beneficiary {
     pub allocation_bp: u32,  // Allocation in basis points (0-10000, where 10000 = 100%)
     pub priority: u32,       // Priority level (1=highest)
     pub is_claimed: bool,    // Whether the beneficiary has already claimed their portion
+    // Optional secondary/contingency payout address. If the primary
+    // beneficiary never claims (invalid, deactivated, or simply
+    // unreachable) this address can claim the allocation once the
+    // contingency window has elapsed after inheritance is triggered.
+    pub contingency_address: Option<Address>,
+    // Set to true once the allocation was paid out to `contingency_address`
+    // instead of the primary beneficiary, for auditability.
+    pub claimed_via_contingency: bool,
 }
 
 #[contracttype]
@@ -62,6 +75,8 @@ pub struct BeneficiaryInput {
     pub bank_account: Bytes,
     pub allocation_bp: u32,
     pub priority: u32,
+    // Optional secondary contingency address for this beneficiary.
+    pub contingency_address: Option<Address>,
 }
 
 #[contracttype]
@@ -137,6 +152,7 @@ pub enum InheritanceError {
     WillAlreadyLinked = 48,
     WillAlreadyFinalized = 49,
     WillVersionNotFound = 50,
+    ContingencyClaimNotAllowedYet = 51,
 }
 
 #[contracttype]
@@ -832,7 +848,8 @@ pub struct CreateInheritancePlanParams {
     pub description: String,
     pub total_amount: u64,
     pub distribution_method: DistributionMethod,
-    pub beneficiaries_data: Vec<(String, String, u32, Bytes, u32, u32)>,
+    // Tuple: (full_name, email, claim_code, bank_account, allocation_bp, priority, contingency_address)
+    pub beneficiaries_data: Vec<(String, String, u32, Bytes, u32, u32, Option<Address>)>,
     pub is_lendable: bool,
 }
 
@@ -1358,6 +1375,7 @@ impl InheritanceContract {
         bank_account: Bytes,
         allocation_bp: u32,
         priority: u32,
+        contingency_address: Option<Address>,
     ) -> Result<Beneficiary, InheritanceError> {
         // Validate inputs
         if full_name.is_empty() || email.is_empty() || bank_account.is_empty() {
@@ -1386,6 +1404,8 @@ impl InheritanceContract {
             allocation_bp,
             priority,
             is_claimed: false,
+            contingency_address,
+            claimed_via_contingency: false,
         })
     }
 
@@ -1422,7 +1442,7 @@ impl InheritanceContract {
 
     pub fn validate_beneficiaries(
         env: &Env,
-        beneficiaries_data: Vec<(String, String, u32, Bytes, u32, u32)>,
+        beneficiaries_data: Vec<(String, String, u32, Bytes, u32, u32, Option<Address>)>,
     ) -> Result<(), InheritanceError> {
         // Validate beneficiary count (max 10)
         if beneficiaries_data.len() > 10 {
@@ -1438,7 +1458,7 @@ impl InheritanceContract {
         let mut priorities = Vec::new(env);
         let mut emails = Vec::new(env);
 
-        for (name, email, _, _, bp, priority) in beneficiaries_data.iter() {
+        for (name, email, _, _, bp, priority, _contingency) in beneficiaries_data.iter() {
             // Issue #961: Require non-empty beneficiary names
             if name.is_empty() {
                 return Err(InheritanceError::InvalidBeneficiaryData);
@@ -1777,6 +1797,7 @@ impl InheritanceContract {
             beneficiary_input.bank_account,
             beneficiary_input.allocation_bp,
             beneficiary_input.priority,
+            beneficiary_input.contingency_address,
         )?;
 
         // Add beneficiary to plan
@@ -2012,6 +2033,7 @@ impl InheritanceContract {
                 beneficiary_data.3.clone(),
                 beneficiary_data.4,
                 beneficiary_data.5,
+                beneficiary_data.6.clone(),
             )?;
             total_allocation_bp += beneficiary_data.4;
             beneficiaries.push_back(beneficiary);
@@ -2096,11 +2118,11 @@ impl InheritanceContract {
     /// - PlanNotFound: If plan_id doesn't exist
     /// - InheritanceAlreadyTriggered: If a claim has already been triggered
     /// - Other validation errors from validate_beneficiaries
-    pub fn update_plan(
+        pub fn update_plan(
         env: Env,
         owner: Address,
         plan_id: u64,
-        beneficiaries: Vec<(String, String, u32, Bytes, u32, u32)>,
+        beneficiaries: Vec<(String, String, u32, Bytes, u32, u32, Option<Address>)>,
         grace_period: u64,
         earn_yield: bool,
     ) -> Result<(), InheritanceError> {
@@ -2129,6 +2151,15 @@ impl InheritanceContract {
         let mut total_allocation_bp = 0u32;
         let mut idx: u32 = 0;
         for beneficiary_data in beneficiaries.iter() {
+            // If the caller didn't supply a contingency address for this
+            // index, preserve any existing contingency address so updates
+            // don't accidentally drop it.
+            let fallback_contingency = plan
+                .beneficiaries
+                .get(idx)
+                .and_then(|b| b.contingency_address);
+            let contingency = beneficiary_data.6.clone().or(fallback_contingency);
+
             let beneficiary = Self::create_beneficiary(
                 &env,
                 plan_id,
@@ -2139,6 +2170,7 @@ impl InheritanceContract {
                 beneficiary_data.3.clone(),
                 beneficiary_data.4,
                 beneficiary_data.5,
+                contingency,
             )?;
             total_allocation_bp += beneficiary_data.4;
             new_beneficiaries.push_back(beneficiary);
@@ -2678,6 +2710,178 @@ impl InheritanceContract {
             "Inheritance claimed for plan {} by {}",
             plan_id,
             email
+        );
+
+        Self::exit_guard(&env);
+        Ok(())
+    }
+
+    /// Whether the contingency fallback for a beneficiary is currently
+    /// claimable: inheritance must be triggered, the primary beneficiary
+    /// must not have claimed yet, a contingency address must be configured,
+    /// and at least `CONTINGENCY_CLAIM_DELAY` must have elapsed since the
+    /// trigger ("post-expiration").
+    pub fn is_contingency_claim_available(
+        env: Env,
+        plan_id: u64,
+        beneficiary_index: u32,
+    ) -> Result<bool, InheritanceError> {
+        let plan = Self::get_plan(&env, plan_id).ok_or(InheritanceError::PlanNotFound)?;
+        if beneficiary_index >= plan.beneficiaries.len() {
+            return Err(InheritanceError::InvalidBeneficiaryIndex);
+        }
+        let beneficiary = plan.beneficiaries.get(beneficiary_index).unwrap();
+        if beneficiary.is_claimed || beneficiary.contingency_address.is_none() {
+            return Ok(false);
+        }
+        let trigger_info = match Self::get_trigger_info(&env, plan_id) {
+            Some(t) => t,
+            None => return Ok(false),
+        };
+        let now = env.ledger().timestamp();
+        Ok(now >= trigger_info.triggered_at.saturating_add(CONTINGENCY_CLAIM_DELAY))
+    }
+
+    /// Claim a beneficiary's allocation via their configured contingency
+    /// (secondary) address after the primary beneficiary has failed to claim
+    /// within `CONTINGENCY_CLAIM_DELAY` of inheritance being triggered.
+    pub fn claim_via_contingency(
+        env: Env,
+        plan_id: u64,
+        beneficiary_index: u32,
+        contingency_claimer: Address,
+    ) -> Result<(), InheritanceError> {
+        contingency_claimer.require_auth();
+        Self::check_not_paused(&env);
+        Self::enter_guard(&env);
+
+        let plan = Self::get_plan(&env, plan_id).ok_or(InheritanceError::PlanNotFound)?;
+
+        if !plan.is_active {
+            return Err(InheritanceError::PlanNotActive);
+        }
+        if env.storage().persistent().has(&DataKey::Fz(plan_id)) {
+            return Err(InheritanceError::PlanNotActive);
+        }
+        if env.storage().persistent().has(&DataKey::Lh(plan_id)) {
+            return Err(InheritanceError::PlanNotActive);
+        }
+
+        if beneficiary_index >= plan.beneficiaries.len() {
+            return Err(InheritanceError::InvalidBeneficiaryIndex);
+        }
+
+        if env
+            .storage()
+            .persistent()
+            .get::<DataKey, bool>(&DataKey::Fb(plan_id, beneficiary_index))
+            .unwrap_or(false)
+        {
+            return Err(InheritanceError::Unauthorized);
+        }
+
+        let beneficiary = plan.beneficiaries.get(beneficiary_index).unwrap();
+
+        let expected_contingency = beneficiary
+            .contingency_address
+            .clone()
+            .ok_or(InheritanceError::BeneficiaryNotFound)?;
+        if expected_contingency != contingency_claimer {
+            return Err(InheritanceError::Unauthorized);
+        }
+
+        if beneficiary.is_claimed {
+            return Err(InheritanceError::AlreadyClaimed);
+        }
+
+        // Bring trigger state up to date before checking post-expiration window
+        let _ = Self::auto_trigger_check(env.clone(), plan_id);
+
+        let trigger_info = Self::get_trigger_info(&env, plan_id)
+            .ok_or(InheritanceError::InheritanceNotTriggered)?;
+
+        let now = env.ledger().timestamp();
+        let unlock_at = trigger_info
+            .triggered_at
+            .saturating_add(CONTINGENCY_CLAIM_DELAY);
+        if now < unlock_at {
+            return Err(InheritanceError::ContingencyClaimNotAllowedYet);
+        }
+
+        // Build claim key using plan id and beneficiary hashed email
+        let claim_key = {
+            let mut data = Bytes::new(&env);
+            data.extend_from_slice(&plan_id.to_be_bytes());
+            data.extend_from_slice(&beneficiary.hashed_email.to_array());
+            DataKey::C(env.crypto().sha256(&data).into())
+        };
+        if env.storage().persistent().has(&claim_key) {
+            return Err(InheritanceError::AlreadyClaimed);
+        }
+
+        let mut payout = Self::calculate_waterfall_payout(&env, &plan, beneficiary_index);
+        let exit_settlement = Self::get_vesting_exit_settlement(&env, plan_id, beneficiary_index);
+        if exit_settlement > 0 {
+            payout = payout.min(exit_settlement);
+        }
+
+        if payout == 0 {
+            return Err(InheritanceError::NothingToClaim);
+        }
+
+        let mut updated_plan = plan.clone();
+        let exit_remaining_after = exit_settlement.saturating_sub(payout);
+        let exit_finalized = exit_settlement == 0 || exit_remaining_after == 0;
+
+        let mut b = updated_plan.beneficiaries.get(beneficiary_index).unwrap();
+        if exit_finalized {
+            b.is_claimed = true;
+            b.claimed_via_contingency = true;
+        }
+        updated_plan.beneficiaries.set(beneficiary_index, b);
+        updated_plan.total_amount = updated_plan.total_amount.saturating_sub(payout);
+        Self::store_plan(&env, plan_id, &updated_plan);
+
+        if exit_settlement > 0 {
+            let settle_key = DataKey::Ves(plan_id, beneficiary_index);
+            if exit_remaining_after == 0 {
+                env.storage().persistent().remove(&settle_key);
+            } else {
+                env.storage()
+                    .persistent()
+                    .set(&settle_key, &exit_remaining_after);
+            }
+        }
+
+        if exit_finalized {
+            let claim = ClaimRecord {
+                plan_id,
+                beneficiary_index,
+                claimed_at: now,
+            };
+            env.storage().persistent().set(&claim_key, &claim);
+            Self::add_plan_to_claimed(&env, plan.owner.clone(), plan_id);
+        }
+
+        access_control::assign_role(&env, &contingency_claimer, Role::Beneficiary);
+
+        env.events().publish(
+            (symbol_short!("CLAIM"), symbol_short!("SUCCESS")),
+            (plan_id, beneficiary.hashed_email, payout),
+        );
+
+        if !beneficiary.bank_account.is_empty() {
+            env.events().publish(
+                (symbol_short!("F_PAYOUT"),),
+                (plan_id, beneficiary_index, payout, symbol_short!("BANK")),
+            );
+        }
+
+        log!(
+            &env,
+            "Inheritance plan {} beneficiary {} claimed via contingency address",
+            plan_id,
+            beneficiary_index
         );
 
         Self::exit_guard(&env);
@@ -5260,6 +5464,7 @@ impl InheritanceContract {
                 input.bank_account.clone(),
                 input.allocation_bp,
                 input.priority,
+                input.contingency_address.clone(),
             ) {
                 Ok(beneficiary) => {
                     plan.total_allocation_bp = new_total;
