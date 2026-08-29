@@ -570,6 +570,7 @@ pub enum LendingError {
     PlanYieldInactive = 36,
     InvalidYieldBoost = 37,
     TooManyYieldPositions = 38,
+    FlashLoanDefense = 39,
 }
 
 impl From<LendingError> for soroban_sdk::Error {
@@ -627,6 +628,7 @@ impl TryFrom<soroban_sdk::Error> for LendingError {
             36 => Ok(LendingError::PlanYieldInactive),
             37 => Ok(LendingError::InvalidYieldBoost),
             38 => Ok(LendingError::TooManyYieldPositions),
+            39 => Ok(LendingError::FlashLoanDefense),
             _ => Err(err),
         }
     }
@@ -680,6 +682,7 @@ pub enum DataKey {
     Version,                           // Contract version (u32)
     PlanYield(u64),                    // plan_id -> PlanYieldPosition
     PlanYieldIndex,                    // Vec<u64> of every registered plan_id
+    DepositLedger(Address, Address),   // (User, Asset) -> deposit ledger sequence number
 }
 
 // ─────────────────────────────────────────────────
@@ -983,6 +986,18 @@ impl LendingContract {
         env.storage()
             .persistent()
             .set(&DataKey::Shares(owner.clone(), asset.clone()), &shares);
+    }
+
+    fn get_user_deposit_ledger(env: &Env, asset: &Address, user: &Address) -> Option<u32> {
+        env.storage()
+            .persistent()
+            .get(&DataKey::DepositLedger(user.clone(), asset.clone()))
+    }
+
+    fn set_user_deposit_ledger(env: &Env, asset: &Address, user: &Address, ledger: u32) {
+        env.storage()
+            .persistent()
+            .set(&DataKey::DepositLedger(user.clone(), asset.clone()), &ledger);
     }
 
     fn get_next_loan_id(env: &Env) -> u64 {
@@ -1325,6 +1340,7 @@ impl LendingContract {
 
         let existing = Self::get_shares(&env, &asset, &depositor);
         Self::set_shares(&env, &asset, &depositor, existing + shares);
+        Self::set_user_deposit_ledger(&env, &asset, &depositor, env.ledger().sequence());
 
         env.events().publish(
             (symbol_short!("POOL"), symbol_short!("DEPOSIT")),
@@ -1361,6 +1377,13 @@ impl LendingContract {
 
         if shares == 0 {
             return Err(LendingError::InvalidAmount);
+        }
+
+        // Flash loan defense guard: prevent withdrawal within the same ledger block as deposit
+        if let Some(deposit_ledger) = Self::get_user_deposit_ledger(&env, &asset, &depositor) {
+            if env.ledger().sequence() <= deposit_ledger {
+                return Err(LendingError::FlashLoanDefense);
+            }
         }
 
         let depositor_shares = Self::get_shares(&env, &asset, &depositor);
@@ -1432,6 +1455,13 @@ impl LendingContract {
 
         if amount == 0 || collateral_amount == 0 {
             return Err(LendingError::InvalidAmount);
+        }
+
+        // Flash loan defense guard: prevent borrowing within the same ledger block as collateral deposit
+        if let Some(deposit_ledger) = Self::get_user_deposit_ledger(&env, &collateral_token, &borrower) {
+            if env.ledger().sequence() <= deposit_ledger {
+                return Err(LendingError::FlashLoanDefense);
+            }
         }
 
         let mut pool = Self::get_pool(&env, &asset)?;
@@ -1804,6 +1834,11 @@ impl LendingContract {
     /// Returns the share balance of the given address for a specific asset.
     pub fn get_shares_of(env: Env, asset: Address, owner: Address) -> u64 {
         Self::get_shares(&env, &asset, &owner)
+    }
+
+    /// Returns the deposit ledger sequence number for a user and asset, if any.
+    pub fn get_deposit_ledger(env: Env, asset: Address, user: Address) -> Option<u32> {
+        Self::get_user_deposit_ledger(&env, &asset, &user)
     }
 
     /// Returns the outstanding loan record for the given borrower, if any.
