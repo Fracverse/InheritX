@@ -7614,3 +7614,205 @@ fn snapshot_gas_datakey() {
     );
     assert!(cpu_read < 5_000_000, "read plan cpu instructions regressed");
 }
+
+// ─── Beneficiary Whitelist & Restricted Assets Tests (Issue #1158) ───
+
+#[test]
+fn test_set_and_get_access_contract() {
+    let env = Env::default();
+    let (client, admin) = setup_versioned_contract(&env);
+
+    let access_id = env.register_contract(None, access_control::AccessControlContract);
+    let access_client = access_control::AccessControlContractClient::new(&env, &access_id);
+    access_client.initialize(&admin);
+
+    client.set_access_contract(&admin, &access_id);
+    assert_eq!(client.get_access_contract(), Some(access_id.clone()));
+    assert_eq!(client.get_access_control_contract(), Some(access_id));
+}
+
+#[test]
+#[should_panic(expected = "incompatible contract version")]
+fn test_set_access_contract_rejects_version_mismatch() {
+    let env = Env::default();
+    let (client, admin) = setup_versioned_contract(&env);
+
+    let stale = env.register_contract(None, StaleVersionPeer);
+    client.set_access_contract(&admin, &stale);
+}
+
+#[test]
+fn test_cross_contract_kyc_approved_verification() {
+    let env = Env::default();
+    let (client, _token, admin, _owner) = setup_with_token_and_admin(&env);
+    let beneficiary = create_test_address(&env, 105);
+
+    let access_id = env.register_contract(None, access_control::AccessControlContract);
+    let access_client = access_control::AccessControlContractClient::new(&env, &access_id);
+    access_client.initialize(&admin);
+
+    // Link AccessControl contract
+    client.set_access_contract(&admin, &access_id);
+
+    // Beneficiary not approved initially
+    assert!(!client.is_kyc_approved(&beneficiary));
+
+    // Submit and approve in AccessControlContract
+    access_client.submit_kyc(&beneficiary);
+    access_client.approve_kyc(&admin, &beneficiary);
+
+    // Verification via cross-contract call from InheritanceContract
+    assert!(client.is_kyc_approved(&beneficiary));
+}
+
+#[test]
+fn test_restricted_asset_and_plan_management() {
+    let env = Env::default();
+    let (client, token_id, admin, owner) = setup_with_token_and_admin(&env);
+
+    // Token-level restriction
+    assert!(!client.is_asset_restricted(&token_id));
+    client.set_restricted_asset(&admin, &token_id, &true);
+    assert!(client.is_asset_restricted(&token_id));
+    client.set_restricted_asset(&admin, &token_id, &false);
+    assert!(!client.is_asset_restricted(&token_id));
+
+    // Plan-level restriction
+    let params = plan_params(
+        &env,
+        &owner,
+        &token_id,
+        "Restricted Plan",
+        "Restricted Description",
+        100_000u64,
+        DistributionMethod::LumpSum,
+        &default_beneficiaries(&env),
+    );
+    let plan_id = client.create_inheritance_plan(&params);
+
+    assert!(!client.is_plan_restricted(&plan_id));
+    client.set_plan_restricted(&owner, &plan_id, &true);
+    assert!(client.is_plan_restricted(&plan_id));
+}
+
+#[test]
+fn test_restricted_asset_claim_held_in_escrow_and_released_after_kyc() {
+    let env = Env::default();
+    let (client, token_id, admin, owner) = setup_with_token_and_admin(&env);
+    let beneficiary = create_test_address(&env, 100);
+
+    // Deploy AccessControlContract and link to InheritanceContract
+    let access_id = env.register_contract(None, access_control::AccessControlContract);
+    let access_client = access_control::AccessControlContractClient::new(&env, &access_id);
+    access_client.initialize(&admin);
+    client.set_access_contract(&admin, &access_id);
+
+    // Create plan and mark it as restricted
+    let params = plan_params(
+        &env,
+        &owner,
+        &token_id,
+        "Restricted Inheritance Plan",
+        "KYC Whitelist Guarded Assets",
+        100_000u64,
+        DistributionMethod::LumpSum,
+        &default_beneficiaries(&env),
+    );
+    let plan_id = client.create_inheritance_plan(&params);
+    client.set_plan_restricted(&owner, &plan_id, &true);
+
+    // Beneficiary attempts to claim without KYC approval in AccessControlContract
+    assert!(!client.is_kyc_approved(&beneficiary));
+    let claim_res = client.try_claim_inheritance_plan(
+        &plan_id,
+        &beneficiary,
+        &String::from_str(&env, "alice@example.com"),
+        &111111u32,
+    );
+    assert!(claim_res.is_ok(), "claim should succeed by holding funds in escrow");
+
+    // Check escrow record is stored
+    let escrow = client.get_escrow_record(&plan_id, &0u32);
+    assert!(escrow.is_some());
+    let escrow_rec = escrow.unwrap();
+    assert_eq!(escrow_rec.beneficiary, beneficiary);
+    assert_eq!(escrow_rec.amount, 98_000u64);
+    assert!(!escrow_rec.is_released);
+    assert!(client.is_escrow_held(&plan_id, &0u32));
+
+    // Plan amount deducted to reserve escrowed tokens
+    let plan = client.get_plan_details(&plan_id).unwrap();
+    assert_eq!(plan.total_amount, 0);
+
+    // Releasing escrow before KYC approval fails with KycNotSubmitted
+    let early_release = client.try_release_escrow_payout(&beneficiary, &plan_id, &0u32);
+    assert!(early_release.is_err());
+    assert_eq!(early_release.err().unwrap().ok().unwrap(), InheritanceError::KycNotSubmitted);
+
+    // Approve KYC in AccessControlContract
+    access_client.submit_kyc(&beneficiary);
+    access_client.approve_kyc(&admin, &beneficiary);
+    assert!(client.is_kyc_approved(&beneficiary));
+
+    // Release escrowed payout now that beneficiary is KYC approved
+    let release_res = client.release_escrow_payout(&beneficiary, &plan_id, &0u32);
+    assert_eq!(release_res, ());
+
+    // Verify escrow state is released
+    assert!(!client.is_escrow_held(&plan_id, &0u32));
+    let updated_escrow = client.get_escrow_record(&plan_id, &0u32).unwrap();
+    assert!(updated_escrow.is_released);
+
+    // Beneficiary role assigned and marked claimed
+    assert!(client.has_role(&beneficiary, &access_control::Role::Beneficiary));
+    let final_plan = client.get_plan_details(&plan_id).unwrap();
+    assert!(final_plan.beneficiaries.get(0).unwrap().is_claimed);
+
+    // Double release fails with AlreadyClaimed
+    let double_release = client.try_release_escrow_payout(&beneficiary, &plan_id, &0u32);
+    assert!(double_release.is_err());
+    assert_eq!(double_release.err().unwrap().ok().unwrap(), InheritanceError::AlreadyClaimed);
+}
+
+#[test]
+fn test_escrow_release_unauthorized_caller_rejected() {
+    let env = Env::default();
+    let (client, token_id, admin, owner) = setup_with_token_and_admin(&env);
+    let beneficiary = create_test_address(&env, 100);
+    let stranger = create_test_address(&env, 101);
+
+    // Deploy AccessControlContract and link
+    let access_id = env.register_contract(None, access_control::AccessControlContract);
+    let access_client = access_control::AccessControlContractClient::new(&env, &access_id);
+    access_client.initialize(&admin);
+    client.set_access_contract(&admin, &access_id);
+
+    let params = plan_params(
+        &env,
+        &owner,
+        &token_id,
+        "Restricted Plan",
+        "Desc",
+        50_000u64,
+        DistributionMethod::LumpSum,
+        &default_beneficiaries(&env),
+    );
+    let plan_id = client.create_inheritance_plan(&params);
+    client.set_plan_restricted(&owner, &plan_id, &true);
+
+    // Claim into escrow
+    client.claim_inheritance_plan(
+        &plan_id,
+        &beneficiary,
+        &String::from_str(&env, "alice@example.com"),
+        &111111u32,
+    );
+
+    // Stranger with KYC approved tries to release beneficiary's escrow
+    access_client.submit_kyc(&stranger);
+    access_client.approve_kyc(&admin, &stranger);
+
+    let result = client.try_release_escrow_payout(&stranger, &plan_id, &0u32);
+    assert!(result.is_err());
+    assert_eq!(result.err().unwrap().ok().unwrap(), InheritanceError::Unauthorized);
+}

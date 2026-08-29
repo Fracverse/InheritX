@@ -1,6 +1,9 @@
 #![no_std]
 
-use soroban_sdk::{contracttype, Address, Env, Symbol, Val, Vec};
+use soroban_sdk::{
+    contract, contracterror, contractimpl, contracttype, symbol_short, Address, Env, Symbol, Val,
+    Vec,
+};
 
 /// The four roles recognised across all InheritX contracts.
 #[contracttype]
@@ -12,11 +15,34 @@ pub enum Role {
     Owner,
 }
 
-/// Per-address storage key for role lists.
+/// Per-address storage key for role lists and KYC state.
 #[contracttype]
 #[derive(Clone)]
 pub enum AccessControlKey {
     Roles(Address),
+    Kyc(Address),
+    Admin,
+}
+
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct AccessKycStatus {
+    pub submitted: bool,
+    pub approved: bool,
+    pub rejected: bool,
+    pub updated_at: u64,
+}
+
+#[contracterror]
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum AccessControlError {
+    AdminNotSet = 1,
+    AdminAlreadyInitialized = 2,
+    NotAdmin = 3,
+    Unauthorized = 4,
+    KycNotSubmitted = 5,
+    KycAlreadyApproved = 6,
+    KycAlreadyRejected = 7,
 }
 
 /// Assign `role` to `address`.  Idempotent — does nothing if already assigned.
@@ -358,5 +384,181 @@ pub fn assert_compatible_version_or_panic(
         Some(version) if version == expected_version => {}
         Some(_) => panic!("incompatible contract version"),
         None => panic!("contract version unavailable"),
+    }
+}
+
+// ─── KYC Whitelist Management ────────────────────
+
+/// Check if an address has approved KYC in access control storage.
+pub fn is_kyc_approved(env: &Env, address: &Address) -> bool {
+    let key = AccessControlKey::Kyc(address.clone());
+    if let Some(status) = env
+        .storage()
+        .persistent()
+        .get::<AccessControlKey, AccessKycStatus>(&key)
+    {
+        status.approved
+    } else {
+        false
+    }
+}
+
+/// Set KYC approval status for an address in access control storage.
+pub fn set_kyc_approved(env: &Env, address: &Address, approved: bool) {
+    let key = AccessControlKey::Kyc(address.clone());
+    let status = AccessKycStatus {
+        submitted: true,
+        approved,
+        rejected: !approved,
+        updated_at: env.ledger().timestamp(),
+    };
+    env.storage().persistent().set(&key, &status);
+}
+
+// ─── Access Control Contract ─────────────────────
+
+#[contract]
+pub struct AccessControlContract;
+
+#[contractimpl]
+impl AccessControlContract {
+    pub fn initialize(env: Env, admin: Address) -> Result<(), AccessControlError> {
+        let key = AccessControlKey::Admin;
+        if env.storage().instance().has(&key) {
+            return Err(AccessControlError::AdminAlreadyInitialized);
+        }
+        env.storage().instance().set(&key, &admin);
+        assign_role(&env, &admin, Role::Admin);
+        set_contract_version(&env, CONTRACT_VERSION);
+        Ok(())
+    }
+
+    pub fn get_admin(env: Env) -> Option<Address> {
+        env.storage().instance().get(&AccessControlKey::Admin)
+    }
+
+    pub fn get_version(env: Env) -> u32 {
+        get_contract_version(&env)
+    }
+
+    pub fn assign_role(
+        env: Env,
+        admin: Address,
+        address: Address,
+        role: Role,
+    ) -> Result<(), AccessControlError> {
+        admin.require_auth();
+        if !has_role(&env, &admin, Role::Admin) {
+            return Err(AccessControlError::NotAdmin);
+        }
+        assign_role(&env, &address, role);
+        Ok(())
+    }
+
+    pub fn revoke_role(
+        env: Env,
+        admin: Address,
+        address: Address,
+        role: Role,
+    ) -> Result<(), AccessControlError> {
+        admin.require_auth();
+        if !has_role(&env, &admin, Role::Admin) {
+            return Err(AccessControlError::NotAdmin);
+        }
+        revoke_role(&env, &address, role);
+        Ok(())
+    }
+
+    pub fn has_role(env: Env, address: Address, role: Role) -> bool {
+        has_role(&env, &address, role)
+    }
+
+    pub fn get_roles(env: Env, address: Address) -> Vec<Role> {
+        let key = AccessControlKey::Roles(address);
+        env.storage().persistent().get(&key).unwrap_or(Vec::new(&env))
+    }
+
+    pub fn submit_kyc(env: Env, user: Address) -> Result<(), AccessControlError> {
+        user.require_auth();
+        let key = AccessControlKey::Kyc(user.clone());
+        let mut status = env.storage().persistent().get(&key).unwrap_or(AccessKycStatus {
+            submitted: false,
+            approved: false,
+            rejected: false,
+            updated_at: 0,
+        });
+        if status.approved {
+            return Err(AccessControlError::KycAlreadyApproved);
+        }
+        status.submitted = true;
+        status.updated_at = env.ledger().timestamp();
+        env.storage().persistent().set(&key, &status);
+        Ok(())
+    }
+
+    pub fn approve_kyc(env: Env, admin: Address, user: Address) -> Result<(), AccessControlError> {
+        admin.require_auth();
+        if !has_role(&env, &admin, Role::Admin) {
+            return Err(AccessControlError::NotAdmin);
+        }
+        let key = AccessControlKey::Kyc(user.clone());
+        let status = AccessKycStatus {
+            submitted: true,
+            approved: true,
+            rejected: false,
+            updated_at: env.ledger().timestamp(),
+        };
+        env.storage().persistent().set(&key, &status);
+        env.events().publish(
+            (symbol_short!("KYC"), symbol_short!("APPROV")),
+            (user, env.ledger().timestamp()),
+        );
+        Ok(())
+    }
+
+    pub fn reject_kyc(env: Env, admin: Address, user: Address) -> Result<(), AccessControlError> {
+        admin.require_auth();
+        if !has_role(&env, &admin, Role::Admin) {
+            return Err(AccessControlError::NotAdmin);
+        }
+        let key = AccessControlKey::Kyc(user.clone());
+        let status = AccessKycStatus {
+            submitted: true,
+            approved: false,
+            rejected: true,
+            updated_at: env.ledger().timestamp(),
+        };
+        env.storage().persistent().set(&key, &status);
+        env.events().publish(
+            (symbol_short!("KYC"), symbol_short!("REJECT")),
+            (user, env.ledger().timestamp()),
+        );
+        Ok(())
+    }
+
+    pub fn is_kyc_approved(env: Env, address: Address) -> bool {
+        is_kyc_approved(&env, &address)
+    }
+
+    pub fn pause(env: Env, admin: Address) -> Result<(), AccessControlError> {
+        admin.require_auth();
+        if !has_role(&env, &admin, Role::Admin) {
+            return Err(AccessControlError::NotAdmin);
+        }
+        pause_contract(&env);
+        Ok(())
+    }
+
+    pub fn unpause(env: Env, admin: Address) -> Result<(), AccessControlError> {
+        admin.require_auth();
+        if !has_role(&env, &admin, Role::Admin) {
+            return Err(AccessControlError::NotAdmin);
+        }
+        unpause_contract(&env);
+        Ok(())
+    }
+
+    pub fn is_paused(env: Env) -> bool {
+        is_contract_paused(&env)
     }
 }
