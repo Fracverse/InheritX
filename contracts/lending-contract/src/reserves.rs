@@ -1,10 +1,5 @@
 use soroban_sdk::{contracttype, Address};
 
-/// Utilization kink used by the default reserve interest-rate curve.
-pub const DEFAULT_KINK_UTILIZATION_BPS: u32 = 8_000;
-/// Default second-stage rate slope, in basis points from kink to 100% utilization.
-pub const DEFAULT_SLOPE2_BPS: u32 = 30_000;
-
 #[contracttype]
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct ReserveWithdrawnEvent {

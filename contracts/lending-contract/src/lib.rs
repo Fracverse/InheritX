@@ -7,8 +7,6 @@ use soroban_sdk::{
 
 mod reserves;
 
-use reserves::{DEFAULT_KINK_UTILIZATION_BPS, DEFAULT_SLOPE2_BPS};
-
 // ─────────────────────────────────────────────────
 // Constants
 // ─────────────────────────────────────────────────
@@ -1282,14 +1280,11 @@ impl LendingContract {
         multiplier_bps: u32,
         utilization_bps: u32,
     ) -> u32 {
-        let model = RateModel {
-            base_rate_bps,
-            optimal_utilization_bps: DEFAULT_KINK_UTILIZATION_BPS,
-            slope1_bps: multiplier_bps,
-            slope2_bps: DEFAULT_SLOPE2_BPS,
-            reserve_factor_bps: 0,
-        };
-        Self::two_slope_rate(&model, utilization_bps)
+        // Preserve the legacy pool-rate behaviour for pools without an
+        // explicitly configured RateModel. The kinked curve is exposed by
+        // the configured model APIs and is selected when RateModel exists.
+        let variable_rate = (utilization_bps as u64).saturating_mul(multiplier_bps as u64) / 10_000;
+        base_rate_bps.saturating_add(variable_rate as u32)
     }
 
     // ─── Public Functions ────────────────────────────
@@ -1499,8 +1494,15 @@ impl LendingContract {
         pool.total_borrowed += amount;
 
         let utilization_bps = Self::get_utilization_bps(pool.total_borrowed, pool.total_deposits);
-        let dynamic_rate_bps =
-            Self::calculate_dynamic_rate(pool.base_rate_bps, pool.multiplier_bps, utilization_bps);
+        let dynamic_rate_bps = if let Some(model) = env
+            .storage()
+            .instance()
+            .get::<DataKey, RateModel>(&DataKey::RateModel)
+        {
+            Self::two_slope_rate(&model, utilization_bps)
+        } else {
+            Self::calculate_dynamic_rate(pool.base_rate_bps, pool.multiplier_bps, utilization_bps)
+        };
 
         Self::set_pool(&env, &asset, &pool);
 
@@ -1847,6 +1849,13 @@ impl LendingContract {
         Self::require_initialized(&env)?;
         let pool = Self::get_pool(&env, &asset)?;
         let utilization_bps = Self::get_utilization_bps(pool.total_borrowed, pool.total_deposits);
+        if let Some(model) = env
+            .storage()
+            .instance()
+            .get::<DataKey, RateModel>(&DataKey::RateModel)
+        {
+            return Ok(Self::two_slope_rate(&model, utilization_bps));
+        }
         Ok(Self::calculate_dynamic_rate(
             pool.base_rate_bps,
             pool.multiplier_bps,
@@ -2679,8 +2688,15 @@ impl LendingContract {
 
         let pool = Self::get_pool(&env, &loan.asset)?;
         let utilization_bps = Self::get_utilization_bps(pool.total_borrowed, pool.total_deposits);
-        let new_interest_rate_bps =
-            Self::calculate_dynamic_rate(pool.base_rate_bps, pool.multiplier_bps, utilization_bps);
+        let new_interest_rate_bps = if let Some(model) = env
+            .storage()
+            .instance()
+            .get::<DataKey, RateModel>(&DataKey::RateModel)
+        {
+            Self::two_slope_rate(&model, utilization_bps)
+        } else {
+            Self::calculate_dynamic_rate(pool.base_rate_bps, pool.multiplier_bps, utilization_bps)
+        };
 
         Ok(RefinanceTerms {
             outstanding_balance,
@@ -2950,8 +2966,15 @@ impl LendingContract {
 
         let pool = Self::get_pool(&env, &consolidation_asset)?;
         let utilization_bps = Self::get_utilization_bps(pool.total_borrowed, pool.total_deposits);
-        let new_interest_rate_bps =
-            Self::calculate_dynamic_rate(pool.base_rate_bps, pool.multiplier_bps, utilization_bps);
+        let new_interest_rate_bps = if let Some(model) = env
+            .storage()
+            .instance()
+            .get::<DataKey, RateModel>(&DataKey::RateModel)
+        {
+            Self::two_slope_rate(&model, utilization_bps)
+        } else {
+            Self::calculate_dynamic_rate(pool.base_rate_bps, pool.multiplier_bps, utilization_bps)
+        };
 
         let new_loan = LoanRecord {
             loan_id: new_loan_id,
@@ -3087,8 +3110,15 @@ impl LendingContract {
 
         let pool = Self::get_pool(&env, &old_loan.asset)?;
         let utilization_bps = Self::get_utilization_bps(pool.total_borrowed, pool.total_deposits);
-        let new_interest_rate_bps =
-            Self::calculate_dynamic_rate(pool.base_rate_bps, pool.multiplier_bps, utilization_bps);
+        let new_interest_rate_bps = if let Some(model) = env
+            .storage()
+            .instance()
+            .get::<DataKey, RateModel>(&DataKey::RateModel)
+        {
+            Self::two_slope_rate(&model, utilization_bps)
+        } else {
+            Self::calculate_dynamic_rate(pool.base_rate_bps, pool.multiplier_bps, utilization_bps)
+        };
 
         // Distribute collateral proportionally
         for amount in split_amounts.iter() {
@@ -4725,7 +4755,11 @@ impl LendingContract {
 
     /// Two-slope interest rate calculation.
     fn two_slope_rate(model: &RateModel, utilization_bps: u32) -> u32 {
-        let optimal = model.optimal_utilization_bps;
+        let optimal = model.optimal_utilization_bps.min(10_000);
+        let utilization_bps = utilization_bps.min(10_000);
+        if optimal == 0 {
+            return model.base_rate_bps.saturating_add(model.slope2_bps);
+        }
         if utilization_bps <= optimal {
             // Linear ramp up to slope1 at optimal utilization
             let variable = (utilization_bps as u64)
@@ -4736,7 +4770,7 @@ impl LendingContract {
         } else {
             // Above optimal: base + slope1 + steep slope2 portion
             let excess = utilization_bps.saturating_sub(optimal);
-            let max_excess = (10000u32).saturating_sub(optimal);
+            let max_excess = 10_000u32.saturating_sub(optimal);
             let steep = if max_excess == 0 {
                 model.slope2_bps as u64
             } else {
