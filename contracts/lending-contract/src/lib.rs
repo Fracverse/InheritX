@@ -4914,7 +4914,9 @@ impl LendingContract {
 
         let threshold = 518_400;
         let extend_to = 535_680;
-        env.storage().persistent().extend_ttl(&key, threshold, extend_to);
+        env.storage()
+            .persistent()
+            .extend_ttl(&key, threshold, extend_to);
 
         Ok(())
     }
