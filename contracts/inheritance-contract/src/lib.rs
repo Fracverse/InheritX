@@ -1520,6 +1520,7 @@ impl InheritanceContract {
     fn store_plan(env: &Env, plan_id: u64, plan: &InheritancePlan) {
         let key = DataKey::Plan(plan_id);
         env.storage().persistent().set(&key, plan);
+        let _ = Self::extend_plan_ttl_internal(env, plan_id);
     }
 
     fn get_plan(env: &Env, plan_id: u64) -> Option<InheritancePlan> {
@@ -7157,6 +7158,55 @@ impl InheritanceContract {
             .persistent()
             .get(&symbol_short!("supp_wrp"))
             .unwrap_or_else(|| Vec::new(&env))
+    }
+
+    /// Extend the TTL of the plan and its specific associated entries.
+    /// This is the worker ping endpoint.
+    pub fn extend_ttl(env: Env, plan_id: u64) -> Result<(), InheritanceError> {
+        Self::extend_plan_ttl_internal(&env, plan_id)
+    }
+
+    fn extend_plan_ttl_internal(env: &Env, plan_id: u64) -> Result<(), InheritanceError> {
+        let key = DataKey::Plan(plan_id);
+        if !env.storage().persistent().has(&key) {
+            return Err(InheritanceError::PlanNotFound);
+        }
+        
+        let threshold = 518_400;
+        let extend_to = 535_680;
+        env.storage().persistent().extend_ttl(&key, threshold, extend_to);
+
+        let trigger_key = DataKey::InheritanceTrigger(plan_id);
+        if env.storage().persistent().has(&trigger_key) {
+            env.storage().persistent().extend_ttl(&trigger_key, threshold, extend_to);
+        }
+
+        let emergency_access_key = DataKey::EmergencyAccess(plan_id);
+        if env.storage().persistent().has(&emergency_access_key) {
+            env.storage().persistent().extend_ttl(&emergency_access_key, threshold, extend_to);
+        }
+
+        let guardians_key = DataKey::Guardians(plan_id);
+        if env.storage().persistent().has(&guardians_key) {
+            env.storage().persistent().extend_ttl(&guardians_key, threshold, extend_to);
+        }
+
+        let contacts_key = DataKey::EmergencyContacts(plan_id);
+        if env.storage().persistent().has(&contacts_key) {
+            env.storage().persistent().extend_ttl(&contacts_key, threshold, extend_to);
+        }
+
+        let will_hash_key = DataKey::WillHash(plan_id);
+        if env.storage().persistent().has(&will_hash_key) {
+            env.storage().persistent().extend_ttl(&will_hash_key, threshold, extend_to);
+        }
+
+        let vault_will_key = DataKey::VaultWill(plan_id);
+        if env.storage().persistent().has(&vault_will_key) {
+            env.storage().persistent().extend_ttl(&vault_will_key, threshold, extend_to);
+        }
+
+        Ok(())
     }
 }
 
