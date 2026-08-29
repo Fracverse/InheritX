@@ -98,7 +98,6 @@ pub enum InheritanceError {
     Unauthorized = 9,
     PlanNotFound = 10,
     InvalidBeneficiaryIndex = 11,
-    AllocationExceedsLimit = 12,
     InvalidAllocation = 13,
     InvalidClaimCodeRange = 14,
     ClaimNotAllowedYet = 15,
@@ -1767,7 +1766,7 @@ impl InheritanceContract {
     /// - Unauthorized: If caller is not the plan owner
     /// - PlanNotFound: If plan_id doesn't exist
     /// - TooManyBeneficiaries: If plan already has 10 beneficiaries
-    /// - AllocationExceedsLimit: If total allocation would exceed 10000 basis points
+    /// - AllocationPercentageMismatch: If total allocation would exceed 10000 basis points
     /// - InvalidBeneficiaryData: If any required field is empty
     /// - InvalidAllocation: If allocation_bp is 0
     /// - InvalidClaimCodeRange: If claim_code > 999999
@@ -1802,9 +1801,10 @@ impl InheritanceContract {
         }
 
         // Check that total allocation won't exceed 10000 basis points (100%)
+        // Check that total allocation won't exceed 10000 basis points (100%)
         let new_total = plan.total_allocation_bp + beneficiary_input.allocation_bp;
         if new_total > 10000 {
-            return Err(InheritanceError::AllocationExceedsLimit);
+            return Err(InheritanceError::AllocationPercentageMismatch);
         }
 
         // Create the beneficiary (validates inputs and hashes sensitive data)
