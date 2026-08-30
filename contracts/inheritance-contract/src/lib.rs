@@ -7489,7 +7489,7 @@ impl InheritanceContract {
     }
 
     fn extend_plan_ttl_internal(env: &Env, plan_id: u64) -> Result<(), InheritanceError> {
-        let key = DataKey::Plan(plan_id);
+        let key = DataKey::P(plan_id);
         if !env.storage().persistent().has(&key) {
             return Err(InheritanceError::PlanNotFound);
         }
@@ -7500,42 +7500,42 @@ impl InheritanceContract {
             .persistent()
             .extend_ttl(&key, threshold, extend_to);
 
-        let trigger_key = DataKey::InheritanceTrigger(plan_id);
+        let trigger_key = DataKey::It(plan_id);
         if env.storage().persistent().has(&trigger_key) {
             env.storage()
                 .persistent()
                 .extend_ttl(&trigger_key, threshold, extend_to);
         }
 
-        let emergency_access_key = DataKey::EmergencyAccess(plan_id);
+        let emergency_access_key = DataKey::Eac(plan_id);
         if env.storage().persistent().has(&emergency_access_key) {
             env.storage()
                 .persistent()
                 .extend_ttl(&emergency_access_key, threshold, extend_to);
         }
 
-        let guardians_key = DataKey::Guardians(plan_id);
+        let guardians_key = DataKey::Gd(plan_id);
         if env.storage().persistent().has(&guardians_key) {
             env.storage()
                 .persistent()
                 .extend_ttl(&guardians_key, threshold, extend_to);
         }
 
-        let contacts_key = DataKey::EmergencyContacts(plan_id);
+        let contacts_key = DataKey::Ec(plan_id);
         if env.storage().persistent().has(&contacts_key) {
             env.storage()
                 .persistent()
                 .extend_ttl(&contacts_key, threshold, extend_to);
         }
 
-        let will_hash_key = DataKey::WillHash(plan_id);
+        let will_hash_key = DataKey::Wh(plan_id);
         if env.storage().persistent().has(&will_hash_key) {
             env.storage()
                 .persistent()
                 .extend_ttl(&will_hash_key, threshold, extend_to);
         }
 
-        let vault_will_key = DataKey::VaultWill(plan_id);
+        let vault_will_key = DataKey::Vw(plan_id);
         if env.storage().persistent().has(&vault_will_key) {
             env.storage()
                 .persistent()
