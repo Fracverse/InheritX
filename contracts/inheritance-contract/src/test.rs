@@ -1401,7 +1401,6 @@ fn test_upgrade_rejects_non_admin() {
     let non_admin = create_test_address(&env, 2);
     client.initialize_admin(&admin);
 
-    // Auth check happens before wasm swap, so this returns NotAdmin
     let result = client.try_upgrade(&non_admin, &fake_wasm_hash(&env));
     assert!(result.is_err());
 }
@@ -1416,6 +1415,17 @@ fn test_upgrade_rejects_no_admin_initialized() {
     let caller = create_test_address(&env, 1);
 
     let result = client.try_upgrade(&caller, &fake_wasm_hash(&env));
+    assert!(result.is_err());
+}
+
+#[test]
+fn test_upgrade_wasm_rejects_no_admin_initialized() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let contract_id = env.register_contract(None, InheritanceContract);
+    let client = InheritanceContractClient::new(&env, &contract_id);
+
+    let result = client.try_upgrade_wasm(&fake_wasm_hash(&env));
     assert!(result.is_err());
 }
 
@@ -7614,3 +7624,20 @@ fn snapshot_gas_datakey() {
     );
     assert!(cpu_read < 5_000_000, "read plan cpu instructions regressed");
 }
+
+#[test]
+fn test_raise_dispute_and_resolve_dispute() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let (client, _admin, _owner, plan_id) = setup_plan_for_triggers(&env);
+
+    let challenger = create_test_address(&env, 99);
+    let proof_hash = BytesN::from_array(&env, &[1u8; 32]);
+
+    let dispute_id = client.raise_dispute(&plan_id, &challenger, &proof_hash);
+    assert_eq!(dispute_id, 0);
+
+    let res = client.try_resolve_dispute(&plan_id, &true);
+    assert!(res.is_ok());
+}
+

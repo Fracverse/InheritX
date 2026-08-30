@@ -1356,6 +1356,172 @@ impl InheritanceContract {
         Ok(())
     }
 
+    pub fn raise_dispute(
+        env: Env,
+        plan_id: u64,
+        challenger: Address,
+        _proof_hash: BytesN<32>,
+    ) -> Result<u64, InheritanceError> {
+        challenger.require_auth();
+        Self::check_not_paused(&env);
+
+        let _ = Self::get_plan(&env, plan_id).ok_or(InheritanceError::PlanNotFound)?;
+
+        let dispute_id = env
+            .storage()
+            .persistent()
+            .get(&DataKey::Ndi)
+            .unwrap_or(0u64);
+
+        let mut arbitrator = Self::get_admin(&env).ok_or(InheritanceError::AdminNotSet)?;
+        let list: Vec<Address> = env
+            .storage()
+            .persistent()
+            .get(&DataKey::Arb)
+            .unwrap_or(Vec::new(&env));
+        if !list.is_empty() {
+            arbitrator = list.get(0).unwrap();
+        }
+
+        let record = DisputeRecord {
+            dispute_id,
+            plan_id,
+            disputer: challenger.clone(),
+            reason: String::from_str(&env, "dispute raised"),
+            status: DisputeStatus::Filed,
+            filed_at: env.ledger().timestamp(),
+            resolved_at: 0,
+            resolution_notes: String::from_str(&env, ""),
+            arbitrator,
+        };
+
+        env.storage()
+            .persistent()
+            .set(&DataKey::Ds(dispute_id), &record);
+
+        let mut plan_disputes: Vec<u64> = env
+            .storage()
+            .persistent()
+            .get(&DataKey::Pd(plan_id))
+            .unwrap_or(Vec::new(&env));
+        plan_disputes.push_back(dispute_id);
+        env.storage()
+            .persistent()
+            .set(&DataKey::Pd(plan_id), &plan_disputes);
+
+        env.storage()
+            .persistent()
+            .set(&DataKey::Ndi, &(dispute_id + 1));
+
+        let fr = FreezeRecord {
+            plan_id,
+            frozen_at: env.ledger().timestamp(),
+            reason: String::from_str(&env, "dispute"),
+            frozen_by: challenger.clone(),
+        };
+        env.storage()
+            .persistent()
+            .set(&DataKey::Fz(plan_id), &fr);
+
+        env.events().publish(
+            (symbol_short!("DSPT"), symbol_short!("RAISED")),
+            disputes::DisputeFiledEvent {
+                dispute_id,
+                plan_id,
+                disputer: challenger,
+                reason: String::from_str(&env, "dispute raised"),
+                filed_at: env.ledger().timestamp(),
+            },
+        );
+
+        env.events().publish(
+            (symbol_short!("PLAN"), symbol_short!("FROZE")),
+            disputes::PlanFrozenEvent {
+                plan_id,
+                dispute_id,
+                frozen_at: env.ledger().timestamp(),
+            },
+        );
+
+        Ok(dispute_id)
+    }
+
+    pub fn resolve_dispute(
+        env: Env,
+        plan_id: u64,
+        approve: bool,
+    ) -> Result<(), InheritanceError> {
+        Self::check_not_paused(&env);
+
+        let mut arbitrator = Self::get_admin(&env).ok_or(InheritanceError::AdminNotSet)?;
+        let list: Vec<Address> = env
+            .storage()
+            .persistent()
+            .get(&DataKey::Arb)
+            .unwrap_or(Vec::new(&env));
+        if !list.is_empty() {
+            arbitrator = list.get(0).unwrap();
+        }
+        arbitrator.require_auth();
+
+        let plan_disputes: Vec<u64> = env
+            .storage()
+            .persistent()
+            .get(&DataKey::Pd(plan_id))
+            .unwrap_or(Vec::new(&env));
+
+        if plan_disputes.is_empty() {
+            return Err(InheritanceError::PlanNotFound);
+        }
+
+        let new_status = if approve {
+            DisputeStatus::Resolved
+        } else {
+            DisputeStatus::Rejected
+        };
+
+        for dispute_id in plan_disputes.iter() {
+            if let Some(mut record) = Self::get_dispute(env.clone(), dispute_id) {
+                if record.status == DisputeStatus::Filed || record.status == DisputeStatus::UnderReview {
+                    record.status = new_status;
+                    record.resolved_at = env.ledger().timestamp();
+                    record.resolution_notes = if approve {
+                        String::from_str(&env, "resolved")
+                    } else {
+                        String::from_str(&env, "rejected")
+                    };
+                    env.storage()
+                        .persistent()
+                        .set(&DataKey::Ds(dispute_id), &record);
+
+                    env.events().publish(
+                        (symbol_short!("DSPT"), symbol_short!("RESOLV")),
+                        disputes::DisputeResolvedEvent {
+                            dispute_id,
+                            plan_id,
+                            status: new_status,
+                            arbitrator: arbitrator.clone(),
+                            resolved_at: record.resolved_at,
+                        },
+                    );
+                }
+            }
+        }
+
+        env.storage().persistent().remove(&DataKey::Fz(plan_id));
+
+        env.events().publish(
+            (symbol_short!("PLAN"), symbol_short!("UNFRO")),
+            disputes::PlanUnfrozenEvent {
+                plan_id,
+                dispute_id: 0,
+                unfrozen_at: env.ledger().timestamp(),
+            },
+        );
+
+        Ok(())
+    }
+
     #[allow(clippy::too_many_arguments)]
     fn create_beneficiary(
         env: &Env,
@@ -4131,36 +4297,52 @@ impl InheritanceContract {
         admin: Address,
         new_wasm_hash: BytesN<32>,
     ) -> Result<(), InheritanceError> {
-        // Only the contract admin can trigger an upgrade
         Self::require_admin(&env, &admin)?;
 
         let old_version = Self::version(env.clone());
         let new_version = old_version + 1;
 
-        // Store the new version before upgrading
         env.storage().instance().set(&DataKey::Ver, &new_version);
 
-        // Emit upgrade event for audit trail
         env.events().publish(
             (symbol_short!("CONTRACT"), symbol_short!("UPGRADE")),
             ContractUpgradedEvent {
                 old_version,
                 new_version,
                 new_wasm_hash: new_wasm_hash.clone(),
-                admin: admin.clone(),
+                admin,
                 upgraded_at: env.ledger().timestamp(),
             },
         );
 
-        log!(
-            &env,
-            "Contract upgraded from v{} to v{} by admin",
-            old_version,
-            new_version
+        env.deployer().update_current_contract_wasm(new_wasm_hash);
+
+        Ok(())
+    }
+
+    pub fn upgrade_wasm(
+        env: Env,
+        new_wasm_hash: BytesN<32>,
+    ) -> Result<(), InheritanceError> {
+        let admin = Self::get_admin(&env).ok_or(InheritanceError::AdminNotSet)?;
+        Self::require_admin(&env, &admin)?;
+
+        let old_version = Self::version(env.clone());
+        let new_version = old_version + 1;
+
+        env.storage().instance().set(&DataKey::Ver, &new_version);
+
+        env.events().publish(
+            (symbol_short!("CONTRACT"), symbol_short!("UPGRADE")),
+            ContractUpgradedEvent {
+                old_version,
+                new_version,
+                new_wasm_hash: new_wasm_hash.clone(),
+                admin,
+                upgraded_at: env.ledger().timestamp(),
+            },
         );
 
-        // Perform the atomic WASM upgrade — this replaces the contract code
-        // while preserving all storage (plans, claims, KYC, admin, etc.)
         env.deployer().update_current_contract_wasm(new_wasm_hash);
 
         Ok(())
