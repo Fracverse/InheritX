@@ -1542,7 +1542,10 @@ impl InheritanceContract {
         let cache_key = DataKey::Pc(plan_id);
 
         // Check instance cache first (cheap, in-memory within same tx)
-        if let Some(cached) = env.storage().instance().get::<DataKey, InheritancePlan>(&cache_key)
+        if let Some(cached) = env
+            .storage()
+            .instance()
+            .get::<DataKey, InheritancePlan>(&cache_key)
         {
             return Some(cached);
         }
@@ -5792,8 +5795,7 @@ impl InheritanceContract {
         }
 
         // 2. Load plan ONCE from persistent storage and cache it
-        let plan = Self::load_plan_cached(&env, plan_id)
-            .ok_or(InheritanceError::PlanNotFound)?;
+        let plan = Self::load_plan_cached(&env, plan_id).ok_or(InheritanceError::PlanNotFound)?;
 
         // 3. Validate plan state (must be active)
         if !plan.is_active {
