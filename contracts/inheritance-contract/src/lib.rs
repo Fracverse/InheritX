@@ -1565,7 +1565,7 @@ impl InheritanceContract {
                 .with_current_contract(Self::plan_vault_salt(env, plan_id))
                 .deployed_address();
             Self::store_plan_vault(env, plan_id, &vault);
-            return Ok(vault);
+            Ok(vault)
         }
 
         #[cfg(not(test))]
@@ -1621,7 +1621,7 @@ impl InheritanceContract {
             if res.is_err() {
                 return Err(InheritanceError::FeeTransferFailed);
             }
-            return Ok(());
+            Ok(())
         }
 
         #[cfg(not(test))]
