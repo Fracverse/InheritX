@@ -1,8 +1,8 @@
 #![no_std]
 use access_control::{self, Role};
 use soroban_sdk::{
-    contract, contractimpl, contracttype, log, symbol_short, token, vec, Address, BytesN, Env,
-    IntoVal, InvokeError, Val, Vec,
+    contract, contractimpl, contracttype, log, symbol_short, token, vec, Address, Bytes, BytesN,
+    Env, IntoVal, InvokeError, String, Val, Vec,
 };
 
 mod reserves;
@@ -127,6 +127,12 @@ pub struct NftLoanMetadata {
     pub collateral_amount: u64,
     pub collateral_token: Address,
     pub due_date: u64,
+    /// LTV ratio in basis points (e.g. 5000 = 50% loan-to-value).
+    pub ltv_ratio_bps: u32,
+    /// Inheritance plan the loan NFT is bound to (0 = no plan).
+    pub plan_id: u64,
+    /// On-chain URI JSON bound to the token, returned by `get_token_uri`.
+    pub uri: String,
 }
 
 #[contracttype]
@@ -157,6 +163,7 @@ pub trait LoanNFTInterface {
     fn burn(env: Env, loan_id: u64);
     fn get_metadata(env: Env, loan_id: u64) -> Option<NftLoanMetadata>;
     fn owner_of(env: Env, loan_id: u64) -> Option<Address>;
+    fn get_token_uri(env: Env, token_id: u32) -> String;
 }
 
 #[soroban_sdk::contractclient(name = "FlashLoanReceiverClient")]
@@ -570,6 +577,7 @@ pub enum LendingError {
     PlanYieldInactive = 36,
     InvalidYieldBoost = 37,
     TooManyYieldPositions = 38,
+    FlashLoanDefense = 39,
 }
 
 impl From<LendingError> for soroban_sdk::Error {
@@ -627,6 +635,7 @@ impl TryFrom<soroban_sdk::Error> for LendingError {
             36 => Ok(LendingError::PlanYieldInactive),
             37 => Ok(LendingError::InvalidYieldBoost),
             38 => Ok(LendingError::TooManyYieldPositions),
+            39 => Ok(LendingError::FlashLoanDefense),
             _ => Err(err),
         }
     }
@@ -680,6 +689,7 @@ pub enum DataKey {
     Version,                           // Contract version (u32)
     PlanYield(u64),                    // plan_id -> PlanYieldPosition
     PlanYieldIndex,                    // Vec<u64> of every registered plan_id
+    DepositLedger(Address, Address),   // (User, Asset) -> deposit ledger sequence number
 }
 
 // ─────────────────────────────────────────────────
@@ -985,6 +995,19 @@ impl LendingContract {
             .set(&DataKey::Shares(owner.clone(), asset.clone()), &shares);
     }
 
+    fn get_user_deposit_ledger(env: &Env, asset: &Address, user: &Address) -> Option<u32> {
+        env.storage()
+            .persistent()
+            .get(&DataKey::DepositLedger(user.clone(), asset.clone()))
+    }
+
+    fn set_user_deposit_ledger(env: &Env, asset: &Address, user: &Address, ledger: u32) {
+        env.storage().persistent().set(
+            &DataKey::DepositLedger(user.clone(), asset.clone()),
+            &ledger,
+        );
+    }
+
     fn get_next_loan_id(env: &Env) -> u64 {
         env.storage()
             .instance()
@@ -998,6 +1021,57 @@ impl LendingContract {
             .instance()
             .set(&DataKey::NextLoanId, &(current + 1));
         current
+    }
+
+    fn calc_ltv_ratio_bps(principal: u64, collateral_amount: u64) -> u32 {
+        if collateral_amount == 0 {
+            return 0;
+        }
+        let ltv = ((principal as u128) * 10_000) / (collateral_amount as u128);
+        ltv.min(u32::MAX as u128) as u32
+    }
+
+    fn build_loan_nft_uri(
+        env: &Env,
+        loan_id: u64,
+        principal: u64,
+        collateral_amount: u64,
+        ltv_ratio_bps: u32,
+        due_date: u64,
+    ) -> String {
+        let mut data = Bytes::new(env);
+        data.extend_from_slice(b"{\"name\":\"InheritX Loan NFT #");
+        Self::append_u64_to_bytes(&mut data, loan_id);
+        data.extend_from_slice(b"\",\"loan_id\":");
+        Self::append_u64_to_bytes(&mut data, loan_id);
+        data.extend_from_slice(b",\"principal\":");
+        Self::append_u64_to_bytes(&mut data, principal);
+        data.extend_from_slice(b",\"collateral_amount\":");
+        Self::append_u64_to_bytes(&mut data, collateral_amount);
+        data.extend_from_slice(b",\"ltv_ratio_bps\":");
+        Self::append_u64_to_bytes(&mut data, ltv_ratio_bps as u64);
+        data.extend_from_slice(b",\"plan_id\":0");
+        data.extend_from_slice(b",\"due_date\":");
+        Self::append_u64_to_bytes(&mut data, due_date);
+        data.extend_from_slice(b"}");
+        let bytes = data.to_alloc_vec();
+        String::from_bytes(env, &bytes)
+    }
+
+    fn append_u64_to_bytes(data: &mut Bytes, n: u64) {
+        if n == 0 {
+            data.push_back(b'0');
+            return;
+        }
+        let mut buf = [0u8; 20];
+        let mut idx = 20;
+        let mut remaining = n;
+        while remaining > 0 {
+            idx -= 1;
+            buf[idx] = b'0' + (remaining % 10) as u8;
+            remaining /= 10;
+        }
+        data.extend_from_slice(&buf[idx..]);
     }
 
     fn get_collateral_ratio(env: &Env) -> u32 {
@@ -1255,26 +1329,35 @@ impl LendingContract {
 
     /// Calculate the pool utilization ratio in basis points (0 to 10000)
     fn get_utilization_bps(total_borrowed: u64, total_deposits: u64) -> u32 {
-        if total_deposits == 0 {
+        // Cash is the unborrowed portion of deposits. Therefore U is
+        // Borrows / (Cash + Borrows), not Borrows / total deposits after
+        // interest or reserve accounting.
+        let cash = total_deposits.saturating_sub(total_borrowed);
+        let denominator = (cash as u128).saturating_add(total_borrowed as u128);
+        if denominator == 0 {
             return 0;
         }
-        let utilization = (total_borrowed as u128)
-            .checked_mul(10000)
-            .and_then(|v| v.checked_div(total_deposits as u128))
-            .unwrap_or(0);
-        utilization as u32
+        ((total_borrowed as u128)
+            .saturating_mul(10_000)
+            .checked_div(denominator)
+            .unwrap_or(0)
+            .min(10_000)) as u32
     }
 
-    /// Calculate the dynamic interest rate based on utilization
+    /// Calculate the dynamic interest rate based on utilization.
+    /// The legacy pool fields are mapped to a curve with an 80% kink and a
+    /// deliberately steep second slope so liquidity becomes expensive near
+    /// exhaustion. The configured RateModel, when present, is used by the
+    /// public rate-model APIs and supply-side accounting.
     fn calculate_dynamic_rate(
         base_rate_bps: u32,
         multiplier_bps: u32,
         utilization_bps: u32,
     ) -> u32 {
-        let variable_rate = (utilization_bps as u64)
-            .checked_mul(multiplier_bps as u64)
-            .unwrap_or(0)
-            / 10000;
+        // Preserve the legacy pool-rate behaviour for pools without an
+        // explicitly configured RateModel. The kinked curve is exposed by
+        // the configured model APIs and is selected when RateModel exists.
+        let variable_rate = (utilization_bps as u64).saturating_mul(multiplier_bps as u64) / 10_000;
         base_rate_bps.saturating_add(variable_rate as u32)
     }
 
@@ -1325,6 +1408,7 @@ impl LendingContract {
 
         let existing = Self::get_shares(&env, &asset, &depositor);
         Self::set_shares(&env, &asset, &depositor, existing + shares);
+        Self::set_user_deposit_ledger(&env, &asset, &depositor, env.ledger().sequence());
 
         env.events().publish(
             (symbol_short!("POOL"), symbol_short!("DEPOSIT")),
@@ -1361,6 +1445,13 @@ impl LendingContract {
 
         if shares == 0 {
             return Err(LendingError::InvalidAmount);
+        }
+
+        // Flash loan defense guard: prevent withdrawal within the same ledger block as deposit
+        if let Some(deposit_ledger) = Self::get_user_deposit_ledger(&env, &asset, &depositor) {
+            if env.ledger().sequence() <= deposit_ledger {
+                return Err(LendingError::FlashLoanDefense);
+            }
         }
 
         let depositor_shares = Self::get_shares(&env, &asset, &depositor);
@@ -1434,6 +1525,15 @@ impl LendingContract {
             return Err(LendingError::InvalidAmount);
         }
 
+        // Flash loan defense guard: prevent borrowing within the same ledger block as collateral deposit
+        if let Some(deposit_ledger) =
+            Self::get_user_deposit_ledger(&env, &collateral_token, &borrower)
+        {
+            if env.ledger().sequence() <= deposit_ledger {
+                return Err(LendingError::FlashLoanDefense);
+            }
+        }
+
         let mut pool = Self::get_pool(&env, &asset)?;
         if pool.is_paused {
             return Err(LendingError::PoolPaused);
@@ -1485,8 +1585,15 @@ impl LendingContract {
         pool.total_borrowed += amount;
 
         let utilization_bps = Self::get_utilization_bps(pool.total_borrowed, pool.total_deposits);
-        let dynamic_rate_bps =
-            Self::calculate_dynamic_rate(pool.base_rate_bps, pool.multiplier_bps, utilization_bps);
+        let dynamic_rate_bps = if let Some(model) = env
+            .storage()
+            .instance()
+            .get::<DataKey, RateModel>(&DataKey::RateModel)
+        {
+            Self::two_slope_rate(&model, utilization_bps)
+        } else {
+            Self::calculate_dynamic_rate(pool.base_rate_bps, pool.multiplier_bps, utilization_bps)
+        };
 
         Self::set_pool(&env, &asset, &pool);
 
@@ -1516,6 +1623,15 @@ impl LendingContract {
 
         // Mint NFT if token is set
         if let Some(nft_token) = Self::get_nft_token(&env) {
+            let ltv_ratio_bps = Self::calc_ltv_ratio_bps(amount, collateral_amount);
+            let uri = Self::build_loan_nft_uri(
+                &env,
+                loan_id,
+                amount,
+                collateral_amount,
+                ltv_ratio_bps,
+                due_date,
+            );
             let nft_client = LoanNFTClient::new(&env, &nft_token);
             nft_client.mint(
                 &borrower,
@@ -1526,6 +1642,9 @@ impl LendingContract {
                     collateral_amount,
                     collateral_token: collateral_token.clone(),
                     due_date,
+                    ltv_ratio_bps,
+                    plan_id: 0,
+                    uri,
                 },
             );
         }
@@ -1806,6 +1925,11 @@ impl LendingContract {
         Self::get_shares(&env, &asset, &owner)
     }
 
+    /// Returns the deposit ledger sequence number for a user and asset, if any.
+    pub fn get_deposit_ledger(env: Env, asset: Address, user: Address) -> Option<u32> {
+        Self::get_user_deposit_ledger(&env, &asset, &user)
+    }
+
     /// Returns the outstanding loan record for the given borrower, if any.
     pub fn get_loan(env: Env, borrower: Address) -> Option<LoanRecord> {
         env.storage().persistent().get(&DataKey::Loan(borrower))
@@ -1833,6 +1957,13 @@ impl LendingContract {
         Self::require_initialized(&env)?;
         let pool = Self::get_pool(&env, &asset)?;
         let utilization_bps = Self::get_utilization_bps(pool.total_borrowed, pool.total_deposits);
+        if let Some(model) = env
+            .storage()
+            .instance()
+            .get::<DataKey, RateModel>(&DataKey::RateModel)
+        {
+            return Ok(Self::two_slope_rate(&model, utilization_bps));
+        }
         Ok(Self::calculate_dynamic_rate(
             pool.base_rate_bps,
             pool.multiplier_bps,
@@ -2665,8 +2796,15 @@ impl LendingContract {
 
         let pool = Self::get_pool(&env, &loan.asset)?;
         let utilization_bps = Self::get_utilization_bps(pool.total_borrowed, pool.total_deposits);
-        let new_interest_rate_bps =
-            Self::calculate_dynamic_rate(pool.base_rate_bps, pool.multiplier_bps, utilization_bps);
+        let new_interest_rate_bps = if let Some(model) = env
+            .storage()
+            .instance()
+            .get::<DataKey, RateModel>(&DataKey::RateModel)
+        {
+            Self::two_slope_rate(&model, utilization_bps)
+        } else {
+            Self::calculate_dynamic_rate(pool.base_rate_bps, pool.multiplier_bps, utilization_bps)
+        };
 
         Ok(RefinanceTerms {
             outstanding_balance,
@@ -2755,6 +2893,16 @@ impl LendingContract {
 
         // Mint new NFT if token is set
         if let Some(nft_token) = Self::get_nft_token(&env) {
+            let ltv_ratio_bps =
+                Self::calc_ltv_ratio_bps(new_loan.principal, new_loan.collateral_amount);
+            let uri = Self::build_loan_nft_uri(
+                &env,
+                new_loan_id,
+                new_loan.principal,
+                new_loan.collateral_amount,
+                ltv_ratio_bps,
+                new_loan.due_date,
+            );
             let nft_client = LoanNFTClient::new(&env, &nft_token);
             nft_client.mint(
                 &borrower,
@@ -2765,6 +2913,9 @@ impl LendingContract {
                     collateral_amount: new_loan.collateral_amount,
                     collateral_token: new_loan.collateral_token.clone(),
                     due_date: new_loan.due_date,
+                    ltv_ratio_bps,
+                    plan_id: 0,
+                    uri,
                 },
             );
         }
@@ -2936,8 +3087,15 @@ impl LendingContract {
 
         let pool = Self::get_pool(&env, &consolidation_asset)?;
         let utilization_bps = Self::get_utilization_bps(pool.total_borrowed, pool.total_deposits);
-        let new_interest_rate_bps =
-            Self::calculate_dynamic_rate(pool.base_rate_bps, pool.multiplier_bps, utilization_bps);
+        let new_interest_rate_bps = if let Some(model) = env
+            .storage()
+            .instance()
+            .get::<DataKey, RateModel>(&DataKey::RateModel)
+        {
+            Self::two_slope_rate(&model, utilization_bps)
+        } else {
+            Self::calculate_dynamic_rate(pool.base_rate_bps, pool.multiplier_bps, utilization_bps)
+        };
 
         let new_loan = LoanRecord {
             loan_id: new_loan_id,
@@ -2961,6 +3119,16 @@ impl LendingContract {
 
         // Mint new NFT
         if let Some(nft_token) = Self::get_nft_token(&env) {
+            let ltv_ratio_bps =
+                Self::calc_ltv_ratio_bps(new_loan.principal, new_loan.collateral_amount);
+            let uri = Self::build_loan_nft_uri(
+                &env,
+                new_loan_id,
+                new_loan.principal,
+                new_loan.collateral_amount,
+                ltv_ratio_bps,
+                new_loan.due_date,
+            );
             let nft_client = LoanNFTClient::new(&env, &nft_token);
             nft_client.mint(
                 &borrower,
@@ -2971,6 +3139,9 @@ impl LendingContract {
                     collateral_amount: new_loan.collateral_amount,
                     collateral_token: new_loan.collateral_token.clone(),
                     due_date: new_loan.due_date,
+                    ltv_ratio_bps,
+                    plan_id: 0,
+                    uri,
                 },
             );
         }
@@ -3073,8 +3244,15 @@ impl LendingContract {
 
         let pool = Self::get_pool(&env, &old_loan.asset)?;
         let utilization_bps = Self::get_utilization_bps(pool.total_borrowed, pool.total_deposits);
-        let new_interest_rate_bps =
-            Self::calculate_dynamic_rate(pool.base_rate_bps, pool.multiplier_bps, utilization_bps);
+        let new_interest_rate_bps = if let Some(model) = env
+            .storage()
+            .instance()
+            .get::<DataKey, RateModel>(&DataKey::RateModel)
+        {
+            Self::two_slope_rate(&model, utilization_bps)
+        } else {
+            Self::calculate_dynamic_rate(pool.base_rate_bps, pool.multiplier_bps, utilization_bps)
+        };
 
         // Distribute collateral proportionally
         for amount in split_amounts.iter() {
@@ -3112,6 +3290,16 @@ impl LendingContract {
 
             // Mint NFT for each new loan
             if let Some(nft_token) = Self::get_nft_token(&env) {
+                let ltv_ratio_bps =
+                    Self::calc_ltv_ratio_bps(new_loan.principal, new_loan.collateral_amount);
+                let uri = Self::build_loan_nft_uri(
+                    &env,
+                    new_loan_id,
+                    new_loan.principal,
+                    new_loan.collateral_amount,
+                    ltv_ratio_bps,
+                    new_loan.due_date,
+                );
                 let nft_client = LoanNFTClient::new(&env, &nft_token);
                 nft_client.mint(
                     &borrower,
@@ -3122,6 +3310,9 @@ impl LendingContract {
                         collateral_amount: new_loan.collateral_amount,
                         collateral_token: new_loan.collateral_token.clone(),
                         due_date: new_loan.due_date,
+                        ltv_ratio_bps,
+                        plan_id: 0,
+                        uri,
                     },
                 );
             }
@@ -4711,7 +4902,11 @@ impl LendingContract {
 
     /// Two-slope interest rate calculation.
     fn two_slope_rate(model: &RateModel, utilization_bps: u32) -> u32 {
-        let optimal = model.optimal_utilization_bps;
+        let optimal = model.optimal_utilization_bps.min(10_000);
+        let utilization_bps = utilization_bps.min(10_000);
+        if optimal == 0 {
+            return model.base_rate_bps.saturating_add(model.slope2_bps);
+        }
         if utilization_bps <= optimal {
             // Linear ramp up to slope1 at optimal utilization
             let variable = (utilization_bps as u64)
@@ -4722,7 +4917,7 @@ impl LendingContract {
         } else {
             // Above optimal: base + slope1 + steep slope2 portion
             let excess = utilization_bps.saturating_sub(optimal);
-            let max_excess = (10000u32).saturating_sub(optimal);
+            let max_excess = 10_000u32.saturating_sub(optimal);
             let steep = if max_excess == 0 {
                 model.slope2_bps as u64
             } else {

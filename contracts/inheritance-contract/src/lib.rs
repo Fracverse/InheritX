@@ -31,6 +31,8 @@ const MAX_YIELD_BATCH: u32 = 25;
 
 /// Emergency cooldown period in seconds (24 hours)
 const EMERGENCY_COOLDOWN_PERIOD: u64 = 86400;
+const MIN_GRACE_PERIOD_SECONDS: u64 = 604_800;
+const MAX_GRACE_PERIOD_SECONDS: u64 = 5 * 365 * 24 * 60 * 60;
 
 #[contracttype]
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -98,7 +100,6 @@ pub enum InheritanceError {
     Unauthorized = 9,
     PlanNotFound = 10,
     InvalidBeneficiaryIndex = 11,
-    AllocationExceedsLimit = 12,
     InvalidAllocation = 13,
     InvalidClaimCodeRange = 14,
     ClaimNotAllowedYet = 15,
@@ -475,6 +476,13 @@ pub struct VaultWithdrawEvent {
 pub struct VaultLendableChangedEvent {
     pub plan_id: u64,
     pub is_lendable: bool,
+}
+
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct GracePeriodUpdatedEvent {
+    pub plan_id: u64,
+    pub new_grace_period: u64,
 }
 
 #[contracttype]
@@ -1019,7 +1027,12 @@ impl InheritanceContract {
 
     fn require_admin(env: &Env, admin: &Address) -> Result<(), InheritanceError> {
         admin.require_auth();
+        Self::require_not_blacklisted(env, admin)?;
         access_control::require_role(env, admin, Role::Admin, InheritanceError::NotAdmin)
+    }
+
+    fn require_not_blacklisted(env: &Env, address: &Address) -> Result<(), InheritanceError> {
+        access_control::require_not_blacklisted(env, address, InheritanceError::AddressBlacklisted)
     }
 
     fn enter_guard(env: &Env) {
@@ -1068,6 +1081,7 @@ impl InheritanceContract {
 
     pub fn initialize_admin(env: Env, admin: Address) -> Result<(), InheritanceError> {
         admin.require_auth();
+        Self::require_not_blacklisted(&env, &admin)?;
         if Self::get_admin(&env).is_some() {
             return Err(InheritanceError::AdminAlreadyInitialized);
         }
@@ -1087,6 +1101,7 @@ impl InheritanceContract {
         role: Role,
     ) -> Result<(), InheritanceError> {
         Self::require_admin(&env, &admin)?;
+        Self::require_not_blacklisted(&env, &address)?;
         access_control::assign_role(&env, &address, role);
         Ok(())
     }
@@ -1101,6 +1116,32 @@ impl InheritanceContract {
         Self::require_admin(&env, &admin)?;
         access_control::revoke_role(&env, &address, role);
         Ok(())
+    }
+
+    /// Add an address to the sanctioned-address blacklist. Admin-only.
+    pub fn blacklist_address(
+        env: Env,
+        admin: Address,
+        target: Address,
+    ) -> Result<(), InheritanceError> {
+        Self::require_admin(&env, &admin)?;
+        access_control::blacklist_address(&env, &target);
+        Ok(())
+    }
+
+    /// Remove an address from the sanctioned-address blacklist. Admin-only.
+    pub fn unblacklist_address(
+        env: Env,
+        admin: Address,
+        target: Address,
+    ) -> Result<(), InheritanceError> {
+        Self::require_admin(&env, &admin)?;
+        access_control::unblacklist_address(&env, &target);
+        Ok(())
+    }
+
+    pub fn is_blacklisted(env: Env, target: Address) -> bool {
+        access_control::is_blacklisted(&env, &target)
     }
 
     /// Check whether an address holds a given role.
@@ -1765,7 +1806,7 @@ impl InheritanceContract {
     /// - Unauthorized: If caller is not the plan owner
     /// - PlanNotFound: If plan_id doesn't exist
     /// - TooManyBeneficiaries: If plan already has 10 beneficiaries
-    /// - AllocationExceedsLimit: If total allocation would exceed 10000 basis points
+    /// - AllocationPercentageMismatch: If total allocation would exceed 10000 basis points
     /// - InvalidBeneficiaryData: If any required field is empty
     /// - InvalidAllocation: If allocation_bp is 0
     /// - InvalidClaimCodeRange: If claim_code > 999999
@@ -1777,6 +1818,7 @@ impl InheritanceContract {
     ) -> Result<(), InheritanceError> {
         // Require owner authorization
         owner.require_auth();
+        Self::require_not_blacklisted(&env, &owner)?;
         Self::check_not_paused(&env);
         Self::enter_guard(&env);
 
@@ -1799,9 +1841,10 @@ impl InheritanceContract {
         }
 
         // Check that total allocation won't exceed 10000 basis points (100%)
+        // Check that total allocation won't exceed 10000 basis points (100%)
         let new_total = plan.total_allocation_bp + beneficiary_input.allocation_bp;
         if new_total > 10000 {
-            return Err(InheritanceError::AllocationExceedsLimit);
+            return Err(InheritanceError::AllocationPercentageMismatch);
         }
 
         // Create the beneficiary (validates inputs and hashes sensitive data)
@@ -2113,6 +2156,35 @@ impl InheritanceContract {
             },
         );
         log!(&env, "Vault {} lendable set to {}", plan_id, is_lendable);
+        Ok(())
+    }
+
+    /// Update the inactivity grace period of an existing plan.
+    pub fn update_grace_period(
+        env: Env,
+        plan_id: u64,
+        new_grace_period: u64,
+    ) -> Result<(), InheritanceError> {
+        let mut plan = Self::get_plan(&env, plan_id).ok_or(InheritanceError::PlanNotFound)?;
+        plan.owner.require_auth();
+        if !(MIN_GRACE_PERIOD_SECONDS..=MAX_GRACE_PERIOD_SECONDS).contains(&new_grace_period) {
+            return Err(InheritanceError::InvalidBeneficiaryData);
+        }
+        plan.grace_period = new_grace_period;
+        Self::store_plan(&env, plan_id, &plan);
+        env.events().publish(
+            (symbol_short!("PLAN"), symbol_short!("GRACE")),
+            GracePeriodUpdatedEvent {
+                plan_id,
+                new_grace_period,
+            },
+        );
+        log!(
+            &env,
+            "Plan {} grace period set to {} seconds",
+            plan_id,
+            new_grace_period
+        );
         Ok(())
     }
 
@@ -2509,6 +2581,7 @@ impl InheritanceContract {
     ) -> Result<(), InheritanceError> {
         // Require claimer authorization
         claimer.require_auth();
+        Self::require_not_blacklisted(&env, &claimer)?;
         Self::check_not_paused(&env);
         Self::enter_guard(&env);
 
@@ -2725,6 +2798,7 @@ impl InheritanceContract {
     /// Record KYC submission on-chain (called after off-chain submission).
     pub fn submit_kyc(env: Env, user: Address) -> Result<(), InheritanceError> {
         user.require_auth();
+        Self::require_not_blacklisted(&env, &user)?;
 
         let key = DataKey::Ky(user.clone());
         let mut status = env.storage().persistent().get(&key).unwrap_or(KycStatus {
@@ -2750,6 +2824,7 @@ impl InheritanceContract {
     /// Approve a user's KYC after off-chain verification (admin-only).
     pub fn approve_kyc(env: Env, admin: Address, user: Address) -> Result<(), InheritanceError> {
         Self::require_admin(&env, &admin)?;
+        Self::require_not_blacklisted(&env, &user)?;
 
         let key = DataKey::Ky(user.clone());
         let mut status: KycStatus = env
@@ -2794,6 +2869,7 @@ impl InheritanceContract {
     /// - `KycAlreadyRejected` if the KYC was already rejected
     pub fn reject_kyc(env: Env, admin: Address, user: Address) -> Result<(), InheritanceError> {
         Self::require_admin(&env, &admin)?;
+        Self::require_not_blacklisted(&env, &user)?;
 
         let key = DataKey::Ky(user.clone());
         let mut status: KycStatus = env
@@ -5634,6 +5710,10 @@ impl InheritanceContract {
         for entry in claimers.iter() {
             let (claimer, email, claim_code) = entry;
             claimer.require_auth();
+            if Self::require_not_blacklisted(&env, &claimer).is_err() {
+                fail += 1;
+                continue;
+            }
             if Self::check_and_record_claim_attempt(&env, plan_id, &claimer).is_err() {
                 fail += 1;
                 continue;
