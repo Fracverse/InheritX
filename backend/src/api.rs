@@ -1,6 +1,7 @@
 use crate::middleware::{
-    csp_layer, hsts_layer, rate_limit_middleware, referrer_policy_layer,
-    x_content_type_options_layer, x_frame_options_layer, RateLimitConfig, RateLimitStore,
+    csp_layer, geo_restriction_middleware, geoip_resolver_from_env, hsts_layer,
+    rate_limit_middleware, referrer_policy_layer, x_content_type_options_layer,
+    x_frame_options_layer, GeoGuardConfig, RateLimitConfig, RateLimitStore,
 };
 use axum::http::{HeaderValue, Method};
 use axum::{
@@ -290,6 +291,11 @@ pub fn create_router(state: Arc<AppState>) -> Router {
     let store = RateLimitStore::new();
     let config = Arc::new(RateLimitConfig::default());
 
+    // Sanctions-region guard: blocks OFAC-sanctioned countries, resolved via
+    // Cloudflare's CF-IPCountry header or an optional MaxMind DB (GEOIP_DB_PATH).
+    let geo_guard_config = Arc::new(GeoGuardConfig::from_env());
+    let geo_resolver = geoip_resolver_from_env();
+
     // User routes requiring signature verification
     let user_routes = Router::new()
         .route("/api/plans", post(create_plan))
@@ -357,7 +363,10 @@ pub fn create_router(state: Arc<AppState>) -> Router {
         .layer(x_content_type_options_layer())
         .layer(x_frame_options_layer())
         .layer(csp_layer())
-        .layer(hsts_layer());
+        .layer(hsts_layer())
+        .layer(axum::middleware::from_fn(move |req, next| {
+            geo_restriction_middleware(req, next, geo_guard_config.clone(), geo_resolver.clone())
+        }));
 
     #[cfg(feature = "metrics")]
     let router = router

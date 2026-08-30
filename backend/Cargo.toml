@@ -14,6 +14,9 @@ minimal = []
 redis-cache = ["dep:redis"]
 metrics = ["dep:prometheus"]
 pdf = ["dep:printpdf"]
+# Optional local MaxMind GeoIP2/GeoLite2 DB lookup, used by the sanctions-region
+# guard as a fallback when the `CF-IPCountry` edge header isn't present.
+geoip = ["dep:maxminddb"]
 
 [dependencies]
 # Async runtime — only the features we actually use
@@ -78,3 +81,6 @@ prometheus = { version = "0.13", features = ["process"], optional = true }
 
 # Optional: PDF report generation
 printpdf = { version = "0.7", optional = true }
+
+# Optional: MaxMind GeoIP2/GeoLite2 DB lookups for the sanctions-region guard
+maxminddb = { version = "0.30", optional = true }
