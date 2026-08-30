@@ -5,6 +5,7 @@
 The `loan-nft` contract implements the marketplace-facing loan position NFT surface used by the lending flow:
 
 - ownership queries via `owner_of`, `balance_of`, `total_supply`, `get_metadata`, and `token_uri`
+- Soroban NFT standard `get_token_uri(token_id)`, which returns the on-chain URI JSON bound to each loan position
 - transfers via `transfer` and `transfer_from`
 - approvals via `approve`, `get_approved`, `set_approval_for_all`, and `is_approved_for_all`
 - standard NFT lifecycle events: `Transfer`, `Approval`, and `ApprovalForAll`
@@ -12,6 +13,10 @@ The `loan-nft` contract implements the marketplace-facing loan position NFT surf
 - reentrancy protection around mint, burn, and transfer execution paths
 
 Loan position NFTs are intentionally non-transferable while the underlying loan is marked active. The lending flow should set `Transferable(false)` when a position must remain locked and re-enable transfers only when the position can be safely sold or reassigned.
+
+## Dynamic loan metadata
+
+Each minted position persists its dynamic metadata on-chain under `DataKey::Metadata(loan_id)`. `LoanMetadata` binds the loan ID, borrower, principal, collateral amount/token, due date, LTV ratio (in basis points), inheritance plan ID, and the URI JSON that marketplace/indexer tooling can read through `get_token_uri(token_id)`.
 
 ## Project Structure
 

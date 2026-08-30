@@ -5,8 +5,8 @@ use super::*;
 use mock_token::MockToken;
 use mock_token::MockTokenClient;
 use soroban_sdk::{
-    testutils::Address as _, testutils::Events, testutils::Ledger, token, vec, Address, Bytes, Env,
-    String, TryFromVal, Vec,
+    testutils::Address as _, testutils::Events, testutils::Ledger, token, vec, xdr::ToXdr, Address,
+    Bytes, Env, IntoVal, String, TryFromVal, Val, Vec,
 };
 
 /// Test helper for balance and mint (uses mock-token crate client).
@@ -38,7 +38,7 @@ impl TestTokenHelper<'_> {
 fn setup_with_token_and_admin(
     env: &Env,
 ) -> (InheritanceContractClient<'_>, Address, Address, Address) {
-    env.mock_all_auths();
+    env.mock_all_auths_allowing_non_root_auth();
     let contract_id = env.register_contract(None, InheritanceContract);
     let token_id = env.register_contract(None, MockToken);
     let admin = create_test_address(env, 100);
@@ -58,7 +58,7 @@ fn setup_with_token_and_admin(
 fn setup_with_token_and_admin_no_kyc(
     env: &Env,
 ) -> (InheritanceContractClient<'_>, Address, Address, Address) {
-    env.mock_all_auths();
+    env.mock_all_auths_allowing_non_root_auth();
     let contract_id = env.register_contract(None, InheritanceContract);
     let token_id = env.register_contract(None, MockToken);
     let admin = create_test_address(env, 101);
@@ -1233,7 +1233,7 @@ fn test_kyc_approve_success() {
     assert!(result.is_ok());
 
     let stored: KycStatus = env.as_contract(&contract_id, || {
-        env.storage().persistent().get(&DataKey::Kyc(user)).unwrap()
+        env.storage().persistent().get(&DataKey::Ky(user)).unwrap()
     });
     assert!(stored.submitted);
     assert!(stored.approved);
@@ -1312,7 +1312,7 @@ fn test_kyc_reject_success() {
     assert!(result.is_ok());
 
     let stored: KycStatus = env.as_contract(&contract_id, || {
-        env.storage().persistent().get(&DataKey::Kyc(user)).unwrap()
+        env.storage().persistent().get(&DataKey::Ky(user)).unwrap()
     });
     assert!(stored.submitted);
     assert!(!stored.approved);
@@ -1401,7 +1401,6 @@ fn test_upgrade_rejects_non_admin() {
     let non_admin = create_test_address(&env, 2);
     client.initialize_admin(&admin);
 
-    // Auth check happens before wasm swap, so this returns NotAdmin
     let result = client.try_upgrade(&non_admin, &fake_wasm_hash(&env));
     assert!(result.is_err());
 }
@@ -1420,6 +1419,17 @@ fn test_upgrade_rejects_no_admin_initialized() {
 }
 
 #[test]
+fn test_upgrade_wasm_rejects_no_admin_initialized() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let contract_id = env.register_contract(None, InheritanceContract);
+    let client = InheritanceContractClient::new(&env, &contract_id);
+
+    let result = client.try_upgrade_wasm(&fake_wasm_hash(&env));
+    assert!(result.is_err());
+}
+
+#[test]
 fn test_upgrade_version_stored_in_storage() {
     let env = Env::default();
     env.mock_all_auths();
@@ -1431,7 +1441,7 @@ fn test_upgrade_version_stored_in_storage() {
 
     // Directly set version in storage to simulate upgrade version tracking
     env.as_contract(&contract_id, || {
-        env.storage().instance().set(&DataKey::Version, &5u32);
+        env.storage().instance().set(&DataKey::Ver, &5u32);
     });
 
     let version = client.version();
@@ -1450,7 +1460,7 @@ fn test_migrate_no_migration_needed() {
 
     // Set version to CONTRACT_VERSION so migration is not needed
     env.as_contract(&contract_id, || {
-        env.storage().instance().set(&DataKey::Version, &1u32);
+        env.storage().instance().set(&DataKey::Ver, &1u32);
     });
     let result = client.try_migrate(&admin);
     assert!(result.is_ok());
@@ -1483,7 +1493,7 @@ fn test_migrate_runs_when_version_outdated() {
 
     // Set stored version to 0 (older than CONTRACT_VERSION) to simulate needing migration
     env.as_contract(&contract_id, || {
-        env.storage().instance().set(&DataKey::Version, &0u32);
+        env.storage().instance().set(&DataKey::Ver, &0u32);
     });
 
     let result = client.try_migrate(&admin);
@@ -1564,7 +1574,7 @@ fn test_plan_data_survives_across_versions() {
 
     // Simulate version bump (as upgrade would do)
     env.as_contract(&contract_id, || {
-        env.storage().instance().set(&DataKey::Version, &2u32);
+        env.storage().instance().set(&DataKey::Ver, &2u32);
     });
 
     // All data still accessible (plan stores net amount after 2% fee: 5000000 * 0.98 = 4900000)
@@ -1578,7 +1588,7 @@ fn test_plan_data_survives_across_versions() {
     assert!(!deact_plan.is_active);
 
     let kyc: KycStatus = env.as_contract(&contract_id, || {
-        env.storage().persistent().get(&DataKey::Kyc(user)).unwrap()
+        env.storage().persistent().get(&DataKey::Ky(user)).unwrap()
     });
     assert!(kyc.submitted);
     assert!(kyc.approved);
@@ -2109,17 +2119,29 @@ fn test_vault_deposit_and_withdraw() {
 
     let plan = client.get_plan_details(&plan_id).unwrap();
     assert_eq!(plan.total_amount, 980); // 1000 - 2% fee
+    assert_eq!(plan.token, token);
+
+    let token_helper = TestTokenHelper::new(&env, &token);
+    let vault = client.get_plan_vault_address(&plan_id).unwrap();
+    assert_ne!(vault, client.address);
+    assert_eq!(token_helper.balance(&vault), 980);
+    assert_eq!(token_helper.balance(&client.address), 0);
 
     // Deposit more
     client.deposit(&owner, &token, &plan_id, &500u64);
     let plan = client.get_plan_details(&plan_id).unwrap();
     assert_eq!(plan.total_amount, 1480);
+    assert_eq!(token_helper.balance(&vault), 1480);
+    assert_eq!(token_helper.balance(&client.address), 0);
 
     // Withdraw some
+    env.mock_all_auths_allowing_non_root_auth();
     client.withdraw(&owner, &token, &plan_id, &300u64);
     let plan = client.get_plan_details(&plan_id).unwrap();
     assert_eq!(plan.total_amount, 1180);
     assert_eq!(plan.total_loaned, 0);
+    assert_eq!(token_helper.balance(&vault), 1180);
+    assert_eq!(token_helper.balance(&client.address), 0);
 
     // Unauthorized fails
     let not_owner = create_test_address(&env, 999);
@@ -2154,9 +2176,7 @@ fn test_vault_withdraw_prevents_over_withdrawal() {
     plan.total_loaned = 1000;
 
     env.as_contract(&client.address, || {
-        env.storage()
-            .persistent()
-            .set(&DataKey::Plan(plan_id), &plan);
+        env.storage().persistent().set(&DataKey::P(plan_id), &plan);
     });
 
     let modified_plan = client.get_plan_details(&plan_id).unwrap();
@@ -2346,9 +2366,7 @@ fn test_recall_loan_success() {
     let mut plan = client.get_plan_details(&plan_id).unwrap();
     plan.total_loaned = 50_000;
     env.as_contract(&client.address, || {
-        env.storage()
-            .persistent()
-            .set(&DataKey::Plan(plan_id), &plan);
+        env.storage().persistent().set(&DataKey::P(plan_id), &plan);
     });
 
     // Trigger inheritance
@@ -2393,9 +2411,7 @@ fn test_recall_loan_exceeds_loaned_fails() {
     let mut plan = client.get_plan_details(&plan_id).unwrap();
     plan.total_loaned = 10_000;
     env.as_contract(&client.address, || {
-        env.storage()
-            .persistent()
-            .set(&DataKey::Plan(plan_id), &plan);
+        env.storage().persistent().set(&DataKey::P(plan_id), &plan);
     });
 
     client.trigger_inheritance(&admin, &plan_id);
@@ -2470,9 +2486,7 @@ fn test_liquidation_fallback_success() {
     let mut plan = client.get_plan_details(&plan_id).unwrap();
     plan.total_loaned = 30_000;
     env.as_contract(&client.address, || {
-        env.storage()
-            .persistent()
-            .set(&DataKey::Plan(plan_id), &plan);
+        env.storage().persistent().set(&DataKey::P(plan_id), &plan);
     });
 
     // Trigger inheritance
@@ -2554,9 +2568,7 @@ fn test_partial_recall_then_liquidation_fallback() {
     let mut plan = client.get_plan_details(&plan_id).unwrap();
     plan.total_loaned = 40_000;
     env.as_contract(&client.address, || {
-        env.storage()
-            .persistent()
-            .set(&DataKey::Plan(plan_id), &plan);
+        env.storage().persistent().set(&DataKey::P(plan_id), &plan);
     });
 
     client.trigger_inheritance(&admin, &plan_id);
@@ -2603,9 +2615,7 @@ fn test_inheritance_claim_not_blocked_by_loans() {
     let mut plan = client.get_plan_details(&plan_id).unwrap();
     plan.total_loaned = 50_000;
     env.as_contract(&client.address, || {
-        env.storage()
-            .persistent()
-            .set(&DataKey::Plan(plan_id), &plan);
+        env.storage().persistent().set(&DataKey::P(plan_id), &plan);
     });
 
     // Trigger inheritance
@@ -2695,9 +2705,7 @@ fn test_get_claimable_amount() {
     let mut plan = client.get_plan_details(&plan_id).unwrap();
     plan.total_loaned = 20_000;
     env.as_contract(&client.address, || {
-        env.storage()
-            .persistent()
-            .set(&DataKey::Plan(plan_id), &plan);
+        env.storage().persistent().set(&DataKey::P(plan_id), &plan);
     });
 
     let claimable = client.get_claimable_amount(&plan_id);
@@ -2731,9 +2739,7 @@ fn test_full_loan_recall_workflow() {
     let mut plan = client.get_plan_details(&plan_id).unwrap();
     plan.total_loaned = 200_000;
     env.as_contract(&client.address, || {
-        env.storage()
-            .persistent()
-            .set(&DataKey::Plan(plan_id), &plan);
+        env.storage().persistent().set(&DataKey::P(plan_id), &plan);
     });
 
     // Step 3: Trigger inheritance — freezes new loans
@@ -7565,4 +7571,84 @@ fn test_plan_pool_share_bps() {
         2_500
     );
     assert_eq!(client.compute_plan_pool_share_bps(&plan_id, &0u64), 0);
+}
+
+/// Snapshot benchmark for the `DataKey` gas / ledger-footprint optimization.
+///
+/// The fix swaps verbose enum-variant names (e.g. `BeneficiaryNotifiedAt`) for
+/// compact <=9-char symbols so the storage-key `Symbol` is always encoded as an
+/// 8-byte short symbol, shrinking every ledger read/write. This test records:
+///   1. the XDR-encoded size of a representative per-plan ledger key, and
+///   2. the CPU/memory budget for a plan create + read (a gas proxy).
+/// Run with: `cargo test snapshot_gas_datakey -- --nocapture`
+#[test]
+fn snapshot_gas_datakey() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let (client, token, _admin, owner) = setup_with_token_and_admin(&env);
+
+    // (1) Ledger-key footprint: the compact key must stay small.
+    // `DataKey::P(1)` serializes as `ScVal::Vec([Symbol("P"), U64(1)])`, which
+    // XDR-encodes to 36 bytes today: ScvVec tag (4) + Option marker (4) + vec
+    // length (4) + Symbol (4 + 4 + 4 padded) + U64 (4 + 8). Keeping every
+    // variant name a short symbol (<= 9 chars) caps the key at 44 bytes; a
+    // longer symbol or an extra payload field pushes it past that bound.
+    let key = DataKey::P(1u64);
+    let v: Val = key.into_val(&env);
+    let key_len = v.to_xdr(&env).len();
+    log!(&env, "SNAPSHOT DataKey::P xdr_len={}", key_len);
+    assert!(
+        key_len <= 44,
+        "compact ledger key unexpectedly large (variant symbol must stay <=9 chars)"
+    );
+
+    // (2) Gas proxy: budget consumed by a plan create + read.
+    env.budget().reset_default();
+    let params = plan_params(
+        &env,
+        &owner,
+        &token,
+        "GasPlan",
+        "snapshot benchmark",
+        1_000_000u64,
+        DistributionMethod::LumpSum,
+        &default_beneficiaries(&env),
+    );
+    let plan_id = client.create_inheritance_plan(&params);
+    let cpu_create = env.budget().cpu_instruction_cost();
+    let mem_create = env.budget().memory_bytes_cost();
+    log!(
+        &env,
+        "SNAPSHOT create_inheritance_plan cpu_insns={} mem_bytes={}",
+        cpu_create,
+        mem_create
+    );
+
+    env.budget().reset_default();
+    let _plan = client.get_plan_details(&plan_id);
+    let cpu_read = env.budget().cpu_instruction_cost();
+    log!(&env, "SNAPSHOT get_plan_details cpu_insns={}", cpu_read);
+
+    // Regression guards (generous headroom).
+    assert!(
+        cpu_create < 50_000_000,
+        "create plan cpu instructions regressed"
+    );
+    assert!(cpu_read < 5_000_000, "read plan cpu instructions regressed");
+}
+
+#[test]
+fn test_raise_dispute_and_resolve_dispute() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let (client, _admin, _owner, plan_id) = setup_plan_for_triggers(&env);
+
+    let challenger = create_test_address(&env, 99);
+    let proof_hash = BytesN::from_array(&env, &[1u8; 32]);
+
+    let dispute_id = client.raise_dispute(&plan_id, &challenger, &proof_hash);
+    assert_eq!(dispute_id, 0);
+
+    let res = client.try_resolve_dispute(&plan_id, &true);
+    assert!(res.is_ok());
 }
