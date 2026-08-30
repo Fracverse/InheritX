@@ -995,9 +995,10 @@ impl LendingContract {
     }
 
     fn set_user_deposit_ledger(env: &Env, asset: &Address, user: &Address, ledger: u32) {
-        env.storage()
-            .persistent()
-            .set(&DataKey::DepositLedger(user.clone(), asset.clone()), &ledger);
+        env.storage().persistent().set(
+            &DataKey::DepositLedger(user.clone(), asset.clone()),
+            &ledger,
+        );
     }
 
     fn get_next_loan_id(env: &Env) -> u64 {
@@ -1458,7 +1459,9 @@ impl LendingContract {
         }
 
         // Flash loan defense guard: prevent borrowing within the same ledger block as collateral deposit
-        if let Some(deposit_ledger) = Self::get_user_deposit_ledger(&env, &collateral_token, &borrower) {
+        if let Some(deposit_ledger) =
+            Self::get_user_deposit_ledger(&env, &collateral_token, &borrower)
+        {
             if env.ledger().sequence() <= deposit_ledger {
                 return Err(LendingError::FlashLoanDefense);
             }
