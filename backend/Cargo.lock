@@ -1212,6 +1212,7 @@ dependencies = [
  "hex",
  "hmac",
  "jsonwebtoken",
+ "log",
  "maxminddb",
  "once_cell",
  "printpdf",
