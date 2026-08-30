@@ -1419,9 +1419,7 @@ impl InheritanceContract {
             reason: String::from_str(&env, "dispute"),
             frozen_by: challenger.clone(),
         };
-        env.storage()
-            .persistent()
-            .set(&DataKey::Fz(plan_id), &fr);
+        env.storage().persistent().set(&DataKey::Fz(plan_id), &fr);
 
         env.events().publish(
             (symbol_short!("DSPT"), symbol_short!("RAISED")),
@@ -1446,11 +1444,7 @@ impl InheritanceContract {
         Ok(dispute_id)
     }
 
-    pub fn resolve_dispute(
-        env: Env,
-        plan_id: u64,
-        approve: bool,
-    ) -> Result<(), InheritanceError> {
+    pub fn resolve_dispute(env: Env, plan_id: u64, approve: bool) -> Result<(), InheritanceError> {
         Self::check_not_paused(&env);
 
         let mut arbitrator = Self::get_admin(&env).ok_or(InheritanceError::AdminNotSet)?;
@@ -1482,7 +1476,9 @@ impl InheritanceContract {
 
         for dispute_id in plan_disputes.iter() {
             if let Some(mut record) = Self::get_dispute(env.clone(), dispute_id) {
-                if record.status == DisputeStatus::Filed || record.status == DisputeStatus::UnderReview {
+                if record.status == DisputeStatus::Filed
+                    || record.status == DisputeStatus::UnderReview
+                {
                     record.status = new_status;
                     record.resolved_at = env.ledger().timestamp();
                     record.resolution_notes = if approve {
@@ -4320,10 +4316,7 @@ impl InheritanceContract {
         Ok(())
     }
 
-    pub fn upgrade_wasm(
-        env: Env,
-        new_wasm_hash: BytesN<32>,
-    ) -> Result<(), InheritanceError> {
+    pub fn upgrade_wasm(env: Env, new_wasm_hash: BytesN<32>) -> Result<(), InheritanceError> {
         let admin = Self::get_admin(&env).ok_or(InheritanceError::AdminNotSet)?;
         Self::require_admin(&env, &admin)?;
 

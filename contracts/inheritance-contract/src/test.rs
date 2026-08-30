@@ -7640,4 +7640,3 @@ fn test_raise_dispute_and_resolve_dispute() {
     let res = client.try_resolve_dispute(&plan_id, &true);
     assert!(res.is_ok());
 }
-
