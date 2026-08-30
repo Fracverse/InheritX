@@ -140,6 +140,7 @@ pub enum InheritanceError {
     WillAlreadyFinalized = 49,
     WillVersionNotFound = 50,
     AddressBlacklisted = 51,
+    MathOverflow = 52,
 }
 
 #[contracttype]

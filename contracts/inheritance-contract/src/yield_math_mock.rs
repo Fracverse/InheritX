@@ -66,17 +66,17 @@ pub const MAX_COMPOUND_PERIODS: u64 = 36_500;
 
 /// Checked `u64` addition.
 pub fn safe_add(a: u64, b: u64) -> Result<u64, InheritanceError> {
-    a.checked_add(b).ok_or(InheritanceError::InvalidTotalAmount)
+    a.checked_add(b).ok_or(InheritanceError::MathOverflow)
 }
 
 /// Checked `u64` subtraction. Underflow is an error, not a wrap to `u64::MAX`.
 pub fn safe_sub(a: u64, b: u64) -> Result<u64, InheritanceError> {
-    a.checked_sub(b).ok_or(InheritanceError::InvalidTotalAmount)
+    a.checked_sub(b).ok_or(InheritanceError::MathOverflow)
 }
 
 /// Checked `u64` multiplication.
 pub fn safe_mul(a: u64, b: u64) -> Result<u64, InheritanceError> {
-    a.checked_mul(b).ok_or(InheritanceError::InvalidTotalAmount)
+    a.checked_mul(b).ok_or(InheritanceError::MathOverflow)
 }
 
 /// Checked `u64` division. A zero divisor is rejected explicitly.
@@ -84,12 +84,12 @@ pub fn safe_div(a: u64, b: u64) -> Result<u64, InheritanceError> {
     if b == 0 {
         return Err(InheritanceError::InvalidBeneficiaryData);
     }
-    a.checked_div(b).ok_or(InheritanceError::InvalidTotalAmount)
+    a.checked_div(b).ok_or(InheritanceError::MathOverflow)
 }
 
 /// Checked `u128` multiplication, for fixed-point intermediates.
 pub fn safe_mul_u128(a: u128, b: u128) -> Result<u128, InheritanceError> {
-    a.checked_mul(b).ok_or(InheritanceError::InvalidTotalAmount)
+    a.checked_mul(b).ok_or(InheritanceError::MathOverflow)
 }
 
 /// Checked `u128` division.
@@ -97,12 +97,12 @@ pub fn safe_div_u128(a: u128, b: u128) -> Result<u128, InheritanceError> {
     if b == 0 {
         return Err(InheritanceError::InvalidBeneficiaryData);
     }
-    a.checked_div(b).ok_or(InheritanceError::InvalidTotalAmount)
+    a.checked_div(b).ok_or(InheritanceError::MathOverflow)
 }
 
 /// Narrow a `u128` back to `u64`, erroring rather than truncating.
 pub fn to_u64(value: u128) -> Result<u64, InheritanceError> {
-    u64::try_from(value).map_err(|_| InheritanceError::InvalidTotalAmount)
+    u64::try_from(value).map_err(|_| InheritanceError::MathOverflow)
 }
 
 /// Computes `a * b / denominator` with a `u128` intermediate, so the multiply

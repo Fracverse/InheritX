@@ -66,17 +66,17 @@ pub const MAX_COMPOUND_PERIODS: u64 = 36_500;
 
 /// Checked `u64` addition.
 pub fn safe_add(a: u64, b: u64) -> Result<u64, InheritanceError> {
-    a.checked_add(b).ok_or(InheritanceError::InvalidTotalAmount)
+    a.checked_add(b).ok_or(InheritanceError::MathOverflow)
 }
 
 /// Checked `u64` subtraction. Underflow is an error, not a wrap to `u64::MAX`.
 pub fn safe_sub(a: u64, b: u64) -> Result<u64, InheritanceError> {
-    a.checked_sub(b).ok_or(InheritanceError::InvalidTotalAmount)
+    a.checked_sub(b).ok_or(InheritanceError::MathOverflow)
 }
 
 /// Checked `u64` multiplication.
 pub fn safe_mul(a: u64, b: u64) -> Result<u64, InheritanceError> {
-    a.checked_mul(b).ok_or(InheritanceError::InvalidTotalAmount)
+    a.checked_mul(b).ok_or(InheritanceError::MathOverflow)
 }
 
 /// Checked `u64` division. A zero divisor is rejected explicitly.
@@ -84,12 +84,12 @@ pub fn safe_div(a: u64, b: u64) -> Result<u64, InheritanceError> {
     if b == 0 {
         return Err(InheritanceError::InvalidBeneficiaryData);
     }
-    a.checked_div(b).ok_or(InheritanceError::InvalidTotalAmount)
+    a.checked_div(b).ok_or(InheritanceError::MathOverflow)
 }
 
 /// Checked `u128` multiplication, for fixed-point intermediates.
 pub fn safe_mul_u128(a: u128, b: u128) -> Result<u128, InheritanceError> {
-    a.checked_mul(b).ok_or(InheritanceError::InvalidTotalAmount)
+    a.checked_mul(b).ok_or(InheritanceError::MathOverflow)
 }
 
 /// Checked `u128` division.
@@ -97,12 +97,12 @@ pub fn safe_div_u128(a: u128, b: u128) -> Result<u128, InheritanceError> {
     if b == 0 {
         return Err(InheritanceError::InvalidBeneficiaryData);
     }
-    a.checked_div(b).ok_or(InheritanceError::InvalidTotalAmount)
+    a.checked_div(b).ok_or(InheritanceError::MathOverflow)
 }
 
 /// Narrow a `u128` back to `u64`, erroring rather than truncating.
 pub fn to_u64(value: u128) -> Result<u64, InheritanceError> {
-    u64::try_from(value).map_err(|_| InheritanceError::InvalidTotalAmount)
+    u64::try_from(value).map_err(|_| InheritanceError::MathOverflow)
 }
 
 /// Computes `a * b / denominator` with a `u128` intermediate, so the multiply
@@ -216,7 +216,7 @@ pub fn daily_growth_factor(annual_rate_bps: u32) -> Result<u128, InheritanceErro
 
     YIELD_SCALE
         .checked_add(daily_increment)
-        .ok_or(InheritanceError::InvalidTotalAmount)
+        .ok_or(InheritanceError::MathOverflow)
 }
 
 /// Multiplies two [`YIELD_SCALE`] fixed-point factors, returning a factor at
@@ -339,10 +339,10 @@ pub fn effective_apy_bps(nominal_annual_rate_bps: u32) -> Result<u32, Inheritanc
     let growth = pow_factor(daily_growth_factor(nominal_annual_rate_bps)?, DAYS_PER_YEAR)?;
     let gain = growth
         .checked_sub(YIELD_SCALE)
-        .ok_or(InheritanceError::InvalidTotalAmount)?;
+        .ok_or(InheritanceError::MathOverflow)?;
     let bps = safe_div_u128(safe_mul_u128(gain, BPS_DENOMINATOR as u128)?, YIELD_SCALE)?;
 
-    u32::try_from(bps).map_err(|_| InheritanceError::InvalidTotalAmount)
+    u32::try_from(bps).map_err(|_| InheritanceError::MathOverflow)
 }
 
 // ─────────────────────────────────────────────────
@@ -385,10 +385,10 @@ pub fn blended_rate_bps(
 
     let weighted = safe_mul_u128(principal_a as u128, rate_a_bps as u128)?
         .checked_add(safe_mul_u128(principal_b as u128, rate_b_bps as u128)?)
-        .ok_or(InheritanceError::InvalidTotalAmount)?;
+        .ok_or(InheritanceError::MathOverflow)?;
 
     let blended = safe_div_u128(weighted, total as u128)?;
-    u32::try_from(blended).map_err(|_| InheritanceError::InvalidTotalAmount)
+    u32::try_from(blended).map_err(|_| InheritanceError::MathOverflow)
 }
 
 /// Whether a harvest is due: the cooldown has elapsed and the pending amount
