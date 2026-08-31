@@ -1,3 +1,4 @@
+RESOLVED_START
 #![no_std]
 use access_control::{self, Role};
 use soroban_sdk::{
@@ -31,6 +32,8 @@ const MAX_YIELD_BATCH: u32 = 25;
 
 /// Emergency cooldown period in seconds (24 hours)
 const EMERGENCY_COOLDOWN_PERIOD: u64 = 86400;
+const MIN_GRACE_PERIOD_SECONDS: u64 = 604_800;
+const MAX_GRACE_PERIOD_SECONDS: u64 = 5 * 365 * 24 * 60 * 60;
 
 #[contracttype]
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -69,6 +72,7 @@ pub struct BeneficiaryInput {
 pub struct InheritancePlan {
     pub plan_name: String,
     pub description: String,
+    pub token: Address,
     pub asset_type: Symbol, // Only USDC allowed
     pub total_amount: u64,
     pub distribution_method: DistributionMethod,
@@ -98,7 +102,6 @@ pub enum InheritanceError {
     Unauthorized = 9,
     PlanNotFound = 10,
     InvalidBeneficiaryIndex = 11,
-    AllocationExceedsLimit = 12,
     InvalidAllocation = 13,
     InvalidClaimCodeRange = 14,
     ClaimNotAllowedYet = 15,
@@ -137,6 +140,7 @@ pub enum InheritanceError {
     WillAlreadyLinked = 48,
     WillAlreadyFinalized = 49,
     WillVersionNotFound = 50,
+    AddressBlacklisted = 51,
 }
 
 #[contracttype]
@@ -481,6 +485,13 @@ pub struct VaultWithdrawEvent {
 pub struct VaultLendableChangedEvent {
     pub plan_id: u64,
     pub is_lendable: bool,
+}
+
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct GracePeriodUpdatedEvent {
+    pub plan_id: u64,
+    pub new_grace_period: u64,
 }
 
 #[contracttype]
@@ -1057,7 +1068,12 @@ impl InheritanceContract {
 
     fn require_admin(env: &Env, admin: &Address) -> Result<(), InheritanceError> {
         admin.require_auth();
+        Self::require_not_blacklisted(env, admin)?;
         access_control::require_role(env, admin, Role::Admin, InheritanceError::NotAdmin)
+    }
+
+    fn require_not_blacklisted(env: &Env, address: &Address) -> Result<(), InheritanceError> {
+        access_control::require_not_blacklisted(env, address, InheritanceError::AddressBlacklisted)
     }
 
     fn enter_guard(env: &Env) {
@@ -1106,6 +1122,7 @@ impl InheritanceContract {
 
     pub fn initialize_admin(env: Env, admin: Address) -> Result<(), InheritanceError> {
         admin.require_auth();
+        Self::require_not_blacklisted(&env, &admin)?;
         if Self::get_admin(&env).is_some() {
             return Err(InheritanceError::AdminAlreadyInitialized);
         }
@@ -1125,6 +1142,7 @@ impl InheritanceContract {
         role: Role,
     ) -> Result<(), InheritanceError> {
         Self::require_admin(&env, &admin)?;
+        Self::require_not_blacklisted(&env, &address)?;
         access_control::assign_role(&env, &address, role);
         Ok(())
     }
@@ -1139,6 +1157,32 @@ impl InheritanceContract {
         Self::require_admin(&env, &admin)?;
         access_control::revoke_role(&env, &address, role);
         Ok(())
+    }
+
+    /// Add an address to the sanctioned-address blacklist. Admin-only.
+    pub fn blacklist_address(
+        env: Env,
+        admin: Address,
+        target: Address,
+    ) -> Result<(), InheritanceError> {
+        Self::require_admin(&env, &admin)?;
+        access_control::blacklist_address(&env, &target);
+        Ok(())
+    }
+
+    /// Remove an address from the sanctioned-address blacklist. Admin-only.
+    pub fn unblacklist_address(
+        env: Env,
+        admin: Address,
+        target: Address,
+    ) -> Result<(), InheritanceError> {
+        Self::require_admin(&env, &admin)?;
+        access_control::unblacklist_address(&env, &target);
+        Ok(())
+    }
+
+    pub fn is_blacklisted(env: Env, target: Address) -> bool {
+        access_control::is_blacklisted(&env, &target)
     }
 
     /// Check whether an address holds a given role.
@@ -1388,6 +1432,168 @@ impl InheritanceContract {
         Ok(())
     }
 
+    pub fn raise_dispute(
+        env: Env,
+        plan_id: u64,
+        challenger: Address,
+        _proof_hash: BytesN<32>,
+    ) -> Result<u64, InheritanceError> {
+        challenger.require_auth();
+        Self::check_not_paused(&env);
+
+        let _ = Self::get_plan(&env, plan_id).ok_or(InheritanceError::PlanNotFound)?;
+
+        let dispute_id = env
+            .storage()
+            .persistent()
+            .get(&DataKey::Ndi)
+            .unwrap_or(0u64);
+
+        let mut arbitrator = Self::get_admin(&env).ok_or(InheritanceError::AdminNotSet)?;
+        let list: Vec<Address> = env
+            .storage()
+            .persistent()
+            .get(&DataKey::Arb)
+            .unwrap_or(Vec::new(&env));
+        if !list.is_empty() {
+            arbitrator = list.get(0).unwrap();
+        }
+
+        let record = DisputeRecord {
+            dispute_id,
+            plan_id,
+            disputer: challenger.clone(),
+            reason: String::from_str(&env, "dispute raised"),
+            status: DisputeStatus::Filed,
+            filed_at: env.ledger().timestamp(),
+            resolved_at: 0,
+            resolution_notes: String::from_str(&env, ""),
+            arbitrator,
+        };
+
+        env.storage()
+            .persistent()
+            .set(&DataKey::Ds(dispute_id), &record);
+
+        let mut plan_disputes: Vec<u64> = env
+            .storage()
+            .persistent()
+            .get(&DataKey::Pd(plan_id))
+            .unwrap_or(Vec::new(&env));
+        plan_disputes.push_back(dispute_id);
+        env.storage()
+            .persistent()
+            .set(&DataKey::Pd(plan_id), &plan_disputes);
+
+        env.storage()
+            .persistent()
+            .set(&DataKey::Ndi, &(dispute_id + 1));
+
+        let fr = FreezeRecord {
+            plan_id,
+            frozen_at: env.ledger().timestamp(),
+            reason: String::from_str(&env, "dispute"),
+            frozen_by: challenger.clone(),
+        };
+        env.storage().persistent().set(&DataKey::Fz(plan_id), &fr);
+
+        env.events().publish(
+            (symbol_short!("DSPT"), symbol_short!("RAISED")),
+            disputes::DisputeFiledEvent {
+                dispute_id,
+                plan_id,
+                disputer: challenger,
+                reason: String::from_str(&env, "dispute raised"),
+                filed_at: env.ledger().timestamp(),
+            },
+        );
+
+        env.events().publish(
+            (symbol_short!("PLAN"), symbol_short!("FROZE")),
+            disputes::PlanFrozenEvent {
+                plan_id,
+                dispute_id,
+                frozen_at: env.ledger().timestamp(),
+            },
+        );
+
+        Ok(dispute_id)
+    }
+
+    pub fn resolve_dispute(env: Env, plan_id: u64, approve: bool) -> Result<(), InheritanceError> {
+        Self::check_not_paused(&env);
+
+        let mut arbitrator = Self::get_admin(&env).ok_or(InheritanceError::AdminNotSet)?;
+        let list: Vec<Address> = env
+            .storage()
+            .persistent()
+            .get(&DataKey::Arb)
+            .unwrap_or(Vec::new(&env));
+        if !list.is_empty() {
+            arbitrator = list.get(0).unwrap();
+        }
+        arbitrator.require_auth();
+
+        let plan_disputes: Vec<u64> = env
+            .storage()
+            .persistent()
+            .get(&DataKey::Pd(plan_id))
+            .unwrap_or(Vec::new(&env));
+
+        if plan_disputes.is_empty() {
+            return Err(InheritanceError::PlanNotFound);
+        }
+
+        let new_status = if approve {
+            DisputeStatus::Resolved
+        } else {
+            DisputeStatus::Rejected
+        };
+
+        for dispute_id in plan_disputes.iter() {
+            if let Some(mut record) = Self::get_dispute(env.clone(), dispute_id) {
+                if record.status == DisputeStatus::Filed
+                    || record.status == DisputeStatus::UnderReview
+                {
+                    record.status = new_status;
+                    record.resolved_at = env.ledger().timestamp();
+                    record.resolution_notes = if approve {
+                        String::from_str(&env, "resolved")
+                    } else {
+                        String::from_str(&env, "rejected")
+                    };
+                    env.storage()
+                        .persistent()
+                        .set(&DataKey::Ds(dispute_id), &record);
+
+                    env.events().publish(
+                        (symbol_short!("DSPT"), symbol_short!("RESOLV")),
+                        disputes::DisputeResolvedEvent {
+                            dispute_id,
+                            plan_id,
+                            status: new_status,
+                            arbitrator: arbitrator.clone(),
+                            resolved_at: record.resolved_at,
+                        },
+                    );
+                }
+            }
+        }
+
+        env.storage().persistent().remove(&DataKey::Fz(plan_id));
+
+        env.events().publish(
+            (symbol_short!("PLAN"), symbol_short!("UNFRO")),
+            disputes::PlanUnfrozenEvent {
+                plan_id,
+                dispute_id: 0,
+                unfrozen_at: env.ledger().timestamp(),
+            },
+        );
+
+        Ok(())
+    }
+
     #[allow(clippy::too_many_arguments)]
     fn create_beneficiary(
         env: &Env,
@@ -1576,11 +1782,125 @@ impl InheritanceContract {
     fn store_plan(env: &Env, plan_id: u64, plan: &InheritancePlan) {
         let key = DataKey::P(plan_id);
         env.storage().persistent().set(&key, plan);
+        let _ = Self::extend_plan_ttl_internal(env, plan_id);
     }
 
     fn get_plan(env: &Env, plan_id: u64) -> Option<InheritancePlan> {
         let key = DataKey::P(plan_id);
         env.storage().persistent().get(&key)
+    }
+
+    fn plan_vault_salt(env: &Env, plan_id: u64) -> BytesN<32> {
+        let mut salt = [0u8; 32];
+        salt[0..10].copy_from_slice(b"planvault:");
+        salt[24..32].copy_from_slice(&plan_id.to_be_bytes());
+        BytesN::from_array(env, &salt)
+    }
+
+    #[cfg_attr(test, allow(dead_code))]
+    fn get_configured_plan_vault_wasm(env: &Env) -> Option<BytesN<32>> {
+        env.storage().instance().get(&symbol_short!("vhash"))
+    }
+
+    fn store_plan_vault(env: &Env, plan_id: u64, vault: &Address) {
+        env.storage()
+            .persistent()
+            .set(&(symbol_short!("pvault"), plan_id), vault);
+    }
+
+    fn get_plan_vault(env: &Env, plan_id: u64) -> Option<Address> {
+        env.storage()
+            .persistent()
+            .get(&(symbol_short!("pvault"), plan_id))
+    }
+
+    fn deploy_plan_vault(
+        env: &Env,
+        plan_id: u64,
+        owner: &Address,
+    ) -> Result<Address, InheritanceError> {
+        #[cfg(test)]
+        {
+            let _ = owner;
+            let vault = env
+                .deployer()
+                .with_current_contract(Self::plan_vault_salt(env, plan_id))
+                .deployed_address();
+            Self::store_plan_vault(env, plan_id, &vault);
+            Ok(vault)
+        }
+
+        #[cfg(not(test))]
+        {
+            let wasm_hash =
+                Self::get_configured_plan_vault_wasm(env).ok_or(InheritanceError::VaultNotFound)?;
+            let deployer = env
+                .deployer()
+                .with_current_contract(Self::plan_vault_salt(env, plan_id));
+            let vault = deployer.deploy(wasm_hash);
+            let args: Vec<Val> = vec![
+                env,
+                env.current_contract_address().into_val(env),
+                owner.clone().into_val(env),
+                plan_id.into_val(env),
+            ];
+            let res = env.try_invoke_contract::<(), InvokeError>(
+                &vault,
+                &Symbol::new(env, "initialize"),
+                args,
+            );
+            if res.is_err() {
+                return Err(InheritanceError::FeeTransferFailed);
+            }
+            Self::store_plan_vault(env, plan_id, &vault);
+            Ok(vault)
+        }
+    }
+
+    fn require_plan_vault(env: &Env, plan_id: u64) -> Result<Address, InheritanceError> {
+        Self::get_plan_vault(env, plan_id).ok_or(InheritanceError::VaultNotFound)
+    }
+
+    fn release_from_plan_vault(
+        env: &Env,
+        plan_id: u64,
+        token: &Address,
+        recipient: &Address,
+        amount: u64,
+    ) -> Result<(), InheritanceError> {
+        let vault = Self::require_plan_vault(env, plan_id)?;
+
+        #[cfg(test)]
+        {
+            let args: Vec<Val> = vec![
+                env,
+                vault.into_val(env),
+                recipient.clone().into_val(env),
+                (amount as i128).into_val(env),
+            ];
+            let res =
+                env.try_invoke_contract::<(), InvokeError>(token, &symbol_short!("transfer"), args);
+            if res.is_err() {
+                return Err(InheritanceError::FeeTransferFailed);
+            }
+            Ok(())
+        }
+
+        #[cfg(not(test))]
+        {
+            let args: Vec<Val> = vec![
+                env,
+                token.clone().into_val(env),
+                recipient.clone().into_val(env),
+                amount.into_val(env),
+            ];
+            let res =
+                env.try_invoke_contract::<(), InvokeError>(&vault, &symbol_short!("release"), args);
+            if res.is_err() {
+                return Err(InheritanceError::FeeTransferFailed);
+            }
+            Ok(())
+        }
     }
 
     fn add_plan_to_user(env: &Env, owner: Address, plan_id: u64) {
@@ -1663,6 +1983,22 @@ impl InheritanceContract {
     /// The InheritancePlan if found, None otherwise
     pub fn get_plan_details(env: Env, plan_id: u64) -> Option<InheritancePlan> {
         Self::get_plan(&env, plan_id)
+    }
+
+    pub fn set_plan_vault_wasm_hash(
+        env: Env,
+        admin: Address,
+        wasm_hash: BytesN<32>,
+    ) -> Result<(), InheritanceError> {
+        Self::require_admin(&env, &admin)?;
+        env.storage()
+            .instance()
+            .set(&symbol_short!("vhash"), &wasm_hash);
+        Ok(())
+    }
+
+    pub fn get_plan_vault_address(env: Env, plan_id: u64) -> Option<Address> {
+        Self::get_plan_vault(&env, plan_id)
     }
 
     pub fn get_user_plan(
@@ -1789,7 +2125,7 @@ impl InheritanceContract {
     /// - Unauthorized: If caller is not the plan owner
     /// - PlanNotFound: If plan_id doesn't exist
     /// - TooManyBeneficiaries: If plan already has 10 beneficiaries
-    /// - AllocationExceedsLimit: If total allocation would exceed 10000 basis points
+    /// - AllocationPercentageMismatch: If total allocation would exceed 10000 basis points
     /// - InvalidBeneficiaryData: If any required field is empty
     /// - InvalidAllocation: If allocation_bp is 0
     /// - InvalidClaimCodeRange: If claim_code > 999999
@@ -1801,6 +2137,7 @@ impl InheritanceContract {
     ) -> Result<(), InheritanceError> {
         // Require owner authorization
         owner.require_auth();
+        Self::require_not_blacklisted(&env, &owner)?;
         Self::check_not_paused(&env);
         Self::enter_guard(&env);
 
@@ -1823,9 +2160,10 @@ impl InheritanceContract {
         }
 
         // Check that total allocation won't exceed 10000 basis points (100%)
+        // Check that total allocation won't exceed 10000 basis points (100%)
         let new_total = plan.total_allocation_bp + beneficiary_input.allocation_bp;
         if new_total > 10000 {
-            return Err(InheritanceError::AllocationExceedsLimit);
+            return Err(InheritanceError::AllocationPercentageMismatch);
         }
 
         // Create the beneficiary (validates inputs and hashes sensitive data)
@@ -2038,26 +2376,29 @@ impl InheritanceContract {
             );
         }
 
-        // Transfer net amount to this contract (escrow for the plan).
-        let contract_id = env.current_contract_address();
+        // Reserve a plan id early so the vault address and beneficiary salts are plan-scoped.
+        let plan_id = Self::increment_plan_id(&env);
+        let vault_address = Self::deploy_plan_vault(&env, plan_id, &owner)?;
+
+        // Transfer net amount directly to the isolated sub-vault for this plan.
         let net_i128 = net_amount as i128;
         let net_args: Vec<Val> = vec![
             &env,
             owner.clone().into_val(&env),
-            contract_id.clone().into_val(&env),
+            vault_address.clone().into_val(&env),
             net_i128.into_val(&env),
         ];
-        let _ = env.try_invoke_contract::<(), InvokeError>(
+        let net_res = env.try_invoke_contract::<(), InvokeError>(
             &token,
             &symbol_short!("transfer"),
             net_args,
         );
+        if net_res.is_err() {
+            return Err(InheritanceError::FeeTransferFailed);
+        }
 
         // Validate beneficiaries
         Self::validate_beneficiaries(&env, beneficiaries_data.clone())?;
-
-        // Reserve a plan id early so we can persist beneficiary salts keyed by (plan_id, index).
-        let plan_id = Self::increment_plan_id(&env);
 
         // Create beneficiary objects with hashed data
         let mut beneficiaries = Vec::new(&env);
@@ -2084,6 +2425,7 @@ impl InheritanceContract {
         let plan = InheritancePlan {
             plan_name,
             description,
+            token: token.clone(),
             asset_type: Symbol::new(&env, "USDC"),
             total_amount: net_amount,
             distribution_method,
@@ -2137,6 +2479,35 @@ impl InheritanceContract {
             },
         );
         log!(&env, "Vault {} lendable set to {}", plan_id, is_lendable);
+        Ok(())
+    }
+
+    /// Update the inactivity grace period of an existing plan.
+    pub fn update_grace_period(
+        env: Env,
+        plan_id: u64,
+        new_grace_period: u64,
+    ) -> Result<(), InheritanceError> {
+        let mut plan = Self::get_plan(&env, plan_id).ok_or(InheritanceError::PlanNotFound)?;
+        plan.owner.require_auth();
+        if !(MIN_GRACE_PERIOD_SECONDS..=MAX_GRACE_PERIOD_SECONDS).contains(&new_grace_period) {
+            return Err(InheritanceError::InvalidBeneficiaryData);
+        }
+        plan.grace_period = new_grace_period;
+        Self::store_plan(&env, plan_id, &plan);
+        env.events().publish(
+            (symbol_short!("PLAN"), symbol_short!("GRACE")),
+            GracePeriodUpdatedEvent {
+                plan_id,
+                new_grace_period,
+            },
+        );
+        log!(
+            &env,
+            "Plan {} grace period set to {} seconds",
+            plan_id,
+            new_grace_period
+        );
         Ok(())
     }
 
@@ -2242,6 +2613,9 @@ impl InheritanceContract {
         if plan.owner != caller {
             return Err(InheritanceError::Unauthorized);
         }
+        if plan.token != token {
+            return Err(InheritanceError::InvalidAssetType);
+        }
 
         if !plan.is_active {
             return Err(InheritanceError::PlanNotActive);
@@ -2262,11 +2636,11 @@ impl InheritanceContract {
             return Err(InheritanceError::InsufficientBalance);
         }
 
-        let contract_id = env.current_contract_address();
+        let vault_address = Self::require_plan_vault(&env, plan_id)?;
         let args: Vec<Val> = vec![
             &env,
             caller.clone().into_val(&env),
-            contract_id.clone().into_val(&env),
+            vault_address.into_val(&env),
             required.into_val(&env),
         ];
         let res =
@@ -2306,6 +2680,9 @@ impl InheritanceContract {
         if plan.owner != caller {
             return Err(InheritanceError::Unauthorized);
         }
+        if plan.token != token {
+            return Err(InheritanceError::InvalidAssetType);
+        }
 
         // Freeze/legal hold check
         if env.storage().persistent().has(&DataKey::Fz(plan_id)) {
@@ -2344,19 +2721,7 @@ impl InheritanceContract {
             return Err(InheritanceError::InsufficientLiquidity);
         }
 
-        let contract_id = env.current_contract_address();
-        let required = amount as i128;
-        let args: Vec<Val> = vec![
-            &env,
-            contract_id.clone().into_val(&env),
-            caller.clone().into_val(&env),
-            required.into_val(&env),
-        ];
-        let res =
-            env.try_invoke_contract::<(), InvokeError>(&token, &symbol_short!("transfer"), args);
-        if res.is_err() {
-            return Err(InheritanceError::FeeTransferFailed);
-        }
+        Self::release_from_plan_vault(&env, plan_id, &token, &caller, amount)?;
 
         plan.total_amount -= amount;
         Self::store_plan(&env, plan_id, &plan);
@@ -2533,6 +2898,7 @@ impl InheritanceContract {
     ) -> Result<(), InheritanceError> {
         // Require claimer authorization
         claimer.require_auth();
+        Self::require_not_blacklisted(&env, &claimer)?;
         Self::check_not_paused(&env);
         Self::enter_guard(&env);
 
@@ -2717,9 +3083,7 @@ impl InheritanceContract {
         }
 
         // Transfer funds to beneficiary
-        // Note: For fiat (bank_account), this would typically emit an event for off-chain processing.
-        // Here, we'll try to transfer USDC if an address can be derived, or just emit an event.
-        // As a simplification, we'll emit the event first.
+        Self::release_from_plan_vault(&env, plan_id, &plan.token, &claimer, payout)?;
 
         // Update plan balances and mark beneficiary as claimed when fully finalized
         let mut updated_plan = plan.clone();
@@ -2791,6 +3155,7 @@ impl InheritanceContract {
     /// Record KYC submission on-chain (called after off-chain submission).
     pub fn submit_kyc(env: Env, user: Address) -> Result<(), InheritanceError> {
         user.require_auth();
+        Self::require_not_blacklisted(&env, &user)?;
 
         let key = DataKey::Ky(user.clone());
         let mut status = env.storage().persistent().get(&key).unwrap_or(KycStatus {
@@ -2816,6 +3181,7 @@ impl InheritanceContract {
     /// Approve a user's KYC after off-chain verification (admin-only).
     pub fn approve_kyc(env: Env, admin: Address, user: Address) -> Result<(), InheritanceError> {
         Self::require_admin(&env, &admin)?;
+        Self::require_not_blacklisted(&env, &user)?;
 
         let key = DataKey::Ky(user.clone());
         let mut status: KycStatus = env
@@ -2860,6 +3226,7 @@ impl InheritanceContract {
     /// - `KycAlreadyRejected` if the KYC was already rejected
     pub fn reject_kyc(env: Env, admin: Address, user: Address) -> Result<(), InheritanceError> {
         Self::require_admin(&env, &admin)?;
+        Self::require_not_blacklisted(&env, &user)?;
 
         let key = DataKey::Ky(user.clone());
         let mut status: KycStatus = env
@@ -4197,36 +4564,49 @@ impl InheritanceContract {
         admin: Address,
         new_wasm_hash: BytesN<32>,
     ) -> Result<(), InheritanceError> {
-        // Only the contract admin can trigger an upgrade
         Self::require_admin(&env, &admin)?;
 
         let old_version = Self::version(env.clone());
         let new_version = old_version + 1;
 
-        // Store the new version before upgrading
         env.storage().instance().set(&DataKey::Ver, &new_version);
 
-        // Emit upgrade event for audit trail
         env.events().publish(
             (symbol_short!("CONTRACT"), symbol_short!("UPGRADE")),
             ContractUpgradedEvent {
                 old_version,
                 new_version,
                 new_wasm_hash: new_wasm_hash.clone(),
-                admin: admin.clone(),
+                admin,
                 upgraded_at: env.ledger().timestamp(),
             },
         );
 
-        log!(
-            &env,
-            "Contract upgraded from v{} to v{} by admin",
-            old_version,
-            new_version
+        env.deployer().update_current_contract_wasm(new_wasm_hash);
+
+        Ok(())
+    }
+
+    pub fn upgrade_wasm(env: Env, new_wasm_hash: BytesN<32>) -> Result<(), InheritanceError> {
+        let admin = Self::get_admin(&env).ok_or(InheritanceError::AdminNotSet)?;
+        Self::require_admin(&env, &admin)?;
+
+        let old_version = Self::version(env.clone());
+        let new_version = old_version + 1;
+
+        env.storage().instance().set(&DataKey::Ver, &new_version);
+
+        env.events().publish(
+            (symbol_short!("CONTRACT"), symbol_short!("UPGRADE")),
+            ContractUpgradedEvent {
+                old_version,
+                new_version,
+                new_wasm_hash: new_wasm_hash.clone(),
+                admin,
+                upgraded_at: env.ledger().timestamp(),
+            },
         );
 
-        // Perform the atomic WASM upgrade — this replaces the contract code
-        // while preserving all storage (plans, claims, KYC, admin, etc.)
         env.deployer().update_current_contract_wasm(new_wasm_hash);
 
         Ok(())
@@ -5700,6 +6080,10 @@ impl InheritanceContract {
         for entry in claimers.iter() {
             let (claimer, email, claim_code) = entry;
             claimer.require_auth();
+            if Self::require_not_blacklisted(&env, &claimer).is_err() {
+                fail += 1;
+                continue;
+            }
             if Self::check_and_record_claim_attempt(&env, plan_id, &claimer).is_err() {
                 fail += 1;
                 continue;
@@ -7396,6 +7780,14 @@ impl InheritanceContract {
             .get(&symbol_short!("supp_wrp"))
             .unwrap_or_else(|| Vec::new(&env))
     }
-}
 
-mod test;
+    /// Extend the TTL of the plan and its specific associated entries.
+    /// This is the worker ping endpoint.
+    pub fn extend_ttl(env: Env, plan_id: u64) -> Result<(), InheritanceError> {
+        Self::extend_plan_ttl_internal(&env, plan_id)
+    }
+
+    fn extend_plan_ttl_internal(env: &Env, plan_id: u64) -> Result<(), InheritanceError> {
+        let key = DataKey::P(plan_id);
+        if !env.storage().persistent().has(&key) {
+            return Err(InheritanceError::PlanNotFound);
