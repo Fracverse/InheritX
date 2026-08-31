@@ -17,6 +17,7 @@ pub enum Role {
 #[derive(Clone)]
 pub enum AccessControlKey {
     Roles(Address),
+    Blacklisted(Address),
 }
 
 /// Assign `role` to `address`.  Idempotent — does nothing if already assigned.
@@ -84,6 +85,41 @@ pub fn require_role<E: Into<soroban_sdk::Error> + Copy>(
         Ok(())
     } else {
         Err(contract_error)
+    }
+}
+
+/// Add `target` to the persistent sanctioned-address blacklist.
+pub fn blacklist_address(env: &Env, target: &Address) {
+    env.storage()
+        .persistent()
+        .set(&AccessControlKey::Blacklisted(target.clone()), &true);
+}
+
+/// Remove `target` from the persistent sanctioned-address blacklist.
+pub fn unblacklist_address(env: &Env, target: &Address) {
+    env.storage()
+        .persistent()
+        .remove(&AccessControlKey::Blacklisted(target.clone()));
+}
+
+/// Return `true` when `target` is currently blacklisted.
+pub fn is_blacklisted(env: &Env, target: &Address) -> bool {
+    env.storage()
+        .persistent()
+        .get::<AccessControlKey, bool>(&AccessControlKey::Blacklisted(target.clone()))
+        .unwrap_or(false)
+}
+
+/// Reject a blacklisted address with the caller's contract error type.
+pub fn require_not_blacklisted<E: Into<soroban_sdk::Error> + Copy>(
+    env: &Env,
+    target: &Address,
+    contract_error: E,
+) -> Result<(), E> {
+    if is_blacklisted(env, target) {
+        Err(contract_error)
+    } else {
+        Ok(())
     }
 }
 

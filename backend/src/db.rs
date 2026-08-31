@@ -1,8 +1,18 @@
+use log::LevelFilter;
 use sqlx::postgres::{PgConnectOptions, PgPoolOptions};
-use sqlx::PgPool;
+use sqlx::{ConnectOptions, PgPool};
 
 use std::{env, time::Duration};
 use tracing::warn;
+
+/// Default SQL `statement_timeout` (ms) applied to every pooled connection.
+/// Caps how long any single query — web request or background job — may hold
+/// locks before Postgres cancels it, so a runaway query can no longer exhaust
+/// the connection pool.
+const DEFAULT_STATEMENT_TIMEOUT_MS: u64 = 10_000;
+
+/// Default threshold (ms) above which a query execution is logged as slow.
+const DEFAULT_SLOW_QUERY_WARN_MS: u64 = 500;
 
 pub struct DbManager;
 
@@ -19,6 +29,23 @@ impl DbManager {
             || normalized.contains("server closed")
             || normalized.contains("temporarily unavailable")
             || normalized.contains("try again")
+    }
+
+    /// Applies the per-connection query guards: a hard `statement_timeout` so
+    /// no single query can hold locks indefinitely, and slow-statement
+    /// logging so queries approaching that limit show up before they start
+    /// timing out.
+    fn apply_query_guards(
+        connect_options: PgConnectOptions,
+        statement_timeout_ms: u64,
+        slow_query_warn_ms: u64,
+    ) -> PgConnectOptions {
+        connect_options
+            // Applied as a session-level GUC on every connection the pool
+            // opens, so it covers all web requests as well as background jobs
+            // (e.g. the inactivity watchdog) that share this pool.
+            .options([("statement_timeout", statement_timeout_ms.to_string())])
+            .log_slow_statements(LevelFilter::Warn, Duration::from_millis(slow_query_warn_ms))
     }
 
     /// Creates a PostgreSQL connection pool
@@ -58,9 +85,21 @@ impl DbManager {
             .parse()
             .unwrap_or(2);
 
+        let statement_timeout_ms: u64 = env::var("DB_STATEMENT_TIMEOUT_MS")
+            .unwrap_or_else(|_| DEFAULT_STATEMENT_TIMEOUT_MS.to_string())
+            .parse()
+            .unwrap_or(DEFAULT_STATEMENT_TIMEOUT_MS);
+
+        let slow_query_warn_ms: u64 = env::var("DB_SLOW_QUERY_WARN_MS")
+            .unwrap_or_else(|_| DEFAULT_SLOW_QUERY_WARN_MS.to_string())
+            .parse()
+            .unwrap_or(DEFAULT_SLOW_QUERY_WARN_MS);
+
         let connect_options = database_url
             .parse::<PgConnectOptions>()
             .map_err(|error| sqlx::Error::Configuration(error.into()))?;
+        let connect_options =
+            Self::apply_query_guards(connect_options, statement_timeout_ms, slow_query_warn_ms);
 
         let pool_options = PgPoolOptions::new()
             .max_connections(max_connections)
@@ -128,7 +167,34 @@ impl DbManager {
 
 #[cfg(test)]
 mod tests {
-    use super::DbManager;
+    use super::{DbManager, DEFAULT_SLOW_QUERY_WARN_MS, DEFAULT_STATEMENT_TIMEOUT_MS};
+    use sqlx::postgres::PgConnectOptions;
+
+    #[test]
+    fn applies_statement_timeout_as_a_session_level_startup_option() {
+        let base = "postgres://user:pass@localhost/inheritx"
+            .parse::<PgConnectOptions>()
+            .expect("valid connection URL");
+
+        let configured = DbManager::apply_query_guards(
+            base,
+            DEFAULT_STATEMENT_TIMEOUT_MS,
+            DEFAULT_SLOW_QUERY_WARN_MS,
+        );
+
+        assert_eq!(configured.get_options(), Some("-c statement_timeout=10000"));
+    }
+
+    #[test]
+    fn honours_a_custom_statement_timeout() {
+        let base = "postgres://user:pass@localhost/inheritx"
+            .parse::<PgConnectOptions>()
+            .expect("valid connection URL");
+
+        let configured = DbManager::apply_query_guards(base, 2_500, DEFAULT_SLOW_QUERY_WARN_MS);
+
+        assert_eq!(configured.get_options(), Some("-c statement_timeout=2500"));
+    }
 
     #[test]
     fn retries_transient_connection_errors() {

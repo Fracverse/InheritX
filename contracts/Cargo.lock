@@ -913,6 +913,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "plan-vault"
+version = "0.0.0"
+dependencies = [
+ "mock_token",
+ "soroban-sdk",
+]
+
+[[package]]
 name = "powerfmt"
 version = "0.2.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"

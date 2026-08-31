@@ -118,6 +118,8 @@ fn test_withdraw_burns_shares_and_returns_tokens() {
     mint_to(&env, &token_addr, &depositor, 10_000);
 
     client.deposit(&depositor, &token_addr, &2000u64);
+    env.ledger()
+        .set_sequence_number(env.ledger().sequence() + 1);
     let balance_before = tok_client(&env, &token_addr).balance(&depositor);
 
     // Withdraw 500 shares → should get 500 tokens back
@@ -297,6 +299,8 @@ fn test_withdraw_fails_if_funds_are_borrowed() {
     mint_to(&env, &token_addr, &depositor, 10_000);
 
     client.deposit(&depositor, &token_addr, &2000u64);
+    env.ledger()
+        .set_sequence_number(env.ledger().sequence() + 1);
     client.borrow(
         &borrower,
         &token_addr,
@@ -449,6 +453,8 @@ fn test_interest_accrual() {
 
     // 1. Deposit 10,000 → 10,000 shares
     client.deposit(&depositor, &token_addr, &10_000u64);
+    env.ledger()
+        .set_sequence_number(env.ledger().sequence() + 1);
 
     // 2. Borrow 5,000
     // Utilization = 5000 / 10000 = 50%.
@@ -555,6 +561,20 @@ fn test_small_duration_interest_rounds_up_for_contract_repayment() {
 }
 
 #[test]
+fn test_kinked_interest_rate_increases_sharply_above_80_percent() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let (client, token_addr, _collateral_addr, admin) = setup(&env);
+
+    // Configure an 80% kink with a steep post-kink slope.
+    client.set_rate_model(&admin, &500u32, &8000u32, &2000u32, &30000u32, &1000u32);
+    assert_eq!(client.simulate_rate(&0u32), 500u32);
+    assert_eq!(client.simulate_rate(&8000u32), 2500u32);
+    assert_eq!(client.simulate_rate(&9000u32), 17500u32);
+    assert!(client.simulate_rate(&9000u32) > client.simulate_rate(&8000u32) * 5);
+}
+
+#[test]
 fn test_dynamic_interest_rate_increases_with_utilization() {
     let env = Env::default();
     env.mock_all_auths();
@@ -570,7 +590,7 @@ fn test_dynamic_interest_rate_increases_with_utilization() {
     let borrower1 = Address::generate(&env);
     mint_to(&env, &collateral_addr, &borrower1, 100_000);
     // Borrow 2,000 (20% utilization)
-    // Dynamic rate should be 500 + (2000 * 2000 / 10000) = 500 + 400 = 900
+    // The legacy fallback curve is linear: 500 + 20% * 2000 = 900.
     client.borrow(
         &borrower1,
         &token_addr,
@@ -582,7 +602,7 @@ fn test_dynamic_interest_rate_increases_with_utilization() {
     let loan1 = client.get_loan(&borrower1).unwrap();
     assert_eq!(loan1.interest_rate_bps, 900u32);
 
-    // Now utilization is 20%. The *next* borrower will get 900.
+    // The legacy fallback rate is linear when no explicit model is configured.
     assert_eq!(client.get_current_interest_rate(&token_addr), 900u32);
 
     let borrower2 = Address::generate(&env);
@@ -592,7 +612,7 @@ fn test_dynamic_interest_rate_increases_with_utilization() {
     // Dynamic rate for this loan should be based on previous utilization (which changes mid-transaction in real world, but our implementation updates *after* applying the new borrow amount).
     // Let's look at implementation: pool.total_borrowed += amount, THEN get_utilization_bps.
     // So for loan2, total_borrowed becomes 5,000. Utilization = 50%.
-    // Rate = 500 + (5000 * 2000 / 10000) = 500 + 1000 = 1500.
+    // The legacy fallback curve is linear: 500 + 50% * 2000 = 1500.
     client.borrow(
         &borrower2,
         &token_addr,
@@ -3661,4 +3681,88 @@ fn test_harvest_counters_advance() {
     assert_eq!(position.last_harvest_amount, 67_500);
     assert_eq!(position.total_harvested, 135_000);
     assert_eq!(position.registered_at, start);
+}
+
+// ─────────────────────────────────────────────────
+// Flash Loan Defense Guard Tests
+// ─────────────────────────────────────────────────
+
+#[test]
+fn test_flash_loan_defense_blocks_same_block_withdraw() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let (client, token_addr, _collateral, _admin) = setup(&env);
+
+    let depositor = Address::generate(&env);
+    mint_to(&env, &token_addr, &depositor, 10_000);
+
+    // Deposit tokens at current ledger sequence
+    client.deposit(&depositor, &token_addr, &2000u64);
+    assert_eq!(
+        client.get_deposit_ledger(&token_addr, &depositor),
+        Some(env.ledger().sequence())
+    );
+
+    // Attempting to withdraw within the same ledger block should fail with FlashLoanDefense error
+    let result = client.try_withdraw(&depositor, &token_addr, &500u64);
+    assert_eq!(result, Err(Ok(LendingError::FlashLoanDefense)));
+
+    // Advance the ledger sequence number by 1
+    env.ledger()
+        .set_sequence_number(env.ledger().sequence() + 1);
+
+    // Withdrawal in the next ledger block should succeed
+    let withdrawn = client.withdraw(&depositor, &token_addr, &500u64);
+    assert_eq!(withdrawn, 500u64);
+}
+
+#[test]
+fn test_flash_loan_defense_blocks_same_block_borrow() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let (client, token_addr, collateral_addr, _admin) = setup(&env);
+
+    let depositor = Address::generate(&env);
+    let borrower = Address::generate(&env);
+    mint_to(&env, &token_addr, &depositor, 10_000);
+    mint_to(&env, &collateral_addr, &borrower, 100_000);
+
+    // Initial pool deposit and advance ledger
+    client.deposit(&depositor, &token_addr, &5000u64);
+    env.ledger()
+        .set_sequence_number(env.ledger().sequence() + 1);
+
+    // Borrower deposits collateral token into pool in current block
+    client.add_asset_pool(&_admin, &collateral_addr, &500u32, &2000u32, &10000u32);
+    client.deposit(&borrower, &collateral_addr, &2000u64);
+    assert_eq!(
+        client.get_deposit_ledger(&collateral_addr, &borrower),
+        Some(env.ledger().sequence())
+    );
+
+    // Attempting to borrow using that collateral in the same block should fail with FlashLoanDefense
+    let result = client.try_borrow(
+        &borrower,
+        &token_addr,
+        &400u64,
+        &collateral_addr,
+        &600u64,
+        &(30 * 24 * 60 * 60),
+    );
+    assert_eq!(result, Err(Ok(LendingError::FlashLoanDefense)));
+
+    // Advance the ledger sequence number by 1
+    env.ledger()
+        .set_sequence_number(env.ledger().sequence() + 1);
+
+    // Borrowing in subsequent ledger block should succeed
+    let loan_id = client.borrow(
+        &borrower,
+        &token_addr,
+        &400u64,
+        &collateral_addr,
+        &600u64,
+        &(30 * 24 * 60 * 60),
+    );
+    assert!(loan_id > 0);
 }

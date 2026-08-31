@@ -38,7 +38,7 @@ impl TestTokenHelper<'_> {
 fn setup_with_token_and_admin(
     env: &Env,
 ) -> (InheritanceContractClient<'_>, Address, Address, Address) {
-    env.mock_all_auths();
+    env.mock_all_auths_allowing_non_root_auth();
     let contract_id = env.register_contract(None, InheritanceContract);
     let token_id = env.register_contract(None, MockToken);
     let admin = create_test_address(env, 100);
@@ -58,7 +58,7 @@ fn setup_with_token_and_admin(
 fn setup_with_token_and_admin_no_kyc(
     env: &Env,
 ) -> (InheritanceContractClient<'_>, Address, Address, Address) {
-    env.mock_all_auths();
+    env.mock_all_auths_allowing_non_root_auth();
     let contract_id = env.register_contract(None, InheritanceContract);
     let token_id = env.register_contract(None, MockToken);
     let admin = create_test_address(env, 101);
@@ -1401,7 +1401,6 @@ fn test_upgrade_rejects_non_admin() {
     let non_admin = create_test_address(&env, 2);
     client.initialize_admin(&admin);
 
-    // Auth check happens before wasm swap, so this returns NotAdmin
     let result = client.try_upgrade(&non_admin, &fake_wasm_hash(&env));
     assert!(result.is_err());
 }
@@ -1416,6 +1415,17 @@ fn test_upgrade_rejects_no_admin_initialized() {
     let caller = create_test_address(&env, 1);
 
     let result = client.try_upgrade(&caller, &fake_wasm_hash(&env));
+    assert!(result.is_err());
+}
+
+#[test]
+fn test_upgrade_wasm_rejects_no_admin_initialized() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let contract_id = env.register_contract(None, InheritanceContract);
+    let client = InheritanceContractClient::new(&env, &contract_id);
+
+    let result = client.try_upgrade_wasm(&fake_wasm_hash(&env));
     assert!(result.is_err());
 }
 
@@ -2109,17 +2119,29 @@ fn test_vault_deposit_and_withdraw() {
 
     let plan = client.get_plan_details(&plan_id).unwrap();
     assert_eq!(plan.total_amount, 980); // 1000 - 2% fee
+    assert_eq!(plan.token, token);
+
+    let token_helper = TestTokenHelper::new(&env, &token);
+    let vault = client.get_plan_vault_address(&plan_id).unwrap();
+    assert_ne!(vault, client.address);
+    assert_eq!(token_helper.balance(&vault), 980);
+    assert_eq!(token_helper.balance(&client.address), 0);
 
     // Deposit more
     client.deposit(&owner, &token, &plan_id, &500u64);
     let plan = client.get_plan_details(&plan_id).unwrap();
     assert_eq!(plan.total_amount, 1480);
+    assert_eq!(token_helper.balance(&vault), 1480);
+    assert_eq!(token_helper.balance(&client.address), 0);
 
     // Withdraw some
+    env.mock_all_auths_allowing_non_root_auth();
     client.withdraw(&owner, &token, &plan_id, &300u64);
     let plan = client.get_plan_details(&plan_id).unwrap();
     assert_eq!(plan.total_amount, 1180);
     assert_eq!(plan.total_loaned, 0);
+    assert_eq!(token_helper.balance(&vault), 1180);
+    assert_eq!(token_helper.balance(&client.address), 0);
 
     // Unauthorized fails
     let not_owner = create_test_address(&env, 999);
@@ -7613,4 +7635,20 @@ fn snapshot_gas_datakey() {
         "create plan cpu instructions regressed"
     );
     assert!(cpu_read < 5_000_000, "read plan cpu instructions regressed");
+}
+
+#[test]
+fn test_raise_dispute_and_resolve_dispute() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let (client, _admin, _owner, plan_id) = setup_plan_for_triggers(&env);
+
+    let challenger = create_test_address(&env, 99);
+    let proof_hash = BytesN::from_array(&env, &[1u8; 32]);
+
+    let dispute_id = client.raise_dispute(&plan_id, &challenger, &proof_hash);
+    assert_eq!(dispute_id, 0);
+
+    let res = client.try_resolve_dispute(&plan_id, &true);
+    assert!(res.is_ok());
 }
