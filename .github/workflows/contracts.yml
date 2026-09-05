@@ -1,5 +1,4 @@
 name: Contracts CI
-
 on:
   push:
     branches: ["main", "fix-ci", "master"]
@@ -10,7 +9,7 @@ on:
     paths:
       - "contracts/**"
 
-jobs:
+nobs:
   test:
     name: Build and Test
     runs-on: ubuntu-latest
@@ -21,12 +20,12 @@ jobs:
 
     steps:
       - name: Checkout code
-        uses: actions/checkout@v4
+        uses: actions/checkout@v5
 
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@stable
         with:
-          toolchain: "1.88"
+          toolchain: stable
           components: rustfmt, clippy
 
       - name: Rust Cache
