@@ -131,33 +131,69 @@ pub enum SecurityKey {
     ReentrancyLock,
 }
 
-/// Enter the reentrancy guard. Returns `error` if a reentrant call is detected.
+/// A Reentrancy Guard that sets a lock in temporary storage and clears it on drop.
+pub struct ReentrancyGuard<'a> {
+    env: &'a Env,
+}
+
+impl<'a> ReentrancyGuard<'a> {
+    /// Locks the guard. Returns `error` if already locked.
+    pub fn lock<E: Into<soroban_sdk::Error> + Copy>(env: &'a Env, error: E) -> Result<Self, E> {
+        if env.storage().temporary().has(&SecurityKey::ReentrancyLock) {
+            return Err(error);
+        }
+        env.storage()
+            .temporary()
+            .set(&SecurityKey::ReentrancyLock, &true);
+        Ok(Self { env })
+    }
+
+    /// Locks the guard. Panics if already locked.
+    pub fn lock_or_panic(env: &'a Env) -> Self {
+        if env.storage().temporary().has(&SecurityKey::ReentrancyLock) {
+            panic!("reentrant call");
+        }
+        env.storage()
+            .temporary()
+            .set(&SecurityKey::ReentrancyLock, &true);
+        Self { env }
+    }
+}
+
+impl<'a> Drop for ReentrancyGuard<'a> {
+    fn drop(&mut self) {
+        self.env
+            .storage()
+            .temporary()
+            .remove(&SecurityKey::ReentrancyLock);
+    }
+}
+
+/// Kept for backward compatibility but deprecated. Use `ReentrancyGuard` instead.
 pub fn reentrancy_enter<E: Into<soroban_sdk::Error> + Copy>(env: &Env, error: E) -> Result<(), E> {
-    if env.storage().instance().has(&SecurityKey::ReentrancyLock) {
+    if env.storage().temporary().has(&SecurityKey::ReentrancyLock) {
         return Err(error);
     }
     env.storage()
-        .instance()
+        .temporary()
         .set(&SecurityKey::ReentrancyLock, &true);
     Ok(())
 }
 
-/// Enter the reentrancy guard. Panics if a reentrant call is detected.
-/// Use this for contracts whose error enum is full (e.g. InheritanceContract).
+/// Kept for backward compatibility but deprecated.
 pub fn reentrancy_enter_or_panic(env: &Env) {
-    if env.storage().instance().has(&SecurityKey::ReentrancyLock) {
+    if env.storage().temporary().has(&SecurityKey::ReentrancyLock) {
         panic!("reentrant call");
     }
     env.storage()
-        .instance()
+        .temporary()
         .set(&SecurityKey::ReentrancyLock, &true);
 }
 
-/// Release the reentrancy guard. Always call this before returning.
-/// Safe to skip on panic — Soroban reverts all storage on trap.
+/// Kept for backward compatibility but deprecated.
 pub fn reentrancy_exit(env: &Env) {
     env.storage()
-        .instance()
+        .temporary()
         .remove(&SecurityKey::ReentrancyLock);
 }
 

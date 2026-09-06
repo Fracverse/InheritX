@@ -112,9 +112,6 @@ pub enum InheritanceError {
     AdminAlreadyInitialized = 21,
     NotAdmin = 22,
     KycNotSubmitted = 23,
-    KycAlreadyApproved = 24,
-    DuplicatePriority = 25,
-    PriorityOutOfRange = 26,
     PlanNotClaimed = 27,
     KycAlreadyRejected = 28,
     InsufficientBalance = 29,
@@ -141,6 +138,8 @@ pub enum InheritanceError {
     WillVersionNotFound = 50,
     AddressBlacklisted = 51,
     MathOverflow = 52,
+    ReentrantCall = 51,
+    Blk = 52,
 }
 
 #[contracttype]
@@ -159,8 +158,6 @@ pub enum DataKey {
     Ky(Address),
     Ver,
     It(u64),            // per-plan inheritance trigger info
-    Ea(Address),        // bool, keyed by Address
-    Ela(Address),       // u64, keyed by Address
     Eac(u64),           // per-plan emergency access record
     Gd(u64),            // per-plan guardian configuration
     Eap(u64, Address),  // (plan_id, trusted_contact) -> Vec<Address>
@@ -199,6 +196,7 @@ pub enum DataKey {
     // Yield harvesting
     Yr,      // Vec<Address> of accounts allowed to trigger harvests
     Ys(u64), // plan_id -> PlanYieldState
+    Rg,
 }
 
 #[contracttype]
@@ -845,6 +843,10 @@ pub struct CreateInheritancePlanParams {
     pub distribution_method: DistributionMethod,
     pub beneficiaries_data: Vec<(String, String, u32, Bytes, u32, u32)>,
     pub is_lendable: bool,
+    /// Guardians authorized to trigger emergency plan recovery. 0 or up to 5.
+    pub guardians: Vec<Address>,
+    /// Minimum number of guardian signatures required to trigger recovery.
+    pub guardian_threshold: u32,
 }
 
 #[contracttype]
@@ -1032,7 +1034,7 @@ impl InheritanceContract {
     }
 
     fn require_not_blacklisted(env: &Env, address: &Address) -> Result<(), InheritanceError> {
-        access_control::require_not_blacklisted(env, address, InheritanceError::AddressBlacklisted)
+        access_control::require_not_blacklisted(env, address, InheritanceError::Blk)
     }
 
     fn enter_guard(env: &Env) {
@@ -1661,11 +1663,11 @@ impl InheritanceContract {
                 .ok_or(InheritanceError::AllocationPercentageMismatch)?;
 
             if priority == 0 {
-                return Err(InheritanceError::PriorityOutOfRange);
+                return Err(InheritanceError::InvalidBeneficiaryData);
             }
 
             if priorities.contains(priority) {
-                return Err(InheritanceError::DuplicatePriority);
+                return Err(InheritanceError::InvalidBeneficiaryData);
             }
             priorities.push_back(priority);
         }
@@ -1720,6 +1722,7 @@ impl InheritanceContract {
     fn store_plan(env: &Env, plan_id: u64, plan: &InheritancePlan) {
         let key = DataKey::P(plan_id);
         env.storage().persistent().set(&key, plan);
+        let _ = Self::extend_plan_ttl_internal(env, plan_id);
     }
 
     fn get_plan(env: &Env, plan_id: u64) -> Option<InheritancePlan> {
@@ -2252,6 +2255,8 @@ impl InheritanceContract {
             distribution_method,
             beneficiaries_data,
             is_lendable,
+            guardians,
+            guardian_threshold,
         } = params;
 
         // Require owner authorization
@@ -2386,6 +2391,26 @@ impl InheritanceContract {
 
         // Grant Owner role so RBAC checks recognise this address as a plan owner
         access_control::assign_role(&env, &owner, Role::Owner);
+
+        // Register guardians (up to 5) if provided during plan creation
+        if !guardians.is_empty() {
+            if guardians.len() > 5 {
+                return Err(InheritanceError::TooManyEmergencyContacts);
+            }
+            if guardian_threshold == 0 || guardians.len() < guardian_threshold {
+                return Err(InheritanceError::InvalidGuardianThreshold);
+            }
+            let config = GuardianConfig {
+                guardians: guardians.clone(),
+                threshold: guardian_threshold,
+            };
+            env.storage()
+                .persistent()
+                .set(&DataKey::Gd(plan_id), &config);
+            for g in guardians.iter() {
+                access_control::assign_role(&env, &g, Role::Guardian);
+            }
+        }
 
         log!(&env, "Inheritance plan created with ID: {}", plan_id);
 
@@ -2690,7 +2715,7 @@ impl InheritanceContract {
         }
 
         if priority == 0 {
-            return Err(InheritanceError::PriorityOutOfRange);
+            return Err(InheritanceError::InvalidBeneficiaryData);
         }
 
         // Check for duplicate priorities
@@ -2698,7 +2723,7 @@ impl InheritanceContract {
             if i != beneficiary_index {
                 let b = plan.beneficiaries.get(i).unwrap();
                 if b.priority == priority {
-                    return Err(InheritanceError::DuplicatePriority);
+                    return Err(InheritanceError::InvalidBeneficiaryData);
                 }
             }
         }
@@ -2837,7 +2862,7 @@ impl InheritanceContract {
         claimer.require_auth();
         Self::require_not_blacklisted(&env, &claimer)?;
         Self::check_not_paused(&env);
-        Self::enter_guard(&env);
+        let _guard = access_control::ReentrancyGuard::lock_or_panic(&env);
 
         // Check KYC approval - only approved users can claim plans
         Self::check_kyc_approved(&env, &claimer)?;
@@ -3062,7 +3087,7 @@ impl InheritanceContract {
         });
 
         if status.approved {
-            return Err(InheritanceError::KycAlreadyApproved);
+            return Err(InheritanceError::AlreadyApproved);
         }
 
         status.submitted = true;
@@ -3089,7 +3114,7 @@ impl InheritanceContract {
         }
 
         if status.approved {
-            return Err(InheritanceError::KycAlreadyApproved);
+            return Err(InheritanceError::AlreadyApproved);
         }
 
         status.approved = true;
@@ -3306,6 +3331,125 @@ impl InheritanceContract {
         for g in guardians.iter() {
             access_control::assign_role(&env, &g, Role::Guardian);
         }
+        Ok(())
+    }
+
+    /// Guardian multi-signature emergency plan recovery.
+    ///
+    /// When the owner loses access (e.g. before inactivity expires), registered
+    /// guardians can collectively trigger plan recovery by submitting a quorum of
+    /// guardian signatures. Each guardian signs the transaction normally; the
+    /// contract verifies every supplied signer is a registered guardian whose
+    /// authentication the ledger already cryptographically validated. Once the
+    /// configured quorum (`threshold`) is reached the plan's inheritance flow is
+    /// triggered (loans frozen, payout unlocked), mirroring `trigger_inheritance`.
+    ///
+    /// # Arguments
+    /// * `env` - The environment
+    /// * `plan_id` - The ID of the plan to recover
+    /// * `signers` - The distinct, registered guardian addresses providing signatures
+    ///
+    /// # Errors
+    /// - `GuardianNotFound`: The plan has no guardian configuration
+    /// - `Unauthorized`: The quorum of guardian signatures was not reached
+    /// - `InheritanceAlreadyTriggered`: The plan was already triggered
+    pub fn guardian_emergency_trigger(
+        env: Env,
+        plan_id: u64,
+        signers: Vec<Address>,
+    ) -> Result<(), InheritanceError> {
+        Self::check_not_paused(&env);
+        Self::enter_guard(&env);
+
+        let config: GuardianConfig = env
+            .storage()
+            .persistent()
+            .get(&DataKey::Gd(plan_id))
+            .ok_or(InheritanceError::GuardianNotFound)?;
+
+        // Collect distinct registered guardians that authorise recovery.
+        let mut approved: Vec<Address> = Vec::new(&env);
+        for signer in signers.iter() {
+            let mut is_guardian = false;
+            for g in config.guardians.iter() {
+                if g == signer {
+                    is_guardian = true;
+                    break;
+                }
+            }
+            if !is_guardian {
+                continue;
+            }
+            let mut already = false;
+            for a in approved.iter() {
+                if a == signer {
+                    already = true;
+                    break;
+                }
+            }
+            if !already {
+                // Ledger-level authentication: verifies the guardian's signature.
+                signer.require_auth();
+                approved.push_back(signer);
+            }
+        }
+
+        if approved.len() < config.threshold {
+            return Err(InheritanceError::Unauthorized);
+        }
+
+        let mut plan = Self::get_plan(&env, plan_id).ok_or(InheritanceError::PlanNotFound)?;
+        if !plan.is_active {
+            return Err(InheritanceError::PlanNotActive);
+        }
+        if env.storage().persistent().has(&DataKey::Fz(plan_id))
+            || env.storage().persistent().has(&DataKey::Lh(plan_id))
+        {
+            return Err(InheritanceError::PlanNotActive);
+        }
+        if Self::get_trigger_info(&env, plan_id).is_some() {
+            return Err(InheritanceError::InheritanceAlreadyTriggered);
+        }
+
+        let now = env.ledger().timestamp();
+        plan.is_lendable = false;
+        Self::store_plan(&env, plan_id, &plan);
+
+        let trigger_info = InheritanceTriggerInfo {
+            triggered_at: now,
+            loan_freeze_active: true,
+            recall_attempted: false,
+            liquidation_triggered: false,
+            original_loaned: plan.total_loaned,
+            recalled_amount: 0,
+            settled_amount: 0,
+        };
+        Self::set_trigger_info(&env, plan_id, &trigger_info);
+
+        env.events().publish(
+            (symbol_short!("INHERIT"), symbol_short!("TRIGGER")),
+            InheritanceTriggeredEvent {
+                plan_id,
+                triggered_at: now,
+                outstanding_loans: plan.total_loaned,
+            },
+        );
+        env.events().publish(
+            (symbol_short!("LOAN"), symbol_short!("FREEZE")),
+            LoanFreezeEvent {
+                plan_id,
+                frozen_at: now,
+            },
+        );
+
+        log!(
+            &env,
+            "Guardian emergency recovery triggered for plan {} by {} guardians",
+            plan_id,
+            approved.len()
+        );
+
+        Self::exit_guard(&env);
         Ok(())
     }
 
@@ -7480,6 +7624,69 @@ impl InheritanceContract {
             .persistent()
             .get(&symbol_short!("supp_wrp"))
             .unwrap_or_else(|| Vec::new(&env))
+    }
+
+    /// Extend the TTL of the plan and its specific associated entries.
+    /// This is the worker ping endpoint.
+    pub fn extend_ttl(env: Env, plan_id: u64) -> Result<(), InheritanceError> {
+        Self::extend_plan_ttl_internal(&env, plan_id)
+    }
+
+    fn extend_plan_ttl_internal(env: &Env, plan_id: u64) -> Result<(), InheritanceError> {
+        let key = DataKey::P(plan_id);
+        if !env.storage().persistent().has(&key) {
+            return Err(InheritanceError::PlanNotFound);
+        }
+
+        let threshold = 518_400;
+        let extend_to = 535_680;
+        env.storage()
+            .persistent()
+            .extend_ttl(&key, threshold, extend_to);
+
+        let trigger_key = DataKey::It(plan_id);
+        if env.storage().persistent().has(&trigger_key) {
+            env.storage()
+                .persistent()
+                .extend_ttl(&trigger_key, threshold, extend_to);
+        }
+
+        let emergency_access_key = DataKey::Eac(plan_id);
+        if env.storage().persistent().has(&emergency_access_key) {
+            env.storage()
+                .persistent()
+                .extend_ttl(&emergency_access_key, threshold, extend_to);
+        }
+
+        let guardians_key = DataKey::Gd(plan_id);
+        if env.storage().persistent().has(&guardians_key) {
+            env.storage()
+                .persistent()
+                .extend_ttl(&guardians_key, threshold, extend_to);
+        }
+
+        let contacts_key = DataKey::Ec(plan_id);
+        if env.storage().persistent().has(&contacts_key) {
+            env.storage()
+                .persistent()
+                .extend_ttl(&contacts_key, threshold, extend_to);
+        }
+
+        let will_hash_key = DataKey::Wh(plan_id);
+        if env.storage().persistent().has(&will_hash_key) {
+            env.storage()
+                .persistent()
+                .extend_ttl(&will_hash_key, threshold, extend_to);
+        }
+
+        let vault_will_key = DataKey::Vw(plan_id);
+        if env.storage().persistent().has(&vault_will_key) {
+            env.storage()
+                .persistent()
+                .extend_ttl(&vault_will_key, threshold, extend_to);
+        }
+
+        Ok(())
     }
 }
 

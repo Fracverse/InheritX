@@ -3101,10 +3101,34 @@
                     },
                     {
                       "key": {
+                        "symbol": "ltv_ratio_bps"
+                      },
+                      "val": {
+                        "u32": 6666
+                      }
+                    },
+                    {
+                      "key": {
+                        "symbol": "plan_id"
+                      },
+                      "val": {
+                        "u64": 0
+                      }
+                    },
+                    {
+                      "key": {
                         "symbol": "principal"
                       },
                       "val": {
                         "u64": 1000
+                      }
+                    },
+                    {
+                      "key": {
+                        "symbol": "uri"
+                      },
+                      "val": {
+                        "string": "{\"name\":\"InheritX Loan NFT #1\",\"loan_id\":1,\"principal\":1000,\"collateral_amount\":1500,\"ltv_ratio_bps\":6666,\"plan_id\":0,\"due_date\":2592000}"
                       }
                     }
                   ]

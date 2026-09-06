@@ -87,8 +87,9 @@ async fn handle_socket(mut socket: WebSocket, state: Arc<AppState>) {
                         break;
                     }
                     Some(Ok(Message::Ping(data))) => {
-                        if socket.send(Message::Pong(data)).await.is_err() {
-                            break;
+                        match socket.send(Message::Pong(data)).await {
+                            Ok(_) => {}
+                            Err(_) => break,
                         }
                     }
                     Some(Err(e)) => {

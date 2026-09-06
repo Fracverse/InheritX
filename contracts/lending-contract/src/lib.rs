@@ -6,6 +6,7 @@ use soroban_sdk::{
 };
 
 mod reserves;
+use reserves::{ReserveAddedEvent, ReserveConfig};
 
 // ─────────────────────────────────────────────────
 // Constants
@@ -578,6 +579,8 @@ pub enum LendingError {
     InvalidYieldBoost = 37,
     TooManyYieldPositions = 38,
     FlashLoanDefense = 39,
+    ReserveAlreadyExists = 40,
+    ReserveNotFound = 41,
 }
 
 impl From<LendingError> for soroban_sdk::Error {
@@ -671,6 +674,7 @@ pub enum DataKey {
     LoanById(u64),
     CollateralRatio,
     WhitelistedCollateral(Address),
+    Reserve(Address), // token -> ReserveConfig (multi-asset reserve management)
     NFTToken,
     ReentrancyGuard,
     LateFeesAccrued(u64), // Track late fees for a specific loan_id
@@ -1088,6 +1092,20 @@ impl LendingContract {
             .unwrap_or(false)
     }
 
+    /// Load a reserve, or return `ReserveNotFound` if it was never added.
+    fn get_reserve(env: &Env, token: &Address) -> Result<ReserveConfig, LendingError> {
+        env.storage()
+            .persistent()
+            .get(&DataKey::Reserve(token.clone()))
+            .ok_or(LendingError::ReserveNotFound)
+    }
+
+    fn set_reserve(env: &Env, token: &Address, reserve: &ReserveConfig) {
+        env.storage()
+            .persistent()
+            .set(&DataKey::Reserve(token.clone()), reserve);
+    }
+
     pub fn get_admin(env: Env) -> Option<Address> {
         env.storage().instance().get(&DataKey::Admin)
     }
@@ -1440,7 +1458,7 @@ impl LendingContract {
     ) -> Result<u64, LendingError> {
         Self::require_not_paused(&env)?;
         Self::require_initialized(&env)?;
-        Self::enter_reentrancy_guard(&env)?;
+        let _guard = access_control::ReentrancyGuard::lock(&env, LendingError::ReentrantCall)?;
         depositor.require_auth();
 
         if shares == 0 {
@@ -1500,7 +1518,6 @@ impl LendingContract {
             asset,
             shares
         );
-        Self::exit_reentrancy_guard(&env);
         Ok(amount)
     }
 
@@ -1581,6 +1598,16 @@ impl LendingContract {
             &contract_id,
             collateral_amount,
         )?;
+
+        // Isolated per-token reserve tracking (no-op if no reserve registered).
+        if env
+            .storage()
+            .persistent()
+            .has(&DataKey::Reserve(collateral_token.clone()))
+        {
+            Self::add_reserve_collateral(&env, &collateral_token, collateral_amount)?;
+            Self::add_reserve_borrowed(&env, &collateral_token, amount)?;
+        }
 
         pool.total_borrowed += amount;
 
@@ -1716,6 +1743,16 @@ impl LendingContract {
             &borrower,
             loan.collateral_amount,
         )?;
+
+        // Isolated per-token reserve tracking (no-op if no reserve registered).
+        if env
+            .storage()
+            .persistent()
+            .has(&DataKey::Reserve(loan.collateral_token.clone()))
+        {
+            Self::sub_reserve_collateral(&env, &loan.collateral_token, loan.collateral_amount)?;
+            Self::sub_reserve_borrowed(&env, &loan.collateral_token, loan.principal)?;
+        }
 
         let mut pool = Self::get_pool(&env, &loan.asset)?;
         pool.total_borrowed -= loan.principal;
@@ -2075,6 +2112,107 @@ impl LendingContract {
         env.storage()
             .persistent()
             .remove(&DataKey::WhitelistedCollateral(token));
+        Ok(())
+    }
+
+    /// Register a multi-asset reserve (admin only).
+    ///
+    /// Each supported collateral/borrow asset (XLM, USDC, EURC, ...) is tracked
+    /// in an isolated [`ReserveConfig`] holding its LTV and liquidation
+    /// threshold alongside independent `total_borrowed` / `total_collateral`
+    /// tallies. Adding a reserve also whitelists the token as collateral.
+    ///
+    /// # Errors
+    /// - `NotAdmin`: the caller is not the admin
+    /// - `InvalidAmount`: an LTV or liquidation threshold is zero
+    /// - `ReserveAlreadyExists`: a reserve for `token` is already registered
+    pub fn add_reserve(
+        env: Env,
+        admin: Address,
+        token: Address,
+        ltv_bps: u32,
+        liquidation_threshold_bps: u32,
+    ) -> Result<(), LendingError> {
+        Self::require_admin(&env, &admin)?;
+
+        if ltv_bps == 0 || liquidation_threshold_bps == 0 {
+            return Err(LendingError::InvalidAmount);
+        }
+        if env
+            .storage()
+            .persistent()
+            .has(&DataKey::Reserve(token.clone()))
+        {
+            return Err(LendingError::ReserveAlreadyExists);
+        }
+
+        let reserve = ReserveConfig {
+            token: token.clone(),
+            ltv_bps,
+            liquidation_threshold_bps,
+            total_borrowed: 0,
+            total_collateral: 0,
+            enabled: true,
+        };
+        Self::set_reserve(&env, &token, &reserve);
+
+        // A usable reserve implies the token is accepted as collateral.
+        env.storage()
+            .persistent()
+            .set(&DataKey::WhitelistedCollateral(token.clone()), &true);
+
+        env.events().publish(
+            (symbol_short!("RESERVE"), symbol_short!("ADDED")),
+            ReserveAddedEvent {
+                token: token.clone(),
+                ltv_bps,
+                liquidation_threshold_bps,
+            },
+        );
+        log!(
+            &env,
+            "Reserve added for token {} ltv={} liquidation_threshold={}",
+            token,
+            ltv_bps,
+            liquidation_threshold_bps
+        );
+        Ok(())
+    }
+
+    /// Query a token's reserve configuration and isolated borrow/collateral tallies.
+    pub fn get_reserve_config(env: Env, token: Address) -> Result<ReserveConfig, LendingError> {
+        Self::get_reserve(&env, &token)
+    }
+
+    /// Record new collateral of this token locked against lending.
+    fn add_reserve_collateral(env: &Env, token: &Address, amount: u64) -> Result<(), LendingError> {
+        let mut reserve = Self::get_reserve(env, token)?;
+        reserve.total_collateral = reserve.total_collateral.saturating_add(amount);
+        Self::set_reserve(env, token, &reserve);
+        Ok(())
+    }
+
+    /// Record collateral of this token returned to the borrower.
+    fn sub_reserve_collateral(env: &Env, token: &Address, amount: u64) -> Result<(), LendingError> {
+        let mut reserve = Self::get_reserve(env, token)?;
+        reserve.total_collateral = reserve.total_collateral.saturating_sub(amount);
+        Self::set_reserve(env, token, &reserve);
+        Ok(())
+    }
+
+    /// Record new principal borrowed against this reserve's collateral.
+    fn add_reserve_borrowed(env: &Env, token: &Address, amount: u64) -> Result<(), LendingError> {
+        let mut reserve = Self::get_reserve(env, token)?;
+        reserve.total_borrowed = reserve.total_borrowed.saturating_add(amount);
+        Self::set_reserve(env, token, &reserve);
+        Ok(())
+    }
+
+    /// Record principal repaid against this reserve's collateral.
+    fn sub_reserve_borrowed(env: &Env, token: &Address, amount: u64) -> Result<(), LendingError> {
+        let mut reserve = Self::get_reserve(env, token)?;
+        reserve.total_borrowed = reserve.total_borrowed.saturating_sub(amount);
+        Self::set_reserve(env, token, &reserve);
         Ok(())
     }
 
@@ -2659,7 +2797,7 @@ impl LendingContract {
         amount: u64,
     ) -> Result<u64, LendingError> {
         Self::require_initialized(&env)?;
-        Self::enter_reentrancy_guard(&env)?;
+        let _guard = access_control::ReentrancyGuard::lock(&env, LendingError::ReentrantCall)?;
         liquidator.require_auth();
 
         let loan: LoanRecord = env
@@ -4331,6 +4469,7 @@ impl LendingContract {
         env.storage()
             .persistent()
             .set(&DataKey::PlanYield(plan_id), &position);
+        let _ = Self::extend_plan_yield_ttl_internal(&env, plan_id);
 
         env.events().publish(
             (symbol_short!("PLANYLD"), symbol_short!("REGISTER")),
@@ -4421,6 +4560,7 @@ impl LendingContract {
         env.storage()
             .persistent()
             .set(&DataKey::PlanYield(plan_id), &position);
+        let _ = Self::extend_plan_yield_ttl_internal(&env, plan_id);
 
         env.events().publish(
             (symbol_short!("PLANYLD"), symbol_short!("CLAIM")),
@@ -4498,6 +4638,7 @@ impl LendingContract {
         env.storage()
             .persistent()
             .set(&DataKey::PlanYield(plan_id), &position);
+        let _ = Self::extend_plan_yield_ttl_internal(&env, plan_id);
 
         env.events().publish(
             (symbol_short!("PLANYLD"), symbol_short!("UNREG")),
@@ -4541,6 +4682,7 @@ impl LendingContract {
         env.storage()
             .persistent()
             .set(&DataKey::PlanYield(plan_id), &position);
+        let _ = Self::extend_plan_yield_ttl_internal(&env, plan_id);
 
         env.events().publish(
             (symbol_short!("PLANYLD"), symbol_short!("BOOST")),
@@ -5087,6 +5229,27 @@ impl LendingContract {
 
         // Replace the contract WASM atomically — all storage is preserved.
         env.deployer().update_current_contract_wasm(new_wasm_hash);
+
+        Ok(())
+    }
+
+    /// Extend the TTL of the plan yield position.
+    /// This is the worker ping endpoint.
+    pub fn extend_ttl(env: Env, plan_id: u64) -> Result<(), LendingError> {
+        Self::extend_plan_yield_ttl_internal(&env, plan_id)
+    }
+
+    fn extend_plan_yield_ttl_internal(env: &Env, plan_id: u64) -> Result<(), LendingError> {
+        let key = DataKey::PlanYield(plan_id);
+        if !env.storage().persistent().has(&key) {
+            return Err(LendingError::PlanYieldNotRegistered);
+        }
+
+        let threshold = 518_400;
+        let extend_to = 535_680;
+        env.storage()
+            .persistent()
+            .extend_ttl(&key, threshold, extend_to);
 
         Ok(())
     }

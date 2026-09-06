@@ -89,6 +89,8 @@ fn plan_params(
         distribution_method,
         beneficiaries_data: beneficiaries_data.clone(),
         is_lendable: true,
+        guardians: Vec::new(env),
+        guardian_threshold: 0,
     }
 }
 
