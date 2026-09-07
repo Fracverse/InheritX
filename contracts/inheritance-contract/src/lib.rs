@@ -138,8 +138,8 @@ pub enum InheritanceError {
     WillVersionNotFound = 50,
     AddressBlacklisted = 51,
     MathOverflow = 52,
-    ReentrantCall = 51,
-    Blk = 52,
+    ReentrantCall = 53,
+    Blk = 54,
 }
 
 #[contracttype]
