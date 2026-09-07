@@ -25,6 +25,9 @@ fn test_mint_and_burn() {
         collateral_amount: 500,
         collateral_token: token.clone(),
         due_date: 0,
+        ltv_ratio_bps: 2000,
+        plan_id: 0,
+        uri: String::from_str(&env, "https://example.com/nft/1"),
     };
 
     client.mint(&user, &metadata);
@@ -62,6 +65,9 @@ fn test_transfer() {
         collateral_amount: 500,
         collateral_token: token.clone(),
         due_date: 0,
+        ltv_ratio_bps: 2000,
+        plan_id: 0,
+        uri: String::from_str(&env, "https://example.com/nft/2"),
     };
 
     client.mint(&user1, &metadata);
@@ -95,6 +101,9 @@ fn test_approve_and_transfer_from() {
         collateral_amount: 500,
         collateral_token: token.clone(),
         due_date: 0,
+        ltv_ratio_bps: 2000,
+        plan_id: 0,
+        uri: String::from_str(&env, "https://example.com/nft/3"),
     };
 
     client.mint(&user1, &metadata);
@@ -132,6 +141,9 @@ fn test_approval_for_all() {
         collateral_amount: 50,
         collateral_token: token.clone(),
         due_date: 0,
+        ltv_ratio_bps: 2000,
+        plan_id: 0,
+        uri: String::from_str(&env, "https://example.com/nft/4"),
     };
     client.mint(&user1, &metadata);
 
@@ -165,6 +177,9 @@ fn test_operator_can_approve_on_behalf_of_owner() {
         collateral_amount: 50,
         collateral_token: token,
         due_date: 0,
+        ltv_ratio_bps: 2000,
+        plan_id: 0,
+        uri: String::from_str(&env, "https://example.com/nft/44"),
     };
     client.mint(&owner, &metadata);
 
@@ -211,6 +226,9 @@ fn test_approve_rejects_current_owner() {
         collateral_amount: 50,
         collateral_token: token,
         due_date: 0,
+        ltv_ratio_bps: 2000,
+        plan_id: 0,
+        uri: String::from_str(&env, "https://example.com/nft/45"),
     };
     client.mint(&owner, &metadata);
 
@@ -239,6 +257,9 @@ fn test_transfer_events_use_standard_names() {
         collateral_amount: 50,
         collateral_token: token,
         due_date: 0,
+        ltv_ratio_bps: 2000,
+        plan_id: 0,
+        uri: String::from_str(&env, "https://example.com/nft/46"),
     };
     client.mint(&owner, &metadata);
     client.set_transferable(&46, &true);
@@ -293,6 +314,9 @@ fn test_transfer_restriction() {
         collateral_amount: 50,
         collateral_token: token.clone(),
         due_date: 0,
+        ltv_ratio_bps: 2000,
+        plan_id: 0,
+        uri: String::from_str(&env, "https://example.com/nft/5"),
     };
     client.mint(&user1, &metadata);
 
@@ -320,6 +344,9 @@ fn test_token_uri() {
         collateral_amount: 50,
         collateral_token: token.clone(),
         due_date: 0,
+        ltv_ratio_bps: 2000,
+        plan_id: 0,
+        uri: String::from_str(&env, "https://example.com/nft/6"),
     };
     client.mint(&user1, &metadata);
 
@@ -327,4 +354,55 @@ fn test_token_uri() {
     client.set_token_uri(&6, &uri);
 
     assert_eq!(client.token_uri(&6), uri);
+}
+
+#[test]
+fn test_get_token_uri_returns_on_chain_metadata_uri() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let contract_id = env.register_contract(None, LoanNFT);
+    let client = LoanNFTClient::new(&env, &contract_id);
+
+    let admin = Address::generate(&env);
+    let user = Address::generate(&env);
+    let token = Address::generate(&env);
+
+    client.initialize(&admin);
+
+    let uri_json = String::from_str(
+        &env,
+        "{\"name\":\"InheritX Loan NFT #7\",\"loan_id\":7,\"principal\":1000,\"collateral_amount\":500,\"ltv_ratio_bps\":2000,\"plan_id\":42,\"due_date\":0}",
+    );
+    let metadata = LoanMetadata {
+        loan_id: 7,
+        borrower: user.clone(),
+        principal: 1000,
+        collateral_amount: 500,
+        collateral_token: token.clone(),
+        due_date: 0,
+        ltv_ratio_bps: 2000,
+        plan_id: 42,
+        uri: uri_json.clone(),
+    };
+
+    client.mint(&user, &metadata);
+
+    // On-chain URI JSON is exposed via the Soroban NFT standard function.
+    assert_eq!(client.get_token_uri(&7), uri_json);
+    assert_eq!(client.get_metadata(&7), Some(metadata));
+}
+
+#[test]
+fn test_get_token_uri_unknown_token_returns_empty() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let contract_id = env.register_contract(None, LoanNFT);
+    let client = LoanNFTClient::new(&env, &contract_id);
+
+    let admin = Address::generate(&env);
+    client.initialize(&admin);
+
+    assert_eq!(client.get_token_uri(&999), String::from_str(&env, ""));
 }

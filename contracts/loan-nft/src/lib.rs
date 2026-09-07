@@ -12,6 +12,12 @@ pub struct LoanMetadata {
     pub collateral_amount: u64,
     pub collateral_token: Address,
     pub due_date: u64,
+    /// LTV ratio in basis points (e.g. 5000 = 50% loan-to-value).
+    pub ltv_ratio_bps: u32,
+    /// Inheritance plan the loan NFT is bound to (0 = no plan).
+    pub plan_id: u64,
+    /// On-chain URI JSON bound to the token, returned by `get_token_uri`.
+    pub uri: String,
 }
 
 #[contracttype]
@@ -291,6 +297,16 @@ impl LoanNFT {
         env.storage()
             .persistent()
             .get(&DataKey::TokenUri(loan_id))
+            .unwrap_or_else(|| String::from_str(&env, ""))
+    }
+
+    /// Returns the on-chain URI JSON bound to the loan NFT's dynamic metadata,
+    /// conforming to Soroban NFT `get_token_uri(token_id)` standards.
+    pub fn get_token_uri(env: Env, token_id: u32) -> String {
+        env.storage()
+            .persistent()
+            .get::<_, LoanMetadata>(&DataKey::Metadata(token_id as u64))
+            .map(|metadata| metadata.uri)
             .unwrap_or_else(|| String::from_str(&env, ""))
     }
 
