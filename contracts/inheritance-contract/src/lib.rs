@@ -85,6 +85,10 @@ pub struct InheritancePlan {
     pub waterfall_enabled: bool,
     pub grace_period: u64,
     pub earn_yield: bool,
+    /// When true, beneficiaries must be whitelisted in `access_control`
+    /// before they can claim — for assets subject to transfer restrictions
+    /// (e.g. regulated securities tokens) beyond plain KYC approval.
+    pub restricted: bool,
 }
 
 #[contracterror]
@@ -138,6 +142,7 @@ pub enum InheritanceError {
     WillVersionNotFound = 50,
     ReentrantCall = 51,
     Blk = 52,
+    NotWhitelisted = 53,
 }
 
 #[contracttype]
@@ -1703,6 +1708,20 @@ impl InheritanceContract {
         Ok(())
     }
 
+    /// For restricted-asset plans, require the beneficiary to be whitelisted
+    /// in `access_control` in addition to passing KYC. Non-restricted plans
+    /// skip this check entirely.
+    fn check_whitelist_if_restricted(
+        env: &Env,
+        plan: &InheritancePlan,
+        claimer: &Address,
+    ) -> Result<(), InheritanceError> {
+        if plan.restricted && !access_control::is_whitelisted(env, claimer) {
+            return Err(InheritanceError::NotWhitelisted);
+        }
+        Ok(())
+    }
+
     // Storage functions
     fn get_next_plan_id(env: &Env) -> u64 {
         let key = DataKey::Npi;
@@ -2379,6 +2398,7 @@ impl InheritanceContract {
             waterfall_enabled: false,
             grace_period: 0,
             earn_yield: false,
+            restricted: false,
         };
 
         // Store the plan
@@ -2609,7 +2629,10 @@ impl InheritanceContract {
             return Err(InheritanceError::FeeTransferFailed);
         }
 
-        plan.total_amount += amount;
+        plan.total_amount = plan
+            .total_amount
+            .checked_add(amount)
+            .ok_or(InheritanceError::InvalidTotalAmount)?;
         Self::store_plan(&env, plan_id, &plan);
 
         env.events().publish(
@@ -2683,7 +2706,10 @@ impl InheritanceContract {
 
         Self::release_from_plan_vault(&env, plan_id, &token, &caller, amount)?;
 
-        plan.total_amount -= amount;
+        plan.total_amount = plan
+            .total_amount
+            .checked_sub(amount)
+            .ok_or(InheritanceError::InvalidTotalAmount)?;
         Self::store_plan(&env, plan_id, &plan);
 
         env.events().publish(
@@ -2867,6 +2893,10 @@ impl InheritanceContract {
 
         // Fetch the plan
         let plan = Self::get_plan(&env, plan_id).ok_or(InheritanceError::PlanNotFound)?;
+
+        // Restricted-asset plans additionally require the beneficiary to be
+        // whitelisted in access_control before any funds move.
+        Self::check_whitelist_if_restricted(&env, &plan, &claimer)?;
 
         // Check if plan is active
         if !plan.is_active {
@@ -3173,6 +3203,69 @@ impl InheritanceContract {
         );
 
         Ok(())
+    }
+
+    /// Mark a plan's asset as restricted, requiring beneficiaries to be
+    /// whitelisted (in addition to KYC) before they can claim from it.
+    ///
+    /// Admin-only: restriction is a compliance classification for regulated
+    /// assets (e.g. securities tokens), not something a plan owner should be
+    /// able to toggle off on their own plan to bypass the whitelist gate.
+    pub fn set_plan_restricted(
+        env: Env,
+        admin: Address,
+        plan_id: u64,
+        restricted: bool,
+    ) -> Result<(), InheritanceError> {
+        Self::require_admin(&env, &admin)?;
+
+        let mut plan = Self::get_plan(&env, plan_id).ok_or(InheritanceError::PlanNotFound)?;
+        plan.restricted = restricted;
+        Self::store_plan(&env, plan_id, &plan);
+
+        env.events().publish(
+            (symbol_short!("PLAN"), symbol_short!("RESTRICT")),
+            (plan_id, restricted),
+        );
+
+        Ok(())
+    }
+
+    /// Whitelist a beneficiary address for restricted-asset plans (admin-only).
+    pub fn whitelist_beneficiary(
+        env: Env,
+        admin: Address,
+        beneficiary: Address,
+    ) -> Result<(), InheritanceError> {
+        Self::require_admin(&env, &admin)?;
+        access_control::whitelist_address(&env, &beneficiary);
+
+        env.events()
+            .publish((symbol_short!("WLIST"), symbol_short!("ADD")), beneficiary);
+
+        Ok(())
+    }
+
+    /// Remove a beneficiary from the restricted-asset whitelist (admin-only).
+    pub fn remove_whitelisted_beneficiary(
+        env: Env,
+        admin: Address,
+        beneficiary: Address,
+    ) -> Result<(), InheritanceError> {
+        Self::require_admin(&env, &admin)?;
+        access_control::unwhitelist_address(&env, &beneficiary);
+
+        env.events().publish(
+            (symbol_short!("WLIST"), symbol_short!("REMOVE")),
+            beneficiary,
+        );
+
+        Ok(())
+    }
+
+    /// Return `true` if `beneficiary` is whitelisted for restricted-asset plans.
+    pub fn is_beneficiary_whitelisted(env: Env, beneficiary: Address) -> bool {
+        access_control::is_whitelisted(&env, &beneficiary)
     }
 
     /// Deactivate an existing inheritance plan
@@ -4467,12 +4560,18 @@ impl InheritanceContract {
         }
 
         // Reduce the loaned amount
-        plan.total_loaned -= recall_amount;
+        plan.total_loaned = plan
+            .total_loaned
+            .checked_sub(recall_amount)
+            .ok_or(InheritanceError::InvalidTotalAmount)?;
         Self::store_plan(&env, plan_id, &plan);
 
         // Update trigger info
         trigger_info.recall_attempted = true;
-        trigger_info.recalled_amount += recall_amount;
+        trigger_info.recalled_amount = trigger_info
+            .recalled_amount
+            .checked_add(recall_amount)
+            .ok_or(InheritanceError::InvalidTotalAmount)?;
         Self::set_trigger_info(&env, plan_id, &trigger_info);
 
         env.events().publish(
@@ -4538,7 +4637,10 @@ impl InheritanceContract {
 
         // Update trigger info
         trigger_info.liquidation_triggered = true;
-        trigger_info.settled_amount += unrecoverable;
+        trigger_info.settled_amount = trigger_info
+            .settled_amount
+            .checked_add(unrecoverable)
+            .ok_or(InheritanceError::InvalidTotalAmount)?;
         Self::set_trigger_info(&env, plan_id, &trigger_info);
 
         env.events().publish(
@@ -6125,6 +6227,10 @@ impl InheritanceContract {
                 continue;
             }
             if Self::check_kyc_approved(&env, &claimer).is_err() {
+                fail += 1;
+                continue;
+            }
+            if Self::check_whitelist_if_restricted(&env, &plan, &claimer).is_err() {
                 fail += 1;
                 continue;
             }
