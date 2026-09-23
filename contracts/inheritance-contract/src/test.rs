@@ -2154,6 +2154,40 @@ fn test_vault_deposit_and_withdraw() {
 }
 
 #[test]
+fn test_deposit_overflow_returns_error_instead_of_panicking() {
+    let env = Env::default();
+    let (client, token, _admin, owner) = setup_with_token_and_admin(&env);
+
+    let plan_id = client.create_inheritance_plan(&plan_params(
+        &env,
+        &owner,
+        &token,
+        "Overflow",
+        "Test Overflow",
+        1000u64,
+        DistributionMethod::LumpSum,
+        &one_beneficiary(&env, "B", "b@example.com", 666666),
+    ));
+
+    // Simulate a plan that has already accumulated a total_amount right at
+    // the edge of u64 range, so the next deposit's checked_add must overflow.
+    let mut plan = client.get_plan_details(&plan_id).unwrap();
+    plan.total_amount = u64::MAX - 5;
+    env.as_contract(&client.address, || {
+        env.storage().persistent().set(&DataKey::P(plan_id), &plan);
+    });
+
+    let result = client.try_deposit(&owner, &token, &plan_id, &10u64);
+    assert!(result.is_err());
+    let err = result.err().unwrap();
+    assert!(
+        err.is_ok(),
+        "overflow must surface as InheritanceError, not a host panic"
+    );
+    assert_eq!(err.ok().unwrap(), InheritanceError::InvalidTotalAmount);
+}
+
+#[test]
 fn test_vault_withdraw_prevents_over_withdrawal() {
     let env = Env::default();
     let (client, token, _admin, owner) = setup_with_token_and_admin(&env);
@@ -2392,6 +2426,48 @@ fn test_recall_loan_success() {
 
     let info = client.get_inheritance_trigger(&plan_id).unwrap();
     assert_eq!(info.recalled_amount, 50_000);
+}
+
+#[test]
+fn test_recall_loan_accumulator_overflow_returns_error_instead_of_panicking() {
+    let env = Env::default();
+    let (client, token, admin, owner) = setup_with_token_and_admin(&env);
+
+    let plan_id = client.create_inheritance_plan(&plan_params(
+        &env,
+        &owner,
+        &token,
+        "Will",
+        "My will",
+        100_000u64,
+        DistributionMethod::LumpSum,
+        &one_beneficiary(&env, "Alice", "alice@example.com", 123456),
+    ));
+
+    let mut plan = client.get_plan_details(&plan_id).unwrap();
+    plan.total_loaned = 10_000;
+    env.as_contract(&client.address, || {
+        env.storage().persistent().set(&DataKey::P(plan_id), &plan);
+    });
+
+    client.trigger_inheritance(&admin, &plan_id);
+
+    // Simulate trigger info that has already recalled right up to u64::MAX,
+    // so the next recall's checked_add on recalled_amount must overflow.
+    let mut info = client.get_inheritance_trigger(&plan_id).unwrap();
+    info.recalled_amount = u64::MAX - 5;
+    env.as_contract(&client.address, || {
+        env.storage().persistent().set(&DataKey::It(plan_id), &info);
+    });
+
+    let result = client.try_recall_loan(&admin, &plan_id, &10_000u64);
+    assert!(result.is_err());
+    let err = result.err().unwrap();
+    assert!(
+        err.is_ok(),
+        "overflow must surface as InheritanceError, not a host panic"
+    );
+    assert_eq!(err.ok().unwrap(), InheritanceError::InvalidTotalAmount);
 }
 
 #[test]
@@ -5047,6 +5123,185 @@ fn test_claim_plan_with_approved_kyc_succeeds() {
     );
 
     // Verify claim was recorded (no error means success)
+}
+
+#[test]
+fn test_claim_restricted_plan_without_whitelist_fails() {
+    let env = Env::default();
+    let (client, token_id, admin, owner) = setup_with_token_and_admin(&env);
+    let beneficiary = create_test_address(&env, 100);
+
+    let params = plan_params(
+        &env,
+        &owner,
+        &token_id,
+        "Test Plan",
+        "Test Description",
+        50_000u64,
+        DistributionMethod::LumpSum,
+        &default_beneficiaries(&env),
+    );
+    let plan_id = client.create_inheritance_plan(&params);
+
+    // Beneficiary has approved KYC, but the plan is marked restricted and the
+    // beneficiary was never whitelisted.
+    client.submit_kyc(&beneficiary);
+    client.approve_kyc(&admin, &beneficiary);
+    client.set_plan_restricted(&admin, &plan_id, &true);
+
+    let result = client.try_claim_inheritance_plan(
+        &plan_id,
+        &beneficiary,
+        &String::from_str(&env, "alice@example.com"),
+        &111111u32,
+    );
+    assert!(result.is_err());
+    let err = result.err().unwrap();
+    assert!(
+        err.is_ok(),
+        "contract should return InheritanceError, not InvokeError"
+    );
+    assert_eq!(err.ok().unwrap(), InheritanceError::NotWhitelisted);
+}
+
+#[test]
+fn test_claim_restricted_plan_with_whitelist_succeeds() {
+    let env = Env::default();
+    let (client, token_id, admin, owner) = setup_with_token_and_admin(&env);
+    let beneficiary = create_test_address(&env, 100);
+
+    let params = plan_params(
+        &env,
+        &owner,
+        &token_id,
+        "Test Plan",
+        "Test Description",
+        50_000u64,
+        DistributionMethod::LumpSum,
+        &default_beneficiaries(&env),
+    );
+    let plan_id = client.create_inheritance_plan(&params);
+
+    client.submit_kyc(&beneficiary);
+    client.approve_kyc(&admin, &beneficiary);
+    client.set_plan_restricted(&admin, &plan_id, &true);
+    client.whitelist_beneficiary(&admin, &beneficiary);
+
+    // Should succeed now that the beneficiary is both KYC-approved and whitelisted.
+    client.claim_inheritance_plan(
+        &plan_id,
+        &beneficiary,
+        &String::from_str(&env, "alice@example.com"),
+        &111111u32,
+    );
+}
+
+#[test]
+fn test_claim_restricted_plan_after_whitelist_removed_fails() {
+    let env = Env::default();
+    let (client, token_id, admin, owner) = setup_with_token_and_admin(&env);
+    let beneficiary = create_test_address(&env, 100);
+
+    let params = plan_params(
+        &env,
+        &owner,
+        &token_id,
+        "Test Plan",
+        "Test Description",
+        50_000u64,
+        DistributionMethod::LumpSum,
+        &default_beneficiaries(&env),
+    );
+    let plan_id = client.create_inheritance_plan(&params);
+
+    client.submit_kyc(&beneficiary);
+    client.approve_kyc(&admin, &beneficiary);
+    client.set_plan_restricted(&admin, &plan_id, &true);
+    client.whitelist_beneficiary(&admin, &beneficiary);
+    client.remove_whitelisted_beneficiary(&admin, &beneficiary);
+
+    let result = client.try_claim_inheritance_plan(
+        &plan_id,
+        &beneficiary,
+        &String::from_str(&env, "alice@example.com"),
+        &111111u32,
+    );
+    assert!(result.is_err());
+    let err = result.err().unwrap();
+    assert!(err.is_ok());
+    assert_eq!(err.ok().unwrap(), InheritanceError::NotWhitelisted);
+}
+
+#[test]
+fn test_non_restricted_plan_ignores_whitelist() {
+    let env = Env::default();
+    let (client, token_id, admin, owner) = setup_with_token_and_admin(&env);
+    let beneficiary = create_test_address(&env, 100);
+
+    let params = plan_params(
+        &env,
+        &owner,
+        &token_id,
+        "Test Plan",
+        "Test Description",
+        50_000u64,
+        DistributionMethod::LumpSum,
+        &default_beneficiaries(&env),
+    );
+    let plan_id = client.create_inheritance_plan(&params);
+
+    client.submit_kyc(&beneficiary);
+    client.approve_kyc(&admin, &beneficiary);
+
+    // Plan was never marked restricted, and the beneficiary was never
+    // whitelisted — the claim must still succeed on KYC alone.
+    client.claim_inheritance_plan(
+        &plan_id,
+        &beneficiary,
+        &String::from_str(&env, "alice@example.com"),
+        &111111u32,
+    );
+}
+
+#[test]
+fn test_set_plan_restricted_requires_admin() {
+    let env = Env::default();
+    let (client, token_id, _admin, owner) = setup_with_token_and_admin(&env);
+
+    let params = plan_params(
+        &env,
+        &owner,
+        &token_id,
+        "Test Plan",
+        "Test Description",
+        50_000u64,
+        DistributionMethod::LumpSum,
+        &default_beneficiaries(&env),
+    );
+    let plan_id = client.create_inheritance_plan(&params);
+
+    // The plan owner is not the admin and must not be able to self-declare
+    // their own plan as (un)restricted.
+    let result = client.try_set_plan_restricted(&owner, &plan_id, &true);
+    assert!(result.is_err());
+    let err = result.err().unwrap();
+    assert!(err.is_ok());
+    assert_eq!(err.ok().unwrap(), InheritanceError::NotAdmin);
+}
+
+#[test]
+fn test_whitelist_beneficiary_requires_admin() {
+    let env = Env::default();
+    let (client, token_id, _admin, owner) = setup_with_token_and_admin(&env);
+    let beneficiary = create_test_address(&env, 100);
+    let _ = token_id;
+
+    let result = client.try_whitelist_beneficiary(&owner, &beneficiary);
+    assert!(result.is_err());
+    let err = result.err().unwrap();
+    assert!(err.is_ok());
+    assert_eq!(err.ok().unwrap(), InheritanceError::NotAdmin);
+    assert!(!client.is_beneficiary_whitelisted(&beneficiary));
 }
 
 // --- Message Deletion Option ---

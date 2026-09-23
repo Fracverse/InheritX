@@ -18,6 +18,7 @@ pub enum Role {
 pub enum AccessControlKey {
     Roles(Address),
     Blacklisted(Address),
+    Whitelisted(Address),
 }
 
 /// Assign `role` to `address`.  Idempotent — does nothing if already assigned.
@@ -120,6 +121,42 @@ pub fn require_not_blacklisted<E: Into<soroban_sdk::Error> + Copy>(
         Err(contract_error)
     } else {
         Ok(())
+    }
+}
+
+/// Add `target` to the persistent beneficiary whitelist used to gate payouts
+/// on restricted assets (e.g. regulated securities tokens) beyond plain KYC.
+pub fn whitelist_address(env: &Env, target: &Address) {
+    env.storage()
+        .persistent()
+        .set(&AccessControlKey::Whitelisted(target.clone()), &true);
+}
+
+/// Remove `target` from the persistent beneficiary whitelist.
+pub fn unwhitelist_address(env: &Env, target: &Address) {
+    env.storage()
+        .persistent()
+        .remove(&AccessControlKey::Whitelisted(target.clone()));
+}
+
+/// Return `true` when `target` is currently whitelisted.
+pub fn is_whitelisted(env: &Env, target: &Address) -> bool {
+    env.storage()
+        .persistent()
+        .get::<AccessControlKey, bool>(&AccessControlKey::Whitelisted(target.clone()))
+        .unwrap_or(false)
+}
+
+/// Reject an address that is not whitelisted, with the caller's contract error type.
+pub fn require_whitelisted<E: Into<soroban_sdk::Error> + Copy>(
+    env: &Env,
+    target: &Address,
+    contract_error: E,
+) -> Result<(), E> {
+    if is_whitelisted(env, target) {
+        Ok(())
+    } else {
+        Err(contract_error)
     }
 }
 
