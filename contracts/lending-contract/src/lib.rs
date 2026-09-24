@@ -26,6 +26,12 @@ const LIQUIDATION_THRESHOLD_BPS: u32 = 15000; // 150% liquidation threshold in b
 const DEFAULT_INSURANCE_PREMIUM_RATE_BPS: u32 = 200; // 2% premium of loan principal
 const CONTRACT_VERSION: u32 = 1; // Contract version for upgrade tracking
 
+// SEP metadata answers (Issue #1178). Kept in step with the inheritance
+// contract so an integrator reading either gets the same protocol version.
+const PROTOCOL_VERSION: &str = "v1.0.0-testnet";
+const CONTRACT_AUTHOR: &str = "InheritX Protocol";
+const AUDIT_STATUS: &str = "unaudited-testnet";
+
 // Plan yield constants
 const MAX_YIELD_BOOST_BPS: u32 = 2_000; // 20% additional rate, absolute ceiling
 const MAX_PLAN_YIELD_POSITIONS: u32 = 200; // Bounds the index scan
@@ -34,6 +40,18 @@ const MAX_YIELD_CLAIM_BATCH: u32 = 25; // Bounds one batch claim
 // ─────────────────────────────────────────────────
 // Data Types
 // ─────────────────────────────────────────────────
+
+/// SEP-0038 / SEP-0040 style metadata for the contract (Issue #1178).
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct ContractMetadata {
+    pub name: String,
+    pub protocol_version: String,
+    pub contract_version: u32,
+    pub author: String,
+    pub audit_status: String,
+    pub supported_seps: Vec<String>,
+}
 
 #[contracttype]
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -5252,6 +5270,49 @@ impl LendingContract {
             .extend_ttl(&key, threshold, extend_to);
 
         Ok(())
+    }
+
+    // ───────────────────────────────────────────
+    // SEP metadata interfaces (Issue #1178)
+    // ───────────────────────────────────────────
+
+    /// Protocol version string, as distinct from the storage-schema number
+    /// `version()` returns. Wallets and explorers key off this.
+    pub fn protocol_version(env: Env) -> String {
+        String::from_str(&env, PROTOCOL_VERSION)
+    }
+
+    /// Contract author, for SEP-0040 style attribution.
+    pub fn contract_author(env: Env) -> String {
+        String::from_str(&env, CONTRACT_AUTHOR)
+    }
+
+    /// Audit status. Deliberately explicit that testnet builds are unaudited,
+    /// rather than leaving integrators to assume either way.
+    pub fn audit_status(env: Env) -> String {
+        String::from_str(&env, AUDIT_STATUS)
+    }
+
+    /// SEPs this contract implements interfaces for.
+    pub fn supported_seps(env: Env) -> Vec<String> {
+        vec![
+            &env,
+            String::from_str(&env, "SEP-0038"),
+            String::from_str(&env, "SEP-0040"),
+        ]
+    }
+
+    /// Every metadata answer in one call, so an indexer needs one round trip
+    /// rather than five.
+    pub fn contract_metadata(env: Env) -> ContractMetadata {
+        ContractMetadata {
+            name: String::from_str(&env, "InheritX Lending Contract"),
+            protocol_version: String::from_str(&env, PROTOCOL_VERSION),
+            contract_version: Self::version(env.clone()),
+            author: String::from_str(&env, CONTRACT_AUTHOR),
+            audit_status: String::from_str(&env, AUDIT_STATUS),
+            supported_seps: Self::supported_seps(env),
+        }
     }
 }
 
