@@ -78,7 +78,7 @@ fn plan_params(
     description: &str,
     total_amount: u64,
     distribution_method: DistributionMethod,
-    beneficiaries_data: &Vec<(String, String, u32, Bytes, u32, u32)>,
+    beneficiaries_data: &Vec<(String, String, u32, Bytes, u32, u32, Option<Address>)>,
 ) -> CreateInheritancePlanParams {
     CreateInheritancePlanParams {
         owner: owner.clone(),
@@ -94,7 +94,7 @@ fn plan_params(
     }
 }
 
-fn default_beneficiaries(env: &Env) -> Vec<(String, String, u32, Bytes, u32, u32)> {
+fn default_beneficiaries(env: &Env) -> Vec<(String, String, u32, Bytes, u32, u32, Option<Address>)> {
     vec![
         env,
         (
@@ -104,6 +104,7 @@ fn default_beneficiaries(env: &Env) -> Vec<(String, String, u32, Bytes, u32, u32
             create_test_bytes(env, "1111111111111111"),
             10000u32,
             1u32,
+            None,
         ),
     ]
 }
@@ -127,7 +128,7 @@ fn one_beneficiary(
     name: &str,
     email: &str,
     claim_code: u32,
-) -> Vec<(String, String, u32, Bytes, u32, u32)> {
+) -> Vec<(String, String, u32, Bytes, u32, u32, Option<Address>)> {
     vec![
         env,
         (
@@ -137,6 +138,7 @@ fn one_beneficiary(
             create_test_bytes(env, "1111111111111111"),
             10000u32,
             1u32,
+            None,
         ),
     ]
 }
@@ -249,6 +251,7 @@ fn test_validate_beneficiaries_basis_points() {
             create_test_bytes(&env, "123456789"),
             5000u32, // 50%
             1u32,    // priority
+            None,
         ),
         (
             String::from_str(&env, "Jane"),
@@ -257,6 +260,7 @@ fn test_validate_beneficiaries_basis_points() {
             create_test_bytes(&env, "987654321"),
             5000u32, // 50%
             2u32,    // priority
+            None,
         ),
     ];
 
@@ -282,6 +286,7 @@ fn test_validate_beneficiaries_basis_points() {
             create_test_bytes(&env, "123456789"),
             6000u32,
             1u32,
+            None,
         ),
         (
             String::from_str(&env, "Jane"),
@@ -290,6 +295,7 @@ fn test_validate_beneficiaries_basis_points() {
             create_test_bytes(&env, "987654321"),
             5000u32,
             2u32,
+            None,
         ),
     ];
 
@@ -323,6 +329,7 @@ fn test_create_beneficiary_success() {
             bank_account,
             allocation,
             1u32, // priority
+            None, // contingency_address
         )
     });
 
@@ -348,6 +355,7 @@ fn test_create_beneficiary_invalid_data() {
             create_test_bytes(&env, "1234567890123456"),
             5000u32,
             1u32,
+            None, // contingency_address
         )
     });
     assert!(result.is_err());
@@ -368,6 +376,7 @@ fn test_create_beneficiary_invalid_data() {
             create_test_bytes(&env, "1234567890123456"),
             5000u32,
             2u32,
+            None, // contingency_address
         )
     });
     assert!(result.is_err());
@@ -388,6 +397,7 @@ fn test_create_beneficiary_invalid_data() {
             create_test_bytes(&env, "1234567890123456"),
             0u32, // zero allocation
             1u32, // priority
+            None, // contingency_address
         )
     });
     assert!(result.is_err());
@@ -408,6 +418,7 @@ fn test_add_beneficiary_success() {
             create_test_bytes(&env, "1111111111111111"),
             10000u32, // 100%
             1u32,     // priority
+            None,
         ),
     ];
 
@@ -455,6 +466,7 @@ fn test_add_beneficiary_allocation_exceeds_limit() {
             create_test_bytes(&env, "1111111111111111"),
             10000u32,
             1u32,
+            None,
         ),
     ];
 
@@ -480,6 +492,7 @@ fn test_add_beneficiary_allocation_exceeds_limit() {
             bank_account: create_test_bytes(&env, "3333333333333333"),
             allocation_bp: 2000,
             priority: 1,
+            contingency_address: None,
         },
     );
 
@@ -500,6 +513,7 @@ fn test_remove_beneficiary_success() {
             create_test_bytes(&env, "1111111111111111"),
             5000u32,
             1u32,
+            None,
         ),
         (
             String::from_str(&env, "Bob"),
@@ -508,6 +522,7 @@ fn test_remove_beneficiary_success() {
             create_test_bytes(&env, "2222222222222222"),
             5000u32,
             2u32,
+            None,
         ),
     ];
 
@@ -537,6 +552,7 @@ fn test_remove_beneficiary_success() {
             bank_account: create_test_bytes(&env, "3333333333333333"),
             allocation_bp: 2000,
             priority: 1,
+            contingency_address: None,
         },
     );
     assert!(add_result.is_ok());
@@ -556,6 +572,7 @@ fn test_remove_beneficiary_invalid_index() {
             create_test_bytes(&env, "1111111111111111"),
             10000u32,
             1u32,
+            None,
         ),
     ];
 
@@ -590,6 +607,7 @@ fn test_remove_beneficiary_unauthorized() {
             create_test_bytes(&env, "1111111111111111"),
             10000u32,
             1u32,
+            None,
         ),
     ];
 
@@ -623,6 +641,7 @@ fn test_beneficiary_allocation_tracking() {
             create_test_bytes(&env, "1111111111111111"),
             4000u32, // 40%
             1u32,    // priority
+            None,
         ),
         (
             String::from_str(&env, "Bob"),
@@ -631,6 +650,7 @@ fn test_beneficiary_allocation_tracking() {
             create_test_bytes(&env, "2222222222222222"),
             3000u32, // 30%
             2u32,    // priority
+            None,
         ),
         (
             String::from_str(&env, "Charlie"),
@@ -639,6 +659,7 @@ fn test_beneficiary_allocation_tracking() {
             create_test_bytes(&env, "3333333333333333"),
             3000u32, // 30%
             3u32,    // priority
+            None,
         ),
     ];
 
@@ -667,6 +688,7 @@ fn test_beneficiary_allocation_tracking() {
             bank_account: create_test_bytes(&env, "3333333333333333"),
             allocation_bp: 2000,
             priority: 1,
+            contingency_address: None,
         },
     );
     assert!(result.is_ok());
@@ -682,6 +704,7 @@ fn test_beneficiary_allocation_tracking() {
             bank_account: create_test_bytes(&env, "3333333333333333"),
             allocation_bp: 2000,
             priority: 1,
+            contingency_address: None,
         },
     );
     assert!(result2.is_err());
@@ -701,6 +724,7 @@ fn test_claim_success() {
             create_test_bytes(&env, "1111"),
             10000u32,
             1u32,
+            None,
         ),
     ];
 
@@ -748,6 +772,7 @@ fn test_double_claim_fails() {
             create_test_bytes(&env, "1111"),
             10000u32,
             1u32,
+            None,
         ),
     ];
 
@@ -793,6 +818,7 @@ fn test_claim_with_wrong_code_fails() {
             create_test_bytes(&env, "1111"),
             10000u32,
             1u32,
+            None,
         ),
     ];
 
@@ -829,6 +855,7 @@ fn test_deactivate_plan_success() {
             create_test_bytes(&env, "1111111111111111"),
             10000u32,
             1u32,
+            None,
         ),
     ];
 
@@ -863,6 +890,7 @@ fn test_deactivate_plan_unauthorized() {
             create_test_bytes(&env, "1111111111111111"),
             10000u32,
             1u32,
+            None,
         ),
     ];
 
@@ -910,6 +938,7 @@ fn test_deactivate_plan_already_deactivated() {
             create_test_bytes(&env, "1111111111111111"),
             10000u32,
             1u32,
+            None,
         ),
     ];
 
@@ -948,6 +977,7 @@ fn test_claim_deactivated_plan_fails() {
             create_test_bytes(&env, "1111111111111111"),
             10000u32,
             1u32,
+            None,
         ),
     ];
 
@@ -988,6 +1018,7 @@ fn test_deactivate_plan_with_multiple_beneficiaries() {
             create_test_bytes(&env, "1111111111111111"),
             5000u32,
             1u32,
+            None,
         ),
         (
             String::from_str(&env, "Bob"),
@@ -996,6 +1027,7 @@ fn test_deactivate_plan_with_multiple_beneficiaries() {
             create_test_bytes(&env, "2222222222222222"),
             5000u32,
             2u32,
+            None,
         ),
     ];
 
@@ -1029,6 +1061,7 @@ fn test_get_plan_details() {
             create_test_bytes(&env, "1111111111111111"),
             10000u32,
             1u32,
+            None,
         ),
     ];
 
@@ -1534,6 +1567,7 @@ fn test_plan_data_survives_across_versions() {
             create_test_bytes(&env, "1111111111111111"),
             5000u32,
             1u32,
+            None,
         ),
         (
             String::from_str(&env, "Bob"),
@@ -1542,6 +1576,7 @@ fn test_plan_data_survives_across_versions() {
             create_test_bytes(&env, "2222222222222222"),
             5000u32,
             2u32,
+            None,
         ),
     ];
 
@@ -1612,6 +1647,7 @@ fn test_get_user_deactivated_plans() {
             create_test_bytes(&env, "1111111111111111"),
             10000u32,
             1u32,
+            None,
         ),
     ];
 
@@ -1673,6 +1709,7 @@ fn test_admin_retrieval() {
             create_test_bytes(&env, "1111111111111111"),
             10000u32,
             1u32,
+            None,
         ),
     ];
 
@@ -1722,6 +1759,7 @@ fn test_get_claimed_plan() {
             create_test_bytes(&env, "1111"),
             10000u32,
             1u32,
+            None,
         ),
     ];
 
@@ -1772,6 +1810,7 @@ fn test_get_user_claimed_plans() {
             create_test_bytes(&env, "1111"),
             10000u32,
             1u32,
+            None,
         ),
     ];
 
@@ -1833,6 +1872,7 @@ fn test_get_all_claimed_plans() {
             create_test_bytes(&env, "1111"),
             10000u32,
             1u32,
+            None,
         ),
     ];
 
@@ -5407,6 +5447,7 @@ fn plan_with_partial_alloc(
             create_test_bytes(env, "1111111111111111"),
             5000u32,
             1u32,
+            None,
         ),
         (
             String::from_str(env, "Bob"),
@@ -5415,6 +5456,7 @@ fn plan_with_partial_alloc(
             create_test_bytes(env, "2222222222222222"),
             5000u32,
             2u32,
+            None,
         ),
     ];
     client.create_inheritance_plan(&plan_params(
@@ -5445,6 +5487,7 @@ fn test_batch_add_beneficiaries_success() {
             bank_account: create_test_bytes(&env, "3333333333333333"),
             allocation_bp: 6000u32,
             priority: 1u32,
+            contingency_address: None,
         },
         BeneficiaryInput {
             name: String::from_str(&env, "Dave"),
@@ -5453,6 +5496,7 @@ fn test_batch_add_beneficiaries_success() {
             bank_account: create_test_bytes(&env, "4444444444444444"),
             allocation_bp: 4000u32,
             priority: 2u32,
+            contingency_address: None,
         },
     ];
     let (success, fail) = client.batch_add_beneficiaries(&owner, &plan_id, &inputs);
@@ -5477,6 +5521,7 @@ fn test_batch_add_beneficiaries_partial_fail_over_allocation() {
             bank_account: create_test_bytes(&env, "5555555555555555"),
             allocation_bp: 1000u32,
             priority: 1u32,
+            contingency_address: None,
         },
     ];
     let (success, fail) = client.batch_add_beneficiaries(&owner, &plan_id, &inputs);
@@ -5498,6 +5543,7 @@ fn test_batch_add_beneficiaries_limit_exceeded() {
             bank_account: create_test_bytes(&env, "1234"),
             allocation_bp: 100u32,
             priority: i,
+            contingency_address: None,
         });
     }
     let result = client.try_batch_add_beneficiaries(&owner, &plan_id, &inputs);
@@ -5519,6 +5565,7 @@ fn test_batch_add_beneficiaries_unauthorized() {
             bank_account: create_test_bytes(&env, "1234"),
             allocation_bp: 1000u32,
             priority: 1u32,
+            contingency_address: None,
         },
     ];
     let result = client.try_batch_add_beneficiaries(&stranger, &plan_id, &inputs);
@@ -5756,6 +5803,7 @@ fn test_batch_claim_success() {
             create_test_bytes(&env, "1111111111111111"),
             5000u32,
             1u32,
+            None,
         ),
         (
             String::from_str(&env, "Bob"),
@@ -5764,6 +5812,7 @@ fn test_batch_claim_success() {
             create_test_bytes(&env, "2222222222222222"),
             5000u32,
             2u32,
+            None,
         ),
     ];
     let plan_id = client.create_inheritance_plan(&plan_params(
@@ -5813,6 +5862,7 @@ fn test_batch_claim_partial_fail_wrong_code() {
             create_test_bytes(&env, "1111111111111111"),
             10000u32,
             1u32,
+            None,
         ),
     ];
     let plan_id = client.create_inheritance_plan(&plan_params(
@@ -5854,6 +5904,7 @@ fn test_batch_claim_no_kyc_counted_as_fail() {
             create_test_bytes(&env, "1111111111111111"),
             10000u32,
             1u32,
+            None,
         ),
     ];
     let plan_id = client.create_inheritance_plan(&plan_params(
@@ -5893,6 +5944,7 @@ fn test_batch_claim_double_claim_counted_as_fail() {
             create_test_bytes(&env, "1111111111111111"),
             10000u32,
             1u32,
+            None,
         ),
     ];
     let plan_id = client.create_inheritance_plan(&plan_params(
@@ -5940,6 +5992,7 @@ fn test_batch_claim_limit_exceeded() {
             create_test_bytes(&env, "1111111111111111"),
             10000u32,
             1u32,
+            None,
         ),
     ];
     let plan_id = client.create_inheritance_plan(&plan_params(
@@ -5978,6 +6031,7 @@ fn test_waterfall_payout_logic() {
             create_test_bytes(&env, "1111111111111111"),
             6000u32, // 60%
             1u32,    // priority 1
+            None,
         ),
         (
             String::from_str(&env, "Priority 2"),
@@ -5986,6 +6040,7 @@ fn test_waterfall_payout_logic() {
             create_test_bytes(&env, "2222222222222222"),
             4000u32, // 40%
             2u32,    // priority 2
+            None,
         ),
     ];
 
@@ -6068,6 +6123,7 @@ fn test_priority_validation() {
             create_test_bytes(&env, "1111"),
             5000u32,
             1u32,
+            None,
         ),
         (
             String::from_str(&env, "B"),
@@ -6076,6 +6132,7 @@ fn test_priority_validation() {
             create_test_bytes(&env, "2222"),
             5000u32,
             1u32, // Duplicate priority!
+            None,
         ),
     ];
 
@@ -6241,6 +6298,7 @@ fn test_get_unacknowledged_beneficiaries() {
             create_test_bytes(&env, "1111111111111111"),
             5000u32,
             1u32,
+            None,
         ),
         (
             String::from_str(&env, "Bob"),
@@ -6249,6 +6307,7 @@ fn test_get_unacknowledged_beneficiaries() {
             create_test_bytes(&env, "2222222222222222"),
             5000u32,
             2u32,
+            None,
         ),
     ];
 

@@ -29,6 +29,22 @@ const MAX_YIELD_HISTORY: u32 = 20;
 /// Hard cap on plans per batch harvest — bounds the O(n) sweep loop.
 const MAX_YIELD_BATCH: u32 = 25;
 
+/// Hard cap on plans per `batch_ping` call (Issue #1161).
+///
+/// Sized for the institutional owners the batch exists for — 50+ plans in one
+/// transaction — while still bounding the loop so a caller cannot push a
+/// single invocation past the ledger's resource limits.
+const MAX_BATCH_PING: u32 = 100;
+
+/// How long after inheritance is triggered an unclaimed share may be routed to
+/// the beneficiary's contingency address (Issue #1163): 180 days.
+const CONTINGENCY_TIMEOUT_SECONDS: u64 = 180 * 24 * 60 * 60;
+
+/// SEP metadata answers (Issue #1178). Bumped alongside `CONTRACT_VERSION`.
+const PROTOCOL_VERSION: &str = "v1.0.0-testnet";
+const CONTRACT_AUTHOR: &str = "InheritX Protocol";
+const AUDIT_STATUS: &str = "unaudited-testnet";
+
 /// Emergency cooldown period in seconds (24 hours)
 const EMERGENCY_COOLDOWN_PERIOD: u64 = 86400;
 const MIN_GRACE_PERIOD_SECONDS: u64 = 604_800;
@@ -53,6 +69,11 @@ pub struct Beneficiary {
     pub allocation_bp: u32,  // Allocation in basis points (0-10000, where 10000 = 100%)
     pub priority: u32,       // Priority level (1=highest)
     pub is_claimed: bool,    // Whether the beneficiary has already claimed their portion
+    /// Fallback recipient if this beneficiary never claims (Issue #1163).
+    ///
+    /// Without one, a share whose primary address is lost or deactivated sits
+    /// in the vault indefinitely — the funds are not recoverable by anyone.
+    pub contingency_address: Option<Address>,
 }
 
 #[contracttype]
@@ -64,6 +85,8 @@ pub struct BeneficiaryInput {
     pub bank_account: Bytes,
     pub allocation_bp: u32,
     pub priority: u32,
+    /// Optional fallback recipient, set at plan creation (Issue #1163).
+    pub contingency_address: Option<Address>,
 }
 
 #[contracttype]
@@ -143,6 +166,16 @@ pub enum InheritanceError {
     ReentrantCall = 51,
     Blk = 52,
     NotWhitelisted = 53,
+    /// `batch_ping` was called with no plan ids, or more than `MAX_BATCH_PING`
+    /// (Issue #1161).
+    ///
+    /// The only new error the four features need: a bad partial amount is an
+    /// `InvalidTotalAmount`, over-claiming is `InsufficientBalance`, a missing
+    /// contingency address is a `MissingRequiredField` and an unelapsed
+    /// contingency window is `ClaimNotAllowedYet`. The contract spec caps a
+    /// UDT enum at 50 cases and this enum was already at 49, so a variant is
+    /// only worth spending where nothing existing fits.
+    InvalidBatchSize = 54,
 }
 
 #[contracttype]
@@ -200,6 +233,11 @@ pub enum DataKey {
     Yr,      // Vec<Address> of accounts allowed to trigger harvests
     Ys(u64), // plan_id -> PlanYieldState
     Rg,
+    /// (plan_id, beneficiary_index) -> u64 remaining claimable balance.
+    ///
+    /// Written lazily on the first partial claim (Issue #1144). Absent means
+    /// "not yet fixed"; the entitlement is still derived from the plan.
+    Bb(u64, u32),
 }
 
 #[contracttype]
@@ -215,6 +253,59 @@ pub struct ClaimRecord {
     pub plan_id: u64,
     pub beneficiary_index: u32,
     pub claimed_at: u64,
+}
+
+/// Emitted on every successful partial claim (Issue #1144).
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct PartialClaimEvent {
+    pub plan_id: u64,
+    pub beneficiary_index: u32,
+    pub claimer: Address,
+    pub amount: u64,
+    /// What is left of this beneficiary's share after the withdrawal.
+    pub remaining: u64,
+}
+
+/// Emitted once per `batch_ping` call (Issue #1161).
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct BatchPingEvent {
+    pub owner: Address,
+    pub plans_pinged: u32,
+    pub pinged_at: u64,
+}
+
+/// Emitted when a contingency address is attached to a beneficiary (#1163).
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct ContingencySetEvent {
+    pub plan_id: u64,
+    pub beneficiary_index: u32,
+    pub contingency_address: Address,
+}
+
+/// Emitted when an unclaimed share is routed to its contingency address.
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct ContingencyPayoutEvent {
+    pub plan_id: u64,
+    pub beneficiary_index: u32,
+    pub contingency_address: Address,
+    pub amount: u64,
+    pub routed_at: u64,
+}
+
+/// SEP-0038 / SEP-0040 style metadata for the contract (Issue #1178).
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct ContractMetadata {
+    pub name: String,
+    pub protocol_version: String,
+    pub contract_version: u32,
+    pub author: String,
+    pub audit_status: String,
+    pub supported_seps: Vec<String>,
 }
 
 #[contracttype]
@@ -844,7 +935,10 @@ pub struct CreateInheritancePlanParams {
     pub description: String,
     pub total_amount: u64,
     pub distribution_method: DistributionMethod,
-    pub beneficiaries_data: Vec<(String, String, u32, Bytes, u32, u32)>,
+    /// (name, email, claim_code, bank_account, allocation_bp, priority,
+    /// contingency_address). The last element is the Issue #1163 fallback
+    /// recipient and may be `None`.
+    pub beneficiaries_data: Vec<(String, String, u32, Bytes, u32, u32, Option<Address>)>,
     pub is_lendable: bool,
     /// Guardians authorized to trigger emergency plan recovery. 0 or up to 5.
     pub guardians: Vec<Address>,
@@ -1569,6 +1663,7 @@ impl InheritanceContract {
         bank_account: Bytes,
         allocation_bp: u32,
         priority: u32,
+        contingency_address: Option<Address>,
     ) -> Result<Beneficiary, InheritanceError> {
         // Validate inputs
         if full_name.is_empty() || email.is_empty() || bank_account.is_empty() {
@@ -1597,6 +1692,7 @@ impl InheritanceContract {
             allocation_bp,
             priority,
             is_claimed: false,
+            contingency_address,
         })
     }
 
@@ -1633,7 +1729,7 @@ impl InheritanceContract {
 
     pub fn validate_beneficiaries(
         env: &Env,
-        beneficiaries_data: Vec<(String, String, u32, Bytes, u32, u32)>,
+        beneficiaries_data: Vec<(String, String, u32, Bytes, u32, u32, Option<Address>)>,
     ) -> Result<(), InheritanceError> {
         // Validate beneficiary count (max 10)
         if beneficiaries_data.len() > 10 {
@@ -1649,7 +1745,7 @@ impl InheritanceContract {
         let mut priorities = Vec::new(env);
         let mut emails = Vec::new(env);
 
-        for (name, email, _, _, bp, priority) in beneficiaries_data.iter() {
+        for (name, email, _, _, bp, priority, _) in beneficiaries_data.iter() {
             // Issue #961: Require non-empty beneficiary names
             if name.is_empty() {
                 return Err(InheritanceError::InvalidBeneficiaryData);
@@ -2134,6 +2230,7 @@ impl InheritanceContract {
             beneficiary_input.bank_account,
             beneficiary_input.allocation_bp,
             beneficiary_input.priority,
+            beneficiary_input.contingency_address,
         )?;
 
         // Add beneficiary to plan
@@ -2374,6 +2471,7 @@ impl InheritanceContract {
                 beneficiary_data.3.clone(),
                 beneficiary_data.4,
                 beneficiary_data.5,
+                beneficiary_data.6.clone(),
             )?;
             total_allocation_bp += beneficiary_data.4;
             beneficiaries.push_back(beneficiary);
@@ -2513,7 +2611,7 @@ impl InheritanceContract {
         env: Env,
         owner: Address,
         plan_id: u64,
-        beneficiaries: Vec<(String, String, u32, Bytes, u32, u32)>,
+        beneficiaries: Vec<(String, String, u32, Bytes, u32, u32, Option<Address>)>,
         grace_period: u64,
         earn_yield: bool,
     ) -> Result<(), InheritanceError> {
@@ -2552,6 +2650,7 @@ impl InheritanceContract {
                 beneficiary_data.3.clone(),
                 beneficiary_data.4,
                 beneficiary_data.5,
+                beneficiary_data.6.clone(),
             )?;
             total_allocation_bp += beneficiary_data.4;
             new_beneficiaries.push_back(beneficiary);
@@ -2940,28 +3039,8 @@ impl InheritanceContract {
             return Err(InheritanceError::AlreadyClaimed);
         }
 
-        // Find beneficiary by email, then validate claim_code against salted hash.
-        let mut beneficiary_index: Option<u32> = None;
         let count = plan.beneficiaries.len().min(MAX_BENEFICIARIES);
-        for i in 0..count {
-            let b = plan.beneficiaries.get(i).unwrap();
-            if b.hashed_email != hashed_email {
-                continue;
-            }
-
-            let salt: BytesN<32> = env
-                .storage()
-                .persistent()
-                .get(&DataKey::Cs(plan_id, i))
-                .unwrap_or(BytesN::<32>::from_array(&env, &[0u8; 32]));
-            let hashed_claim_code = Self::hash_claim_code_with_salt(&env, claim_code, &salt)?;
-            if b.hashed_claim_code == hashed_claim_code {
-                beneficiary_index = Some(i);
-                break;
-            }
-        }
-
-        let index = beneficiary_index.ok_or(InheritanceError::BeneficiaryNotFound)?;
+        let index = Self::resolve_beneficiary(&env, plan_id, &plan, email.clone(), claim_code)?;
 
         // Reject claim if the beneficiary is frozen
         if env
@@ -2990,7 +3069,10 @@ impl InheritanceContract {
         }
 
         // --- Payout Logic ---
-        let mut payout = Self::calculate_waterfall_payout(&env, &plan, index);
+        // Reads the sub-entry so a beneficiary who took part of their share
+        // via `claim_partial_payout` collects only what is left, rather than a
+        // fresh entitlement recomputed from the reduced plan balance.
+        let mut payout = Self::beneficiary_balance(&env, plan_id, index, &plan);
 
         let exit_settlement = Self::get_vesting_exit_settlement(&env, plan_id, index);
         if exit_settlement > 0 {
@@ -3047,6 +3129,14 @@ impl InheritanceContract {
 
         updated_plan.total_amount = updated_plan.total_amount.saturating_sub(payout);
         Self::store_plan(&env, plan_id, &updated_plan);
+
+        // Keep the partial-claim sub-entry in step with what was just paid.
+        Self::set_beneficiary_balance(
+            &env,
+            plan_id,
+            index,
+            Self::beneficiary_balance(&env, plan_id, index, &plan).saturating_sub(payout),
+        );
 
         if exit_settlement > 0 {
             let settle_key = DataKey::Ves(plan_id, index);
@@ -5882,6 +5972,7 @@ impl InheritanceContract {
                 input.bank_account.clone(),
                 input.allocation_bp,
                 input.priority,
+                input.contingency_address.clone(),
             ) {
                 Ok(beneficiary) => {
                     plan.total_allocation_bp = new_total;
@@ -7791,6 +7882,482 @@ impl InheritanceContract {
         }
 
         Ok(())
+    }
+
+    // ───────────────────────────────────────────
+    // Partial beneficiary claims (Issue #1144)
+    // ───────────────────────────────────────────
+
+    /// Remaining claimable balance for one beneficiary.
+    ///
+    /// The sub-entry is written on the first partial claim and is authoritative
+    /// from then on. It has to be: `calculate_waterfall_payout` derives the
+    /// entitlement from `plan.total_amount`, which every payout shrinks, so
+    /// re-deriving it after a partial withdrawal would quietly cut the
+    /// beneficiary's remaining share on each call.
+    fn beneficiary_balance(env: &Env, plan_id: u64, index: u32, plan: &InheritancePlan) -> u64 {
+        env.storage()
+            .persistent()
+            .get(&DataKey::Bb(plan_id, index))
+            .unwrap_or_else(|| Self::calculate_waterfall_payout(env, plan, index))
+    }
+
+    fn set_beneficiary_balance(env: &Env, plan_id: u64, index: u32, balance: u64) {
+        env.storage()
+            .persistent()
+            .set(&DataKey::Bb(plan_id, index), &balance);
+    }
+
+    /// Remaining share a beneficiary may still withdraw.
+    pub fn get_beneficiary_balance(
+        env: Env,
+        plan_id: u64,
+        beneficiary_index: u32,
+    ) -> Result<u64, InheritanceError> {
+        let plan = Self::get_plan(&env, plan_id).ok_or(InheritanceError::PlanNotFound)?;
+        if beneficiary_index >= plan.beneficiaries.len() {
+            return Err(InheritanceError::InvalidBeneficiaryIndex);
+        }
+        Ok(Self::beneficiary_balance(
+            &env,
+            plan_id,
+            beneficiary_index,
+            &plan,
+        ))
+    }
+
+    /// Withdraw part of an allocated inheritance share.
+    ///
+    /// `claim_inheritance_plan` is all-or-nothing: a beneficiary who needs
+    /// 10% of their share to cover an immediate cost has to move 100% of it on
+    /// chain. This draws down the same entitlement incrementally, marking the
+    /// beneficiary claimed only once the balance reaches zero.
+    ///
+    /// Identity is proved exactly as it is for a full claim — address, email
+    /// and claim code — because the payout moves real funds and Soroban has no
+    /// implicit caller.
+    ///
+    /// # Errors
+    /// - `InvalidPartialAmount` if `amount` is not a positive u64-sized value
+    /// - `PartialClaimExceedsBalance` if it exceeds the remaining share
+    /// - `NothingToClaim` if the share is already exhausted
+    pub fn claim_partial_payout(
+        env: Env,
+        plan_id: u64,
+        claimer: Address,
+        email: String,
+        claim_code: u32,
+        amount: i128,
+    ) -> Result<u64, InheritanceError> {
+        claimer.require_auth();
+        Self::require_not_blacklisted(&env, &claimer)?;
+        Self::check_not_paused(&env);
+        let _guard = access_control::ReentrancyGuard::lock_or_panic(&env);
+
+        // An i128 is the ledger's native amount type, but plan balances are
+        // u64 — reject anything that cannot be one before touching state.
+        if amount <= 0 || amount > u64::MAX as i128 {
+            return Err(InheritanceError::InvalidTotalAmount);
+        }
+        let amount = amount as u64;
+
+        Self::check_kyc_approved(&env, &claimer)?;
+
+        let plan = Self::get_plan(&env, plan_id).ok_or(InheritanceError::PlanNotFound)?;
+        Self::check_whitelist_if_restricted(&env, &plan, &claimer)?;
+
+        if !plan.is_active {
+            return Err(InheritanceError::PlanNotActive);
+        }
+        if env.storage().persistent().has(&DataKey::Fz(plan_id))
+            || env.storage().persistent().has(&DataKey::Lh(plan_id))
+        {
+            return Err(InheritanceError::PlanNotActive);
+        }
+
+        Self::check_and_record_claim_attempt(&env, plan_id, &claimer)?;
+
+        let _ = Self::auto_trigger_check(env.clone(), plan_id);
+        let triggered = Self::get_trigger_info(&env, plan_id).is_some();
+        if !triggered && !Self::is_claim_time_valid(&env, &plan) {
+            return Err(InheritanceError::ClaimNotAllowedYet);
+        }
+
+        let index = Self::resolve_beneficiary(&env, plan_id, &plan, email, claim_code)?;
+
+        if env
+            .storage()
+            .persistent()
+            .get::<DataKey, bool>(&DataKey::Fb(plan_id, index))
+            .unwrap_or(false)
+        {
+            return Err(InheritanceError::Unauthorized);
+        }
+        if Self::has_active_vesting_schedule(&env, plan_id, index) {
+            return Err(InheritanceError::VestingScheduleActive);
+        }
+
+        // Waterfall ordering applies to partial draws exactly as it does to a
+        // full claim — otherwise it could be walked around a slice at a time.
+        if plan.waterfall_enabled {
+            let this = plan.beneficiaries.get(index).unwrap();
+            let count = plan.beneficiaries.len().min(MAX_BENEFICIARIES);
+            for i in 0..count {
+                let b = plan.beneficiaries.get(i).unwrap();
+                if b.priority != 0 && b.priority < this.priority && !b.is_claimed {
+                    return Err(InheritanceError::ClaimNotAllowedYet);
+                }
+            }
+        }
+
+        let balance = Self::beneficiary_balance(&env, plan_id, index, &plan);
+        if balance == 0 {
+            return Err(InheritanceError::NothingToClaim);
+        }
+        if amount > balance {
+            return Err(InheritanceError::InsufficientBalance);
+        }
+
+        if Self::is_emergency_active(&env, plan_id) {
+            let limit = (plan.total_amount as u128)
+                .checked_mul(EMERGENCY_TRANSFER_LIMIT_BP as u128)
+                .and_then(|v| v.checked_div(10000))
+                .unwrap_or(0) as u64;
+            if amount > limit {
+                return Err(InheritanceError::EmergencyCooldownActive);
+            }
+        }
+
+        let available_liquidity = plan.total_amount.saturating_sub(plan.total_loaned);
+        if !triggered && amount > available_liquidity {
+            return Err(InheritanceError::InsufficientLiquidity);
+        }
+
+        Self::release_from_plan_vault(&env, plan_id, &plan.token, &claimer, amount)?;
+
+        let remaining = balance.saturating_sub(amount);
+        Self::set_beneficiary_balance(&env, plan_id, index, remaining);
+
+        let mut updated_plan = plan.clone();
+        let mut b = updated_plan.beneficiaries.get(index).unwrap();
+        // Only a fully drawn-down share counts as claimed; a beneficiary
+        // mid-withdrawal must still be able to come back for the rest.
+        if remaining == 0 {
+            b.is_claimed = true;
+        }
+        updated_plan.beneficiaries.set(index, b);
+        updated_plan.total_amount = updated_plan.total_amount.saturating_sub(amount);
+        Self::store_plan(&env, plan_id, &updated_plan);
+
+        env.events().publish(
+            (symbol_short!("CLAIM"), symbol_short!("PARTIAL")),
+            PartialClaimEvent {
+                plan_id,
+                beneficiary_index: index,
+                claimer: claimer.clone(),
+                amount,
+                remaining,
+            },
+        );
+
+        log!(
+            &env,
+            "Partial claim of {} on plan {} leaves {}",
+            amount,
+            plan_id,
+            remaining
+        );
+
+        Ok(remaining)
+    }
+
+    /// Find the beneficiary matching an email + claim code on a plan.
+    ///
+    /// Shared by the full and partial claim paths so the two cannot drift
+    /// apart on how identity is proved.
+    fn resolve_beneficiary(
+        env: &Env,
+        plan_id: u64,
+        plan: &InheritancePlan,
+        email: String,
+        claim_code: u32,
+    ) -> Result<u32, InheritanceError> {
+        let hashed_email = Self::hash_string(env, email);
+        let count = plan.beneficiaries.len().min(MAX_BENEFICIARIES);
+
+        for i in 0..count {
+            let b = plan.beneficiaries.get(i).unwrap();
+            if b.hashed_email != hashed_email {
+                continue;
+            }
+
+            let salt: BytesN<32> = env
+                .storage()
+                .persistent()
+                .get(&DataKey::Cs(plan_id, i))
+                .unwrap_or(BytesN::<32>::from_array(env, &[0u8; 32]));
+            let hashed_claim_code = Self::hash_claim_code_with_salt(env, claim_code, &salt)?;
+            if b.hashed_claim_code == hashed_claim_code {
+                return Ok(i);
+            }
+        }
+
+        Err(InheritanceError::BeneficiaryNotFound)
+    }
+
+    // ───────────────────────────────────────────
+    // Batch proof-of-life (Issue #1161)
+    // ───────────────────────────────────────────
+
+    /// Refresh proof-of-life on many plans in one transaction.
+    ///
+    /// An institutional owner with 50+ plans otherwise has to send 50
+    /// `record_activity` transactions to stay alive, paying 50 sets of fees
+    /// and risking a partial sweep if some of them fail.
+    ///
+    /// The owner is taken from the first plan and authorised once; every other
+    /// plan in the batch must belong to that same owner, so the single
+    /// signature can never touch a stranger's plan. Returns the number of
+    /// plans updated.
+    ///
+    /// # Errors
+    /// - `InvalidBatchSize` if the batch is empty or above `MAX_BATCH_PING`
+    /// - `PlanNotFound` if any id has no plan, or no trigger config
+    /// - `Unauthorized` if the plans do not all share one owner
+    pub fn batch_ping(env: Env, plan_ids: Vec<u64>) -> Result<u32, InheritanceError> {
+        let count = plan_ids.len();
+        if count == 0 || count > MAX_BATCH_PING {
+            return Err(InheritanceError::InvalidBatchSize);
+        }
+
+        let first_id = plan_ids.get(0).unwrap();
+        let first_plan = Self::get_plan(&env, first_id).ok_or(InheritanceError::PlanNotFound)?;
+        let owner = first_plan.owner.clone();
+
+        owner.require_auth();
+        Self::require_not_blacklisted(&env, &owner)?;
+        Self::check_not_paused(&env);
+
+        let now = env.ledger().timestamp();
+        let mut pinged = 0u32;
+
+        // Ownership of every plan is checked before a single timestamp is
+        // written, so a batch containing someone else's plan fails whole
+        // rather than leaving half of it applied.
+        for plan_id in plan_ids.iter() {
+            let plan = Self::get_plan(&env, plan_id).ok_or(InheritanceError::PlanNotFound)?;
+            if plan.owner != owner {
+                return Err(InheritanceError::Unauthorized);
+            }
+        }
+
+        for plan_id in plan_ids.iter() {
+            let mut config =
+                Self::get_trigger_config(&env, plan_id).ok_or(InheritanceError::PlanNotFound)?;
+            config.last_activity = now;
+            Self::save_trigger_config(&env, plan_id, &config);
+            pinged = pinged.saturating_add(1);
+        }
+
+        env.events().publish(
+            (symbol_short!("PING"), symbol_short!("BATCH")),
+            BatchPingEvent {
+                owner: owner.clone(),
+                plans_pinged: pinged,
+                pinged_at: now,
+            },
+        );
+
+        log!(&env, "Batch ping refreshed {} plans", pinged);
+
+        Ok(pinged)
+    }
+
+    // ───────────────────────────────────────────
+    // Contingency allocation (Issue #1163)
+    // ───────────────────────────────────────────
+
+    /// Attach or replace a beneficiary's fallback recipient.
+    ///
+    /// Plan creation takes one per beneficiary; this covers the case where an
+    /// owner learns after the fact that a primary address is unreachable.
+    pub fn set_contingency_address(
+        env: Env,
+        owner: Address,
+        plan_id: u64,
+        beneficiary_index: u32,
+        contingency_address: Address,
+    ) -> Result<(), InheritanceError> {
+        owner.require_auth();
+        Self::check_not_paused(&env);
+
+        let mut plan = Self::get_plan(&env, plan_id).ok_or(InheritanceError::PlanNotFound)?;
+        if plan.owner != owner {
+            return Err(InheritanceError::Unauthorized);
+        }
+        if beneficiary_index >= plan.beneficiaries.len() {
+            return Err(InheritanceError::InvalidBeneficiaryIndex);
+        }
+
+        let mut beneficiary = plan.beneficiaries.get(beneficiary_index).unwrap();
+        if beneficiary.is_claimed {
+            return Err(InheritanceError::AlreadyClaimed);
+        }
+        beneficiary.contingency_address = Some(contingency_address.clone());
+        plan.beneficiaries.set(beneficiary_index, beneficiary);
+        Self::store_plan(&env, plan_id, &plan);
+
+        env.events().publish(
+            (symbol_short!("BENEF"), symbol_short!("CONTING")),
+            ContingencySetEvent {
+                plan_id,
+                beneficiary_index,
+                contingency_address,
+            },
+        );
+
+        Ok(())
+    }
+
+    /// Timestamp from which a share may be routed to its contingency address,
+    /// or `None` while inheritance has not been triggered.
+    pub fn get_contingency_available_at(env: Env, plan_id: u64) -> Option<u64> {
+        Self::get_trigger_info(&env, plan_id)
+            .map(|info| info.triggered_at.saturating_add(CONTINGENCY_TIMEOUT_SECONDS))
+    }
+
+    /// Route an unclaimed share to its contingency address.
+    ///
+    /// Callable by anyone once the window has passed: the destination is fixed
+    /// by the plan owner in advance, so there is nothing for a caller to
+    /// redirect, and leaving it to the beneficiary would defeat the purpose —
+    /// this exists precisely for the case where they cannot act.
+    ///
+    /// # Errors
+    /// - `InheritanceNotTriggered` if inheritance has not been triggered
+    /// - `ClaimNotAllowedYet` before 180 days have elapsed
+    /// - `MissingRequiredField` if the beneficiary has no fallback set
+    /// - `AlreadyClaimed` if the primary already took the share
+    /// - `NothingToClaim` if the remaining balance is zero
+    pub fn route_to_contingency(
+        env: Env,
+        plan_id: u64,
+        beneficiary_index: u32,
+    ) -> Result<u64, InheritanceError> {
+        Self::check_not_paused(&env);
+        let _guard = access_control::ReentrancyGuard::lock_or_panic(&env);
+
+        let plan = Self::get_plan(&env, plan_id).ok_or(InheritanceError::PlanNotFound)?;
+        if beneficiary_index >= plan.beneficiaries.len() {
+            return Err(InheritanceError::InvalidBeneficiaryIndex);
+        }
+
+        let trigger = Self::get_trigger_info(&env, plan_id)
+            .ok_or(InheritanceError::InheritanceNotTriggered)?;
+        let available_at = trigger
+            .triggered_at
+            .saturating_add(CONTINGENCY_TIMEOUT_SECONDS);
+        if env.ledger().timestamp() < available_at {
+            return Err(InheritanceError::ClaimNotAllowedYet);
+        }
+
+        let beneficiary = plan.beneficiaries.get(beneficiary_index).unwrap();
+        if beneficiary.is_claimed {
+            return Err(InheritanceError::AlreadyClaimed);
+        }
+
+        let contingency_address = beneficiary
+            .contingency_address
+            .clone()
+            .ok_or(InheritanceError::MissingRequiredField)?;
+
+        let balance = Self::beneficiary_balance(&env, plan_id, beneficiary_index, &plan);
+        if balance == 0 {
+            return Err(InheritanceError::NothingToClaim);
+        }
+
+        Self::release_from_plan_vault(
+            &env,
+            plan_id,
+            &plan.token,
+            &contingency_address,
+            balance,
+        )?;
+
+        // Zeroing the balance and marking the beneficiary claimed is what stops
+        // a second payout — the `is_claimed` check above rejects any repeat.
+        let routed_at = env.ledger().timestamp();
+        Self::set_beneficiary_balance(&env, plan_id, beneficiary_index, 0);
+
+        let mut updated_plan = plan.clone();
+        let mut b = updated_plan.beneficiaries.get(beneficiary_index).unwrap();
+        b.is_claimed = true;
+        updated_plan.beneficiaries.set(beneficiary_index, b);
+        updated_plan.total_amount = updated_plan.total_amount.saturating_sub(balance);
+        Self::store_plan(&env, plan_id, &updated_plan);
+
+        env.events().publish(
+            (symbol_short!("BENEF"), symbol_short!("FALLBACK")),
+            ContingencyPayoutEvent {
+                plan_id,
+                beneficiary_index,
+                contingency_address,
+                amount: balance,
+                routed_at,
+            },
+        );
+
+        log!(
+            &env,
+            "Routed {} from plan {} to contingency address",
+            balance,
+            plan_id
+        );
+
+        Ok(balance)
+    }
+
+    // ───────────────────────────────────────────
+    // SEP metadata interfaces (Issue #1178)
+    // ───────────────────────────────────────────
+
+    /// Protocol version string, as distinct from the storage-schema number
+    /// `version()` returns. Wallets and explorers key off this.
+    pub fn protocol_version(env: Env) -> String {
+        String::from_str(&env, PROTOCOL_VERSION)
+    }
+
+    /// Contract author, for SEP-0040 style attribution.
+    pub fn contract_author(env: Env) -> String {
+        String::from_str(&env, CONTRACT_AUTHOR)
+    }
+
+    /// Audit status. Deliberately explicit that testnet builds are unaudited,
+    /// rather than leaving integrators to assume either way.
+    pub fn audit_status(env: Env) -> String {
+        String::from_str(&env, AUDIT_STATUS)
+    }
+
+    /// SEPs this contract implements interfaces for.
+    pub fn supported_seps(env: Env) -> Vec<String> {
+        vec![
+            &env,
+            String::from_str(&env, "SEP-0038"),
+            String::from_str(&env, "SEP-0040"),
+        ]
+    }
+
+    /// Every metadata answer in one call, so an indexer needs one round trip
+    /// rather than five.
+    pub fn contract_metadata(env: Env) -> ContractMetadata {
+        ContractMetadata {
+            name: String::from_str(&env, "InheritX Inheritance Contract"),
+            protocol_version: String::from_str(&env, PROTOCOL_VERSION),
+            contract_version: Self::version(env.clone()),
+            author: String::from_str(&env, CONTRACT_AUTHOR),
+            audit_status: String::from_str(&env, AUDIT_STATUS),
+            supported_seps: Self::supported_seps(env),
+        }
     }
 }
 
