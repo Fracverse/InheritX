@@ -166,17 +166,16 @@ pub enum InheritanceError {
     ReentrantCall = 51,
     Blk = 52,
     NotWhitelisted = 53,
-    /// Partial claim amount was zero, negative, or wider than the ledger's
-    /// u64 balances (Issue #1144).
-    InvalidPartialAmount = 54,
-    /// Partial claim asked for more than the beneficiary's remaining share.
-    PartialClaimExceedsBalance = 55,
-    /// `batch_ping` was called with no plan ids, or more than `MAX_BATCH_PING`.
-    InvalidBatchSize = 56,
-    /// Beneficiary has no contingency address configured (Issue #1163).
-    NoContingencyAddress = 57,
-    /// The 180-day contingency window has not elapsed yet.
-    ContingencyNotYetAvailable = 58,
+    /// `batch_ping` was called with no plan ids, or more than `MAX_BATCH_PING`
+    /// (Issue #1161).
+    ///
+    /// The only new error the four features need: a bad partial amount is an
+    /// `InvalidTotalAmount`, over-claiming is `InsufficientBalance`, a missing
+    /// contingency address is a `MissingRequiredField` and an unelapsed
+    /// contingency window is `ClaimNotAllowedYet`. The contract spec caps a
+    /// UDT enum at 50 cases and this enum was already at 49, so a variant is
+    /// only worth spending where nothing existing fits.
+    InvalidBatchSize = 54,
 }
 
 #[contracttype]
@@ -239,8 +238,6 @@ pub enum DataKey {
     /// Written lazily on the first partial claim (Issue #1144). Absent means
     /// "not yet fixed"; the entitlement is still derived from the plan.
     Bb(u64, u32),
-    /// (plan_id, beneficiary_index) -> u64 timestamp of the contingency payout.
-    Cgp(u64, u32),
 }
 
 #[contracttype]
@@ -1748,7 +1745,7 @@ impl InheritanceContract {
         let mut priorities = Vec::new(env);
         let mut emails = Vec::new(env);
 
-        for (name, email, _, _, bp, priority) in beneficiaries_data.iter() {
+        for (name, email, _, _, bp, priority, _) in beneficiaries_data.iter() {
             // Issue #961: Require non-empty beneficiary names
             if name.is_empty() {
                 return Err(InheritanceError::InvalidBeneficiaryData);
@@ -7960,7 +7957,7 @@ impl InheritanceContract {
         // An i128 is the ledger's native amount type, but plan balances are
         // u64 — reject anything that cannot be one before touching state.
         if amount <= 0 || amount > u64::MAX as i128 {
-            return Err(InheritanceError::InvalidPartialAmount);
+            return Err(InheritanceError::InvalidTotalAmount);
         }
         let amount = amount as u64;
 
@@ -8018,7 +8015,7 @@ impl InheritanceContract {
             return Err(InheritanceError::NothingToClaim);
         }
         if amount > balance {
-            return Err(InheritanceError::PartialClaimExceedsBalance);
+            return Err(InheritanceError::InsufficientBalance);
         }
 
         if Self::is_emergency_active(&env, plan_id) {
@@ -8238,8 +8235,8 @@ impl InheritanceContract {
     ///
     /// # Errors
     /// - `InheritanceNotTriggered` if inheritance has not been triggered
-    /// - `ContingencyNotYetAvailable` before 180 days have elapsed
-    /// - `NoContingencyAddress` if the beneficiary has no fallback set
+    /// - `ClaimNotAllowedYet` before 180 days have elapsed
+    /// - `MissingRequiredField` if the beneficiary has no fallback set
     /// - `AlreadyClaimed` if the primary already took the share
     /// - `NothingToClaim` if the remaining balance is zero
     pub fn route_to_contingency(
@@ -8255,23 +8252,13 @@ impl InheritanceContract {
             return Err(InheritanceError::InvalidBeneficiaryIndex);
         }
 
-        // Paid out once. Without this the entry could be drained repeatedly
-        // while the plan still holds a balance.
-        if env
-            .storage()
-            .persistent()
-            .has(&DataKey::Cgp(plan_id, beneficiary_index))
-        {
-            return Err(InheritanceError::AlreadyClaimed);
-        }
-
         let trigger = Self::get_trigger_info(&env, plan_id)
             .ok_or(InheritanceError::InheritanceNotTriggered)?;
         let available_at = trigger
             .triggered_at
             .saturating_add(CONTINGENCY_TIMEOUT_SECONDS);
         if env.ledger().timestamp() < available_at {
-            return Err(InheritanceError::ContingencyNotYetAvailable);
+            return Err(InheritanceError::ClaimNotAllowedYet);
         }
 
         let beneficiary = plan.beneficiaries.get(beneficiary_index).unwrap();
@@ -8282,7 +8269,7 @@ impl InheritanceContract {
         let contingency_address = beneficiary
             .contingency_address
             .clone()
-            .ok_or(InheritanceError::NoContingencyAddress)?;
+            .ok_or(InheritanceError::MissingRequiredField)?;
 
         let balance = Self::beneficiary_balance(&env, plan_id, beneficiary_index, &plan);
         if balance == 0 {
@@ -8297,11 +8284,10 @@ impl InheritanceContract {
             balance,
         )?;
 
+        // Zeroing the balance and marking the beneficiary claimed is what stops
+        // a second payout — the `is_claimed` check above rejects any repeat.
         let routed_at = env.ledger().timestamp();
         Self::set_beneficiary_balance(&env, plan_id, beneficiary_index, 0);
-        env.storage()
-            .persistent()
-            .set(&DataKey::Cgp(plan_id, beneficiary_index), &routed_at);
 
         let mut updated_plan = plan.clone();
         let mut b = updated_plan.beneficiaries.get(beneficiary_index).unwrap();

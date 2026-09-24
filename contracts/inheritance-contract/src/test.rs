@@ -329,6 +329,7 @@ fn test_create_beneficiary_success() {
             bank_account,
             allocation,
             1u32, // priority
+            None, // contingency_address
         )
     });
 
@@ -354,6 +355,7 @@ fn test_create_beneficiary_invalid_data() {
             create_test_bytes(&env, "1234567890123456"),
             5000u32,
             1u32,
+            None, // contingency_address
         )
     });
     assert!(result.is_err());
@@ -374,6 +376,7 @@ fn test_create_beneficiary_invalid_data() {
             create_test_bytes(&env, "1234567890123456"),
             5000u32,
             2u32,
+            None, // contingency_address
         )
     });
     assert!(result.is_err());
@@ -394,6 +397,7 @@ fn test_create_beneficiary_invalid_data() {
             create_test_bytes(&env, "1234567890123456"),
             0u32, // zero allocation
             1u32, // priority
+            None, // contingency_address
         )
     });
     assert!(result.is_err());
@@ -5833,13 +5837,11 @@ fn test_batch_claim_success() {
             claimer_a.clone(),
             String::from_str(&env, "alice@batch.com"),
             111111u32,
-            None,
         ),
         (
             claimer_b.clone(),
             String::from_str(&env, "bob@batch.com"),
             222222u32,
-            None,
         ),
     ];
     let (success, fail) = client.batch_claim(&plan_id, &claimers);
@@ -5882,7 +5884,6 @@ fn test_batch_claim_partial_fail_wrong_code() {
             claimer.clone(),
             String::from_str(&env, "alice@batch.com"),
             999999u32,
-            None,
         ),
     ];
     let (success, fail) = client.batch_claim(&plan_id, &claimers);
@@ -5923,7 +5924,6 @@ fn test_batch_claim_no_kyc_counted_as_fail() {
             claimer.clone(),
             String::from_str(&env, "alice@batch.com"),
             111111u32,
-            None,
         ),
     ];
     let (success, fail) = client.batch_claim(&plan_id, &claimers);
@@ -5972,7 +5972,6 @@ fn test_batch_claim_double_claim_counted_as_fail() {
             claimer.clone(),
             String::from_str(&env, "alice@batch.com"),
             111111u32,
-            None,
         ),
     ];
     let (success, fail) = client.batch_claim(&plan_id, &claimers);
