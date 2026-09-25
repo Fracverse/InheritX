@@ -1046,11 +1046,7 @@ impl InheritanceContract {
     /// verifier, or one that does not return a `bool` all report `false` — the
     /// hook fails closed, so an unconfigured or misbehaving verifier can never
     /// approve a claim.
-    pub fn verify_zk_genetic_proof(
-        env: Env,
-        proof: Bytes,
-        public_inputs: Vec<BytesN<32>>,
-    ) -> bool {
+    pub fn verify_zk_genetic_proof(env: Env, proof: Bytes, public_inputs: Vec<BytesN<32>>) -> bool {
         plan_maintenance::verify_zk_genetic_proof(env, proof, public_inputs)
     }
 
@@ -1078,7 +1074,13 @@ impl InheritanceContract {
         beneficiary_index: u32,
         required: bool,
     ) -> Result<(), InheritanceError> {
-        plan_maintenance::set_genetic_kin_requirement(env, owner, plan_id, beneficiary_index, required)
+        plan_maintenance::set_genetic_kin_requirement(
+            env,
+            owner,
+            plan_id,
+            beneficiary_index,
+            required,
+        )
     }
 
     /// Whether `beneficiary_index` must present a verified genetic proof.
@@ -3116,11 +3118,7 @@ impl InheritanceContract {
         // recorded by `verify_genetic_kin_claim`, which fails closed when no
         // verifier is configured.
         if plan_maintenance::is_genetic_kin_required(env.clone(), plan_id, index)
-            && !plan_maintenance::has_verified_genetic_proof(
-                env.clone(),
-                plan_id,
-                claimer.clone(),
-            )
+            && !plan_maintenance::has_verified_genetic_proof(env.clone(), plan_id, claimer.clone())
         {
             return Err(InheritanceError::ZkProofRequired);
         }

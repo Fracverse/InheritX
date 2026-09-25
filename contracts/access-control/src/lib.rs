@@ -619,8 +619,7 @@ pub fn get_voting_power(env: &Env, user: &Address) -> u128 {
         get_locked_value(env, user)
     };
     let received = get_delegated_power(env, user);
-    own
-        .saturating_mul(VOTES_PER_UNIT)
+    own.saturating_mul(VOTES_PER_UNIT)
         .saturating_add(received.saturating_mul(VOTES_PER_UNIT))
 }
 

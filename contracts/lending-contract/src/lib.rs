@@ -707,7 +707,7 @@ pub enum DataKey {
     NFTToken,
     ReentrancyGuard,
     LateFeesAccrued(u64), // Track late fees for a specific loan_id
-    DefaultWarned(u64),  // loan_id -> bool, whether loan_default_warning fired
+    DefaultWarned(u64),   // loan_id -> bool, whether loan_default_warning fired
     FlashLoanFeeBps,
     UserLoans(Address),          // Track multiple loans per user (Vec<u64>)
     RewardPool(Address),         // Per-asset reward pool

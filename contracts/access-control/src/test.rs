@@ -13,7 +13,7 @@ fn addr(env: &Env) -> Address {
 
 /// Register `access-control`'s storage-owning contract so tests can read and
 /// write persistent entries the way the real contracts do.
-fn as_contract<'a>(env: &'a Env) -> Address {
+fn as_contract(env: &Env) -> Address {
     env.register_contract(None, VotingHarness)
 }
 
@@ -30,16 +30,16 @@ fn locked_value_maps_one_to_one_onto_votes() {
     env.mock_all_auths_allowing_non_root_auth();
     let me = as_contract(&env);
     env.as_contract(&me, || {
-    let holder = addr(&env);
+        let holder = addr(&env);
 
-    assert_eq!(get_voting_power(&env, &holder), 0);
+        assert_eq!(get_voting_power(&env, &holder), 0);
 
-    add_locked_value(&env, &holder, 1_000);
-    assert_eq!(get_locked_value(&env, &holder), 1_000);
-    assert_eq!(get_voting_power(&env, &holder), 1_000);
+        add_locked_value(&env, &holder, 1_000);
+        assert_eq!(get_locked_value(&env, &holder), 1_000);
+        assert_eq!(get_voting_power(&env, &holder), 1_000);
 
-    add_locked_value(&env, &holder, 500);
-    assert_eq!(get_voting_power(&env, &holder), 1_500);
+        add_locked_value(&env, &holder, 500);
+        assert_eq!(get_voting_power(&env, &holder), 1_500);
     });
 }
 
@@ -49,16 +49,16 @@ fn removing_locked_value_shrinks_votes_and_floors_at_zero() {
     env.mock_all_auths_allowing_non_root_auth();
     let me = as_contract(&env);
     env.as_contract(&me, || {
-    let holder = addr(&env);
+        let holder = addr(&env);
 
-    add_locked_value(&env, &holder, 1_000);
-    remove_locked_value(&env, &holder, 400);
-    assert_eq!(get_voting_power(&env, &holder), 600);
+        add_locked_value(&env, &holder, 1_000);
+        remove_locked_value(&env, &holder, 400);
+        assert_eq!(get_voting_power(&env, &holder), 600);
 
-    // Releasing more than recorded saturates rather than wrapping.
-    remove_locked_value(&env, &holder, 10_000);
-    assert_eq!(get_voting_power(&env, &holder), 0);
-    assert_eq!(get_locked_value(&env, &holder), 0);
+        // Releasing more than recorded saturates rather than wrapping.
+        remove_locked_value(&env, &holder, 10_000);
+        assert_eq!(get_voting_power(&env, &holder), 0);
+        assert_eq!(get_locked_value(&env, &holder), 0);
     });
 }
 
@@ -68,15 +68,15 @@ fn zero_and_negative_ish_adjustments_are_noops() {
     env.mock_all_auths_allowing_non_root_auth();
     let me = as_contract(&env);
     env.as_contract(&me, || {
-    let holder = addr(&env);
+        let holder = addr(&env);
 
-    add_locked_value(&env, &holder, 0);
-    assert_eq!(get_voting_power(&env, &holder), 0);
+        add_locked_value(&env, &holder, 0);
+        assert_eq!(get_voting_power(&env, &holder), 0);
 
-    add_locked_value(&env, &holder, 100);
-    remove_locked_value(&env, &holder, 0);
-    set_locked_value(&env, &holder, 100);
-    assert_eq!(get_voting_power(&env, &holder), 100);
+        add_locked_value(&env, &holder, 100);
+        remove_locked_value(&env, &holder, 0);
+        set_locked_value(&env, &holder, 100);
+        assert_eq!(get_voting_power(&env, &holder), 100);
     });
 }
 
@@ -86,14 +86,14 @@ fn set_locked_value_overwrites_and_clears() {
     env.mock_all_auths_allowing_non_root_auth();
     let me = as_contract(&env);
     env.as_contract(&me, || {
-    let holder = addr(&env);
+        let holder = addr(&env);
 
-    add_locked_value(&env, &holder, 1_000);
-    set_locked_value(&env, &holder, 250);
-    assert_eq!(get_voting_power(&env, &holder), 250);
+        add_locked_value(&env, &holder, 1_000);
+        set_locked_value(&env, &holder, 250);
+        assert_eq!(get_voting_power(&env, &holder), 250);
 
-    set_locked_value(&env, &holder, 0);
-    assert_eq!(get_voting_power(&env, &holder), 0);
+        set_locked_value(&env, &holder, 0);
+        assert_eq!(get_voting_power(&env, &holder), 0);
     });
 }
 
@@ -103,18 +103,18 @@ fn delegating_moves_the_whole_weight_to_the_delegate() {
     env.mock_all_auths_allowing_non_root_auth();
     let me = as_contract(&env);
     env.as_contract(&me, || {
-    let holder = addr(&env);
-    let delegate = addr(&env);
+        let holder = addr(&env);
+        let delegate = addr(&env);
 
-    add_locked_value(&env, &holder, 1_000);
-    delegate_votes(&env, &holder, &delegate);
+        add_locked_value(&env, &holder, 1_000);
+        delegate_votes(&env, &holder, &delegate);
 
-    // The holder keeps their locked value but no longer counts it themselves.
-    assert_eq!(get_locked_value(&env, &holder), 1_000);
-    assert_eq!(get_voting_power(&env, &holder), 0);
-    assert_eq!(get_voting_power(&env, &delegate), 1_000);
-    assert_eq!(get_delegate(&env, &holder), Some(delegate.clone()));
-    assert_eq!(effective_voter(&env, &holder), delegate);
+        // The holder keeps their locked value but no longer counts it themselves.
+        assert_eq!(get_locked_value(&env, &holder), 1_000);
+        assert_eq!(get_voting_power(&env, &holder), 0);
+        assert_eq!(get_voting_power(&env, &delegate), 1_000);
+        assert_eq!(get_delegate(&env, &holder), Some(delegate.clone()));
+        assert_eq!(effective_voter(&env, &holder), delegate);
     });
 }
 
@@ -170,20 +170,20 @@ fn locked_value_changes_track_an_active_delegation() {
     env.mock_all_auths_allowing_non_root_auth();
     let me = as_contract(&env);
     env.as_contract(&me, || {
-    let holder = addr(&env);
-    let delegate = addr(&env);
+        let holder = addr(&env);
+        let delegate = addr(&env);
 
-    add_locked_value(&env, &holder, 1_000);
-    delegate_votes(&env, &holder, &delegate);
+        add_locked_value(&env, &holder, 1_000);
+        delegate_votes(&env, &holder, &delegate);
 
-    // Locking more after delegating credits the delegate, not the holder.
-    add_locked_value(&env, &holder, 500);
-    assert_eq!(get_voting_power(&env, &delegate), 1_500);
-    assert_eq!(get_voting_power(&env, &holder), 0);
+        // Locking more after delegating credits the delegate, not the holder.
+        add_locked_value(&env, &holder, 500);
+        assert_eq!(get_voting_power(&env, &delegate), 1_500);
+        assert_eq!(get_voting_power(&env, &holder), 0);
 
-    // And unlocking pulls it back out of the delegate.
-    remove_locked_value(&env, &holder, 1_200);
-    assert_eq!(get_voting_power(&env, &delegate), 300);
+        // And unlocking pulls it back out of the delegate.
+        remove_locked_value(&env, &holder, 1_200);
+        assert_eq!(get_voting_power(&env, &delegate), 300);
     });
 }
 
@@ -193,14 +193,14 @@ fn set_locked_value_resyncs_an_active_delegation() {
     env.mock_all_auths_allowing_non_root_auth();
     let me = as_contract(&env);
     env.as_contract(&me, || {
-    let holder = addr(&env);
-    let delegate = addr(&env);
+        let holder = addr(&env);
+        let delegate = addr(&env);
 
-    add_locked_value(&env, &holder, 1_000);
-    delegate_votes(&env, &holder, &delegate);
+        add_locked_value(&env, &holder, 1_000);
+        delegate_votes(&env, &holder, &delegate);
 
-    set_locked_value(&env, &holder, 200);
-    assert_eq!(get_voting_power(&env, &delegate), 200);
+        set_locked_value(&env, &holder, 200);
+        assert_eq!(get_voting_power(&env, &delegate), 200);
     });
 }
 
@@ -210,14 +210,14 @@ fn self_delegation_is_a_noop_that_keeps_votes_with_the_holder() {
     env.mock_all_auths_allowing_non_root_auth();
     let me = as_contract(&env);
     env.as_contract(&me, || {
-    let holder = addr(&env);
+        let holder = addr(&env);
 
-    add_locked_value(&env, &holder, 1_000);
-    delegate_votes(&env, &holder, &holder);
+        add_locked_value(&env, &holder, 1_000);
+        delegate_votes(&env, &holder, &holder);
 
-    // Equivalent to not delegating at all.
-    assert_eq!(get_voting_power(&env, &holder), 1_000);
-    assert_eq!(get_delegate(&env, &holder), None);
+        // Equivalent to not delegating at all.
+        assert_eq!(get_voting_power(&env, &holder), 1_000);
+        assert_eq!(get_delegate(&env, &holder), None);
     });
 }
 
@@ -227,11 +227,11 @@ fn undelegating_without_a_delegation_is_a_noop() {
     env.mock_all_auths_allowing_non_root_auth();
     let me = as_contract(&env);
     env.as_contract(&me, || {
-    let holder = addr(&env);
+        let holder = addr(&env);
 
-    add_locked_value(&env, &holder, 1_000);
-    undelegate_votes(&env, &holder);
-    assert_eq!(get_voting_power(&env, &holder), 1_000);
+        add_locked_value(&env, &holder, 1_000);
+        undelegate_votes(&env, &holder);
+        assert_eq!(get_voting_power(&env, &holder), 1_000);
     });
 }
 
@@ -241,16 +241,16 @@ fn a_delegate_keeps_its_own_weight_and_receives_the_deposited_weight() {
     env.mock_all_auths_allowing_non_root_auth();
     let me = as_contract(&env);
     env.as_contract(&me, || {
-    let delegate = addr(&env);
-    let holder = addr(&env);
+        let delegate = addr(&env);
+        let holder = addr(&env);
 
-    add_locked_value(&env, &delegate, 300);
-    add_locked_value(&env, &holder, 700);
-    delegate_votes(&env, &holder, &delegate);
+        add_locked_value(&env, &delegate, 300);
+        add_locked_value(&env, &holder, 700);
+        delegate_votes(&env, &holder, &delegate);
 
-    // Own locked value plus the delegated weight.
-    assert_eq!(get_voting_power(&env, &delegate), 1_000);
-    assert_eq!(get_delegated_power(&env, &delegate), 700);
+        // Own locked value plus the delegated weight.
+        assert_eq!(get_voting_power(&env, &delegate), 1_000);
+        assert_eq!(get_delegated_power(&env, &delegate), 700);
     });
 }
 
@@ -260,18 +260,18 @@ fn many_delegates_accumulate_on_one_address() {
     env.mock_all_auths_allowing_non_root_auth();
     let me = as_contract(&env);
     env.as_contract(&me, || {
-    let delegate = addr(&env);
+        let delegate = addr(&env);
 
-    let mut total = 0u128;
-    for _ in 0..5 {
-        let holder = addr(&env);
-        let amount = 100u128;
-        add_locked_value(&env, &holder, amount);
-        delegate_votes(&env, &holder, &delegate);
-        total += amount;
-    }
+        let mut total = 0u128;
+        for _ in 0..5 {
+            let holder = addr(&env);
+            let amount = 100u128;
+            add_locked_value(&env, &holder, amount);
+            delegate_votes(&env, &holder, &delegate);
+            total += amount;
+        }
 
-    assert_eq!(get_voting_power(&env, &delegate), total);
+        assert_eq!(get_voting_power(&env, &delegate), total);
     });
 }
 
@@ -281,22 +281,22 @@ fn snapshot_returns_powers_in_input_order() {
     env.mock_all_auths_allowing_non_root_auth();
     let me = as_contract(&env);
     env.as_contract(&me, || {
-    let a = addr(&env);
-    let b = addr(&env);
-    let c = addr(&env);
+        let a = addr(&env);
+        let b = addr(&env);
+        let c = addr(&env);
 
-    add_locked_value(&env, &a, 100);
-    add_locked_value(&env, &b, 200);
-    add_locked_value(&env, &c, 300);
-    delegate_votes(&env, &c, &b);
+        add_locked_value(&env, &a, 100);
+        add_locked_value(&env, &b, 200);
+        add_locked_value(&env, &c, 300);
+        delegate_votes(&env, &c, &b);
 
-    let holders = vec![&env, a.clone(), b.clone(), c.clone()];
-    let snap = get_voting_snapshot(&env, &holders);
+        let holders = vec![&env, a.clone(), b.clone(), c.clone()];
+        let snap = get_voting_snapshot(&env, &holders);
 
-    assert_eq!(snap.len(), 3);
-    assert_eq!(snap.get(0).unwrap(), (a, 100));
-    assert_eq!(snap.get(1).unwrap(), (b.clone(), 500)); // own 200 + 300 delegated
-    assert_eq!(snap.get(2).unwrap(), (c, 0));
+        assert_eq!(snap.len(), 3);
+        assert_eq!(snap.get(0).unwrap(), (a, 100));
+        assert_eq!(snap.get(1).unwrap(), (b.clone(), 500)); // own 200 + 300 delegated
+        assert_eq!(snap.get(2).unwrap(), (c, 0));
     });
 }
 
@@ -306,8 +306,8 @@ fn snapshot_of_an_empty_holder_set_is_empty() {
     env.mock_all_auths_allowing_non_root_auth();
     let me = as_contract(&env);
     env.as_contract(&me, || {
-    let holders: Vec<Address> = Vec::new(&env);
-    assert!(get_voting_snapshot(&env, &holders).is_empty());
+        let holders: Vec<Address> = Vec::new(&env);
+        assert!(get_voting_snapshot(&env, &holders).is_empty());
     });
 }
 
@@ -317,15 +317,15 @@ fn delegation_requires_the_holders_own_authorization() {
     env.mock_all_auths_allowing_non_root_auth();
     let me = as_contract(&env);
     env.as_contract(&me, || {
-    let holder = addr(&env);
-    let delegate = addr(&env);
-    add_locked_value(&env, &holder, 100);
+        let holder = addr(&env);
+        let delegate = addr(&env);
+        add_locked_value(&env, &holder, 100);
 
-    // `delegate_votes` calls `require_auth` on the delegator, so only the
-    // holder can redirect their own weight — a delegate cannot act on someone
-    // else's behalf.
-    delegate_votes(&env, &holder, &delegate);
-    assert_eq!(get_voting_power(&env, &delegate), 100);
-    assert_eq!(get_voting_power(&env, &holder), 0);
+        // `delegate_votes` calls `require_auth` on the delegator, so only the
+        // holder can redirect their own weight — a delegate cannot act on someone
+        // else's behalf.
+        delegate_votes(&env, &holder, &delegate);
+        assert_eq!(get_voting_power(&env, &delegate), 100);
+        assert_eq!(get_voting_power(&env, &holder), 0);
     });
 }

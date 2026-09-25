@@ -8,12 +8,16 @@
 //! `InheritanceContract` in `lib.rs`; everything here is a plain function so
 //! this module never has to re-open the contract's impl block.
 
-use soroban_sdk::{log, symbol_short, token, vec, Address, Bytes, BytesN, Env, IntoVal,
-    InvokeError, Symbol, Val, Vec};
 use soroban_sdk::xdr::ToXdr;
+use soroban_sdk::{
+    log, symbol_short, token, vec, Address, Bytes, BytesN, Env, IntoVal, InvokeError, Symbol, Val,
+    Vec,
+};
 
-use crate::{DataKey, InheritanceError, InheritancePlan, PlanStorageCleanedEvent,
-    ZkGeneticProofVerifiedEvent, MAX_BENEFICIARIES, MAX_WILL_VERSIONS};
+use crate::{
+    DataKey, InheritanceError, InheritancePlan, PlanStorageCleanedEvent,
+    ZkGeneticProofVerifiedEvent, MAX_BENEFICIARIES, MAX_WILL_VERSIONS,
+};
 
 /// Method name the external Groth16 verifier must expose.
 fn verifier_fn(env: &Env) -> Symbol {
@@ -142,10 +146,11 @@ pub fn cleanup_closed_plan(
 /// plan that still holds a balance is *not* closed — the creator can still
 /// withdraw from it — so deleting it here would strand that money.
 fn plan_for_cleanup(env: &Env, plan_id: u64) -> Result<InheritancePlan, InheritanceError> {
-    let plan = crate::InheritanceContract::get_plan(env, plan_id).ok_or(InheritanceError::PlanNotFound)?;
+    let plan =
+        crate::InheritanceContract::get_plan(env, plan_id).ok_or(InheritanceError::PlanNotFound)?;
 
     let count = plan.beneficiaries.len().min(MAX_BENEFICIARIES);
-    let all_claimed = (0..count).all(|i| plan.beneficiaries.get(i as u32).unwrap().is_claimed);
+    let all_claimed = (0..count).all(|i| plan.beneficiaries.get(i).unwrap().is_claimed);
     let settled = plan.total_amount == 0 && plan.total_loaned == 0;
 
     let closed = if !plan.is_active {
@@ -201,7 +206,13 @@ fn refund_vault_residue(
     }
 
     let amount = balance as u64;
-    crate::InheritanceContract::release_from_plan_vault(env, plan_id, &plan.token, &plan.owner, amount)?;
+    crate::InheritanceContract::release_from_plan_vault(
+        env,
+        plan_id,
+        &plan.token,
+        &plan.owner,
+        amount,
+    )?;
     Ok(amount)
 }
 
@@ -220,11 +231,7 @@ fn remove_from_list(env: &Env, key: &DataKey, plan_id: u64) {
     if !env.storage().persistent().has(key) {
         return;
     }
-    let mut plans: Vec<u64> = env
-        .storage()
-        .persistent()
-        .get(key)
-        .unwrap_or(Vec::new(env));
+    let mut plans: Vec<u64> = env.storage().persistent().get(key).unwrap_or(Vec::new(env));
 
     for i in 0..plans.len() {
         if plans.get(i).unwrap() == plan_id {
@@ -284,23 +291,22 @@ fn release_plan_storage(env: &Env, plan: &InheritancePlan, plan_id: u64) -> u32 
     // Per-beneficiary entries, bounded by the plan's own beneficiary cap.
     let count = plan.beneficiaries.len().min(MAX_BENEFICIARIES);
     for i in 0..count {
-        let idx = i as u32;
-        if drop_key(env, &DataKey::Cs(plan_id, idx)) {
+        if drop_key(env, &DataKey::Cs(plan_id, i)) {
             released += 1;
         }
-        if drop_key(env, &DataKey::Fb(plan_id, idx)) {
+        if drop_key(env, &DataKey::Fb(plan_id, i)) {
             released += 1;
         }
-        if drop_key(env, &DataKey::Bn(plan_id, idx)) {
+        if drop_key(env, &DataKey::Bn(plan_id, i)) {
             released += 1;
         }
-        if drop_key(env, &DataKey::Ba(plan_id, idx)) {
+        if drop_key(env, &DataKey::Ba(plan_id, i)) {
             released += 1;
         }
-        if drop_key(env, &DataKey::Ves(plan_id, idx)) {
+        if drop_key(env, &DataKey::Ves(plan_id, i)) {
             released += 1;
         }
-        if drop_key(env, &genetic_kin_key(env, plan_id, idx)) {
+        if drop_key(env, &genetic_kin_key(env, plan_id, i)) {
             released += 1;
         }
     }
@@ -392,19 +398,22 @@ pub fn plan_storage_footprint(env: Env, plan_id: u64) -> u32 {
 
     let mut count: u32 = 0;
     count += has(&env, &DataKey::P(plan_id));
-    if env.storage().persistent().has(&(symbol_short!("pvault"), plan_id)) {
+    if env
+        .storage()
+        .persistent()
+        .has(&(symbol_short!("pvault"), plan_id))
+    {
         count += 1;
     }
 
     let bens = plan.beneficiaries.len().min(MAX_BENEFICIARIES);
     for i in 0..bens {
-        let idx = i as u32;
-        count += has(&env, &DataKey::Cs(plan_id, idx));
-        count += has(&env, &DataKey::Fb(plan_id, idx));
-        count += has(&env, &DataKey::Bn(plan_id, idx));
-        count += has(&env, &DataKey::Ba(plan_id, idx));
-        count += has(&env, &DataKey::Ves(plan_id, idx));
-        count += has(&env, &genetic_kin_key(&env, plan_id, idx));
+        count += has(&env, &DataKey::Cs(plan_id, i));
+        count += has(&env, &DataKey::Fb(plan_id, i));
+        count += has(&env, &DataKey::Bn(plan_id, i));
+        count += has(&env, &DataKey::Ba(plan_id, i));
+        count += has(&env, &DataKey::Ves(plan_id, i));
+        count += has(&env, &genetic_kin_key(&env, plan_id, i));
     }
 
     count += has(&env, &DataKey::It(plan_id));
@@ -457,7 +466,9 @@ pub fn set_zk_verifier(
 
 /// The configured Groth16 verifier, if one has been set.
 pub fn get_zk_verifier(env: Env) -> Option<Address> {
-    env.storage().instance().get(&zk_key(&env, ZK_VERIFIER_TAG, &[]))
+    env.storage()
+        .instance()
+        .get(&zk_key(&env, ZK_VERIFIER_TAG, &[]))
 }
 
 /// Verify a zk-SNARK / Groth16 proof of genetic kinship.
@@ -468,18 +479,18 @@ pub fn get_zk_verifier(env: Env) -> Option<Address> {
 /// report `false` — the hook fails closed, so an unconfigured or misbehaving
 /// verifier can never approve a claim.
 pub fn verify_zk_genetic_proof(env: Env, proof: Bytes, public_inputs: Vec<BytesN<32>>) -> bool {
-    let verifier: Address = match env.storage().instance().get(&zk_key(&env, ZK_VERIFIER_TAG, &[])) {
+    let verifier: Address = match env
+        .storage()
+        .instance()
+        .get(&zk_key(&env, ZK_VERIFIER_TAG, &[]))
+    {
         Some(v) => v,
         None => return false,
     };
 
     // `try_invoke_contract` prepends the callee address itself, so the args are
     // exactly the verifier's declared parameters.
-    let args: Vec<Val> = vec![
-        &env,
-        proof.into_val(&env),
-        public_inputs.into_val(&env),
-    ];
+    let args: Vec<Val> = vec![&env, proof.into_val(&env), public_inputs.into_val(&env)];
 
     // `try_invoke_contract` keeps a missing or reverting verifier recoverable;
     // a plain `invoke_contract` would trap this contract along with it.
@@ -505,7 +516,8 @@ pub fn verify_genetic_kin_claim(
     crate::InheritanceContract::enter_guard(&env);
 
     // The plan must exist: a proof for a nonexistent plan proves nothing.
-    let plan = crate::InheritanceContract::get_plan(&env, plan_id).ok_or(InheritanceError::PlanNotFound)?;
+    let plan = crate::InheritanceContract::get_plan(&env, plan_id)
+        .ok_or(InheritanceError::PlanNotFound)?;
 
     // A closed plan has no live genetic claims left to approve.
     if !plan.is_active {
@@ -536,11 +548,7 @@ pub fn verify_genetic_kin_claim(
         },
     );
 
-    log!(
-        &env,
-        "Genetic proof verified for plan {}",
-        plan_id
-    );
+    log!(&env, "Genetic proof verified for plan {}", plan_id);
 
     crate::InheritanceContract::exit_guard(&env);
     Ok(())
@@ -560,7 +568,8 @@ pub fn set_genetic_kin_requirement(
 ) -> Result<(), InheritanceError> {
     owner.require_auth();
 
-    let plan = crate::InheritanceContract::get_plan(&env, plan_id).ok_or(InheritanceError::PlanNotFound)?;
+    let plan = crate::InheritanceContract::get_plan(&env, plan_id)
+        .ok_or(InheritanceError::PlanNotFound)?;
     if plan.owner != owner {
         return Err(InheritanceError::Unauthorized);
     }

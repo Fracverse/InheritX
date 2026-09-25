@@ -29,7 +29,9 @@ pub enum VerifierKey {
 impl MockZkVerifier {
     /// Set the commitment the verifier will accept.
     pub fn set_expected(env: Env, commitment: soroban_sdk::BytesN<32>) {
-        env.storage().instance().set(&VerifierKey::Expected, &commitment);
+        env.storage()
+            .instance()
+            .set(&VerifierKey::Expected, &commitment);
     }
 
     /// Make the verifier reject everything, standing in for a reverting or
@@ -38,11 +40,7 @@ impl MockZkVerifier {
         env.storage().instance().set(&VerifierKey::Reject, &reject);
     }
 
-    pub fn verify(
-        env: Env,
-        _proof: Bytes,
-        public_inputs: Vec<soroban_sdk::BytesN<32>>,
-    ) -> bool {
+    pub fn verify(env: Env, _proof: Bytes, public_inputs: Vec<soroban_sdk::BytesN<32>>) -> bool {
         if env
             .storage()
             .instance()
@@ -303,9 +301,13 @@ fn mock_verifier_responds_to_a_direct_call() {
     env.mock_all_auths();
     let id = env.register_contract(None, MockZkVerifier);
     let c = MockZkVerifierClient::new(&env, &id);
-    let expected: soroban_sdk::BytesN<32> = env.crypto().sha256(&Bytes::from_slice(&env, b"x")).into();
+    let expected: soroban_sdk::BytesN<32> =
+        env.crypto().sha256(&Bytes::from_slice(&env, b"x")).into();
     c.set_expected(&expected);
-    assert!(c.verify(&Bytes::from_slice(&env, b"p"), &vec![&env, expected.clone()]));
+    assert!(c.verify(
+        &Bytes::from_slice(&env, b"p"),
+        &vec![&env, expected.clone()]
+    ));
     assert!(!c.verify(&Bytes::from_slice(&env, b"p"), &Vec::new(&env)));
 }
 
@@ -318,7 +320,10 @@ fn zk_verification_fails_closed_without_a_configured_verifier() {
     assert!(client.get_zk_verifier().is_none());
     assert!(!client.verify_zk_genetic_proof(
         &Bytes::from_slice(&env, b"proof"),
-        &vec![&env, env.crypto().sha256(&Bytes::from_slice(&env, b"x")).into()]
+        &vec![
+            &env,
+            env.crypto().sha256(&Bytes::from_slice(&env, b"x")).into()
+        ]
     ));
 
     let plan_id = client.create_inheritance_plan(&plan_params(
@@ -348,7 +353,10 @@ fn zk_verification_survives_a_rejecting_verifier() {
 
     assert!(!client.verify_zk_genetic_proof(
         &Bytes::from_slice(&env, b"proof"),
-        &vec![&env, env.crypto().sha256(&Bytes::from_slice(&env, b"x")).into()]
+        &vec![
+            &env,
+            env.crypto().sha256(&Bytes::from_slice(&env, b"x")).into()
+        ]
     ));
 }
 
@@ -399,8 +407,11 @@ fn invalid_proof_records_nothing() {
     ));
     let claimant = Address::generate(&env);
     // Verifier expects a different commitment than the one supplied.
-    MockZkVerifierClient::new(&env, &verifier_id)
-        .set_expected(&env.crypto().sha256(&Bytes::from_slice(&env, b"other")).into());
+    MockZkVerifierClient::new(&env, &verifier_id).set_expected(
+        &env.crypto()
+            .sha256(&Bytes::from_slice(&env, b"other"))
+            .into(),
+    );
 
     let result = client.try_verify_genetic_kin_claim(
         &claimant,

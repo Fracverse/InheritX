@@ -98,14 +98,19 @@ fn liquidation_is_blocked_for_three_days_past_due_even_with_a_short_configured_w
 
     // A second past maturity the loan is in default, but the liquidator is
     // still held back.
-    env.ledger().set_timestamp(env.ledger().timestamp() + 24 * 60 * 60 + 10);
+    env.ledger()
+        .set_timestamp(env.ledger().timestamp() + 24 * 60 * 60 + 10);
     assert!(client.is_loan_default_warned(&borrower) == false);
-    assert!(client.try_liquidate(&liquidator, &borrower, &1_000).is_err());
+    assert!(client
+        .try_liquidate(&liquidator, &borrower, &1_000)
+        .is_err());
 
     // Still blocked right up to the last second of the 3-day window, which is
     // the guarantee this issue asks for.
     env.ledger().set_timestamp(floor - 1);
-    assert!(client.try_liquidate(&liquidator, &borrower, &1_000).is_err());
+    assert!(client
+        .try_liquidate(&liquidator, &borrower, &1_000)
+        .is_err());
 
     // Past the floor the grace-period gate no longer blocks. (The health
     // factor is an independent gate and may still reject, which is why this
@@ -197,7 +202,8 @@ fn default_warning_emits_once_after_the_due_date() {
     assert!(!client.is_loan_default_warned(&borrower));
 
     // Past the due timestamp the warning fires.
-    env.ledger().set_timestamp(env.ledger().timestamp() + 24 * 60 * 60 + 1);
+    env.ledger()
+        .set_timestamp(env.ledger().timestamp() + 24 * 60 * 60 + 1);
     assert!(client.notify_loan_default(&borrower));
     assert!(client.is_loan_default_warned(&borrower));
 
@@ -260,7 +266,8 @@ fn default_warning_is_cleared_when_the_loan_is_repaid() {
         7_500,
     );
 
-    env.ledger().set_timestamp(env.ledger().timestamp() + 24 * 60 * 60 + 1);
+    env.ledger()
+        .set_timestamp(env.ledger().timestamp() + 24 * 60 * 60 + 1);
     client.notify_loan_default(&borrower);
     assert!(client.is_loan_default_warned(&borrower));
 
