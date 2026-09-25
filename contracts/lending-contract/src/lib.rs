@@ -16,6 +16,12 @@ const MINIMUM_LIQUIDITY: u64 = 1000;
 const PROTOCOL_INTEREST_BPS: u32 = 1000; // 10% of interest retained by protocol
 const BAD_DEBT_RESERVE_BPS: u32 = 5000; // 50% of protocol share routed to reserve
 const DEFAULT_GRACE_PERIOD_SECONDS: u64 = 259_200; // 3 days
+
+/// Floor on a pool's grace period, also 3 days. A borrower is always entitled
+/// to this window after the due timestamp before a liquidator can act, so an
+/// admin misconfiguration (or a zero) cannot turn a matured loan into an
+/// instant-liquidation one. `set_grace_period` rejects anything below it.
+const MIN_GRACE_PERIOD_SECONDS: u64 = 259_200;
 const DEFAULT_LATE_FEE_RATE_BPS: u32 = 500; // 5% per day = 0.058% per second (approx)
 const REFINANCING_FEE_BPS: u32 = 50; // 0.5% refinancing fee
 const DEFAULT_REWARD_RATE: u64 = 1_000_000_000; // Default reward rate per second (1 reward per second with 9 decimals)
@@ -280,6 +286,29 @@ pub struct LateFeeChargedEvent {
     pub late_fee: u64,
     pub days_overdue: u64,
     pub total_with_late_fees: u64,
+    pub timestamp: u64,
+}
+
+/// Emitted when a loan passes its due timestamp and enters default.
+///
+/// Carries the end of the borrower's grace period so a relayer, keeper or
+/// front end can tell the borrower exactly how long they still have to repay
+/// before the loan becomes liquidatable. Emitted at most once per loan.
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct LoanDefaultWarningEvent {
+    pub loan_id: u64,
+    pub borrower: Address,
+    pub asset: Address,
+    /// When the loan must be repaid by.
+    pub due_date: u64,
+    /// `due_date` plus the pool's grace period; liquidation is blocked until
+    /// this timestamp.
+    pub grace_period_end: u64,
+    /// Seconds the borrower still has, saturating at zero once elapsed.
+    pub seconds_remaining: u64,
+    /// Principal plus accrued interest, excluding late fees.
+    pub amount_due: u64,
     pub timestamp: u64,
 }
 
@@ -678,6 +707,7 @@ pub enum DataKey {
     NFTToken,
     ReentrancyGuard,
     LateFeesAccrued(u64), // Track late fees for a specific loan_id
+    DefaultWarned(u64),  // loan_id -> bool, whether loan_default_warning fired
     FlashLoanFeeBps,
     UserLoans(Address),          // Track multiple loans per user (Vec<u64>)
     RewardPool(Address),         // Per-asset reward pool
@@ -977,7 +1007,22 @@ impl LendingContract {
     }
 
     fn is_after_grace_period(env: &Env, loan: &LoanRecord) -> Result<bool, LendingError> {
-        Ok(env.ledger().timestamp() > Self::grace_period_end(env, loan)?)
+        Ok(env.ledger().timestamp() > Self::liquidation_floor(env, loan)?)
+    }
+
+    /// The earliest timestamp at which a liquidator may act on a loan.
+    ///
+    /// `due_date` plus the pool's configured grace period, but never less than
+    /// the protocol's 3-day `MIN_GRACE_PERIOD_SECONDS`. The floor is applied
+    /// here, at the liquidation gate, rather than in `set_grace_period`, so an
+    /// admin can still tune late fees, refinancing and insurance expiry while
+    /// no configuration can leave a matured loan open to instant liquidation.
+    fn liquidation_floor(env: &Env, loan: &LoanRecord) -> Result<u64, LendingError> {
+        let pool = Self::get_pool(env, &loan.asset)?;
+        let grace = pool.grace_period_seconds.max(MIN_GRACE_PERIOD_SECONDS);
+        loan.due_date
+            .checked_add(grace)
+            .ok_or(LendingError::InvalidAmount)
     }
 
     fn set_pool(env: &Env, asset: &Address, pool: &PoolState) {
@@ -1785,6 +1830,9 @@ impl LendingContract {
         env.storage()
             .persistent()
             .remove(&DataKey::LateFeesAccrued(loan.loan_id));
+        env.storage()
+            .persistent()
+            .remove(&DataKey::DefaultWarned(loan.loan_id));
 
         // Burn NFT if token is set
         if let Some(nft_token) = Self::get_nft_token(&env) {
@@ -2026,6 +2074,107 @@ impl LendingContract {
         Ok(current_time <= grace_period_end)
     }
 
+    /// Get the timestamp at which a borrower's grace period ends, and when the
+    /// loan becomes liquidatable.
+    ///
+    /// This is `due_date` plus the pool's grace period, floored at the 3-day
+    /// `MIN_GRACE_PERIOD_SECONDS` window. A liquidator's transaction reverts
+    /// before this timestamp.
+    pub fn get_grace_period_end(env: Env, borrower: Address) -> Result<u64, LendingError> {
+        Self::require_initialized(&env)?;
+
+        let loan: LoanRecord = env
+            .storage()
+            .persistent()
+            .get(&DataKey::Loan(borrower))
+            .ok_or(LendingError::NoOpenLoan)?;
+
+        // Report the liquidation floor, not the raw pool value: this is the
+        // timestamp a liquidator is actually held back until.
+        Self::liquidation_floor(&env, &loan)
+    }
+
+    /// Emit `loan_default_warning` for a loan that has passed its due date.
+    ///
+    /// Callable by anyone — a relayer, keeper, or the borrower's own front end
+    /// — so the warning does not depend on the borrower noticing it. The event
+    /// fires at most once per loan; later calls are a no-op and return `false`.
+    ///
+    /// Returns `Err(NoOpenLoan)` when the borrower has no open loan, and
+    /// `Err(InvalidAmount)` when the due timestamp has not passed yet, so a
+    /// caller can tell "not due" apart from "already warned".
+    pub fn notify_loan_default(env: Env, borrower: Address) -> Result<bool, LendingError> {
+        Self::require_initialized(&env)?;
+
+        let loan: LoanRecord = env
+            .storage()
+            .persistent()
+            .get(&DataKey::Loan(borrower.clone()))
+            .ok_or(LendingError::NoOpenLoan)?;
+
+        let now = env.ledger().timestamp();
+        if now <= loan.due_date {
+            return Err(LendingError::InvalidAmount);
+        }
+
+        let warned_key = DataKey::DefaultWarned(loan.loan_id);
+        if env
+            .storage()
+            .persistent()
+            .get::<DataKey, bool>(&warned_key)
+            .unwrap_or(false)
+        {
+            return Ok(false);
+        }
+        env.storage().persistent().set(&warned_key, &true);
+
+        // Quote the same floor the liquidation gate uses, so the warning tells
+        // the borrower exactly how long they still have.
+        let grace_end = Self::liquidation_floor(&env, &loan)?;
+        let amount_due = Self::calculate_outstanding_balance(&env, &loan);
+
+        env.events().publish(
+            (symbol_short!("LOAN"), symbol_short!("DEFAULT")),
+            LoanDefaultWarningEvent {
+                loan_id: loan.loan_id,
+                borrower,
+                asset: loan.asset.clone(),
+                due_date: loan.due_date,
+                grace_period_end: grace_end,
+                seconds_remaining: grace_end.saturating_sub(now),
+                amount_due,
+                timestamp: now,
+            },
+        );
+
+        log!(
+            &env,
+            "Loan {} is in default: grace period ends at {}, {} seconds remaining",
+            loan.loan_id,
+            grace_end,
+            grace_end.saturating_sub(now)
+        );
+
+        Ok(true)
+    }
+
+    /// Whether `loan_default_warning` has already fired for a borrower's loan.
+    pub fn is_loan_default_warned(env: Env, borrower: Address) -> Result<bool, LendingError> {
+        Self::require_initialized(&env)?;
+
+        let loan: LoanRecord = env
+            .storage()
+            .persistent()
+            .get(&DataKey::Loan(borrower))
+            .ok_or(LendingError::NoOpenLoan)?;
+
+        Ok(env
+            .storage()
+            .persistent()
+            .get::<DataKey, bool>(&DataKey::DefaultWarned(loan.loan_id))
+            .unwrap_or(false))
+    }
+
     /// Calculate late fees accumulated on a loan
     /// Daily late fee rate applied to days overdue after grace period
     pub fn calculate_late_fee(env: Env, borrower: Address) -> Result<u64, LendingError> {
@@ -2236,6 +2385,10 @@ impl LendingContract {
     ) -> Result<(), LendingError> {
         Self::require_admin(&env, &admin)?;
 
+        // No floor is enforced here: the configured window drives late fees,
+        // refinancing and insurance expiry, which stay admin-tunable. The 3-day
+        // borrower guarantee is enforced at the liquidation gate instead — see
+        // `liquidation_floor`.
         let mut pool = Self::get_pool(&env, &asset)?;
         pool.grace_period_seconds = grace_period_seconds;
         Self::set_pool(&env, &asset, &pool);
@@ -5257,3 +5410,5 @@ impl LendingContract {
 
 mod cross_contract_test;
 mod test;
+#[cfg(test)]
+mod test_grace_period;

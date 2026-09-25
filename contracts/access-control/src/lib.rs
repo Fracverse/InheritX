@@ -1,6 +1,6 @@
 #![no_std]
 
-use soroban_sdk::{contracttype, Address, Env, Symbol, Val, Vec};
+use soroban_sdk::{contracttype, vec, Address, Env, Symbol, Val, Vec};
 
 /// The four roles recognised across all InheritX contracts.
 #[contracttype]
@@ -469,3 +469,213 @@ pub fn assert_compatible_version_or_panic(
         None => panic!("contract version unavailable"),
     }
 }
+
+// ─── Governance: Voting Power & Delegation ───────
+
+/// Storage keys for decentralized governance state.
+#[contracttype]
+#[derive(Clone)]
+pub enum VotingKey {
+    /// Address -> u128 of value the holder has locked in the protocol (e.g.
+    /// XLM locked in active inheritance plans). Locked value backs voting
+    /// power: the more locked, the more weight.
+    LockedBalance(Address),
+    /// Address -> Address the holder has delegated their voting power to.
+    Delegation(Address),
+    /// Address -> u128 of voting power the address received from other
+    /// holders through delegation. Self-owned power stays in `LockedBalance`;
+    /// this bucket only tracks inherited weight.
+    DelegatedPower(Address),
+}
+
+/// Voting weight of locked value: 1 unit locked == 1 vote.
+pub const VOTES_PER_UNIT: u128 = 1;
+
+/// Record `amount` of newly locked value for `user`, growing their voting
+/// power. Call this when value is locked on the user's behalf (e.g. an
+/// inheritance plan is funded).
+pub fn add_locked_value(env: &Env, user: &Address, amount: u128) {
+    if amount == 0 {
+        return;
+    }
+    let key = VotingKey::LockedBalance(user.clone());
+    let old: u128 = env.storage().persistent().get(&key).unwrap_or(0);
+    let new = old.saturating_add(amount);
+    env.storage().persistent().set(&key, &new);
+    sync_delegated_power(env, user, old, new);
+}
+
+/// Release `amount` of previously locked value for `user`, shrinking their
+/// voting power. Call this when locked value is paid out or otherwise
+/// unlocked. Releasing more than recorded saturates at zero.
+pub fn remove_locked_value(env: &Env, user: &Address, amount: u128) {
+    if amount == 0 {
+        return;
+    }
+    let key = VotingKey::LockedBalance(user.clone());
+    let old: u128 = env.storage().persistent().get(&key).unwrap_or(0);
+    let new = old.saturating_sub(amount);
+    if new == 0 {
+        env.storage().persistent().remove(&key);
+    } else {
+        env.storage().persistent().set(&key, &new);
+    }
+    sync_delegated_power(env, user, old, new);
+}
+
+/// Overwrite the locked value recorded for `user` (e.g. when a plan's
+/// remaining balance is recomputed in bulk rather than adjusted incrementally).
+pub fn set_locked_value(env: &Env, user: &Address, amount: u128) {
+    let key = VotingKey::LockedBalance(user.clone());
+    let old: u128 = env.storage().persistent().get(&key).unwrap_or(0);
+    if old == amount {
+        return;
+    }
+    if amount == 0 {
+        env.storage().persistent().remove(&key);
+    } else {
+        env.storage().persistent().set(&key, &amount);
+    }
+    sync_delegated_power(env, user, old, amount);
+}
+
+/// Value the user currently has locked in the protocol.
+pub fn get_locked_value(env: &Env, user: &Address) -> u128 {
+    env.storage()
+        .persistent()
+        .get(&VotingKey::LockedBalance(user.clone()))
+        .unwrap_or(0)
+}
+
+/// Voting power the address received from other holders through delegation.
+pub fn get_delegated_power(env: &Env, holder: &Address) -> u128 {
+    env.storage()
+        .persistent()
+        .get(&VotingKey::DelegatedPower(holder.clone()))
+        .unwrap_or(0)
+}
+
+/// Delegate the caller's voting power to `delegate`. Re-delegating overwrites
+/// the previous delegate and moves the full voting weight with it.
+/// Delegating to yourself is accepted as a no-op (equivalent to not delegating).
+pub fn delegate_votes(env: &Env, delegator: &Address, delegate: &Address) {
+    delegator.require_auth();
+    let key = VotingKey::Delegation(delegator.clone());
+    let old_delegate: Option<Address> = env.storage().persistent().get(&key);
+    if old_delegate.as_ref() == Some(delegate) || delegate == delegator {
+        return; // no-op: already delegated there, or self-delegation
+    }
+    let locked = get_locked_value(env, delegator);
+    let old_target = effective_voter(env, delegator);
+    env.storage().persistent().set(&key, delegate);
+    if old_target != *delegate {
+        if old_target != *delegator {
+            apply_power_delta(env, &old_target, -(locked as i128));
+        }
+        if *delegate != *delegator {
+            apply_power_delta(env, delegate, locked as i128);
+        }
+    }
+}
+
+/// Remove an active delegation so the caller's voting power counts for
+/// themselves again.
+pub fn undelegate_votes(env: &Env, delegator: &Address) {
+    delegator.require_auth();
+    let key = VotingKey::Delegation(delegator.clone());
+    let old_delegate: Option<Address> = env.storage().persistent().get(&key);
+    if old_delegate.is_none() {
+        return; // no-op: nothing delegated
+    }
+    let locked = get_locked_value(env, delegator);
+    env.storage().persistent().remove(&key);
+    if *old_delegate.as_ref().unwrap() != *delegator {
+        apply_power_delta(env, &old_delegate.unwrap(), -(locked as i128));
+    }
+}
+
+/// The address `delegator` has delegated their voting power to, if any.
+pub fn get_delegate(env: &Env, delegator: &Address) -> Option<Address> {
+    env.storage()
+        .persistent()
+        .get(&VotingKey::Delegation(delegator.clone()))
+}
+
+/// The address whose votes `voter`'s locked value backs: the delegate when a
+/// delegation is active, otherwise the holder themselves.
+pub fn effective_voter(env: &Env, voter: &Address) -> Address {
+    get_delegate(env, voter).unwrap_or_else(|| voter.clone())
+}
+
+/// Voting power of `user` under the 1 unit locked = 1 vote rule.
+///
+/// Composed of the holder's own locked value plus any voting power delegated
+/// to them. When the holder has delegated, their own weight counts toward the
+/// delegate instead, so a delegator's power is zero until they undelegate.
+pub fn get_voting_power(env: &Env, user: &Address) -> u128 {
+    let own = if get_delegate(env, user).is_some() {
+        0
+    } else {
+        get_locked_value(env, user)
+    };
+    let received = get_delegated_power(env, user);
+    own
+        .saturating_mul(VOTES_PER_UNIT)
+        .saturating_add(received.saturating_mul(VOTES_PER_UNIT))
+}
+
+/// Voting power of every holder in `holders`, paired with its address.
+///
+/// Governance needs a fixed, ordered view of the electorate at the moment a
+/// proposal is opened; re-reading each holder individually later is both
+/// slower and open to drift if a balance moves in between. Callers pass the
+/// holder set they already resolved (e.g. the snapshot of plan owners) and
+/// get back matching `(address, power)` pairs in the same order, so position
+/// `i` of the result always describes position `i` of the input.
+pub fn get_voting_snapshot(env: &Env, holders: &Vec<Address>) -> Vec<(Address, u128)> {
+    // returns (address, power) pairs in input order
+    let mut out = vec![env];
+    for holder in holders.iter() {
+        out.push_back((holder.clone(), get_voting_power(env, &holder)));
+    }
+    out
+}
+
+/// Re-sync delegation accounting after `holder`'s locked value moved from
+/// `old_locked` to `new_locked`. Power only leaves the holder's own bucket
+/// when they delegated it away.
+fn sync_delegated_power(env: &Env, holder: &Address, old_locked: u128, new_locked: u128) {
+    let target = effective_voter(env, holder);
+    if target == *holder {
+        return; // own power is read straight from the locked balance
+    }
+    let delta = if new_locked >= old_locked {
+        (new_locked - old_locked) as i128
+    } else {
+        -((old_locked - new_locked) as i128)
+    };
+    apply_power_delta(env, &target, delta);
+}
+
+/// Apply `delta` to `holder`'s received-power bucket, saturating at zero so a
+/// stale delegation record can never trap the contract.
+fn apply_power_delta(env: &Env, holder: &Address, delta: i128) {
+    if delta == 0 {
+        return;
+    }
+    let key = VotingKey::DelegatedPower(holder.clone());
+    let current: u128 = env.storage().persistent().get(&key).unwrap_or(0);
+    let next = if delta > 0 {
+        current.saturating_add(delta as u128)
+    } else {
+        current.saturating_sub((-delta) as u128)
+    };
+    if next == 0 {
+        env.storage().persistent().remove(&key);
+    } else {
+        env.storage().persistent().set(&key, &next);
+    }
+}
+
+#[cfg(test)]
+mod test;
