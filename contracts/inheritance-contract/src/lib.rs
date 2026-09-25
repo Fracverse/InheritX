@@ -258,6 +258,15 @@ pub struct EmergencyAccessRecord {
 // Events for beneficiary operations
 #[contracttype]
 #[derive(Clone, Debug, Eq, PartialEq)]
+pub struct PlanCreatedEvent {
+    pub plan_id: u64,
+    pub owner: Address,
+    pub token: Address,
+    pub created_at: u64,
+}
+
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
 pub struct BeneficiaryAddedEvent {
     pub plan_id: u64,
     pub hashed_email: BytesN<32>,
@@ -1462,7 +1471,7 @@ impl InheritanceContract {
         env.storage().persistent().set(&DataKey::Fz(plan_id), &fr);
 
         env.events().publish(
-            (symbol_short!("DSPT"), symbol_short!("RAISED")),
+            (symbol_short!("DSPT"), symbol_short!("RAISED"), plan_id),
             disputes::DisputeFiledEvent {
                 dispute_id,
                 plan_id,
@@ -2404,6 +2413,16 @@ impl InheritanceContract {
         // Store the plan
         Self::store_plan(&env, plan_id, &plan);
 
+        env.events().publish(
+            (symbol_short!("PLAN"), symbol_short!("CREATED"), plan_id),
+            PlanCreatedEvent {
+                plan_id,
+                owner: owner.clone(),
+                token: token.clone(),
+                created_at: plan.created_at,
+            },
+        );
+
         // Add to user's plan list
         Self::add_plan_to_user(&env, owner.clone(), plan_id);
 
@@ -3083,7 +3102,7 @@ impl InheritanceContract {
         if !beneficiary.bank_account.is_empty() {
             // fiat_anchor_info = "BANK" indicates bank transfer settlement
             env.events().publish(
-                (symbol_short!("F_PAYOUT"),),
+                (symbol_short!("F_PAYOUT"), plan_id, index),
                 (plan_id, index, payout, symbol_short!("BANK")),
             );
         }
@@ -3518,7 +3537,7 @@ impl InheritanceContract {
         Self::set_trigger_info(&env, plan_id, &trigger_info);
 
         env.events().publish(
-            (symbol_short!("INHERIT"), symbol_short!("TRIGGER")),
+            (symbol_short!("INHERIT"), symbol_short!("TRIGGER"), plan_id),
             InheritanceTriggeredEvent {
                 plan_id,
                 triggered_at: now,

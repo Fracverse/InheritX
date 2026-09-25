@@ -248,6 +248,17 @@ pub struct CollateralDepositEvent {
 
 #[contracttype]
 #[derive(Clone, Debug, Eq, PartialEq)]
+pub struct CollateralAddedEvent {
+    pub loan_id: u64,
+    pub borrower: Address,
+    pub collateral_token: Address,
+    pub amount_added: u64,
+    pub total_collateral: u64,
+    pub health_factor_bps: u32,
+}
+
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
 pub struct LiquidationEvent {
     pub loan_id: u64,
     pub borrower: Address,
@@ -1679,7 +1690,7 @@ impl LendingContract {
         Self::transfer(&env, &asset, &contract_id, &borrower, amount)?;
 
         env.events().publish(
-            (symbol_short!("POOL"), symbol_short!("BORROW")),
+            (symbol_short!("POOL"), symbol_short!("BORROW"), loan_id),
             BorrowEvent {
                 loan_id,
                 borrower: borrower.clone(),
@@ -1690,7 +1701,7 @@ impl LendingContract {
             },
         );
         env.events().publish(
-            (symbol_short!("COLL"), symbol_short!("DEPOSIT")),
+            (symbol_short!("COLL"), symbol_short!("DEPOSIT"), loan_id),
             CollateralDepositEvent {
                 loan_id,
                 borrower: borrower.clone(),
@@ -1708,6 +1719,76 @@ impl LendingContract {
         );
         Self::exit_reentrancy_guard(&env);
         Ok(loan_id)
+    }
+
+    /// Add collateral to an existing loan without changing its principal.
+    pub fn deposit_additional_collateral(
+        env: Env,
+        loan_id: u64,
+        amount: u64,
+    ) -> Result<u32, LendingError> {
+        Self::require_not_paused(&env)?;
+        Self::require_initialized(&env)?;
+        Self::enter_reentrancy_guard(&env)?;
+
+        if amount == 0 {
+            return Err(LendingError::InvalidAmount);
+        }
+
+        let mut loan: LoanRecord = env
+            .storage()
+            .persistent()
+            .get(&DataKey::LoanById(loan_id))
+            .ok_or(LendingError::LoanNotFound)?;
+        loan.borrower.require_auth();
+
+        let contract_id = env.current_contract_address();
+        Self::transfer(
+            &env,
+            &loan.collateral_token,
+            &loan.borrower,
+            &contract_id,
+            amount,
+        )?;
+
+        if env
+            .storage()
+            .persistent()
+            .has(&DataKey::Reserve(loan.collateral_token.clone()))
+        {
+            Self::add_reserve_collateral(&env, &loan.collateral_token, amount)?;
+        }
+
+        loan.collateral_amount = loan
+            .collateral_amount
+            .checked_add(amount)
+            .ok_or(LendingError::InvalidAmount)?;
+        let health_factor_bps = (loan.collateral_amount as u128)
+            .checked_mul(10_000)
+            .and_then(|value| value.checked_div(loan.principal as u128))
+            .unwrap_or(0) as u32;
+
+        env.storage()
+            .persistent()
+            .set(&DataKey::Loan(loan.borrower.clone()), &loan);
+        env.storage()
+            .persistent()
+            .set(&DataKey::LoanById(loan_id), &loan);
+
+        env.events().publish(
+            (symbol_short!("COLL"), symbol_short!("ADD"), loan_id),
+            CollateralAddedEvent {
+                loan_id,
+                borrower: loan.borrower.clone(),
+                collateral_token: loan.collateral_token.clone(),
+                amount_added: amount,
+                total_collateral: loan.collateral_amount,
+                health_factor_bps,
+            },
+        );
+
+        Self::exit_reentrancy_guard(&env);
+        Ok(health_factor_bps)
     }
 
     /// Repay the full outstanding loan for the caller.
