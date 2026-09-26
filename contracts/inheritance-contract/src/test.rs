@@ -5965,6 +5965,430 @@ fn test_batch_claim_limit_exceeded() {
 }
 
 #[test]
+fn test_batch_claim_inheritance_plan_success() {
+    let env = Env::default();
+    let (client, token, _admin, owner) = setup_with_token_and_admin(&env);
+
+    let bens = vec![
+        &env,
+        (
+            String::from_str(&env, "Heir 1"),
+            String::from_str(&env, "heir1@example.com"),
+            111111u32,
+            create_test_bytes(&env, "BANK123"),
+            5000u32,
+            1u32,
+        ),
+        (
+            String::from_str(&env, "Heir 2"),
+            String::from_str(&env, "heir2@example.com"),
+            222222u32,
+            create_test_bytes(&env, "BANK456"),
+            5000u32,
+            2u32,
+        ),
+    ];
+
+    let plan_id = client.create_inheritance_plan(&plan_params(
+        &env,
+        &owner,
+        &token,
+        "Family Vault",
+        "Inheritance Plan",
+        100_000u64,
+        DistributionMethod::LumpSum,
+        &bens,
+    ));
+
+    let indices = vec![&env, 0u32, 1u32];
+    let codes = vec![&env, 111111u32, 222222u32];
+
+    let result = client.try_batch_claim_inheritance_plan(&plan_id, &indices, &codes);
+    assert!(result.is_ok());
+
+    let plan = client.get_plan_details(&plan_id).unwrap();
+    assert!(plan.beneficiaries.get(0).unwrap().is_claimed);
+    assert!(plan.beneficiaries.get(1).unwrap().is_claimed);
+    assert_eq!(plan.total_amount, 0);
+}
+
+#[test]
+fn test_batch_claim_inheritance_plan_atomic_rollback_on_wrong_code() {
+    let env = Env::default();
+    let (client, token, _admin, owner) = setup_with_token_and_admin(&env);
+
+    let bens = vec![
+        &env,
+        (
+            String::from_str(&env, "Heir 1"),
+            String::from_str(&env, "heir1@example.com"),
+            111111u32,
+            create_test_bytes(&env, "BANK123"),
+            5000u32,
+            1u32,
+        ),
+        (
+            String::from_str(&env, "Heir 2"),
+            String::from_str(&env, "heir2@example.com"),
+            222222u32,
+            create_test_bytes(&env, "BANK456"),
+            5000u32,
+            2u32,
+        ),
+    ];
+
+    let plan_id = client.create_inheritance_plan(&plan_params(
+        &env,
+        &owner,
+        &token,
+        "Family Vault",
+        "Inheritance Plan",
+        100_000u64,
+        DistributionMethod::LumpSum,
+        &bens,
+    ));
+
+    // Correct code for Heir 1, WRONG code for Heir 2
+    let indices = vec![&env, 0u32, 1u32];
+    let codes = vec![&env, 111111u32, 999999u32];
+
+    let result = client.try_batch_claim_inheritance_plan(&plan_id, &indices, &codes);
+    assert!(result.is_err());
+
+    // Verify atomic rollback: neither heir is marked claimed
+    let plan = client.get_plan_details(&plan_id).unwrap();
+    assert!(!plan.beneficiaries.get(0).unwrap().is_claimed);
+    assert!(!plan.beneficiaries.get(1).unwrap().is_claimed);
+    assert_eq!(plan.total_amount, 98000u64);
+}
+
+#[test]
+fn test_batch_claim_inheritance_plan_duplicate_index_fails() {
+    let env = Env::default();
+    let (client, token, _admin, owner) = setup_with_token_and_admin(&env);
+
+    let bens = vec![
+        &env,
+        (
+            String::from_str(&env, "Heir 1"),
+            String::from_str(&env, "heir1@example.com"),
+            111111u32,
+            create_test_bytes(&env, "BANK123"),
+            10000u32,
+            1u32,
+        ),
+    ];
+
+    let plan_id = client.create_inheritance_plan(&plan_params(
+        &env,
+        &owner,
+        &token,
+        "Family Vault",
+        "Inheritance Plan",
+        100_000u64,
+        DistributionMethod::LumpSum,
+        &bens,
+    ));
+
+    let indices = vec![&env, 0u32, 0u32];
+    let codes = vec![&env, 111111u32, 111111u32];
+
+    let result = client.try_batch_claim_inheritance_plan(&plan_id, &indices, &codes);
+    assert!(result.is_err());
+}
+
+#[test]
+fn test_batch_claim_inheritance_plan_length_mismatch_fails() {
+    let env = Env::default();
+    let (client, token, _admin, owner) = setup_with_token_and_admin(&env);
+
+    let bens = vec![
+        &env,
+        (
+            String::from_str(&env, "Heir 1"),
+            String::from_str(&env, "heir1@example.com"),
+            111111u32,
+            create_test_bytes(&env, "BANK123"),
+            10000u32,
+            1u32,
+        ),
+    ];
+
+    let plan_id = client.create_inheritance_plan(&plan_params(
+        &env,
+        &owner,
+        &token,
+        "Family Vault",
+        "Inheritance Plan",
+        100_000u64,
+        DistributionMethod::LumpSum,
+        &bens,
+    ));
+
+    let indices = vec![&env, 0u32];
+    let codes = vec![&env, 111111u32, 222222u32];
+
+    let result = client.try_batch_claim_inheritance_plan(&plan_id, &indices, &codes);
+    assert!(result.is_err());
+}
+
+// Two equal fiat beneficiaries, with a net funded balance of 98,000.
+fn batch_claim_fixture(env: &Env) -> (InheritanceContractClient<'_>, Address, Address, u64) {
+    let (client, token, _admin, owner) = setup_with_token_and_admin(env);
+    let mut bens = Vec::new(env);
+    for i in 0..2u32 {
+        bens.push_back((
+            String::from_str(env, if i == 0 { "First" } else { "Second" }),
+            String::from_str(
+                env,
+                if i == 0 {
+                    "first@example.com"
+                } else {
+                    "second@example.com"
+                },
+            ),
+            111111 * (i + 1),
+            create_test_bytes(env, "BANK123"),
+            5000u32,
+            i + 1,
+        ));
+    }
+    let id = client.create_inheritance_plan(&plan_params(
+        env,
+        &owner,
+        &token,
+        "Batch",
+        "Regression",
+        100_000,
+        DistributionMethod::LumpSum,
+        &bens,
+    ));
+    (client, token, owner, id)
+}
+
+#[test]
+fn test_batch_claim_inheritance_plan_input_bounds() {
+    let env = Env::default();
+    let (client, _, _, id) = batch_claim_fixture(&env);
+    assert_eq!(
+        client.try_batch_claim_inheritance_plan(&id, &Vec::new(&env), &Vec::new(&env)),
+        Err(Ok(InheritanceError::MissingRequiredField))
+    );
+    let mut indices = Vec::new(&env);
+    let mut codes = Vec::new(&env);
+    for i in 0..11 {
+        indices.push_back(i);
+        codes.push_back(111111);
+    }
+    assert_eq!(
+        client.try_batch_claim_inheritance_plan(&id, &indices, &codes),
+        Err(Ok(InheritanceError::TooManyBeneficiaries))
+    );
+    assert_eq!(
+        client.try_batch_claim_inheritance_plan(&id, &vec![&env, 2], &vec![&env, 111111]),
+        Err(Ok(InheritanceError::InvalidBeneficiaryIndex))
+    );
+}
+
+#[test]
+fn test_batch_claim_inheritance_plan_waterfall_order_and_events() {
+    let env = Env::default();
+    let (client, token, owner, id) = batch_claim_fixture(&env);
+    client.enable_waterfall_distribution(&owner, &id);
+    assert_eq!(
+        client.try_batch_claim_inheritance_plan(
+            &id,
+            &vec![&env, 1, 0],
+            &vec![&env, 222222, 111111]
+        ),
+        Err(Ok(InheritanceError::ClaimNotAllowedYet))
+    );
+    let vault = client.get_plan_vault_address(&id).unwrap();
+    let balance = token::Client::new(&env, &token).balance(&client.address);
+    client.batch_claim_inheritance_plan(&id, &vec![&env, 0, 1], &vec![&env, 111111, 222222]);
+    let plan = client.get_plan_details(&id).unwrap();
+    assert_eq!(plan.total_amount, 0);
+    assert!(plan.beneficiaries.iter().all(|b| b.is_claimed));
+    assert_eq!(token::Client::new(&env, &token).balance(&vault), 0);
+    assert_eq!(
+        token::Client::new(&env, &token).balance(&client.address),
+        balance + 98_000
+    );
+    let events = env.events().all();
+    for index in 0..2u32 {
+        assert!(events
+            .iter()
+            .any(|(address, topics, data)| address == client.address
+                && topics == (symbol_short!("F_PAYOUT"), id, index).into_val(&env)
+                && <(u64, u32, u64, Symbol)>::from_val(&env, &data)
+                    == (id, index, 49_000u64, symbol_short!("BANK"))));
+    }
+    assert!(events
+        .iter()
+        .any(|(address, topics, data)| address == client.address
+            && topics == (symbol_short!("BATCH"), symbol_short!("CLAIM")).into_val(&env)
+            && BatchClaimEvent::from_val(&env, &data)
+                == BatchClaimEvent {
+                    plan_id: id,
+                    success_count: 2,
+                    fail_count: 0
+                }));
+}
+
+#[test]
+fn test_batch_claim_inheritance_plan_partial_exit_does_not_unlock_waterfall() {
+    let env = Env::default();
+    let (client, _, owner, id) = batch_claim_fixture(&env);
+    client.enable_waterfall_distribution(&owner, &id);
+    env.as_contract(&client.address, || {
+        env.storage()
+            .persistent()
+            .set(&DataKey::Ves(id, 0), &60_000u64);
+    });
+    assert_eq!(
+        client.try_batch_claim_inheritance_plan(
+            &id,
+            &vec![&env, 0, 1],
+            &vec![&env, 111111, 222222]
+        ),
+        Err(Ok(InheritanceError::ClaimNotAllowedYet))
+    );
+    assert_eq!(client.get_plan_details(&id).unwrap().total_amount, 98_000);
+}
+
+#[test]
+fn test_batch_claim_inheritance_plan_rejects_genetic_proof_bypass() {
+    let env = Env::default();
+    let (client, _, owner, id) = batch_claim_fixture(&env);
+    client.set_genetic_kin_requirement(&owner, &id, &1, &true);
+    assert_eq!(
+        client.try_batch_claim_inheritance_plan(
+            &id,
+            &vec![&env, 0, 1],
+            &vec![&env, 111111, 222222]
+        ),
+        Err(Ok(InheritanceError::ZkProofRequired))
+    );
+    assert_eq!(client.get_plan_details(&id).unwrap().total_amount, 98_000);
+}
+
+#[test]
+fn test_batch_claim_inheritance_plan_trigger_preserves_loan_freeze() {
+    let env = Env::default();
+    let (client, _, owner, id) = batch_claim_fixture(&env);
+    client.add_time_trigger(&owner, &id, &1);
+    env.ledger().with_mut(|l| l.timestamp = 2);
+    client.batch_claim_inheritance_plan(&id, &vec![&env, 0], &vec![&env, 111111]);
+    assert!(client.get_inheritance_trigger(&id).is_some());
+    assert!(!client.get_plan_details(&id).unwrap().is_lendable);
+}
+
+#[test]
+fn test_batch_claim_inheritance_plan_trigger_cannot_bypass_liquidity() {
+    let env = Env::default();
+    let (client, _, owner, id) = batch_claim_fixture(&env);
+    env.as_contract(&client.address, || {
+        let mut plan = InheritanceContract::get_plan(&env, id).unwrap();
+        plan.total_loaned = 1;
+        InheritanceContract::store_plan(&env, id, &plan);
+    });
+    client.add_time_trigger(&owner, &id, &1);
+    env.ledger().with_mut(|l| l.timestamp = 2);
+    assert_eq!(
+        client.try_batch_claim_inheritance_plan(
+            &id,
+            &vec![&env, 0, 1],
+            &vec![&env, 111111, 222222]
+        ),
+        Err(Ok(InheritanceError::InsufficientLiquidity))
+    );
+    assert!(client.get_inheritance_trigger(&id).is_none());
+    assert!(client.get_plan_details(&id).unwrap().is_lendable);
+    client.auto_trigger_check(&id);
+    assert_eq!(
+        client.try_batch_claim_inheritance_plan(
+            &id,
+            &vec![&env, 0, 1],
+            &vec![&env, 111111, 222222]
+        ),
+        Err(Ok(InheritanceError::InsufficientLiquidity))
+    );
+}
+
+#[test]
+fn test_batch_claim_inheritance_plan_execution_failure_rolls_back_transfers() {
+    let env = Env::default();
+    let (client, token, owner, id) = batch_claim_fixture(&env);
+    let vault = client.get_plan_vault_address(&id).unwrap();
+    // Leave enough for the first transfer (49,000), but not the second.
+    MockTokenClient::new(&env, &token).burn(&vault, &30_000);
+    client.add_time_trigger(&owner, &id, &1);
+    env.ledger().with_mut(|l| l.timestamp = 2);
+    let before = client.get_plan_details(&id).unwrap();
+    let balance = token::Client::new(&env, &token).balance(&client.address);
+    assert_eq!(
+        client.try_batch_claim_inheritance_plan(
+            &id,
+            &vec![&env, 0, 1],
+            &vec![&env, 111111, 222222]
+        ),
+        Err(Ok(InheritanceError::FeeTransferFailed))
+    );
+    assert_eq!(client.get_plan_details(&id).unwrap(), before);
+    assert_eq!(token::Client::new(&env, &token).balance(&vault), 68_000);
+    assert_eq!(
+        token::Client::new(&env, &token).balance(&client.address),
+        balance
+    );
+    assert!(client.get_inheritance_trigger(&id).is_none());
+    env.as_contract(&client.address, || {
+        let mut data = Bytes::new(&env);
+        data.extend_from_slice(&id.to_be_bytes());
+        data.extend_from_slice(&before.beneficiaries.get(0).unwrap().hashed_email.to_array());
+        assert!(!env
+            .storage()
+            .persistent()
+            .has(&DataKey::C(env.crypto().sha256(&data).into())));
+    });
+    // A retry also proves that the reentrancy guard was rolled back.
+    MockTokenClient::new(&env, &token).mint(&vault, &30_000);
+    client.batch_claim_inheritance_plan(&id, &vec![&env, 0, 1], &vec![&env, 111111, 222222]);
+}
+
+#[test]
+fn test_batch_claim_inheritance_plan_emergency_limit_covers_whole_batch() {
+    let env = Env::default();
+    let (client, _, owner, id) = batch_claim_fixture(&env);
+    env.as_contract(&client.address, || {
+        // Each settlement fits the 9,800 limit; together they exceed it.
+        for index in 0..2u32 {
+            env.storage()
+                .persistent()
+                .set(&DataKey::Ves(id, index), &6_000u64);
+        }
+        env.storage().persistent().set(
+            &DataKey::Eac(id),
+            &EmergencyAccessRecord {
+                plan_id: id,
+                trusted_contact: owner.clone(),
+                activated_at: env.ledger().timestamp(),
+            },
+        );
+    });
+    assert_eq!(
+        client.try_batch_claim_inheritance_plan(
+            &id,
+            &vec![&env, 0, 1],
+            &vec![&env, 111111, 222222]
+        ),
+        Err(Ok(InheritanceError::EmergencyCooldownActive))
+    );
+    assert_eq!(client.get_plan_details(&id).unwrap().total_amount, 98_000);
+    client.batch_claim_inheritance_plan(&id, &vec![&env, 0], &vec![&env, 111111]);
+    assert_eq!(client.get_plan_details(&id).unwrap().total_amount, 92_000);
+}
+
+#[test]
 fn test_waterfall_payout_logic() {
     let env = Env::default();
     let (client, token, admin, owner) = setup_with_token_and_admin(&env);
