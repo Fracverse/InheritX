@@ -3766,3 +3766,159 @@ fn test_flash_loan_defense_blocks_same_block_borrow() {
     );
     assert!(loan_id > 0);
 }
+
+#[test]
+fn test_custom_error_enum_discriminants() {
+    assert_eq!(Error::PlanNotFound as u32, 42);
+    assert_eq!(Error::PlanNotExpired as u32, 43);
+    assert_eq!(Error::Unauthorized as u32, 10);
+    assert_eq!(Error::InvalidAllocation as u32, 44);
+    assert_eq!(Error::DisputeActive as u32, 45);
+    let error: LendingError = Error::PlanNotFound;
+    assert_eq!(error, LendingError::PlanNotFound);
+}
+
+#[test]
+fn test_error_diagnostics_preserve_lending_codes_and_reject_host_errors() {
+    for (error, code) in [
+        (Error::NotInitialized, 1),
+        (Error::Unauthorized, 10),
+        (Error::ReserveAlreadyExists, 40),
+        (Error::ReserveNotFound, 41),
+        (Error::PlanNotFound, 42),
+        (Error::PlanNotExpired, 43),
+        (Error::InvalidAllocation, 44),
+        (Error::DisputeActive, 45),
+    ] {
+        let wire = soroban_sdk::Error::from(error);
+        assert_eq!(wire, soroban_sdk::Error::from_contract_error(code));
+        assert_eq!(Error::try_from(wire), Ok(error));
+    }
+    let host = soroban_sdk::Error::from_type_and_code(
+        soroban_sdk::xdr::ScErrorType::Value,
+        soroban_sdk::xdr::ScErrorCode::InvalidInput,
+    );
+    assert_eq!(Error::try_from(host), Err(host));
+    let unknown = soroban_sdk::Error::from_contract_error(999);
+    assert_eq!(Error::try_from(unknown), Err(unknown));
+}
+
+#[test]
+fn test_error_diagnostics_missing_token_and_active_pause() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let (client, _, _, admin) = setup(&env);
+    env.as_contract(&client.address, || {
+        env.storage().instance().remove(&DataKey::Token);
+    });
+    assert_eq!(client.try_get_borrow_rate(), Err(Ok(Error::NotInitialized)));
+    let raw = env.try_invoke_contract::<u32, soroban_sdk::Error>(
+        &client.address,
+        &soroban_sdk::Symbol::new(&env, "get_borrow_rate"),
+        Vec::new(&env),
+    );
+    assert_eq!(raw, Err(Ok(soroban_sdk::Error::from_contract_error(1))));
+    env.as_contract(&client.address, || {
+        env.storage()
+            .instance()
+            .set(&access_control::PauseKey::ActiveOps, &1i128);
+    });
+    assert_eq!(client.try_pause(&admin), Err(Ok(Error::ReentrantCall)));
+    assert!(!client.is_paused());
+}
+
+#[test]
+fn test_legacy_error_wire_codes_are_stable() {
+    // Pin deployed codes independently of the enum/specification definitions.
+    for (error, code) in [
+        (Error::NotInitialized, 1),
+        (Error::AlreadyInitialized, 2),
+        (Error::NotAdmin, 3),
+        (Error::InsufficientLiquidity, 4),
+        (Error::InsufficientShares, 5),
+        (Error::NoOpenLoan, 6),
+        (Error::LoanAlreadyExists, 7),
+        (Error::InvalidAmount, 8),
+        (Error::TransferFailed, 9),
+        (Error::Unauthorized, 10),
+        (Error::InsufficientCollateral, 11),
+        (Error::CollateralNotWhitelisted, 12),
+        (Error::UtilizationCapExceeded, 13),
+        (Error::ReentrantCall, 14),
+        (Error::FlashLoanNotRepaid, 15),
+        (Error::CannotRefinance, 16),
+        (Error::InvalidRefinanceTerms, 17),
+        (Error::LoanNotFound, 18),
+        (Error::TooManyLoans, 19),
+        (Error::InvalidSplitAmounts, 20),
+        (Error::InsufficientStake, 21),
+        (Error::NoRewardsToClaim, 22),
+        (Error::InvalidRewardRate, 23),
+        (Error::PoolPaused, 24),
+        (Error::AssetNotSupported, 25),
+        (Error::InsuranceAlreadyPurchased, 26),
+        (Error::InsuranceNotFound, 27),
+        (Error::InsuranceExpired, 28),
+        (Error::InsuranceAlreadyClaimed, 29),
+        (Error::InsufficientInsuranceFund, 30),
+        (Error::InvalidInsuranceAmount, 31),
+        (Error::InvalidRateModel, 32),
+        (Error::ContractPaused, 33),
+        (Error::PlanYieldNotRegistered, 34),
+        (Error::NoYieldAccrued, 35),
+        (Error::PlanYieldInactive, 36),
+        (Error::InvalidYieldBoost, 37),
+        (Error::TooManyYieldPositions, 38),
+        (Error::FlashLoanDefense, 39),
+        (Error::ReserveAlreadyExists, 40),
+        (Error::ReserveNotFound, 41),
+    ] {
+        assert_eq!(error as u32, code);
+        assert_eq!(
+            soroban_sdk::Error::from(error),
+            soroban_sdk::Error::from_contract_error(code)
+        );
+    }
+}
+
+#[test]
+fn test_error_diagnostics_flash_callback_failure_rolls_back_transfer() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let (client, asset, _, admin) = setup(&env);
+    let depositor = Address::generate(&env);
+    mint_to(&env, &asset, &depositor, 100_000);
+    client.deposit(&depositor, &asset, &100_000);
+    // A token contract is a valid transfer destination but has no flash callback.
+    client.whitelist_flash_loan_receiver(&admin, &asset);
+    let before = tok_client(&env, &asset).balance(&client.address);
+    assert_eq!(
+        client.try_flash_loan(&depositor, &asset, &asset, &10_000),
+        Err(Ok(Error::FlashLoanCallbackFailed))
+    );
+    assert_eq!(tok_client(&env, &asset).balance(&client.address), before);
+    assert_eq!(tok_client(&env, &asset).balance(&asset), 0);
+}
+
+#[test]
+fn test_error_diagnostics_insurance_transfer_failure_rolls_back_accounting() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let (client, _, _, admin) = setup(&env);
+    env.as_contract(&client.address, || {
+        env.storage().instance().set(
+            &DataKey::InsuranceFund,
+            &InsuranceFund {
+                total_premiums_collected: 1000,
+                total_claims_paid: 0,
+                available_balance: 1000,
+            },
+        );
+    });
+    let before = client.get_insurance_fund_state();
+    assert_eq!(
+        client.try_withdraw_from_insurance_fund(&admin, &1000),
+        Err(Ok(Error::TransferFailed))
+    );
+    assert_eq!(client.get_insurance_fund_state(), before);
+}

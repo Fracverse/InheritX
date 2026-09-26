@@ -99,7 +99,7 @@ pub fn cleanup_closed_plan(
     plan_id: u64,
 ) -> Result<(), InheritanceError> {
     caller.require_auth();
-    crate::InheritanceContract::enter_guard(&env);
+    crate::InheritanceContract::enter_guard(&env)?;
 
     let plan = plan_for_cleanup(&env, plan_id)?;
     require_admin_or_owner(&env, &caller, &plan.owner)?;
@@ -513,7 +513,7 @@ pub fn verify_genetic_kin_claim(
     public_inputs: Vec<BytesN<32>>,
 ) -> Result<(), InheritanceError> {
     claimant.require_auth();
-    crate::InheritanceContract::enter_guard(&env);
+    crate::InheritanceContract::enter_guard(&env)?;
 
     // The plan must exist: a proof for a nonexistent plan proves nothing.
     let plan = crate::InheritanceContract::get_plan(&env, plan_id)
