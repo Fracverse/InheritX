@@ -247,22 +247,27 @@ pub enum PauseKey {
     ActiveOps,
 }
 
-/// Mark the contract as paused.
-pub fn pause_contract(env: &Env) {
-    // Prevent new operations from starting while we attempt to pause.
-    env.storage().instance().set(&PauseKey::PauseLock, &true);
-    // If there are active operations, abort and release the lock.
+/// Mark the contract as paused, returning the caller's error for active operations.
+pub fn try_pause_contract<E>(env: &Env, error: E) -> Result<(), E> {
     let active: i128 = env
         .storage()
         .instance()
         .get::<PauseKey, i128>(&PauseKey::ActiveOps)
         .unwrap_or(0);
     if active != 0 {
-        env.storage().instance().remove(&PauseKey::PauseLock);
-        panic!("cannot pause: active operations present");
+        return Err(error);
     }
+    env.storage().instance().set(&PauseKey::PauseLock, &true);
     env.storage().instance().set(&PauseKey::Paused, &true);
     env.storage().instance().remove(&PauseKey::PauseLock);
+    Ok(())
+}
+
+/// Legacy panic-based wrapper. Contracts should use `try_pause_contract`.
+pub fn pause_contract(env: &Env) {
+    if try_pause_contract(env, ()).is_err() {
+        panic!("cannot pause: active operations present");
+    }
 }
 
 /// Mark the contract as unpaused.
