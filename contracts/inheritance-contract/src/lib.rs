@@ -10,11 +10,19 @@ use disputes::{DisputeRecord, DisputeStatus};
 
 mod yield_math;
 
+mod plan_maintenance;
+
+#[cfg(test)]
+mod test_plan_maintenance;
+
 /// Current contract version - bump this on each upgrade
 const CONTRACT_VERSION: u32 = 1;
 
 /// Hard cap on beneficiaries per plan — bounds all O(n) loops.
 const MAX_BENEFICIARIES: u32 = 10;
+
+/// Hard cap on will versions per plan — bounds the storage clean-up sweep.
+const MAX_WILL_VERSIONS: u32 = 50;
 
 /// Emergency transfer limit in basis points (10% = 1000 bp)
 const EMERGENCY_TRANSFER_LIMIT_BP: u32 = 1000;
@@ -105,6 +113,11 @@ pub enum InheritanceError {
     Unauthorized = 9,
     PlanNotFound = 10,
     InvalidBeneficiaryIndex = 11,
+    /// A genetic-kin claim was attempted without a verified zero-knowledge
+    /// proof, or with one the verifier rejected. Reuses the gap at 12 because
+    /// `InheritanceError` sits at the 50-variant ceiling `#[contracterror]`
+    /// permits, so new cases have to reuse an existing discriminant.
+    ZkProofRequired = 12,
     InvalidAllocation = 13,
     InvalidClaimCodeRange = 14,
     ClaimNotAllowedYet = 15,
@@ -200,6 +213,13 @@ pub enum DataKey {
     Yr,      // Vec<Address> of accounts allowed to trigger harvests
     Ys(u64), // plan_id -> PlanYieldState
     Rg,
+    // Zero-knowledge genetic proof state (#1176).
+    //
+    // `Zk` carries a domain-separated SHA-256 of the record's identity rather
+    // than a typed tuple, because `DataKey` already sits at the 50-variant
+    // ceiling `#[contracttype]` permits and cannot afford one variant per
+    // record kind. The same trick is already used for `C` above.
+    Zk(BytesN<32>),
 }
 
 #[contracttype]
@@ -288,6 +308,32 @@ pub struct PlanDeactivatedEvent {
     pub owner: Address,
     pub total_amount: u64,
     pub deactivated_at: u64,
+}
+
+/// Emitted when a closed plan's persistent storage is released and the
+/// accrued storage-fee rent is returned to the plan creator.
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct PlanStorageCleanedEvent {
+    pub plan_id: u64,
+    pub owner: Address,
+    /// Storage-fee rent refunded to the creator, in the plan token.
+    pub rent_refunded: u64,
+    /// Number of persistent ledger entries released by the clean-up.
+    pub entries_released: u32,
+    pub cleaned_at: u64,
+}
+
+/// Emitted when a genetic-kin claim is approved on the strength of a valid
+/// zero-knowledge proof.
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct ZkGeneticProofVerifiedEvent {
+    pub plan_id: u64,
+    pub claimant: Address,
+    /// Commitment the proof was bound to: the plan the claimant claims against.
+    pub plan_commitment: BytesN<32>,
+    pub verified_at: u64,
 }
 
 #[contracttype]
@@ -959,6 +1005,110 @@ impl InheritanceContract {
         vec![&env, symbol_short!("Hello"), to]
     }
 
+    // ─── Closed-plan storage clean-up (#1170) ─────────
+    //
+    // Thin entry points over `plan_maintenance`, which holds the ledger logic.
+
+    /// Release the persistent storage of a closed, fully paid-out plan and
+    /// return the plan creator's storage-fee rent.
+    ///
+    /// A plan qualifies only once it can no longer move funds: deactivated with
+    /// no remaining balance, or fully claimed with the balance drained to zero.
+    /// Anything else returns `PlanNotClaimed` rather than deleting a plan
+    /// that still owes money to a beneficiary.
+    pub fn cleanup_closed_plan(
+        env: Env,
+        caller: Address,
+        plan_id: u64,
+    ) -> Result<(), InheritanceError> {
+        plan_maintenance::cleanup_closed_plan(env, caller, plan_id)
+    }
+
+    /// Number of persistent ledger entries a plan currently occupies.
+    ///
+    /// Read-only: mirrors the keys `cleanup_closed_plan` sweeps, so an operator
+    /// can see a plan's footprint before closing it and confirm afterwards that
+    /// the clean-up actually released it.
+    pub fn plan_storage_footprint(env: Env, plan_id: u64) -> u32 {
+        plan_maintenance::plan_storage_footprint(env, plan_id)
+    }
+
+    // ─── Zero-knowledge genetic proof (#1176) ─────────
+
+    /// Register the Groth16 verifier contract that checks genetic proofs.
+    pub fn set_zk_verifier(
+        env: Env,
+        admin: Address,
+        verifier: Address,
+    ) -> Result<(), InheritanceError> {
+        plan_maintenance::set_zk_verifier(env, admin, verifier)
+    }
+
+    /// The registered Groth16 verifier, if one is configured.
+    pub fn get_zk_verifier(env: Env) -> Option<Address> {
+        plan_maintenance::get_zk_verifier(env)
+    }
+
+    /// Verify a zk-SNARK / Groth16 proof of genetic kinship.
+    ///
+    /// Delegates to the registered verifier. A missing verifier, a reverting
+    /// verifier, or one that does not return a `bool` all report `false` — the
+    /// hook fails closed, so an unconfigured or misbehaving verifier can never
+    /// approve a claim.
+    pub fn verify_zk_genetic_proof(env: Env, proof: Bytes, public_inputs: Vec<BytesN<32>>) -> bool {
+        plan_maintenance::verify_zk_genetic_proof(env, proof, public_inputs)
+    }
+
+    /// Approve a genetic-kin claim by verifying a zero-knowledge proof for it.
+    ///
+    /// On a valid proof the (plan, claimant) pair is recorded so the claim path
+    /// can gate on it; on an invalid one nothing is recorded and the call
+    /// reverts with `ZkProofRequired`.
+    pub fn verify_genetic_kin_claim(
+        env: Env,
+        claimant: Address,
+        plan_id: u64,
+        proof: Bytes,
+        public_inputs: Vec<BytesN<32>>,
+    ) -> Result<(), InheritanceError> {
+        plan_maintenance::verify_genetic_kin_claim(env, claimant, plan_id, proof, public_inputs)
+    }
+
+    /// Mark a beneficiary as a genetic-kin beneficiary whose claim requires a
+    /// verified zero-knowledge proof. Owner-only, owner-authenticated.
+    pub fn set_genetic_kin_requirement(
+        env: Env,
+        owner: Address,
+        plan_id: u64,
+        beneficiary_index: u32,
+        required: bool,
+    ) -> Result<(), InheritanceError> {
+        plan_maintenance::set_genetic_kin_requirement(
+            env,
+            owner,
+            plan_id,
+            beneficiary_index,
+            required,
+        )
+    }
+
+    /// Whether `beneficiary_index` must present a verified genetic proof.
+    pub fn is_genetic_kin_required(env: Env, plan_id: u64, beneficiary_index: u32) -> bool {
+        plan_maintenance::is_genetic_kin_required(env, plan_id, beneficiary_index)
+    }
+
+    /// Whether `claimant` has a verified genetic proof on file for `plan_id`.
+    pub fn has_verified_genetic_proof(env: Env, plan_id: u64, claimant: Address) -> bool {
+        plan_maintenance::has_verified_genetic_proof(env, plan_id, claimant)
+    }
+
+    /// The commitment a genetic proof must be bound to for this
+    /// (plan, claimant) pair, so a proof minted for one pair cannot be
+    /// replayed against another.
+    pub fn genetic_proof_commitment(env: Env, plan_id: u64, claimant: Address) -> BytesN<32> {
+        plan_maintenance::genetic_proof_commitment(env, plan_id, claimant)
+    }
+
     // Hash utility functions
     pub fn hash_string(env: &Env, input: String) -> BytesN<32> {
         let len = input.len() as usize;
@@ -1034,12 +1184,12 @@ impl InheritanceContract {
         Ok(())
     }
 
-    fn get_admin(env: &Env) -> Option<Address> {
+    pub(crate) fn get_admin(env: &Env) -> Option<Address> {
         let key = DataKey::Ad;
         env.storage().instance().get(&key)
     }
 
-    fn require_admin(env: &Env, admin: &Address) -> Result<(), InheritanceError> {
+    pub(crate) fn require_admin(env: &Env, admin: &Address) -> Result<(), InheritanceError> {
         admin.require_auth();
         Self::require_not_blacklisted(env, admin)?;
         access_control::require_role(env, admin, Role::Admin, InheritanceError::NotAdmin)
@@ -1049,11 +1199,11 @@ impl InheritanceContract {
         access_control::require_not_blacklisted(env, address, InheritanceError::Blk)
     }
 
-    fn enter_guard(env: &Env) {
+    pub(crate) fn enter_guard(env: &Env) {
         access_control::reentrancy_enter_or_panic(env);
     }
 
-    fn exit_guard(env: &Env) {
+    pub(crate) fn exit_guard(env: &Env) {
         access_control::reentrancy_exit(env);
     }
 
@@ -1751,7 +1901,7 @@ impl InheritanceContract {
         let _ = Self::extend_plan_ttl_internal(env, plan_id);
     }
 
-    fn get_plan(env: &Env, plan_id: u64) -> Option<InheritancePlan> {
+    pub(crate) fn get_plan(env: &Env, plan_id: u64) -> Option<InheritancePlan> {
         let key = DataKey::P(plan_id);
         env.storage().persistent().get(&key)
     }
@@ -1774,7 +1924,7 @@ impl InheritanceContract {
             .set(&(symbol_short!("pvault"), plan_id), vault);
     }
 
-    fn get_plan_vault(env: &Env, plan_id: u64) -> Option<Address> {
+    pub(crate) fn get_plan_vault(env: &Env, plan_id: u64) -> Option<Address> {
         env.storage()
             .persistent()
             .get(&(symbol_short!("pvault"), plan_id))
@@ -1827,7 +1977,7 @@ impl InheritanceContract {
         Self::get_plan_vault(env, plan_id).ok_or(InheritanceError::VaultNotFound)
     }
 
-    fn release_from_plan_vault(
+    pub(crate) fn release_from_plan_vault(
         env: &Env,
         plan_id: u64,
         token: &Address,
@@ -2981,6 +3131,16 @@ impl InheritanceContract {
         }
 
         let index = beneficiary_index.ok_or(InheritanceError::BeneficiaryNotFound)?;
+
+        // Genetic-kin beneficiaries must present a verified zero-knowledge
+        // proof of kinship before their claim is approved (#1176). The proof is
+        // recorded by `verify_genetic_kin_claim`, which fails closed when no
+        // verifier is configured.
+        if plan_maintenance::is_genetic_kin_required(env.clone(), plan_id, index)
+            && !plan_maintenance::has_verified_genetic_proof(env.clone(), plan_id, claimer.clone())
+        {
+            return Err(InheritanceError::ZkProofRequired);
+        }
 
         // Reject claim if the beneficiary is frozen
         if env
