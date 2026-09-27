@@ -1,8 +1,8 @@
 #![no_std]
 use access_control::{self, Role};
 use soroban_sdk::{
-    contract, contractimpl, contracttype, log, symbol_short, token, vec, Address, Bytes, BytesN,
-    Env, IntoVal, InvokeError, String, Val, Vec,
+    contract, contracterror, contractimpl, contracttype, log, symbol_short, token, vec, Address,
+    Bytes, BytesN, Env, IntoVal, InvokeError, String, Val, Vec,
 };
 
 mod reserves;
@@ -577,6 +577,7 @@ pub struct ContractUpgradedEvent {
 // Errors
 // ─────────────────────────────────────────────────
 
+#[contracterror]
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 #[repr(u32)]
 pub enum LendingError {
@@ -621,82 +622,14 @@ pub enum LendingError {
     FlashLoanDefense = 39,
     ReserveAlreadyExists = 40,
     ReserveNotFound = 41,
+    PlanNotFound = 42,
+    PlanNotExpired = 43,
+    InvalidAllocation = 44,
+    DisputeActive = 45,
+    FlashLoanCallbackFailed = 46,
 }
 
-impl From<LendingError> for soroban_sdk::Error {
-    fn from(e: LendingError) -> Self {
-        soroban_sdk::Error::from_contract_error(e as u32)
-    }
-}
-
-impl From<&LendingError> for soroban_sdk::Error {
-    fn from(e: &LendingError) -> Self {
-        soroban_sdk::Error::from_contract_error(*e as u32)
-    }
-}
-
-impl TryFrom<soroban_sdk::Error> for LendingError {
-    type Error = soroban_sdk::Error;
-    fn try_from(err: soroban_sdk::Error) -> Result<Self, Self::Error> {
-        let val = err.get_code();
-        match val {
-            1 => Ok(LendingError::NotInitialized),
-            2 => Ok(LendingError::AlreadyInitialized),
-            3 => Ok(LendingError::NotAdmin),
-            4 => Ok(LendingError::InsufficientLiquidity),
-            5 => Ok(LendingError::InsufficientShares),
-            6 => Ok(LendingError::NoOpenLoan),
-            7 => Ok(LendingError::LoanAlreadyExists),
-            8 => Ok(LendingError::InvalidAmount),
-            9 => Ok(LendingError::TransferFailed),
-            10 => Ok(LendingError::Unauthorized),
-            11 => Ok(LendingError::InsufficientCollateral),
-            12 => Ok(LendingError::CollateralNotWhitelisted),
-            13 => Ok(LendingError::UtilizationCapExceeded),
-            14 => Ok(LendingError::ReentrantCall),
-            15 => Ok(LendingError::FlashLoanNotRepaid),
-            16 => Ok(LendingError::CannotRefinance),
-            17 => Ok(LendingError::InvalidRefinanceTerms),
-            18 => Ok(LendingError::LoanNotFound),
-            19 => Ok(LendingError::TooManyLoans),
-            20 => Ok(LendingError::InvalidSplitAmounts),
-            21 => Ok(LendingError::InsufficientStake),
-            22 => Ok(LendingError::NoRewardsToClaim),
-            23 => Ok(LendingError::InvalidRewardRate),
-            24 => Ok(LendingError::PoolPaused),
-            25 => Ok(LendingError::AssetNotSupported),
-            26 => Ok(LendingError::InsuranceAlreadyPurchased),
-            27 => Ok(LendingError::InsuranceNotFound),
-            28 => Ok(LendingError::InsuranceExpired),
-            29 => Ok(LendingError::InsuranceAlreadyClaimed),
-            30 => Ok(LendingError::InsufficientInsuranceFund),
-            31 => Ok(LendingError::InvalidInsuranceAmount),
-            32 => Ok(LendingError::InvalidRateModel),
-            33 => Ok(LendingError::ContractPaused),
-            34 => Ok(LendingError::PlanYieldNotRegistered),
-            35 => Ok(LendingError::NoYieldAccrued),
-            36 => Ok(LendingError::PlanYieldInactive),
-            37 => Ok(LendingError::InvalidYieldBoost),
-            38 => Ok(LendingError::TooManyYieldPositions),
-            39 => Ok(LendingError::FlashLoanDefense),
-            _ => Err(err),
-        }
-    }
-}
-
-impl soroban_sdk::IntoVal<soroban_sdk::Env, soroban_sdk::Val> for LendingError {
-    fn into_val(&self, env: &soroban_sdk::Env) -> soroban_sdk::Val {
-        soroban_sdk::Error::from_contract_error(*self as u32).into_val(env)
-    }
-}
-
-impl soroban_sdk::TryFromVal<soroban_sdk::Env, soroban_sdk::Val> for LendingError {
-    type Error = soroban_sdk::ConversionError;
-    fn try_from_val(env: &soroban_sdk::Env, val: &soroban_sdk::Val) -> Result<Self, Self::Error> {
-        let err = soroban_sdk::Error::try_from_val(env, val)?;
-        Self::try_from(err).map_err(|_| soroban_sdk::ConversionError)
-    }
-}
+pub type Error = LendingError;
 
 // ─────────────────────────────────────────────────
 // Storage Keys
@@ -974,7 +907,7 @@ impl LendingContract {
 
     pub fn pause(env: Env, admin: Address) -> Result<(), LendingError> {
         Self::require_admin(&env, &admin)?;
-        access_control::pause_contract(&env);
+        access_control::try_pause_contract(&env, Error::ReentrantCall)?;
         Ok(())
     }
 
@@ -1393,7 +1326,7 @@ impl LendingContract {
             .and_then(|v| v.checked_mul(elapsed_seconds as u128))
             .unwrap_or(0);
 
-        let denominator = (10000u128).checked_mul(SECONDS_IN_YEAR as u128).unwrap();
+        let denominator = 10000u128 * SECONDS_IN_YEAR as u128;
 
         numerator
             .checked_add(denominator / 2)
@@ -2664,7 +2597,7 @@ impl LendingContract {
         let balance_before = token_client.balance(&contract_id);
 
         // 1. Transfer funds to the receiver.
-        token_client.transfer(&contract_id, &receiver_id, &(amount as i128));
+        Self::transfer(env, &asset, &contract_id, &receiver_id, amount)?;
 
         // 2. Invoke the receiver callback.
         //    The reentrancy guard is already locked, so any attempt by the
@@ -2673,7 +2606,12 @@ impl LendingContract {
         //    The true `initiator` address is forwarded so the receiver can
         //    verify who triggered the flash loan.
         let receiver_client = FlashLoanReceiverClient::new(env, &receiver_id);
-        receiver_client.execute_operation(&amount, &fee, &initiator);
+        if !matches!(
+            receiver_client.try_execute_operation(&amount, &fee, &initiator),
+            Ok(Ok(()))
+        ) {
+            return Err(Error::FlashLoanCallbackFailed);
+        }
 
         // 3. Verify the loan plus fee has been repaid in full.
         //    `balance_after` must be at least `balance_before + fee` — i.e. the
@@ -2735,7 +2673,7 @@ impl LendingContract {
             .storage()
             .instance()
             .get(&DataKey::RewardPool(asset.clone()))
-            .unwrap();
+            .ok_or(Error::AssetNotSupported)?;
 
         // Update user stake
         let mut user_stake: UserStake = env
@@ -2823,7 +2761,7 @@ impl LendingContract {
             .storage()
             .instance()
             .get(&DataKey::UserStake(user.clone(), asset.clone()))
-            .unwrap();
+            .ok_or(Error::InsufficientStake)?;
 
         let rewards_to_claim = user_stake.rewards;
 
@@ -2840,7 +2778,7 @@ impl LendingContract {
             .storage()
             .instance()
             .get(&DataKey::RewardPool(asset.clone()))
-            .unwrap();
+            .ok_or(Error::AssetNotSupported)?;
         reward_pool.total_staked = reward_pool.total_staked.saturating_sub(amount);
 
         // Save state
@@ -2993,7 +2931,7 @@ impl LendingContract {
             .storage()
             .instance()
             .get(&DataKey::RewardPool(asset.clone()))
-            .unwrap();
+            .ok_or(Error::AssetNotSupported)?;
         let old_rate = reward_pool.reward_rate;
         reward_pool.reward_rate = new_rate;
 
@@ -3417,7 +3355,7 @@ impl LendingContract {
             old_loans.push_back(loan);
         }
 
-        let consolidation_asset = asset.unwrap();
+        let consolidation_asset = asset.ok_or(Error::InvalidAmount)?;
         let consolidation_fee = ((total_outstanding as u128)
             .checked_mul(REFINANCING_FEE_BPS as u128)
             .and_then(|v| v.checked_div(10000))
@@ -3475,7 +3413,7 @@ impl LendingContract {
             asset: consolidation_asset.clone(),
             principal: new_principal,
             collateral_amount: total_collateral,
-            collateral_token: collateral_token.unwrap(),
+            collateral_token: collateral_token.ok_or(Error::InvalidAmount)?,
             borrow_time: current_time,
             due_date: new_due_date,
             interest_rate_bps: new_interest_rate_bps,
@@ -4128,7 +4066,11 @@ impl LendingContract {
         }
 
         // Transfer premium from borrower to insurance fund (using underlying token)
-        let token: Address = env.storage().instance().get(&DataKey::Token).unwrap();
+        let token: Address = env
+            .storage()
+            .instance()
+            .get(&DataKey::Token)
+            .ok_or(Error::NotInitialized)?;
         let contract_id = env.current_contract_address();
         Self::transfer(&env, &token, &borrower, &contract_id, premium)?;
 
@@ -4375,13 +4317,18 @@ impl LendingContract {
             env.storage().instance().set(&DataKey::InsuranceFund, &fund);
 
             // Transfer refund to borrower
-            let token: Address = env.storage().instance().get(&DataKey::Token).unwrap();
-            let token_client = token::Client::new(&env, &token);
-            token_client.transfer(
+            let token: Address = env
+                .storage()
+                .instance()
+                .get(&DataKey::Token)
+                .ok_or(Error::NotInitialized)?;
+            Self::transfer(
+                &env,
+                &token,
                 &env.current_contract_address(),
                 &borrower,
-                &(refund_amount as i128),
-            );
+                refund_amount,
+            )?;
         }
 
         // Emit event
@@ -4434,7 +4381,11 @@ impl LendingContract {
         Self::init_insurance_fund_if_needed(&env);
 
         // Transfer from admin to contract
-        let token: Address = env.storage().instance().get(&DataKey::Token).unwrap();
+        let token: Address = env
+            .storage()
+            .instance()
+            .get(&DataKey::Token)
+            .ok_or(Error::NotInitialized)?;
         let contract_id = env.current_contract_address();
         Self::transfer(&env, &token, &admin, &contract_id, amount)?;
 
@@ -4490,9 +4441,18 @@ impl LendingContract {
         env.storage().instance().set(&DataKey::InsuranceFund, &fund);
 
         // Transfer to admin
-        let token: Address = env.storage().instance().get(&DataKey::Token).unwrap();
-        let token_client = token::Client::new(&env, &token);
-        token_client.transfer(&env.current_contract_address(), &admin, &(amount as i128));
+        let token: Address = env
+            .storage()
+            .instance()
+            .get(&DataKey::Token)
+            .ok_or(Error::NotInitialized)?;
+        Self::transfer(
+            &env,
+            &token,
+            &env.current_contract_address(),
+            &admin,
+            amount,
+        )?;
 
         log!(
             &env,
@@ -5152,7 +5112,11 @@ impl LendingContract {
         {
             return Ok(model.base_rate_bps);
         }
-        let token: Address = env.storage().instance().get(&DataKey::Token).unwrap();
+        let token: Address = env
+            .storage()
+            .instance()
+            .get(&DataKey::Token)
+            .ok_or(Error::NotInitialized)?;
         Ok(Self::get_pool(&env, &token)?.base_rate_bps)
     }
 
@@ -5167,7 +5131,11 @@ impl LendingContract {
             return Ok(model.optimal_utilization_bps);
         }
         // Default: use utilization cap as the optimal target
-        let token: Address = env.storage().instance().get(&DataKey::Token).unwrap();
+        let token: Address = env
+            .storage()
+            .instance()
+            .get(&DataKey::Token)
+            .ok_or(Error::NotInitialized)?;
         Ok(Self::get_pool(&env, &token)?.utilization_cap_bps)
     }
 
@@ -5182,7 +5150,11 @@ impl LendingContract {
             return Ok(model.slope1_bps);
         }
         // Fallback: use pool multiplier as slope1
-        let token: Address = env.storage().instance().get(&DataKey::Token).unwrap();
+        let token: Address = env
+            .storage()
+            .instance()
+            .get(&DataKey::Token)
+            .ok_or(Error::NotInitialized)?;
         Ok(Self::get_pool(&env, &token)?.multiplier_bps)
     }
 
@@ -5197,7 +5169,11 @@ impl LendingContract {
             return Ok(model.slope2_bps);
         }
         // Fallback: slope2 is 10× slope1 when not configured
-        let token: Address = env.storage().instance().get(&DataKey::Token).unwrap();
+        let token: Address = env
+            .storage()
+            .instance()
+            .get(&DataKey::Token)
+            .ok_or(Error::NotInitialized)?;
         Ok(Self::get_pool(&env, &token)?
             .multiplier_bps
             .saturating_mul(10))
@@ -5207,7 +5183,11 @@ impl LendingContract {
     /// or the legacy linear model otherwise.
     pub fn get_borrow_rate(env: Env) -> Result<u32, LendingError> {
         Self::require_initialized(&env)?;
-        let token: Address = env.storage().instance().get(&DataKey::Token).unwrap();
+        let token: Address = env
+            .storage()
+            .instance()
+            .get(&DataKey::Token)
+            .ok_or(Error::NotInitialized)?;
         let pool = Self::get_pool(&env, &token)?;
         let utilization_bps = Self::get_utilization_bps(pool.total_borrowed, pool.total_deposits);
 
@@ -5230,7 +5210,11 @@ impl LendingContract {
     /// supply_rate = borrow_rate × utilization × (1 − reserve_factor)
     pub fn get_supply_rate(env: Env) -> Result<u32, LendingError> {
         Self::require_initialized(&env)?;
-        let token: Address = env.storage().instance().get(&DataKey::Token).unwrap();
+        let token: Address = env
+            .storage()
+            .instance()
+            .get(&DataKey::Token)
+            .ok_or(Error::NotInitialized)?;
         let pool = Self::get_pool(&env, &token)?;
         let utilization_bps = Self::get_utilization_bps(pool.total_borrowed, pool.total_deposits);
         let borrow_rate = Self::get_borrow_rate(env.clone())?;
@@ -5267,7 +5251,11 @@ impl LendingContract {
         {
             return Ok(Self::two_slope_rate(&model, utilization_bps));
         }
-        let token: Address = env.storage().instance().get(&DataKey::Token).unwrap();
+        let token: Address = env
+            .storage()
+            .instance()
+            .get(&DataKey::Token)
+            .ok_or(Error::NotInitialized)?;
         let pool = Self::get_pool(&env, &token)?;
         Ok(Self::calculate_dynamic_rate(
             pool.base_rate_bps,

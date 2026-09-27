@@ -7164,24 +7164,28 @@ fn test_link_accepts_peer_on_matching_version() {
 }
 
 #[test]
-#[should_panic(expected = "incompatible contract version")]
 fn test_link_rejects_peer_on_version_mismatch() {
     let env = Env::default();
     let (client, admin) = setup_versioned_contract(&env);
 
     let stale = env.register_contract(None, StaleVersionPeer);
-    client.set_lending_contract(&admin, &stale);
+    assert_eq!(
+        client.try_set_lending_contract(&admin, &stale),
+        Err(Ok(Error::IncompatibleVersion))
+    );
 }
 
 #[test]
-#[should_panic(expected = "contract version unavailable")]
 fn test_link_rejects_peer_that_cannot_report_a_version() {
     let env = Env::default();
     let (client, admin) = setup_versioned_contract(&env);
 
     // Not a contract at all — it can never answer `get_version`.
     let not_a_contract = create_test_address(&env, 7);
-    client.set_lending_contract(&admin, &not_a_contract);
+    assert_eq!(
+        client.try_set_lending_contract(&admin, &not_a_contract),
+        Err(Ok(Error::IncompatibleVersion))
+    );
 }
 
 #[test]
@@ -8332,4 +8336,167 @@ fn test_raise_dispute_and_resolve_dispute() {
 
     let res = client.try_resolve_dispute(&plan_id, &true);
     assert!(res.is_ok());
+}
+
+#[test]
+fn test_custom_error_enum_discriminants() {
+    assert_eq!(Error::PlanNotFound as u32, 10);
+    assert_eq!(Error::PlanNotExpired as u32, 24);
+    assert_eq!(Error::Unauthorized as u32, 9);
+    assert_eq!(Error::InvalidAllocation as u32, 13);
+    assert_eq!(Error::DisputeActive as u32, 25);
+    let error: InheritanceError = Error::PlanNotFound;
+    assert_eq!(error, InheritanceError::PlanNotFound);
+}
+
+#[test]
+fn test_error_diagnostics_from_claim_entry_point() {
+    let env = Env::default();
+    let (client, _, owner, id) = batch_claim_fixture(&env);
+    let indices = vec![&env, 0u32];
+    let codes = vec![&env, 111111u32];
+    assert_eq!(
+        client.try_batch_claim_inheritance_plan(&999, &indices, &codes),
+        Err(Ok(Error::PlanNotFound))
+    );
+    env.as_contract(&client.address, || {
+        let mut plan = InheritanceContract::get_plan(&env, id).unwrap();
+        plan.distribution_method = DistributionMethod::Monthly;
+        InheritanceContract::store_plan(&env, id, &plan);
+    });
+    assert_eq!(
+        client.try_batch_claim_inheritance_plan(&id, &indices, &codes),
+        Err(Ok(Error::PlanNotExpired))
+    );
+    let raw = env.try_invoke_contract::<(), soroban_sdk::Error>(
+        &client.address,
+        &Symbol::new(&env, "batch_claim_inheritance_plan"),
+        vec![
+            &env,
+            id.into_val(&env),
+            indices.clone().into_val(&env),
+            codes.clone().into_val(&env),
+        ],
+    );
+    assert_eq!(raw, Err(Ok(soroban_sdk::Error::from_contract_error(24))));
+    client.raise_dispute(&id, &owner, &BytesN::from_array(&env, &[1; 32]));
+    assert_eq!(
+        client.try_batch_claim_inheritance_plan(&id, &indices, &codes),
+        Err(Ok(Error::DisputeActive))
+    );
+    client.resolve_dispute(&id, &true);
+    // Resolving a dispute does not bypass the independent time gate.
+    assert_eq!(
+        client.try_batch_claim_inheritance_plan(&id, &indices, &codes),
+        Err(Ok(Error::PlanNotExpired))
+    );
+    assert_eq!(client.get_plan_details(&id).unwrap().total_amount, 98_000);
+}
+
+#[test]
+fn test_error_diagnostics_pause_reentrancy_and_authorization() {
+    let env = Env::default();
+    let (client, _, owner, id) = batch_claim_fixture(&env);
+    let admin = env.as_contract(&client.address, || {
+        InheritanceContract::get_admin(&env).unwrap()
+    });
+    let indices = vec![&env, 0u32];
+    let codes = vec![&env, 111111u32];
+    client.pause(&admin);
+    assert_eq!(
+        client.try_batch_claim_inheritance_plan(&id, &indices, &codes),
+        Err(Ok(Error::ContractPaused))
+    );
+    client.unpause(&admin);
+    env.as_contract(&client.address, || {
+        env.storage()
+            .temporary()
+            .set(&access_control::SecurityKey::ReentrancyLock, &true);
+    });
+    assert_eq!(
+        client.try_batch_claim_inheritance_plan(&id, &indices, &codes),
+        Err(Ok(Error::ReentrantCall))
+    );
+    env.as_contract(&client.address, || {
+        env.storage()
+            .temporary()
+            .remove(&access_control::SecurityKey::ReentrancyLock);
+        env.storage()
+            .instance()
+            .set(&access_control::PauseKey::ActiveOps, &1i128);
+    });
+    assert_eq!(client.try_pause(&admin), Err(Ok(Error::ReentrantCall)));
+    assert!(!client.is_paused());
+    let stranger = Address::generate(&env);
+    assert_eq!(
+        client.try_enable_waterfall_distribution(&stranger, &id),
+        Err(Ok(Error::Unauthorized))
+    );
+    assert_eq!(
+        client.try_batch_update_allocations(&owner, &id, &vec![&env, 0, 10000]),
+        Err(Ok(Error::InvalidAllocation))
+    );
+}
+
+#[test]
+fn test_legacy_error_wire_codes_are_stable() {
+    // Pin deployed codes independently of the enum/specification definitions.
+    for (error, code) in [
+        (Error::InvalidAssetType, 1),
+        (Error::InvalidTotalAmount, 2),
+        (Error::MissingRequiredField, 3),
+        (Error::TooManyBeneficiaries, 4),
+        (Error::InvalidClaimCode, 5),
+        (Error::AllocationPercentageMismatch, 6),
+        (Error::DescriptionTooLong, 7),
+        (Error::InvalidBeneficiaryData, 8),
+        (Error::Unauthorized, 9),
+        (Error::PlanNotFound, 10),
+        (Error::InvalidBeneficiaryIndex, 11),
+        (Error::ZkProofRequired, 12),
+        (Error::InvalidAllocation, 13),
+        (Error::InvalidClaimCodeRange, 14),
+        (Error::ClaimNotAllowedYet, 15),
+        (Error::AlreadyClaimed, 16),
+        (Error::BeneficiaryNotFound, 17),
+        (Error::PlanAlreadyDeactivated, 18),
+        (Error::PlanNotActive, 19),
+        (Error::AdminNotSet, 20),
+        (Error::AdminAlreadyInitialized, 21),
+        (Error::NotAdmin, 22),
+        (Error::KycNotSubmitted, 23),
+        (Error::PlanNotClaimed, 27),
+        (Error::KycAlreadyRejected, 28),
+        (Error::InsufficientBalance, 29),
+        (Error::FeeTransferFailed, 30),
+        (Error::InsufficientLiquidity, 31),
+        (Error::InheritanceAlreadyTriggered, 32),
+        (Error::EmergencyCooldownActive, 33),
+        (Error::VestingScheduleActive, 34),
+        (Error::NothingToClaim, 35),
+        (Error::EmergencyAccessAlreadyActive, 36),
+        (Error::InvalidGuardianThreshold, 37),
+        (Error::EmergencyContactAlreadyExists, 38),
+        (Error::TooManyEmergencyContacts, 39),
+        (Error::EmergencyContactNotFound, 40),
+        (Error::GuardianNotFound, 41),
+        (Error::AlreadyApproved, 42),
+        (Error::InheritanceNotTriggered, 43),
+        (Error::NoOutstandingLoans, 44),
+        (Error::LoanRecallFailed, 45),
+        (Error::WillHashAlreadyStored, 46),
+        (Error::VaultNotFound, 47),
+        (Error::WillAlreadyLinked, 48),
+        (Error::WillAlreadyFinalized, 49),
+        (Error::WillVersionNotFound, 50),
+        (Error::ReentrantCall, 51),
+        (Error::Blk, 52),
+        (Error::NotWhitelisted, 53),
+    ] {
+        assert_eq!(error as u32, code);
+        assert_eq!(
+            soroban_sdk::Error::from(error),
+            soroban_sdk::Error::from_contract_error(code)
+        );
+    }
 }

@@ -1,8 +1,8 @@
 #![no_std]
 use access_control::{self, Role};
 use soroban_sdk::{
-    contract, contracterror, contractimpl, contracttype, log, symbol_short, token, vec, Address,
-    Bytes, BytesN, Env, FromVal, IntoVal, InvokeError, String, Symbol, Val, Vec,
+    contract, contractimpl, contracttype, log, symbol_short, token, vec, Address, Bytes, BytesN,
+    Env, FromVal, IntoVal, InvokeError, String, Symbol, Val, Vec,
 };
 
 mod disputes;
@@ -99,64 +99,8 @@ pub struct InheritancePlan {
     pub restricted: bool,
 }
 
-#[contracterror]
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub enum InheritanceError {
-    InvalidAssetType = 1,
-    InvalidTotalAmount = 2,
-    MissingRequiredField = 3,
-    TooManyBeneficiaries = 4,
-    InvalidClaimCode = 5,
-    AllocationPercentageMismatch = 6,
-    DescriptionTooLong = 7,
-    InvalidBeneficiaryData = 8,
-    Unauthorized = 9,
-    PlanNotFound = 10,
-    InvalidBeneficiaryIndex = 11,
-    /// A genetic-kin claim was attempted without a verified zero-knowledge
-    /// proof, or with one the verifier rejected. Reuses the gap at 12 because
-    /// `InheritanceError` sits at the 50-variant ceiling `#[contracterror]`
-    /// permits, so new cases have to reuse an existing discriminant.
-    ZkProofRequired = 12,
-    InvalidAllocation = 13,
-    InvalidClaimCodeRange = 14,
-    ClaimNotAllowedYet = 15,
-    AlreadyClaimed = 16,
-    BeneficiaryNotFound = 17,
-    PlanAlreadyDeactivated = 18,
-    PlanNotActive = 19,
-    AdminNotSet = 20,
-    AdminAlreadyInitialized = 21,
-    NotAdmin = 22,
-    KycNotSubmitted = 23,
-    PlanNotClaimed = 27,
-    KycAlreadyRejected = 28,
-    InsufficientBalance = 29,
-    FeeTransferFailed = 30,
-    InsufficientLiquidity = 31,
-    InheritanceAlreadyTriggered = 32,
-    EmergencyCooldownActive = 33,
-    VestingScheduleActive = 34,
-    NothingToClaim = 35,
-    EmergencyAccessAlreadyActive = 36,
-    InvalidGuardianThreshold = 37,
-    EmergencyContactAlreadyExists = 38,
-    TooManyEmergencyContacts = 39,
-    EmergencyContactNotFound = 40,
-    GuardianNotFound = 41,
-    AlreadyApproved = 42,
-    InheritanceNotTriggered = 43,
-    NoOutstandingLoans = 44,
-    LoanRecallFailed = 45,
-    WillHashAlreadyStored = 46,
-    VaultNotFound = 47,
-    WillAlreadyLinked = 48,
-    WillAlreadyFinalized = 49,
-    WillVersionNotFound = 50,
-    ReentrantCall = 51,
-    Blk = 52,
-    NotWhitelisted = 53,
-}
+mod errors;
+pub use errors::{Error, InheritanceError};
 
 #[contracttype]
 #[derive(Clone)]
@@ -1199,21 +1143,21 @@ impl InheritanceContract {
         access_control::require_not_blacklisted(env, address, InheritanceError::Blk)
     }
 
-    pub(crate) fn enter_guard(env: &Env) {
-        access_control::reentrancy_enter_or_panic(env);
+    pub(crate) fn enter_guard(env: &Env) -> Result<(), InheritanceError> {
+        access_control::reentrancy_enter(env, Error::ReentrantCall)
     }
 
     pub(crate) fn exit_guard(env: &Env) {
         access_control::reentrancy_exit(env);
     }
 
-    fn check_not_paused(env: &Env) {
-        access_control::require_not_paused_or_panic(env);
+    fn check_not_paused(env: &Env) -> Result<(), InheritanceError> {
+        access_control::require_not_paused(env, Error::ContractPaused)
     }
 
     pub fn pause(env: Env, admin: Address) -> Result<(), InheritanceError> {
         Self::require_admin(&env, &admin)?;
-        access_control::pause_contract(&env);
+        access_control::try_pause_contract(&env, Error::ReentrantCall)?;
         env.events().publish(
             (symbol_short!("ADMIN"), symbol_short!("PAUSE")),
             env.ledger().timestamp(),
@@ -1392,7 +1336,7 @@ impl InheritanceContract {
         reason: String,
     ) -> Result<u64, InheritanceError> {
         disputer.require_auth();
-        Self::check_not_paused(&env);
+        Self::check_not_paused(&env)?;
 
         // Ensure plan exists.
         let _ = Self::get_plan(&env, plan_id).ok_or(InheritanceError::PlanNotFound)?;
@@ -1461,6 +1405,29 @@ impl InheritanceContract {
         env.storage().persistent().get(&DataKey::Ds(dispute_id))
     }
 
+    // Do not label unrelated administrative freezes as active disputes.
+    fn frozen_plan_error(env: &Env, plan_id: u64) -> InheritanceError {
+        let ids: Vec<u64> = env
+            .storage()
+            .persistent()
+            .get(&DataKey::Pd(plan_id))
+            .unwrap_or(Vec::new(env));
+        for id in ids.iter() {
+            if let Some(record) = env
+                .storage()
+                .persistent()
+                .get::<_, DisputeRecord>(&DataKey::Ds(id))
+            {
+                if record.status == DisputeStatus::Filed
+                    || record.status == DisputeStatus::UnderReview
+                {
+                    return Error::DisputeActive;
+                }
+            }
+        }
+        Error::PlanNotActive
+    }
+
     pub fn get_plan_disputes(env: Env, plan_id: u64) -> Vec<u64> {
         env.storage()
             .persistent()
@@ -1477,7 +1444,7 @@ impl InheritanceContract {
         freeze_plan: bool,
     ) -> Result<(), InheritanceError> {
         arbitrator.require_auth();
-        Self::check_not_paused(&env);
+        Self::check_not_paused(&env)?;
 
         let record: DisputeRecord = env
             .storage()
@@ -1562,7 +1529,7 @@ impl InheritanceContract {
         _proof_hash: BytesN<32>,
     ) -> Result<u64, InheritanceError> {
         challenger.require_auth();
-        Self::check_not_paused(&env);
+        Self::check_not_paused(&env)?;
 
         let _ = Self::get_plan(&env, plan_id).ok_or(InheritanceError::PlanNotFound)?;
 
@@ -1644,7 +1611,7 @@ impl InheritanceContract {
     }
 
     pub fn resolve_dispute(env: Env, plan_id: u64, approve: bool) -> Result<(), InheritanceError> {
-        Self::check_not_paused(&env);
+        Self::check_not_paused(&env)?;
 
         let mut arbitrator = Self::get_admin(&env).ok_or(InheritanceError::AdminNotSet)?;
         let list: Vec<Address> = env
@@ -2254,8 +2221,8 @@ impl InheritanceContract {
         // Require owner authorization
         owner.require_auth();
         Self::require_not_blacklisted(&env, &owner)?;
-        Self::check_not_paused(&env);
-        Self::enter_guard(&env);
+        Self::check_not_paused(&env)?;
+        Self::enter_guard(&env)?;
 
         // Get the plan
         let mut plan = Self::get_plan(&env, plan_id).ok_or(InheritanceError::PlanNotFound)?;
@@ -2341,8 +2308,8 @@ impl InheritanceContract {
     ) -> Result<(), InheritanceError> {
         // Require owner authorization
         owner.require_auth();
-        Self::check_not_paused(&env);
-        Self::enter_guard(&env);
+        Self::check_not_paused(&env)?;
+        Self::enter_guard(&env)?;
 
         // Get the plan
         let mut plan = Self::get_plan(&env, plan_id).ok_or(InheritanceError::PlanNotFound)?;
@@ -2437,8 +2404,8 @@ impl InheritanceContract {
 
         // Require owner authorization
         owner.require_auth();
-        Self::check_not_paused(&env);
-        Self::enter_guard(&env);
+        Self::check_not_paused(&env)?;
+        Self::enter_guard(&env)?;
 
         // Check KYC approval - only approved users can create plans
         Self::check_kyc_approved(&env, &owner)?;
@@ -2687,8 +2654,8 @@ impl InheritanceContract {
         earn_yield: bool,
     ) -> Result<(), InheritanceError> {
         owner.require_auth();
-        Self::check_not_paused(&env);
-        Self::enter_guard(&env);
+        Self::check_not_paused(&env)?;
+        Self::enter_guard(&env)?;
 
         let mut plan = Self::get_plan(&env, plan_id).ok_or(InheritanceError::PlanNotFound)?;
 
@@ -2750,8 +2717,8 @@ impl InheritanceContract {
         amount: u64,
     ) -> Result<(), InheritanceError> {
         caller.require_auth();
-        Self::check_not_paused(&env);
-        Self::enter_guard(&env);
+        Self::check_not_paused(&env)?;
+        Self::enter_guard(&env)?;
         if amount == 0 {
             return Err(InheritanceError::InvalidTotalAmount);
         }
@@ -2772,7 +2739,7 @@ impl InheritanceContract {
 
         // Freeze/legal hold check
         if env.storage().persistent().has(&DataKey::Fz(plan_id)) {
-            return Err(InheritanceError::PlanNotActive);
+            return Err(Self::frozen_plan_error(&env, plan_id));
         }
         if env.storage().persistent().has(&DataKey::Lh(plan_id)) {
             return Err(InheritanceError::PlanNotActive);
@@ -2821,8 +2788,8 @@ impl InheritanceContract {
         amount: u64,
     ) -> Result<(), InheritanceError> {
         caller.require_auth();
-        Self::check_not_paused(&env);
-        Self::enter_guard(&env);
+        Self::check_not_paused(&env)?;
+        Self::enter_guard(&env)?;
         if amount == 0 {
             return Err(InheritanceError::InvalidTotalAmount);
         }
@@ -2838,7 +2805,7 @@ impl InheritanceContract {
 
         // Freeze/legal hold check
         if env.storage().persistent().has(&DataKey::Fz(plan_id)) {
-            return Err(InheritanceError::PlanNotActive);
+            return Err(Self::frozen_plan_error(&env, plan_id));
         }
         if env.storage().persistent().has(&DataKey::Lh(plan_id)) {
             return Err(InheritanceError::PlanNotActive);
@@ -3054,8 +3021,8 @@ impl InheritanceContract {
         // Require claimer authorization
         claimer.require_auth();
         Self::require_not_blacklisted(&env, &claimer)?;
-        Self::check_not_paused(&env);
-        let _guard = access_control::ReentrancyGuard::lock_or_panic(&env);
+        Self::check_not_paused(&env)?;
+        let _guard = access_control::ReentrancyGuard::lock(&env, Error::ReentrantCall)?;
 
         // Check KYC approval - only approved users can claim plans
         Self::check_kyc_approved(&env, &claimer)?;
@@ -3074,7 +3041,7 @@ impl InheritanceContract {
 
         // Freeze/legal hold check
         if env.storage().persistent().has(&DataKey::Fz(plan_id)) {
-            return Err(InheritanceError::PlanNotActive);
+            return Err(Self::frozen_plan_error(&env, plan_id));
         }
         if env.storage().persistent().has(&DataKey::Lh(plan_id)) {
             return Err(InheritanceError::PlanNotActive);
@@ -3090,7 +3057,7 @@ impl InheritanceContract {
         // that inheritance execution cannot be blocked.
         let triggered = Self::get_trigger_info(&env, plan_id).is_some();
         if !triggered && !Self::is_claim_time_valid(&env, &plan) {
-            return Err(InheritanceError::ClaimNotAllowedYet);
+            return Err(Error::PlanNotExpired);
         }
 
         // Hash email
@@ -3471,8 +3438,8 @@ impl InheritanceContract {
         owner: Address,
         plan_id: u64,
     ) -> Result<(), InheritanceError> {
-        Self::check_not_paused(&env);
-        Self::enter_guard(&env);
+        Self::check_not_paused(&env)?;
+        Self::enter_guard(&env)?;
 
         // Require owner authorization
         owner.require_auth();
@@ -3628,8 +3595,8 @@ impl InheritanceContract {
         plan_id: u64,
         signers: Vec<Address>,
     ) -> Result<(), InheritanceError> {
-        Self::check_not_paused(&env);
-        Self::enter_guard(&env);
+        Self::check_not_paused(&env)?;
+        Self::enter_guard(&env)?;
 
         let config: GuardianConfig = env
             .storage()
@@ -3672,9 +3639,10 @@ impl InheritanceContract {
         if !plan.is_active {
             return Err(InheritanceError::PlanNotActive);
         }
-        if env.storage().persistent().has(&DataKey::Fz(plan_id))
-            || env.storage().persistent().has(&DataKey::Lh(plan_id))
-        {
+        if env.storage().persistent().has(&DataKey::Fz(plan_id)) {
+            return Err(Self::frozen_plan_error(&env, plan_id));
+        }
+        if env.storage().persistent().has(&DataKey::Lh(plan_id)) {
             return Err(InheritanceError::PlanNotActive);
         }
         if Self::get_trigger_info(&env, plan_id).is_some() {
@@ -4567,8 +4535,8 @@ impl InheritanceContract {
         caller: Address,
         plan_id: u64,
     ) -> Result<(), InheritanceError> {
-        Self::check_not_paused(&env);
-        Self::enter_guard(&env);
+        Self::check_not_paused(&env)?;
+        Self::enter_guard(&env)?;
         // Authorization check: Admin OR Owner OR Trusted Contact with active emergency access
         let mut is_authorized = false;
 
@@ -4606,7 +4574,7 @@ impl InheritanceContract {
 
         // Freeze/legal hold check
         if env.storage().persistent().has(&DataKey::Fz(plan_id)) {
-            return Err(InheritanceError::PlanNotActive);
+            return Err(Self::frozen_plan_error(&env, plan_id));
         }
         if env.storage().persistent().has(&DataKey::Lh(plan_id)) {
             return Err(InheritanceError::PlanNotActive);
@@ -4676,7 +4644,7 @@ impl InheritanceContract {
     /// - `PlanNotFound` if the plan does not exist
     /// - `NotAdmin` if the caller is not the admin
     pub fn freeze_loans(env: Env, admin: Address, plan_id: u64) -> Result<(), InheritanceError> {
-        Self::check_not_paused(&env);
+        Self::check_not_paused(&env)?;
         Self::require_admin(&env, &admin)?;
 
         let mut plan = Self::get_plan(&env, plan_id).ok_or(InheritanceError::PlanNotFound)?;
@@ -6374,8 +6342,8 @@ impl InheritanceContract {
         plan_id: u64,
         claimers: Vec<(Address, String, u32)>,
     ) -> Result<(u32, u32), InheritanceError> {
-        Self::check_not_paused(&env);
-        Self::enter_guard(&env);
+        Self::check_not_paused(&env)?;
+        Self::enter_guard(&env)?;
         if claimers.len() > Self::BATCH_LIMIT {
             return Err(InheritanceError::TooManyBeneficiaries);
         }
@@ -6388,14 +6356,14 @@ impl InheritanceContract {
 
         // Freeze/legal hold check
         if env.storage().persistent().has(&DataKey::Fz(plan_id)) {
-            return Err(InheritanceError::PlanNotActive);
+            return Err(Self::frozen_plan_error(&env, plan_id));
         }
         if env.storage().persistent().has(&DataKey::Lh(plan_id)) {
             return Err(InheritanceError::PlanNotActive);
         }
 
         if !triggered && !Self::is_claim_time_valid(&env, &plan) {
-            return Err(InheritanceError::ClaimNotAllowedYet);
+            return Err(Error::PlanNotExpired);
         }
         let mut success: u32 = 0;
         let mut fail: u32 = 0;
@@ -6535,8 +6503,8 @@ impl InheritanceContract {
         beneficiary_indices: Vec<u32>,
         claim_codes: Vec<u32>,
     ) -> Result<(), InheritanceError> {
-        Self::check_not_paused(&env);
-        let _guard = access_control::ReentrancyGuard::lock_or_panic(&env);
+        Self::check_not_paused(&env)?;
+        let _guard = access_control::ReentrancyGuard::lock(&env, Error::ReentrantCall)?;
 
         let count = beneficiary_indices.len();
         if count != claim_codes.len() {
@@ -6556,9 +6524,10 @@ impl InheritanceContract {
         }
 
         // Freeze / legal hold checks
-        if env.storage().persistent().has(&DataKey::Fz(plan_id))
-            || env.storage().persistent().has(&DataKey::Lh(plan_id))
-        {
+        if env.storage().persistent().has(&DataKey::Fz(plan_id)) {
+            return Err(Self::frozen_plan_error(&env, plan_id));
+        }
+        if env.storage().persistent().has(&DataKey::Lh(plan_id)) {
             return Err(InheritanceError::PlanNotActive);
         }
 
@@ -6568,7 +6537,7 @@ impl InheritanceContract {
             triggered = true;
         }
         if !triggered && !Self::is_claim_time_valid(&env, &plan) {
-            return Err(InheritanceError::ClaimNotAllowedYet);
+            return Err(Error::PlanNotExpired);
         }
 
         let total_beneficiaries = plan.beneficiaries.len();
@@ -6778,7 +6747,7 @@ impl InheritanceContract {
         contract: Address,
     ) -> Result<(), InheritanceError> {
         Self::require_admin(&env, &admin)?;
-        Self::require_compatible_version(&env, &contract);
+        Self::require_compatible_version(&env, &contract)?;
         env.storage().instance().set(&DataKey::Lc, &contract);
         env.events().publish(
             (symbol_short!("LINK"), symbol_short!("LEND")),
@@ -6800,7 +6769,7 @@ impl InheritanceContract {
         contract: Address,
     ) -> Result<(), InheritanceError> {
         Self::require_admin(&env, &admin)?;
-        Self::require_compatible_version(&env, &contract);
+        Self::require_compatible_version(&env, &contract)?;
         env.storage().instance().set(&DataKey::Gc, &contract);
         env.events().publish(
             (symbol_short!("LINK"), symbol_short!("GOV")),
@@ -6822,16 +6791,13 @@ impl InheritanceContract {
     /// Applied when linking a peer, so a mismatch is caught at configuration
     /// time rather than on the first cross-contract call into a surface that
     /// has changed shape underneath us.
-    /// Panics rather than returning a typed error: `InheritanceError` sits at
-    /// the 50-case ceiling `#[contracterror]` permits, so it cannot carry a
-    /// version-mismatch variant. This matches how the contract already handles
-    /// reentrancy and pause violations. Either way the call reverts.
-    fn require_compatible_version(env: &Env, contract: &Address) {
-        access_control::assert_compatible_version_or_panic(
+    fn require_compatible_version(env: &Env, contract: &Address) -> Result<(), InheritanceError> {
+        access_control::assert_compatible_version(
             env,
             contract,
             access_control::CONTRACT_VERSION,
-        );
+            Error::IncompatibleVersion,
+        )
     }
 
     fn require_lending_contract(env: &Env) -> Result<Address, InheritanceError> {
@@ -7053,7 +7019,7 @@ impl InheritanceContract {
         plan_id: u64,
         asset: Address,
     ) -> Result<(), InheritanceError> {
-        Self::check_not_paused(&env);
+        Self::check_not_paused(&env)?;
 
         let plan = Self::get_plan(&env, plan_id).ok_or(InheritanceError::PlanNotFound)?;
         Self::require_harvest_authority(&env, &caller, &plan)?;
@@ -7136,7 +7102,7 @@ impl InheritanceContract {
         caller: Address,
         plan_id: u64,
     ) -> Result<(), InheritanceError> {
-        Self::check_not_paused(&env);
+        Self::check_not_paused(&env)?;
 
         let mut plan = Self::get_plan(&env, plan_id).ok_or(InheritanceError::PlanNotFound)?;
         Self::require_yield_config_authority(&env, &caller, &plan)?;
@@ -7182,7 +7148,7 @@ impl InheritanceContract {
         harvest_interval: u64,
         performance_fee_bp: u32,
     ) -> Result<(), InheritanceError> {
-        Self::check_not_paused(&env);
+        Self::check_not_paused(&env)?;
 
         let plan = Self::get_plan(&env, plan_id).ok_or(InheritanceError::PlanNotFound)?;
         Self::require_yield_config_authority(&env, &caller, &plan)?;
@@ -7243,7 +7209,7 @@ impl InheritanceContract {
         plan_id: u64,
         paused: bool,
     ) -> Result<(), InheritanceError> {
-        Self::check_not_paused(&env);
+        Self::check_not_paused(&env)?;
 
         let plan = Self::get_plan(&env, plan_id).ok_or(InheritanceError::PlanNotFound)?;
         Self::require_yield_config_authority(&env, &caller, &plan)?;
@@ -7618,13 +7584,11 @@ impl InheritanceContract {
     /// - `AdminNotSet` — no lending contract has been linked
     /// - `InvalidTotalAmount` — compounding would overflow `total_amount`
     /// - `FeeTransferFailed` — the lending pool call failed (unreachable pool,
-    ///   unregistered position, or paused pool). `InheritanceError` is at the
-    ///   50-variant ceiling `#[contracterror]` permits, so these share the
-    ///   existing cross-contract failure variant rather than getting their own.
+    ///   unregistered position, or paused pool).
     pub fn harvest_yield(env: Env, caller: Address, plan_id: u64) -> Result<u64, InheritanceError> {
-        Self::check_not_paused(&env);
+        Self::check_not_paused(&env)?;
         caller.require_auth();
-        Self::enter_guard(&env);
+        Self::enter_guard(&env)?;
         let result = Self::harvest_yield_inner(&env, &caller, plan_id);
         Self::exit_guard(&env);
         result
@@ -7760,7 +7724,7 @@ impl InheritanceContract {
         caller: Address,
         plan_id: u64,
     ) -> Result<u64, InheritanceError> {
-        Self::check_not_paused(&env);
+        Self::check_not_paused(&env)?;
 
         let mut plan = Self::get_plan(&env, plan_id).ok_or(InheritanceError::PlanNotFound)?;
         Self::require_yield_config_authority(&env, &caller, &plan)?;
@@ -7806,14 +7770,14 @@ impl InheritanceContract {
         caller: Address,
         plan_ids: Vec<u64>,
     ) -> Result<(u32, u32, u64), InheritanceError> {
-        Self::check_not_paused(&env);
+        Self::check_not_paused(&env)?;
         caller.require_auth();
 
         if plan_ids.len() > MAX_YIELD_BATCH {
             return Err(InheritanceError::TooManyBeneficiaries);
         }
 
-        Self::enter_guard(&env);
+        Self::enter_guard(&env)?;
 
         let mut success = 0u32;
         let mut fail = 0u32;
@@ -8061,7 +8025,7 @@ impl InheritanceContract {
 
         // Freeze/legal hold check
         if env.storage().persistent().has(&DataKey::Fz(plan_id)) {
-            return Err(InheritanceError::PlanNotActive);
+            return Err(Self::frozen_plan_error(&env, plan_id));
         }
         if env.storage().persistent().has(&DataKey::Lh(plan_id)) {
             return Err(InheritanceError::PlanNotActive);
