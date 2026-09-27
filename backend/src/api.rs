@@ -278,7 +278,7 @@ pub fn create_router(state: Arc<AppState>) -> Router {
                 }
             },
         ))
-        .allow_methods([Method::GET, Method::POST, Method::OPTIONS])
+        .allow_methods([Method::GET, Method::POST, Method::PUT, Method::OPTIONS])
         .allow_headers([
             axum::http::header::CONTENT_TYPE,
             axum::http::header::AUTHORIZATION,
@@ -350,6 +350,13 @@ pub fn create_router(state: Arc<AppState>) -> Router {
         .route("/api/transactions/submit", post(submit_transaction))
         .route("/api/admin/login", post(admin_login))
         .route("/api/yield/calculate", get(calculate_yield))
+        .route("/api/genetic/{plan_id}/upload", post(upload_genetic_hash))
+        .route("/api/genetic/{plan_id}", get(get_genetic_verification))
+        .route("/api/genetic/{plan_id}/privacy", put(update_genetic_privacy))
+        .route(
+            "/api/genetic/{plan_id}/family/invite",
+            post(invite_genetic_family),
+        )
         .route("/ws/kyc", get(ws_handler));
     let router = Router::new()
         .merge(user_routes)
@@ -3387,4 +3394,476 @@ async fn cancel_plan(
         Json(serde_json::json!({ "data": updated_response })),
     )
         .into_response()
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Genetic verification (`/api/genetic/*`)
+//
+// `frontend/app/lib/api/geneticVerification.ts` documents these four routes as
+// missing. Raw genetic material never reaches the backend: the browser hashes
+// the file with SHA-256 and posts only the digest, so a `plans` row stores a
+// derived fingerprint rather than the source data. Email addresses and the
+// relationship/status enums are validated before they touch the database, and
+// privacy preferences default to the most restrictive option.
+// ─────────────────────────────────────────────────────────────────────────────
+
+/// Length of a SHA-256 digest rendered as lowercase hex.
+const GENETIC_HASH_HEX_LEN: usize = 64;
+/// Upper bound for `dataRetentionDays` (10 years); `-1` means indefinite.
+const GENETIC_MAX_RETENTION_DAYS: i32 = 3650;
+/// Relationship types accepted by `POST /api/genetic/{plan_id}/family/invite`.
+const GENETIC_RELATIONSHIP_TYPES: [&str; 7] = [
+    "parent",
+    "child",
+    "sibling",
+    "grandparent",
+    "grandchild",
+    "spouse",
+    "other",
+];
+
+/// Request body for `POST /api/genetic/{plan_id}/upload`. Mirrors the frontend
+/// client, which sends `{ dna_hash }` — the SHA-256 digest only.
+#[derive(Debug, Deserialize)]
+pub struct GeneticUploadRequest {
+    pub dna_hash: String,
+}
+
+/// Response payload for a successful genetic upload.
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct GeneticUploadResponse {
+    pub dna_hash: String,
+    pub status: String,
+}
+
+/// Response payload for `GET /api/genetic/{plan_id}`, matching the
+/// `GeneticInheritance` interface in the frontend client.
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct GeneticInheritanceResponse {
+    pub dna_hash: String,
+    pub verified_lineage: bool,
+    pub genetic_triggers: Vec<serde_json::Value>,
+    pub family_tree_id: i64,
+    /// Unix seconds; `0` while the record is unverified.
+    pub verification_timestamp: i64,
+    pub verifying_authority: String,
+}
+
+/// Off-chain privacy preferences for a plan's genetic record. Field names are
+/// camelCase to match the frontend `PrivacySettings` interface.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct GeneticPrivacySettings {
+    pub share_with_family: bool,
+    pub allow_health_analysis: bool,
+    pub visible_to_relatives: bool,
+    /// `-1` means "indefinite".
+    pub data_retention_days: i32,
+}
+
+impl Default for GeneticPrivacySettings {
+    fn default() -> Self {
+        Self {
+            share_with_family: false,
+            allow_health_analysis: false,
+            visible_to_relatives: false,
+            data_retention_days: 365,
+        }
+    }
+}
+
+/// Request body for `POST /api/genetic/{plan_id}/family/invite`.
+#[derive(Debug, Deserialize)]
+pub struct GeneticFamilyInviteRequest {
+    pub email: String,
+    pub proposed_relationship: String,
+}
+
+/// A stored family invitation (frontend `FamilyInvitation`).
+#[derive(Debug, Serialize, sqlx::FromRow)]
+#[serde(rename_all = "camelCase")]
+pub struct GeneticFamilyInvitation {
+    #[sqlx(rename = "id")]
+    pub invitation_id: uuid::Uuid,
+    pub to_email: String,
+    pub proposed_relationship: String,
+    pub status: String,
+    pub sent_at: chrono::DateTime<chrono::Utc>,
+}
+
+/// Row shape for the genetic columns added to `plans` by the
+/// `add_genetic_verification` migration.
+#[derive(Debug, sqlx::FromRow)]
+struct GeneticPlanRow {
+    genetic_dna_hash: Option<String>,
+    genetic_verification_status: Option<String>,
+    genetic_verified_at: Option<chrono::DateTime<chrono::Utc>>,
+    genetic_verifying_authority: Option<String>,
+    genetic_family_tree_id: Option<i64>,
+    genetic_conditions: Option<serde_json::Value>,
+}
+
+/// A SHA-256 digest is exactly 64 lowercase hex characters. Anything else is a
+/// client bug or a tampered payload, so it is rejected before the write.
+fn is_valid_genetic_hash(value: &str) -> bool {
+    value.len() == GENETIC_HASH_HEX_LEN
+        && value
+            .bytes()
+            .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
+}
+
+/// Minimal, deterministic email validation: exactly one `@`, a non-empty local
+/// part, and a dotted domain with no leading/trailing dot and no whitespace.
+fn is_valid_email(value: &str) -> bool {
+    if value.len() < 3 || value.len() > 254 || value.chars().any(char::is_whitespace) {
+        return false;
+    }
+
+    let mut parts = value.split('@');
+    match (parts.next(), parts.next(), parts.next()) {
+        (Some(local), Some(domain), None) => {
+            !local.is_empty()
+                && local.len() <= 64
+                && !domain.is_empty()
+                && domain.contains('.')
+                && !domain.starts_with('.')
+                && !domain.ends_with('.')
+        }
+        _ => false,
+    }
+}
+
+/// `POST /api/genetic/{plan_id}/upload`
+///
+/// Stores the client-computed SHA-256 fingerprint of a genetic file and resets
+/// the record to `pending`. Only the digest is accepted; the file itself never
+/// leaves the browser, so this endpoint cannot leak source genetic data.
+async fn upload_genetic_hash(
+    State(state): State<Arc<AppState>>,
+    Path(plan_id): Path<uuid::Uuid>,
+    Json(payload): Json<GeneticUploadRequest>,
+) -> impl IntoResponse {
+    let dna_hash = payload.dna_hash.trim().to_ascii_lowercase();
+    if !is_valid_genetic_hash(&dna_hash) {
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(serde_json::json!({
+                "error": "dna_hash must be a 64-character lowercase hex SHA-256 digest"
+            })),
+        )
+            .into_response();
+    }
+
+    let result = sqlx::query(
+        r#"
+        UPDATE plans
+        SET genetic_dna_hash = $2,
+            genetic_verification_status = 'pending',
+            genetic_verified_at = NULL,
+            genetic_verifying_authority = NULL
+        WHERE id = $1
+        "#,
+    )
+    .bind(plan_id)
+    .bind(&dna_hash)
+    .execute(&state.db_pool)
+    .await;
+
+    match result {
+        Ok(outcome) if outcome.rows_affected() == 0 => (
+            StatusCode::NOT_FOUND,
+            Json(serde_json::json!({ "error": "Plan not found" })),
+        )
+            .into_response(),
+        Ok(_) => {
+            let response = GeneticUploadResponse {
+                dna_hash,
+                status: "pending".to_string(),
+            };
+            (
+                StatusCode::OK,
+                Json(serde_json::json!({ "data": response })),
+            )
+                .into_response()
+        }
+        Err(e) => {
+            error!(plan_id = %plan_id, error = %e, "Failed to store genetic hash");
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(serde_json::json!({
+                    "error": format!("Failed to store genetic hash: {}", e)
+                })),
+            )
+                .into_response()
+        }
+    }
+}
+
+/// `GET /api/genetic/{plan_id}`
+///
+/// Returns the verification lifecycle for a plan. A plan without an uploaded
+/// hash is reported as `404` rather than an empty record, so the frontend can
+/// distinguish "never uploaded" from "uploaded but unverified".
+async fn get_genetic_verification(
+    State(state): State<Arc<AppState>>,
+    Path(plan_id): Path<uuid::Uuid>,
+) -> impl IntoResponse {
+    let row = match sqlx::query_as::<_, GeneticPlanRow>(
+        r#"
+        SELECT genetic_dna_hash,
+               genetic_verification_status,
+               genetic_verified_at,
+               genetic_verifying_authority,
+               genetic_family_tree_id,
+               genetic_conditions
+        FROM plans
+        WHERE id = $1
+        "#,
+    )
+    .bind(plan_id)
+    .fetch_optional(&state.db_pool)
+    .await
+    {
+        Ok(Some(row)) => row,
+        Ok(None) => {
+            return (
+                StatusCode::NOT_FOUND,
+                Json(serde_json::json!({ "error": "Plan not found" })),
+            )
+                .into_response();
+        }
+        Err(e) => {
+            error!(plan_id = %plan_id, error = %e, "Failed to fetch genetic verification record");
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(serde_json::json!({ "error": format!("Database query failed: {}", e) })),
+            )
+                .into_response();
+        }
+    };
+
+    let dna_hash = match row.genetic_dna_hash {
+        Some(hash) if !hash.is_empty() => hash,
+        _ => {
+            return (
+                StatusCode::NOT_FOUND,
+                Json(serde_json::json!({
+                    "error": "No genetic verification record for this plan"
+                })),
+            )
+                .into_response();
+        }
+    };
+
+    let status = row
+        .genetic_verification_status
+        .unwrap_or_else(|| "unverified".to_string());
+    let genetic_triggers = row
+        .genetic_conditions
+        .and_then(|value| value.as_array().cloned())
+        .unwrap_or_default();
+
+    let response = GeneticInheritanceResponse {
+        dna_hash,
+        verified_lineage: status == "verified",
+        genetic_triggers,
+        family_tree_id: row.genetic_family_tree_id.unwrap_or(0),
+        verification_timestamp: row
+            .genetic_verified_at
+            .map(|verified_at| verified_at.timestamp())
+            .unwrap_or(0),
+        verifying_authority: row.genetic_verifying_authority.unwrap_or_default(),
+    };
+
+    (
+        StatusCode::OK,
+        Json(serde_json::json!({ "data": response })),
+    )
+        .into_response()
+}
+
+/// `PUT /api/genetic/{plan_id}/privacy`
+///
+/// Upserts the off-chain privacy preferences for a plan's genetic record. The
+/// settings are validated before they are stored so a bad retention window can
+/// never be persisted.
+async fn update_genetic_privacy(
+    State(state): State<Arc<AppState>>,
+    Path(plan_id): Path<uuid::Uuid>,
+    Json(settings): Json<GeneticPrivacySettings>,
+) -> impl IntoResponse {
+    if settings.data_retention_days < -1
+        || settings.data_retention_days > GENETIC_MAX_RETENTION_DAYS
+    {
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(serde_json::json!({
+                "error": format!(
+                    "dataRetentionDays must be -1 (indefinite) or between 0 and {}",
+                    GENETIC_MAX_RETENTION_DAYS
+                )
+            })),
+        )
+            .into_response();
+    }
+
+    let serialized = match serde_json::to_value(&settings) {
+        Ok(value) => value,
+        Err(e) => {
+            error!(plan_id = %plan_id, error = %e, "Failed to serialize genetic privacy settings");
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(serde_json::json!({ "error": "Failed to serialize privacy settings" })),
+            )
+                .into_response();
+        }
+    };
+
+    let result = sqlx::query(
+        r#"
+        UPDATE plans
+        SET genetic_privacy_settings = $2
+        WHERE id = $1
+        "#,
+    )
+    .bind(plan_id)
+    .bind(&serialized)
+    .execute(&state.db_pool)
+    .await;
+
+    match result {
+        Ok(outcome) if outcome.rows_affected() == 0 => (
+            StatusCode::NOT_FOUND,
+            Json(serde_json::json!({ "error": "Plan not found" })),
+        )
+            .into_response(),
+        Ok(_) => (
+            StatusCode::OK,
+            Json(serde_json::json!({ "data": settings })),
+        )
+            .into_response(),
+        Err(e) => {
+            error!(plan_id = %plan_id, error = %e, "Failed to update genetic privacy settings");
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(serde_json::json!({
+                    "error": format!("Failed to update privacy settings: {}", e)
+                })),
+            )
+                .into_response()
+        }
+    }
+}
+
+/// `POST /api/genetic/{plan_id}/family/invite`
+///
+/// Creates an email-based family invitation for a plan and returns it. The
+/// foreign key to `plans` makes a missing plan surface as `23503`, which is
+/// mapped back to a `404` instead of a `500`.
+async fn invite_genetic_family(
+    State(state): State<Arc<AppState>>,
+    Path(plan_id): Path<uuid::Uuid>,
+    Json(payload): Json<GeneticFamilyInviteRequest>,
+) -> impl IntoResponse {
+    let email = payload.email.trim().to_ascii_lowercase();
+    if !is_valid_email(&email) {
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(serde_json::json!({ "error": "A valid email address is required" })),
+        )
+            .into_response();
+    }
+
+    let relationship = payload.proposed_relationship.trim().to_ascii_lowercase();
+    if !GENETIC_RELATIONSHIP_TYPES.contains(&relationship.as_str()) {
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(serde_json::json!({
+                "error": format!(
+                    "proposed_relationship must be one of: {}",
+                    GENETIC_RELATIONSHIP_TYPES.join(", ")
+                )
+            })),
+        )
+            .into_response();
+    }
+
+    let invitation = sqlx::query_as::<_, GeneticFamilyInvitation>(
+        r#"
+        INSERT INTO genetic_family_invitations (plan_id, to_email, proposed_relationship, status)
+        VALUES ($1, $2, $3, 'pending')
+        RETURNING id, to_email, proposed_relationship, status, sent_at
+        "#,
+    )
+    .bind(plan_id)
+    .bind(&email)
+    .bind(&relationship)
+    .fetch_one(&state.db_pool)
+    .await;
+
+    match invitation {
+        Ok(invitation) => (
+            StatusCode::CREATED,
+            Json(serde_json::json!({ "data": invitation })),
+        )
+            .into_response(),
+        Err(sqlx::Error::Database(db_error)) if db_error.code().as_deref() == Some("23503") => (
+            StatusCode::NOT_FOUND,
+            Json(serde_json::json!({ "error": "Plan not found" })),
+        )
+            .into_response(),
+        Err(e) => {
+            error!(plan_id = %plan_id, error = %e, "Failed to create genetic family invitation");
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(serde_json::json!({
+                    "error": format!("Failed to create invitation: {}", e)
+                })),
+            )
+                .into_response()
+        }
+    }
+}
+
+#[cfg(test)]
+mod genetic_tests {
+    use super::{is_valid_email, is_valid_genetic_hash};
+
+    #[test]
+    fn accepts_a_lowercase_sha256_digest() {
+        assert!(is_valid_genetic_hash(
+            "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
+        ));
+    }
+
+    #[test]
+    fn rejects_short_uppercase_or_non_hex_digests() {
+        assert!(!is_valid_genetic_hash("deadbeef"));
+        assert!(!is_valid_genetic_hash(
+            "0123456789ABCDEF0123456789ABCDEF0123456789ABCDEF0123456789ABCDEF"
+        ));
+        assert!(!is_valid_genetic_hash(
+            "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdeg"
+        ));
+        assert!(!is_valid_genetic_hash(""));
+    }
+
+    #[test]
+    fn accepts_ordinary_email_addresses() {
+        assert!(is_valid_email("heir@example.com"));
+        assert!(is_valid_email("first.last+tag@sub.example.co.uk"));
+    }
+
+    #[test]
+    fn rejects_malformed_email_addresses() {
+        assert!(!is_valid_email("no-at-sign"));
+        assert!(!is_valid_email("@example.com"));
+        assert!(!is_valid_email("heir@"));
+        assert!(!is_valid_email("heir@localhost"));
+        assert!(!is_valid_email("two@@example.com"));
+        assert!(!is_valid_email("spaces in@example.com"));
+        assert!(!is_valid_email("trailing@example.com."));
+    }
 }
