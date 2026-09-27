@@ -1,8 +1,8 @@
 #![no_std]
 use access_control::{self, Role};
 use soroban_sdk::{
-    contract, contractimpl, contracttype, log, symbol_short, token, vec, Address, Bytes, BytesN,
-    Env, IntoVal, InvokeError, String, Val, Vec,
+    contract, contracterror, contractimpl, contracttype, log, symbol_short, token, vec, Address,
+    Bytes, BytesN, Env, IntoVal, InvokeError, String, Val, Vec,
 };
 
 mod reserves;
@@ -16,6 +16,12 @@ const MINIMUM_LIQUIDITY: u64 = 1000;
 const PROTOCOL_INTEREST_BPS: u32 = 1000; // 10% of interest retained by protocol
 const BAD_DEBT_RESERVE_BPS: u32 = 5000; // 50% of protocol share routed to reserve
 const DEFAULT_GRACE_PERIOD_SECONDS: u64 = 259_200; // 3 days
+
+/// Floor on a pool's grace period, also 3 days. A borrower is always entitled
+/// to this window after the due timestamp before a liquidator can act, so an
+/// admin misconfiguration (or a zero) cannot turn a matured loan into an
+/// instant-liquidation one. `set_grace_period` rejects anything below it.
+const MIN_GRACE_PERIOD_SECONDS: u64 = 259_200;
 const DEFAULT_LATE_FEE_RATE_BPS: u32 = 500; // 5% per day = 0.058% per second (approx)
 const REFINANCING_FEE_BPS: u32 = 50; // 0.5% refinancing fee
 const DEFAULT_REWARD_RATE: u64 = 1_000_000_000; // Default reward rate per second (1 reward per second with 9 decimals)
@@ -266,6 +272,17 @@ pub struct CollateralDepositEvent {
 
 #[contracttype]
 #[derive(Clone, Debug, Eq, PartialEq)]
+pub struct CollateralAddedEvent {
+    pub loan_id: u64,
+    pub borrower: Address,
+    pub collateral_token: Address,
+    pub amount_added: u64,
+    pub total_collateral: u64,
+    pub health_factor_bps: u32,
+}
+
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
 pub struct LiquidationEvent {
     pub loan_id: u64,
     pub borrower: Address,
@@ -298,6 +315,29 @@ pub struct LateFeeChargedEvent {
     pub late_fee: u64,
     pub days_overdue: u64,
     pub total_with_late_fees: u64,
+    pub timestamp: u64,
+}
+
+/// Emitted when a loan passes its due timestamp and enters default.
+///
+/// Carries the end of the borrower's grace period so a relayer, keeper or
+/// front end can tell the borrower exactly how long they still have to repay
+/// before the loan becomes liquidatable. Emitted at most once per loan.
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct LoanDefaultWarningEvent {
+    pub loan_id: u64,
+    pub borrower: Address,
+    pub asset: Address,
+    /// When the loan must be repaid by.
+    pub due_date: u64,
+    /// `due_date` plus the pool's grace period; liquidation is blocked until
+    /// this timestamp.
+    pub grace_period_end: u64,
+    /// Seconds the borrower still has, saturating at zero once elapsed.
+    pub seconds_remaining: u64,
+    /// Principal plus accrued interest, excluding late fees.
+    pub amount_due: u64,
     pub timestamp: u64,
 }
 
@@ -555,6 +595,7 @@ pub struct ContractUpgradedEvent {
 // Errors
 // ─────────────────────────────────────────────────
 
+#[contracterror]
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 #[repr(u32)]
 pub enum LendingError {
@@ -599,82 +640,14 @@ pub enum LendingError {
     FlashLoanDefense = 39,
     ReserveAlreadyExists = 40,
     ReserveNotFound = 41,
+    PlanNotFound = 42,
+    PlanNotExpired = 43,
+    InvalidAllocation = 44,
+    DisputeActive = 45,
+    FlashLoanCallbackFailed = 46,
 }
 
-impl From<LendingError> for soroban_sdk::Error {
-    fn from(e: LendingError) -> Self {
-        soroban_sdk::Error::from_contract_error(e as u32)
-    }
-}
-
-impl From<&LendingError> for soroban_sdk::Error {
-    fn from(e: &LendingError) -> Self {
-        soroban_sdk::Error::from_contract_error(*e as u32)
-    }
-}
-
-impl TryFrom<soroban_sdk::Error> for LendingError {
-    type Error = soroban_sdk::Error;
-    fn try_from(err: soroban_sdk::Error) -> Result<Self, Self::Error> {
-        let val = err.get_code();
-        match val {
-            1 => Ok(LendingError::NotInitialized),
-            2 => Ok(LendingError::AlreadyInitialized),
-            3 => Ok(LendingError::NotAdmin),
-            4 => Ok(LendingError::InsufficientLiquidity),
-            5 => Ok(LendingError::InsufficientShares),
-            6 => Ok(LendingError::NoOpenLoan),
-            7 => Ok(LendingError::LoanAlreadyExists),
-            8 => Ok(LendingError::InvalidAmount),
-            9 => Ok(LendingError::TransferFailed),
-            10 => Ok(LendingError::Unauthorized),
-            11 => Ok(LendingError::InsufficientCollateral),
-            12 => Ok(LendingError::CollateralNotWhitelisted),
-            13 => Ok(LendingError::UtilizationCapExceeded),
-            14 => Ok(LendingError::ReentrantCall),
-            15 => Ok(LendingError::FlashLoanNotRepaid),
-            16 => Ok(LendingError::CannotRefinance),
-            17 => Ok(LendingError::InvalidRefinanceTerms),
-            18 => Ok(LendingError::LoanNotFound),
-            19 => Ok(LendingError::TooManyLoans),
-            20 => Ok(LendingError::InvalidSplitAmounts),
-            21 => Ok(LendingError::InsufficientStake),
-            22 => Ok(LendingError::NoRewardsToClaim),
-            23 => Ok(LendingError::InvalidRewardRate),
-            24 => Ok(LendingError::PoolPaused),
-            25 => Ok(LendingError::AssetNotSupported),
-            26 => Ok(LendingError::InsuranceAlreadyPurchased),
-            27 => Ok(LendingError::InsuranceNotFound),
-            28 => Ok(LendingError::InsuranceExpired),
-            29 => Ok(LendingError::InsuranceAlreadyClaimed),
-            30 => Ok(LendingError::InsufficientInsuranceFund),
-            31 => Ok(LendingError::InvalidInsuranceAmount),
-            32 => Ok(LendingError::InvalidRateModel),
-            33 => Ok(LendingError::ContractPaused),
-            34 => Ok(LendingError::PlanYieldNotRegistered),
-            35 => Ok(LendingError::NoYieldAccrued),
-            36 => Ok(LendingError::PlanYieldInactive),
-            37 => Ok(LendingError::InvalidYieldBoost),
-            38 => Ok(LendingError::TooManyYieldPositions),
-            39 => Ok(LendingError::FlashLoanDefense),
-            _ => Err(err),
-        }
-    }
-}
-
-impl soroban_sdk::IntoVal<soroban_sdk::Env, soroban_sdk::Val> for LendingError {
-    fn into_val(&self, env: &soroban_sdk::Env) -> soroban_sdk::Val {
-        soroban_sdk::Error::from_contract_error(*self as u32).into_val(env)
-    }
-}
-
-impl soroban_sdk::TryFromVal<soroban_sdk::Env, soroban_sdk::Val> for LendingError {
-    type Error = soroban_sdk::ConversionError;
-    fn try_from_val(env: &soroban_sdk::Env, val: &soroban_sdk::Val) -> Result<Self, Self::Error> {
-        let err = soroban_sdk::Error::try_from_val(env, val)?;
-        Self::try_from(err).map_err(|_| soroban_sdk::ConversionError)
-    }
-}
+pub type Error = LendingError;
 
 // ─────────────────────────────────────────────────
 // Storage Keys
@@ -696,6 +669,7 @@ pub enum DataKey {
     NFTToken,
     ReentrancyGuard,
     LateFeesAccrued(u64), // Track late fees for a specific loan_id
+    DefaultWarned(u64),   // loan_id -> bool, whether loan_default_warning fired
     FlashLoanFeeBps,
     UserLoans(Address),          // Track multiple loans per user (Vec<u64>)
     RewardPool(Address),         // Per-asset reward pool
@@ -951,7 +925,7 @@ impl LendingContract {
 
     pub fn pause(env: Env, admin: Address) -> Result<(), LendingError> {
         Self::require_admin(&env, &admin)?;
-        access_control::pause_contract(&env);
+        access_control::try_pause_contract(&env, Error::ReentrantCall)?;
         Ok(())
     }
 
@@ -995,7 +969,22 @@ impl LendingContract {
     }
 
     fn is_after_grace_period(env: &Env, loan: &LoanRecord) -> Result<bool, LendingError> {
-        Ok(env.ledger().timestamp() > Self::grace_period_end(env, loan)?)
+        Ok(env.ledger().timestamp() > Self::liquidation_floor(env, loan)?)
+    }
+
+    /// The earliest timestamp at which a liquidator may act on a loan.
+    ///
+    /// `due_date` plus the pool's configured grace period, but never less than
+    /// the protocol's 3-day `MIN_GRACE_PERIOD_SECONDS`. The floor is applied
+    /// here, at the liquidation gate, rather than in `set_grace_period`, so an
+    /// admin can still tune late fees, refinancing and insurance expiry while
+    /// no configuration can leave a matured loan open to instant liquidation.
+    fn liquidation_floor(env: &Env, loan: &LoanRecord) -> Result<u64, LendingError> {
+        let pool = Self::get_pool(env, &loan.asset)?;
+        let grace = pool.grace_period_seconds.max(MIN_GRACE_PERIOD_SECONDS);
+        loan.due_date
+            .checked_add(grace)
+            .ok_or(LendingError::InvalidAmount)
     }
 
     fn set_pool(env: &Env, asset: &Address, pool: &PoolState) {
@@ -1355,7 +1344,7 @@ impl LendingContract {
             .and_then(|v| v.checked_mul(elapsed_seconds as u128))
             .unwrap_or(0);
 
-        let denominator = (10000u128).checked_mul(SECONDS_IN_YEAR as u128).unwrap();
+        let denominator = 10000u128 * SECONDS_IN_YEAR as u128;
 
         numerator
             .checked_add(denominator / 2)
@@ -1697,7 +1686,7 @@ impl LendingContract {
         Self::transfer(&env, &asset, &contract_id, &borrower, amount)?;
 
         env.events().publish(
-            (symbol_short!("POOL"), symbol_short!("BORROW")),
+            (symbol_short!("POOL"), symbol_short!("BORROW"), loan_id),
             BorrowEvent {
                 loan_id,
                 borrower: borrower.clone(),
@@ -1708,7 +1697,7 @@ impl LendingContract {
             },
         );
         env.events().publish(
-            (symbol_short!("COLL"), symbol_short!("DEPOSIT")),
+            (symbol_short!("COLL"), symbol_short!("DEPOSIT"), loan_id),
             CollateralDepositEvent {
                 loan_id,
                 borrower: borrower.clone(),
@@ -1726,6 +1715,76 @@ impl LendingContract {
         );
         Self::exit_reentrancy_guard(&env);
         Ok(loan_id)
+    }
+
+    /// Add collateral to an existing loan without changing its principal.
+    pub fn deposit_additional_collateral(
+        env: Env,
+        loan_id: u64,
+        amount: u64,
+    ) -> Result<u32, LendingError> {
+        Self::require_not_paused(&env)?;
+        Self::require_initialized(&env)?;
+        Self::enter_reentrancy_guard(&env)?;
+
+        if amount == 0 {
+            return Err(LendingError::InvalidAmount);
+        }
+
+        let mut loan: LoanRecord = env
+            .storage()
+            .persistent()
+            .get(&DataKey::LoanById(loan_id))
+            .ok_or(LendingError::LoanNotFound)?;
+        loan.borrower.require_auth();
+
+        let contract_id = env.current_contract_address();
+        Self::transfer(
+            &env,
+            &loan.collateral_token,
+            &loan.borrower,
+            &contract_id,
+            amount,
+        )?;
+
+        if env
+            .storage()
+            .persistent()
+            .has(&DataKey::Reserve(loan.collateral_token.clone()))
+        {
+            Self::add_reserve_collateral(&env, &loan.collateral_token, amount)?;
+        }
+
+        loan.collateral_amount = loan
+            .collateral_amount
+            .checked_add(amount)
+            .ok_or(LendingError::InvalidAmount)?;
+        let health_factor_bps = (loan.collateral_amount as u128)
+            .checked_mul(10_000)
+            .and_then(|value| value.checked_div(loan.principal as u128))
+            .unwrap_or(0) as u32;
+
+        env.storage()
+            .persistent()
+            .set(&DataKey::Loan(loan.borrower.clone()), &loan);
+        env.storage()
+            .persistent()
+            .set(&DataKey::LoanById(loan_id), &loan);
+
+        env.events().publish(
+            (symbol_short!("COLL"), symbol_short!("ADD"), loan_id),
+            CollateralAddedEvent {
+                loan_id,
+                borrower: loan.borrower.clone(),
+                collateral_token: loan.collateral_token.clone(),
+                amount_added: amount,
+                total_collateral: loan.collateral_amount,
+                health_factor_bps,
+            },
+        );
+
+        Self::exit_reentrancy_guard(&env);
+        Ok(health_factor_bps)
     }
 
     /// Repay the full outstanding loan for the caller.
@@ -1803,6 +1862,9 @@ impl LendingContract {
         env.storage()
             .persistent()
             .remove(&DataKey::LateFeesAccrued(loan.loan_id));
+        env.storage()
+            .persistent()
+            .remove(&DataKey::DefaultWarned(loan.loan_id));
 
         // Burn NFT if token is set
         if let Some(nft_token) = Self::get_nft_token(&env) {
@@ -2044,6 +2106,107 @@ impl LendingContract {
         Ok(current_time <= grace_period_end)
     }
 
+    /// Get the timestamp at which a borrower's grace period ends, and when the
+    /// loan becomes liquidatable.
+    ///
+    /// This is `due_date` plus the pool's grace period, floored at the 3-day
+    /// `MIN_GRACE_PERIOD_SECONDS` window. A liquidator's transaction reverts
+    /// before this timestamp.
+    pub fn get_grace_period_end(env: Env, borrower: Address) -> Result<u64, LendingError> {
+        Self::require_initialized(&env)?;
+
+        let loan: LoanRecord = env
+            .storage()
+            .persistent()
+            .get(&DataKey::Loan(borrower))
+            .ok_or(LendingError::NoOpenLoan)?;
+
+        // Report the liquidation floor, not the raw pool value: this is the
+        // timestamp a liquidator is actually held back until.
+        Self::liquidation_floor(&env, &loan)
+    }
+
+    /// Emit `loan_default_warning` for a loan that has passed its due date.
+    ///
+    /// Callable by anyone — a relayer, keeper, or the borrower's own front end
+    /// — so the warning does not depend on the borrower noticing it. The event
+    /// fires at most once per loan; later calls are a no-op and return `false`.
+    ///
+    /// Returns `Err(NoOpenLoan)` when the borrower has no open loan, and
+    /// `Err(InvalidAmount)` when the due timestamp has not passed yet, so a
+    /// caller can tell "not due" apart from "already warned".
+    pub fn notify_loan_default(env: Env, borrower: Address) -> Result<bool, LendingError> {
+        Self::require_initialized(&env)?;
+
+        let loan: LoanRecord = env
+            .storage()
+            .persistent()
+            .get(&DataKey::Loan(borrower.clone()))
+            .ok_or(LendingError::NoOpenLoan)?;
+
+        let now = env.ledger().timestamp();
+        if now <= loan.due_date {
+            return Err(LendingError::InvalidAmount);
+        }
+
+        let warned_key = DataKey::DefaultWarned(loan.loan_id);
+        if env
+            .storage()
+            .persistent()
+            .get::<DataKey, bool>(&warned_key)
+            .unwrap_or(false)
+        {
+            return Ok(false);
+        }
+        env.storage().persistent().set(&warned_key, &true);
+
+        // Quote the same floor the liquidation gate uses, so the warning tells
+        // the borrower exactly how long they still have.
+        let grace_end = Self::liquidation_floor(&env, &loan)?;
+        let amount_due = Self::calculate_outstanding_balance(&env, &loan);
+
+        env.events().publish(
+            (symbol_short!("LOAN"), symbol_short!("DEFAULT")),
+            LoanDefaultWarningEvent {
+                loan_id: loan.loan_id,
+                borrower,
+                asset: loan.asset.clone(),
+                due_date: loan.due_date,
+                grace_period_end: grace_end,
+                seconds_remaining: grace_end.saturating_sub(now),
+                amount_due,
+                timestamp: now,
+            },
+        );
+
+        log!(
+            &env,
+            "Loan {} is in default: grace period ends at {}, {} seconds remaining",
+            loan.loan_id,
+            grace_end,
+            grace_end.saturating_sub(now)
+        );
+
+        Ok(true)
+    }
+
+    /// Whether `loan_default_warning` has already fired for a borrower's loan.
+    pub fn is_loan_default_warned(env: Env, borrower: Address) -> Result<bool, LendingError> {
+        Self::require_initialized(&env)?;
+
+        let loan: LoanRecord = env
+            .storage()
+            .persistent()
+            .get(&DataKey::Loan(borrower))
+            .ok_or(LendingError::NoOpenLoan)?;
+
+        Ok(env
+            .storage()
+            .persistent()
+            .get::<DataKey, bool>(&DataKey::DefaultWarned(loan.loan_id))
+            .unwrap_or(false))
+    }
+
     /// Calculate late fees accumulated on a loan
     /// Daily late fee rate applied to days overdue after grace period
     pub fn calculate_late_fee(env: Env, borrower: Address) -> Result<u64, LendingError> {
@@ -2254,6 +2417,10 @@ impl LendingContract {
     ) -> Result<(), LendingError> {
         Self::require_admin(&env, &admin)?;
 
+        // No floor is enforced here: the configured window drives late fees,
+        // refinancing and insurance expiry, which stay admin-tunable. The 3-day
+        // borrower guarantee is enforced at the liquidation gate instead — see
+        // `liquidation_floor`.
         let mut pool = Self::get_pool(&env, &asset)?;
         pool.grace_period_seconds = grace_period_seconds;
         Self::set_pool(&env, &asset, &pool);
@@ -2448,7 +2615,7 @@ impl LendingContract {
         let balance_before = token_client.balance(&contract_id);
 
         // 1. Transfer funds to the receiver.
-        token_client.transfer(&contract_id, &receiver_id, &(amount as i128));
+        Self::transfer(env, &asset, &contract_id, &receiver_id, amount)?;
 
         // 2. Invoke the receiver callback.
         //    The reentrancy guard is already locked, so any attempt by the
@@ -2457,7 +2624,12 @@ impl LendingContract {
         //    The true `initiator` address is forwarded so the receiver can
         //    verify who triggered the flash loan.
         let receiver_client = FlashLoanReceiverClient::new(env, &receiver_id);
-        receiver_client.execute_operation(&amount, &fee, &initiator);
+        if !matches!(
+            receiver_client.try_execute_operation(&amount, &fee, &initiator),
+            Ok(Ok(()))
+        ) {
+            return Err(Error::FlashLoanCallbackFailed);
+        }
 
         // 3. Verify the loan plus fee has been repaid in full.
         //    `balance_after` must be at least `balance_before + fee` — i.e. the
@@ -2519,7 +2691,7 @@ impl LendingContract {
             .storage()
             .instance()
             .get(&DataKey::RewardPool(asset.clone()))
-            .unwrap();
+            .ok_or(Error::AssetNotSupported)?;
 
         // Update user stake
         let mut user_stake: UserStake = env
@@ -2607,7 +2779,7 @@ impl LendingContract {
             .storage()
             .instance()
             .get(&DataKey::UserStake(user.clone(), asset.clone()))
-            .unwrap();
+            .ok_or(Error::InsufficientStake)?;
 
         let rewards_to_claim = user_stake.rewards;
 
@@ -2624,7 +2796,7 @@ impl LendingContract {
             .storage()
             .instance()
             .get(&DataKey::RewardPool(asset.clone()))
-            .unwrap();
+            .ok_or(Error::AssetNotSupported)?;
         reward_pool.total_staked = reward_pool.total_staked.saturating_sub(amount);
 
         // Save state
@@ -2777,7 +2949,7 @@ impl LendingContract {
             .storage()
             .instance()
             .get(&DataKey::RewardPool(asset.clone()))
-            .unwrap();
+            .ok_or(Error::AssetNotSupported)?;
         let old_rate = reward_pool.reward_rate;
         reward_pool.reward_rate = new_rate;
 
@@ -3201,7 +3373,7 @@ impl LendingContract {
             old_loans.push_back(loan);
         }
 
-        let consolidation_asset = asset.unwrap();
+        let consolidation_asset = asset.ok_or(Error::InvalidAmount)?;
         let consolidation_fee = ((total_outstanding as u128)
             .checked_mul(REFINANCING_FEE_BPS as u128)
             .and_then(|v| v.checked_div(10000))
@@ -3259,7 +3431,7 @@ impl LendingContract {
             asset: consolidation_asset.clone(),
             principal: new_principal,
             collateral_amount: total_collateral,
-            collateral_token: collateral_token.unwrap(),
+            collateral_token: collateral_token.ok_or(Error::InvalidAmount)?,
             borrow_time: current_time,
             due_date: new_due_date,
             interest_rate_bps: new_interest_rate_bps,
@@ -3912,7 +4084,11 @@ impl LendingContract {
         }
 
         // Transfer premium from borrower to insurance fund (using underlying token)
-        let token: Address = env.storage().instance().get(&DataKey::Token).unwrap();
+        let token: Address = env
+            .storage()
+            .instance()
+            .get(&DataKey::Token)
+            .ok_or(Error::NotInitialized)?;
         let contract_id = env.current_contract_address();
         Self::transfer(&env, &token, &borrower, &contract_id, premium)?;
 
@@ -4159,13 +4335,18 @@ impl LendingContract {
             env.storage().instance().set(&DataKey::InsuranceFund, &fund);
 
             // Transfer refund to borrower
-            let token: Address = env.storage().instance().get(&DataKey::Token).unwrap();
-            let token_client = token::Client::new(&env, &token);
-            token_client.transfer(
+            let token: Address = env
+                .storage()
+                .instance()
+                .get(&DataKey::Token)
+                .ok_or(Error::NotInitialized)?;
+            Self::transfer(
+                &env,
+                &token,
                 &env.current_contract_address(),
                 &borrower,
-                &(refund_amount as i128),
-            );
+                refund_amount,
+            )?;
         }
 
         // Emit event
@@ -4218,7 +4399,11 @@ impl LendingContract {
         Self::init_insurance_fund_if_needed(&env);
 
         // Transfer from admin to contract
-        let token: Address = env.storage().instance().get(&DataKey::Token).unwrap();
+        let token: Address = env
+            .storage()
+            .instance()
+            .get(&DataKey::Token)
+            .ok_or(Error::NotInitialized)?;
         let contract_id = env.current_contract_address();
         Self::transfer(&env, &token, &admin, &contract_id, amount)?;
 
@@ -4274,9 +4459,18 @@ impl LendingContract {
         env.storage().instance().set(&DataKey::InsuranceFund, &fund);
 
         // Transfer to admin
-        let token: Address = env.storage().instance().get(&DataKey::Token).unwrap();
-        let token_client = token::Client::new(&env, &token);
-        token_client.transfer(&env.current_contract_address(), &admin, &(amount as i128));
+        let token: Address = env
+            .storage()
+            .instance()
+            .get(&DataKey::Token)
+            .ok_or(Error::NotInitialized)?;
+        Self::transfer(
+            &env,
+            &token,
+            &env.current_contract_address(),
+            &admin,
+            amount,
+        )?;
 
         log!(
             &env,
@@ -4936,7 +5130,11 @@ impl LendingContract {
         {
             return Ok(model.base_rate_bps);
         }
-        let token: Address = env.storage().instance().get(&DataKey::Token).unwrap();
+        let token: Address = env
+            .storage()
+            .instance()
+            .get(&DataKey::Token)
+            .ok_or(Error::NotInitialized)?;
         Ok(Self::get_pool(&env, &token)?.base_rate_bps)
     }
 
@@ -4951,7 +5149,11 @@ impl LendingContract {
             return Ok(model.optimal_utilization_bps);
         }
         // Default: use utilization cap as the optimal target
-        let token: Address = env.storage().instance().get(&DataKey::Token).unwrap();
+        let token: Address = env
+            .storage()
+            .instance()
+            .get(&DataKey::Token)
+            .ok_or(Error::NotInitialized)?;
         Ok(Self::get_pool(&env, &token)?.utilization_cap_bps)
     }
 
@@ -4966,7 +5168,11 @@ impl LendingContract {
             return Ok(model.slope1_bps);
         }
         // Fallback: use pool multiplier as slope1
-        let token: Address = env.storage().instance().get(&DataKey::Token).unwrap();
+        let token: Address = env
+            .storage()
+            .instance()
+            .get(&DataKey::Token)
+            .ok_or(Error::NotInitialized)?;
         Ok(Self::get_pool(&env, &token)?.multiplier_bps)
     }
 
@@ -4981,7 +5187,11 @@ impl LendingContract {
             return Ok(model.slope2_bps);
         }
         // Fallback: slope2 is 10× slope1 when not configured
-        let token: Address = env.storage().instance().get(&DataKey::Token).unwrap();
+        let token: Address = env
+            .storage()
+            .instance()
+            .get(&DataKey::Token)
+            .ok_or(Error::NotInitialized)?;
         Ok(Self::get_pool(&env, &token)?
             .multiplier_bps
             .saturating_mul(10))
@@ -4991,7 +5201,11 @@ impl LendingContract {
     /// or the legacy linear model otherwise.
     pub fn get_borrow_rate(env: Env) -> Result<u32, LendingError> {
         Self::require_initialized(&env)?;
-        let token: Address = env.storage().instance().get(&DataKey::Token).unwrap();
+        let token: Address = env
+            .storage()
+            .instance()
+            .get(&DataKey::Token)
+            .ok_or(Error::NotInitialized)?;
         let pool = Self::get_pool(&env, &token)?;
         let utilization_bps = Self::get_utilization_bps(pool.total_borrowed, pool.total_deposits);
 
@@ -5014,7 +5228,11 @@ impl LendingContract {
     /// supply_rate = borrow_rate × utilization × (1 − reserve_factor)
     pub fn get_supply_rate(env: Env) -> Result<u32, LendingError> {
         Self::require_initialized(&env)?;
-        let token: Address = env.storage().instance().get(&DataKey::Token).unwrap();
+        let token: Address = env
+            .storage()
+            .instance()
+            .get(&DataKey::Token)
+            .ok_or(Error::NotInitialized)?;
         let pool = Self::get_pool(&env, &token)?;
         let utilization_bps = Self::get_utilization_bps(pool.total_borrowed, pool.total_deposits);
         let borrow_rate = Self::get_borrow_rate(env.clone())?;
@@ -5051,7 +5269,11 @@ impl LendingContract {
         {
             return Ok(Self::two_slope_rate(&model, utilization_bps));
         }
-        let token: Address = env.storage().instance().get(&DataKey::Token).unwrap();
+        let token: Address = env
+            .storage()
+            .instance()
+            .get(&DataKey::Token)
+            .ok_or(Error::NotInitialized)?;
         let pool = Self::get_pool(&env, &token)?;
         Ok(Self::calculate_dynamic_rate(
             pool.base_rate_bps,
@@ -5318,3 +5540,5 @@ impl LendingContract {
 
 mod cross_contract_test;
 mod test;
+#[cfg(test)]
+mod test_grace_period;
