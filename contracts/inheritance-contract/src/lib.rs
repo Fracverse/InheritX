@@ -8604,8 +8604,10 @@ impl InheritanceContract {
     /// Timestamp from which a share may be routed to its contingency address,
     /// or `None` while inheritance has not been triggered.
     pub fn get_contingency_available_at(env: Env, plan_id: u64) -> Option<u64> {
-        Self::get_trigger_info(&env, plan_id)
-            .map(|info| info.triggered_at.saturating_add(CONTINGENCY_TIMEOUT_SECONDS))
+        Self::get_trigger_info(&env, plan_id).map(|info| {
+            info.triggered_at
+                .saturating_add(CONTINGENCY_TIMEOUT_SECONDS)
+        })
     }
 
     /// Route an unclaimed share to its contingency address.
@@ -8658,13 +8660,7 @@ impl InheritanceContract {
             return Err(InheritanceError::NothingToClaim);
         }
 
-        Self::release_from_plan_vault(
-            &env,
-            plan_id,
-            &plan.token,
-            &contingency_address,
-            balance,
-        )?;
+        Self::release_from_plan_vault(&env, plan_id, &plan.token, &contingency_address, balance)?;
 
         // Zeroing the balance and marking the beneficiary claimed is what stops
         // a second payout — the `is_claimed` check above rejects any repeat.

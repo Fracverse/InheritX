@@ -94,7 +94,9 @@ fn plan_params(
     }
 }
 
-fn default_beneficiaries(env: &Env) -> Vec<(String, String, u32, Bytes, u32, u32, Option<Address>)> {
+fn default_beneficiaries(
+    env: &Env,
+) -> Vec<(String, String, u32, Bytes, u32, u32, Option<Address>)> {
     vec![
         env,
         (
