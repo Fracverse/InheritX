@@ -6033,6 +6033,7 @@ fn test_batch_claim_inheritance_plan_success() {
             create_test_bytes(&env, "BANK123"),
             5000u32,
             1u32,
+            None,
         ),
         (
             String::from_str(&env, "Heir 2"),
@@ -6041,6 +6042,7 @@ fn test_batch_claim_inheritance_plan_success() {
             create_test_bytes(&env, "BANK456"),
             5000u32,
             2u32,
+            None,
         ),
     ];
 
@@ -6081,6 +6083,7 @@ fn test_batch_claim_inheritance_plan_atomic_rollback_on_wrong_code() {
             create_test_bytes(&env, "BANK123"),
             5000u32,
             1u32,
+            None,
         ),
         (
             String::from_str(&env, "Heir 2"),
@@ -6089,6 +6092,7 @@ fn test_batch_claim_inheritance_plan_atomic_rollback_on_wrong_code() {
             create_test_bytes(&env, "BANK456"),
             5000u32,
             2u32,
+            None,
         ),
     ];
 
@@ -6131,6 +6135,7 @@ fn test_batch_claim_inheritance_plan_duplicate_index_fails() {
             create_test_bytes(&env, "BANK123"),
             10000u32,
             1u32,
+            None,
         ),
     ];
 
@@ -6166,6 +6171,7 @@ fn test_batch_claim_inheritance_plan_length_mismatch_fails() {
             create_test_bytes(&env, "BANK123"),
             10000u32,
             1u32,
+            None,
         ),
     ];
 
@@ -6206,6 +6212,7 @@ fn batch_claim_fixture(env: &Env) -> (InheritanceContractClient<'_>, Address, Ad
             create_test_bytes(env, "BANK123"),
             5000u32,
             i + 1,
+            None,
         ));
     }
     let id = client.create_inheritance_plan(&plan_params(

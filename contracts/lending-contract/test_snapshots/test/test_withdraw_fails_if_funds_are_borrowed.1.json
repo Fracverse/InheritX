@@ -284,7 +284,7 @@
   ],
   "ledger": {
     "protocol_version": 21,
-    "sequence_number": 0,
+    "sequence_number": 1,
     "timestamp": 0,
     "network_id": "0000000000000000000000000000000000000000000000000000000000000000",
     "base_reserve": 0,
@@ -553,6 +553,57 @@
             "key": {
               "vec": [
                 {
+                  "symbol": "DepositLedger"
+                },
+                {
+                  "address": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAOLZM"
+                },
+                {
+                  "address": "CBUSYNQKASUYFWYC3M2GUEDMX4AIVWPALDBYJPNK6554BREHTGZ2IUNF"
+                }
+              ]
+            },
+            "durability": "persistent"
+          }
+        },
+        [
+          {
+            "last_modified_ledger_seq": 0,
+            "data": {
+              "contract_data": {
+                "ext": "v0",
+                "contract": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAMDR4",
+                "key": {
+                  "vec": [
+                    {
+                      "symbol": "DepositLedger"
+                    },
+                    {
+                      "address": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAOLZM"
+                    },
+                    {
+                      "address": "CBUSYNQKASUYFWYC3M2GUEDMX4AIVWPALDBYJPNK6554BREHTGZ2IUNF"
+                    }
+                  ]
+                },
+                "durability": "persistent",
+                "val": {
+                  "u32": 0
+                }
+              }
+            },
+            "ext": "v0"
+          },
+          4095
+        ]
+      ],
+      [
+        {
+          "contract_data": {
+            "contract": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAMDR4",
+            "key": {
+              "vec": [
+                {
                   "symbol": "Loan"
                 },
                 {
@@ -661,7 +712,7 @@
             },
             "ext": "v0"
           },
-          4095
+          4096
         ]
       ],
       [
@@ -779,7 +830,7 @@
             },
             "ext": "v0"
           },
-          4095
+          4096
         ]
       ],
       [
@@ -932,7 +983,7 @@
             },
             "ext": "v0"
           },
-          4095
+          4096
         ]
       ],
       [
@@ -1332,7 +1383,7 @@
             },
             "ext": "v0"
           },
-          6311999
+          6312000
         ]
       ],
       [
@@ -1398,7 +1449,7 @@
             },
             "ext": "v0"
           },
-          6311999
+          6312000
         ]
       ],
       [
@@ -1617,7 +1668,7 @@
             },
             "ext": "v0"
           },
-          518400
+          518401
         ]
       ],
       [
@@ -1802,7 +1853,7 @@
             },
             "ext": "v0"
           },
-          518400
+          518401
         ]
       ],
       [
@@ -3034,6 +3085,9 @@
               },
               {
                 "symbol": "BORROW"
+              },
+              {
+                "u64": 1
               }
             ],
             "data": {
@@ -3106,6 +3160,9 @@
               },
               {
                 "symbol": "DEPOSIT"
+              },
+              {
+                "u64": 1
               }
             ],
             "data": {

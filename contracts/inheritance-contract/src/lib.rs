@@ -125,6 +125,27 @@ pub struct InheritancePlan {
 mod errors;
 pub use errors::{Error, InheritanceError};
 
+/// One beneficiary as supplied by a caller, in declaration order:
+/// `(name, email, relationship_code, bank_details, percentage_bps, priority,
+/// contingency_address)`.
+///
+/// `contingency_address` is `None` when the share has no fallback recipient.
+/// Named rather than written inline so the signatures stay readable and clippy's
+/// `type_complexity` lint is satisfied in one place.
+pub type BeneficiaryData = (String, String, u32, Bytes, u32, u32, Option<Address>);
+
+/// Storage key for per-beneficiary claim balances.
+///
+/// Kept out of [`DataKey`], which already carries the 50 cases a single
+/// `#[contracttype]` enum may declare — a 51st makes the macro panic. Its own
+/// key type also keeps the partial-claim state self-contained.
+#[contracttype]
+#[derive(Clone)]
+pub enum BeneficiaryKey {
+    /// (plan_id, beneficiary_index) -> remaining claimable amount
+    Balance(u64, u32),
+}
+
 #[contracttype]
 #[derive(Clone)]
 pub enum DataKey {
@@ -922,7 +943,7 @@ pub struct CreateInheritancePlanParams {
     /// (name, email, claim_code, bank_account, allocation_bp, priority,
     /// contingency_address). The last element is the Issue #1163 fallback
     /// recipient and may be `None`.
-    pub beneficiaries_data: Vec<(String, String, u32, Bytes, u32, u32, Option<Address>)>,
+    pub beneficiaries_data: Vec<BeneficiaryData>,
     pub is_lendable: bool,
     /// Guardians authorized to trigger emergency plan recovery. 0 or up to 5.
     pub guardians: Vec<Address>,
@@ -1840,7 +1861,7 @@ impl InheritanceContract {
 
     pub fn validate_beneficiaries(
         env: &Env,
-        beneficiaries_data: Vec<(String, String, u32, Bytes, u32, u32, Option<Address>)>,
+        beneficiaries_data: Vec<BeneficiaryData>,
     ) -> Result<(), InheritanceError> {
         // Validate beneficiary count (max 10)
         if beneficiaries_data.len() > 10 {
@@ -2732,7 +2753,7 @@ impl InheritanceContract {
         env: Env,
         owner: Address,
         plan_id: u64,
-        beneficiaries: Vec<(String, String, u32, Bytes, u32, u32, Option<Address>)>,
+        beneficiaries: Vec<BeneficiaryData>,
         grace_period: u64,
         earn_yield: bool,
     ) -> Result<(), InheritanceError> {
@@ -8280,14 +8301,14 @@ impl InheritanceContract {
     fn beneficiary_balance(env: &Env, plan_id: u64, index: u32, plan: &InheritancePlan) -> u64 {
         env.storage()
             .persistent()
-            .get(&DataKey::Bb(plan_id, index))
+            .get(&BeneficiaryKey::Balance(plan_id, index))
             .unwrap_or_else(|| Self::calculate_waterfall_payout(env, plan, index))
     }
 
     fn set_beneficiary_balance(env: &Env, plan_id: u64, index: u32, balance: u64) {
         env.storage()
             .persistent()
-            .set(&DataKey::Bb(plan_id, index), &balance);
+            .set(&BeneficiaryKey::Balance(plan_id, index), &balance);
     }
 
     /// Remaining share a beneficiary may still withdraw.
@@ -8333,7 +8354,7 @@ impl InheritanceContract {
     ) -> Result<u64, InheritanceError> {
         claimer.require_auth();
         Self::require_not_blacklisted(&env, &claimer)?;
-        Self::check_not_paused(&env);
+        Self::check_not_paused(&env)?;
         let _guard = access_control::ReentrancyGuard::lock_or_panic(&env);
 
         // An i128 is the ledger's native amount type, but plan balances are
@@ -8518,7 +8539,7 @@ impl InheritanceContract {
 
         owner.require_auth();
         Self::require_not_blacklisted(&env, &owner)?;
-        Self::check_not_paused(&env);
+        Self::check_not_paused(&env)?;
 
         let now = env.ledger().timestamp();
         let mut pinged = 0u32;
@@ -8571,7 +8592,7 @@ impl InheritanceContract {
         contingency_address: Address,
     ) -> Result<(), InheritanceError> {
         owner.require_auth();
-        Self::check_not_paused(&env);
+        Self::check_not_paused(&env)?;
 
         let mut plan = Self::get_plan(&env, plan_id).ok_or(InheritanceError::PlanNotFound)?;
         if plan.owner != owner {
@@ -8628,7 +8649,7 @@ impl InheritanceContract {
         plan_id: u64,
         beneficiary_index: u32,
     ) -> Result<u64, InheritanceError> {
-        Self::check_not_paused(&env);
+        Self::check_not_paused(&env)?;
         let _guard = access_control::ReentrancyGuard::lock_or_panic(&env);
 
         let plan = Self::get_plan(&env, plan_id).ok_or(InheritanceError::PlanNotFound)?;

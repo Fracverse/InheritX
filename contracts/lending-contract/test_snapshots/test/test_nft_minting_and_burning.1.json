@@ -688,6 +688,57 @@
             "key": {
               "vec": [
                 {
+                  "symbol": "DepositLedger"
+                },
+                {
+                  "address": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAARQG5"
+                },
+                {
+                  "address": "CBUSYNQKASUYFWYC3M2GUEDMX4AIVWPALDBYJPNK6554BREHTGZ2IUNF"
+                }
+              ]
+            },
+            "durability": "persistent"
+          }
+        },
+        [
+          {
+            "last_modified_ledger_seq": 0,
+            "data": {
+              "contract_data": {
+                "ext": "v0",
+                "contract": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAMDR4",
+                "key": {
+                  "vec": [
+                    {
+                      "symbol": "DepositLedger"
+                    },
+                    {
+                      "address": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAARQG5"
+                    },
+                    {
+                      "address": "CBUSYNQKASUYFWYC3M2GUEDMX4AIVWPALDBYJPNK6554BREHTGZ2IUNF"
+                    }
+                  ]
+                },
+                "durability": "persistent",
+                "val": {
+                  "u32": 0
+                }
+              }
+            },
+            "ext": "v0"
+          },
+          4095
+        ]
+      ],
+      [
+        {
+          "contract_data": {
+            "contract": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAMDR4",
+            "key": {
+              "vec": [
+                {
                   "symbol": "Roles"
                 },
                 {
@@ -3150,10 +3201,34 @@
                     },
                     {
                       "key": {
+                        "symbol": "ltv_ratio_bps"
+                      },
+                      "val": {
+                        "u32": 6666
+                      }
+                    },
+                    {
+                      "key": {
+                        "symbol": "plan_id"
+                      },
+                      "val": {
+                        "u64": 0
+                      }
+                    },
+                    {
+                      "key": {
                         "symbol": "principal"
                       },
                       "val": {
                         "u64": 1000
+                      }
+                    },
+                    {
+                      "key": {
+                        "symbol": "uri"
+                      },
+                      "val": {
+                        "string": "{\"name\":\"InheritX Loan NFT #1\",\"loan_id\":1,\"principal\":1000,\"collateral_amount\":1500,\"ltv_ratio_bps\":6666,\"plan_id\":0,\"due_date\":2592000}"
                       }
                     }
                   ]
@@ -3315,6 +3390,9 @@
               },
               {
                 "symbol": "BORROW"
+              },
+              {
+                "u64": 1
               }
             ],
             "data": {
@@ -3387,6 +3465,9 @@
               },
               {
                 "symbol": "DEPOSIT"
+              },
+              {
+                "u64": 1
               }
             ],
             "data": {
@@ -3623,10 +3704,34 @@
                 },
                 {
                   "key": {
+                    "symbol": "ltv_ratio_bps"
+                  },
+                  "val": {
+                    "u32": 6666
+                  }
+                },
+                {
+                  "key": {
+                    "symbol": "plan_id"
+                  },
+                  "val": {
+                    "u64": 0
+                  }
+                },
+                {
+                  "key": {
                     "symbol": "principal"
                   },
                   "val": {
                     "u64": 1000
+                  }
+                },
+                {
+                  "key": {
+                    "symbol": "uri"
+                  },
+                  "val": {
+                    "string": "{\"name\":\"InheritX Loan NFT #1\",\"loan_id\":1,\"principal\":1000,\"collateral_amount\":1500,\"ltv_ratio_bps\":6666,\"plan_id\":0,\"due_date\":2592000}"
                   }
                 }
               ]
