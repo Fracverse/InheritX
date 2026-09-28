@@ -81,7 +81,10 @@ fn test_bytes(env: &Env, s: &str) -> Bytes {
     Bytes::from_slice(env, s.as_bytes())
 }
 
-fn one_beneficiary(env: &Env, code: u32) -> Vec<(String, String, u32, Bytes, u32, u32)> {
+fn one_beneficiary(
+    env: &Env,
+    code: u32,
+) -> Vec<(String, String, u32, Bytes, u32, u32, Option<Address>)> {
     vec![
         env,
         (
@@ -91,6 +94,7 @@ fn one_beneficiary(env: &Env, code: u32) -> Vec<(String, String, u32, Bytes, u32
             test_bytes(env, "1111111111111111"),
             10000u32,
             1u32,
+            None,
         ),
     ]
 }
@@ -100,7 +104,7 @@ fn plan_params(
     owner: &Address,
     token: &Address,
     amount: u64,
-    bens: &Vec<(String, String, u32, Bytes, u32, u32)>,
+    bens: &Vec<(String, String, u32, Bytes, u32, u32, Option<Address>)>,
 ) -> CreateInheritancePlanParams {
     CreateInheritancePlanParams {
         owner: owner.clone(),
