@@ -103,7 +103,7 @@ pub struct InheritancePlan {
     /// guard opt-in rather than silently freezing existing plans whose
     /// beneficiaries have no document to present.
     ///
-    /// Per-beneficiary documents override this — see `DataKey::Bih`.
+    /// Per-beneficiary documents override this — see `AuxKey::Bih`.
     pub beneficiary_identity_hash: BytesN<32>,
 }
 
@@ -212,16 +212,28 @@ pub enum DataKey {
     Ds(u64), // dispute_id -> DisputeRecord
     Pd(u64), // plan_id -> Vec<u64> (dispute ids)
     Arb,     // Vec<Address>
-    // Beneficiary identity verification (Issue #1169)
-    Bih(u64, u32), // (plan_id, beneficiary_index) -> BytesN<32> identity hash
-    // Multi-asset baskets (Issue #1172)
-    Bb(u64, Address), // (plan_id, token) -> u64 balance held for this plan
-    Bt(u64),          // plan_id -> Vec<Address> of basket tokens
-    Bc(u64, u32, Address), // (plan_id, beneficiary_index, token) -> bool claimed
     // Yield harvesting
     Yr,      // Vec<Address> of accounts allowed to trigger harvests
     Ys(u64), // plan_id -> PlanYieldState
     Rg,
+}
+
+/// Storage keys that could not go in [`DataKey`].
+///
+/// `DataKey` sits at the 50-variant ceiling `#[contracttype]` permits for a
+/// union, so these live in a sibling enum with its own budget. The union
+/// encoding is `[variant_name, values...]` and does not include the enum's
+/// type name, so a variant name must never be repeated between this enum and
+/// `DataKey` — the two would address the same storage entry.
+#[contracttype]
+#[derive(Clone)]
+pub enum AuxKey {
+    // Beneficiary identity verification (Issue #1169)
+    Bih(u64, u32), // (plan_id, beneficiary_index) -> BytesN<32> identity hash
+    // Multi-asset baskets (Issue #1172)
+    Bbl(u64, Address),      // (plan_id, token) -> u64 balance held for this plan
+    Btk(u64),               // plan_id -> Vec<Address> of basket tokens
+    Bcl(u64, u32, Address), // (plan_id, beneficiary_index, token) -> bool claimed
 }
 
 #[contracttype]
@@ -2909,7 +2921,7 @@ impl InheritanceContract {
     /// add an argument most plans do not use would be a poor trade. Plans that
     /// have not opted into identity verification behave identically through
     /// either door.
-    pub fn claim_inheritance_plan_with_identity(
+    pub fn claim_plan_with_identity(
         env: Env,
         plan_id: u64,
         claimer: Address,
@@ -7891,7 +7903,7 @@ impl InheritanceContract {
             return Err(InheritanceError::InvalidBeneficiaryIndex);
         }
 
-        let key = DataKey::Bih(plan_id, beneficiary_index);
+        let key = AuxKey::Bih(plan_id, beneficiary_index);
         if identity_hash == Self::zero_hash(&env) {
             env.storage().persistent().remove(&key);
         } else {
@@ -7948,7 +7960,7 @@ impl InheritanceContract {
         if let Some(per_beneficiary) = env
             .storage()
             .persistent()
-            .get::<DataKey, BytesN<32>>(&DataKey::Bih(plan_id, beneficiary_index))
+            .get::<AuxKey, BytesN<32>>(&AuxKey::Bih(plan_id, beneficiary_index))
         {
             if per_beneficiary != zero {
                 return Some(per_beneficiary);
@@ -7979,7 +7991,7 @@ impl InheritanceContract {
         let required = match env
             .storage()
             .persistent()
-            .get::<DataKey, BytesN<32>>(&DataKey::Bih(plan_id, beneficiary_index))
+            .get::<AuxKey, BytesN<32>>(&AuxKey::Bih(plan_id, beneficiary_index))
         {
             Some(h) if h != zero => Some(h),
             _ => {
@@ -8043,7 +8055,7 @@ impl InheritanceContract {
         let mut tokens: Vec<Address> = env
             .storage()
             .persistent()
-            .get(&DataKey::Bt(plan_id))
+            .get(&AuxKey::Btk(plan_id))
             .unwrap_or(Vec::new(&env));
 
         let mut known = false;
@@ -8059,12 +8071,14 @@ impl InheritanceContract {
                 return Err(InheritanceError::TooManyBeneficiaries);
             }
             tokens.push_back(token.clone());
-            env.storage().persistent().set(&DataKey::Bt(plan_id), &tokens);
+            env.storage()
+                .persistent()
+                .set(&AuxKey::Btk(plan_id), &tokens);
         }
 
         env.storage()
             .persistent()
-            .set(&DataKey::Bb(plan_id, token.clone()), &amount);
+            .set(&AuxKey::Bbl(plan_id, token.clone()), &amount);
 
         env.events()
             .publish((symbol_short!("BSKT_SET"),), (plan_id, token, amount));
@@ -8076,7 +8090,7 @@ impl InheritanceContract {
     pub fn get_basket_tokens(env: Env, plan_id: u64) -> Vec<Address> {
         env.storage()
             .persistent()
-            .get(&DataKey::Bt(plan_id))
+            .get(&AuxKey::Btk(plan_id))
             .unwrap_or(Vec::new(&env))
     }
 
@@ -8084,7 +8098,7 @@ impl InheritanceContract {
     pub fn get_basket_balance(env: Env, plan_id: u64, token: Address) -> u64 {
         env.storage()
             .persistent()
-            .get(&DataKey::Bb(plan_id, token))
+            .get(&AuxKey::Bbl(plan_id, token))
             .unwrap_or(0)
     }
 
@@ -8226,7 +8240,7 @@ impl InheritanceContract {
             if env
                 .storage()
                 .persistent()
-                .has(&DataKey::Bc(plan_id, index, token.clone()))
+                .has(&AuxKey::Bcl(plan_id, index, token.clone()))
             {
                 continue;
             }
@@ -8234,7 +8248,7 @@ impl InheritanceContract {
             let balance: u64 = env
                 .storage()
                 .persistent()
-                .get(&DataKey::Bb(plan_id, token.clone()))
+                .get(&AuxKey::Bbl(plan_id, token.clone()))
                 .unwrap_or(0);
 
             if balance == 0 {
@@ -8256,12 +8270,12 @@ impl InheritanceContract {
             Self::release_from_plan_vault(&env, plan_id, &token, &claimer, share)?;
 
             env.storage().persistent().set(
-                &DataKey::Bb(plan_id, token.clone()),
+                &AuxKey::Bbl(plan_id, token.clone()),
                 &balance.saturating_sub(share),
             );
             env.storage()
                 .persistent()
-                .set(&DataKey::Bc(plan_id, index, token.clone()), &true);
+                .set(&AuxKey::Bcl(plan_id, index, token.clone()), &true);
 
             payouts.push_back((token.clone(), share));
             total_released = total_released.saturating_add(share);
@@ -8275,7 +8289,7 @@ impl InheritanceContract {
 
         env.events().publish(
             (symbol_short!("CLAIM"), symbol_short!("BASKET")),
-            (plan_id, index, payouts.len() as u32, total_released),
+            (plan_id, index, payouts.len(), total_released),
         );
 
         Ok(payouts)
@@ -8381,7 +8395,11 @@ impl InheritanceContract {
         parameter_id: Symbol,
     ) -> Result<bool, InheritanceError> {
         Self::require_admin(&env, &admin)?;
-        Ok(access_control::cancel_parameter_change(&env, &admin, parameter_id))
+        Ok(access_control::cancel_parameter_change(
+            &env,
+            &admin,
+            parameter_id,
+        ))
     }
 
     /// The maturity timestamp of a pending proposal, if one exists.

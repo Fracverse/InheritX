@@ -700,8 +700,7 @@ pub fn is_parameter_change_ready(env: &Env, parameter_id: Symbol) -> bool {
     match get_parameter_proposal(env, parameter_id) {
         Some(proposal) => {
             let now = env.ledger().timestamp();
-            now >= proposal.executable_at
-                && now < proposal.executable_at + PARAMETER_GRACE_SECONDS
+            now >= proposal.executable_at && now < proposal.executable_at + PARAMETER_GRACE_SECONDS
         }
         None => false,
     }
@@ -721,8 +720,8 @@ pub fn execute_parameter_change(
 ) -> Result<i128, TimelockFailure> {
     admin.require_auth();
 
-    let proposal = get_parameter_proposal(env, parameter_id.clone())
-        .ok_or(TimelockFailure::NotFound)?;
+    let proposal =
+        get_parameter_proposal(env, parameter_id.clone()).ok_or(TimelockFailure::NotFound)?;
 
     let now = env.ledger().timestamp();
 

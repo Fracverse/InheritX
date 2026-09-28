@@ -26,8 +26,18 @@ impl TestHost {
 fn setup() -> (Env, Address) {
     let env = Env::default();
     env.mock_all_auths();
-    let contract_id = env.register(TestHost, ());
+    let contract_id = env.register_contract(None, TestHost);
     (env, contract_id)
+}
+
+/// Runs one authorizing call in a frame of its own.
+///
+/// The host lets an address satisfy `require_auth` only once per contract
+/// frame — a second call in the same frame fails with `Auth(ExistingValue)`,
+/// "frame is already authorized". Storage outlives the frame, so splitting two
+/// authorizing calls apart does not change what the test observes.
+fn authed<T>(env: &Env, contract_id: &Address, f: impl FnOnce() -> T) -> T {
+    env.as_contract(contract_id, f)
 }
 
 // ─── Nonce revocation (Issue #1175) ──────────────────────────────────
@@ -66,12 +76,12 @@ fn the_floor_never_moves_down() {
     let (env, contract_id) = setup();
     let user = Address::generate(&env);
 
-    env.as_contract(&contract_id, || {
-        revoke_user_nonces(&env, &user, 500);
-        // An attacker holding the compromised key calls this to undo the
-        // revocation. It must not work, or the mechanism is worthless.
-        revoke_user_nonces(&env, &user, 1);
+    authed(&env, &contract_id, || revoke_user_nonces(&env, &user, 500));
+    // An attacker holding the compromised key calls this to undo the
+    // revocation. It must not work, or the mechanism is worthless.
+    authed(&env, &contract_id, || revoke_user_nonces(&env, &user, 1));
 
+    env.as_contract(&contract_id, || {
         assert_eq!(get_min_nonce(&env, &user), 500);
         assert!(!is_nonce_valid(&env, &user, 400));
     });
@@ -82,9 +92,10 @@ fn revoking_twice_at_the_same_floor_is_harmless() {
     let (env, contract_id) = setup();
     let user = Address::generate(&env);
 
+    authed(&env, &contract_id, || revoke_user_nonces(&env, &user, 42));
+    authed(&env, &contract_id, || revoke_user_nonces(&env, &user, 42));
+
     env.as_contract(&contract_id, || {
-        revoke_user_nonces(&env, &user, 42);
-        revoke_user_nonces(&env, &user, 42);
         assert_eq!(get_min_nonce(&env, &user), 42);
     });
 }
@@ -128,17 +139,22 @@ fn a_proposal_matures_exactly_48_hours_later() {
 fn executing_before_the_delay_elapses_is_refused() {
     let (env, contract_id) = setup();
     let admin = Address::generate(&env);
+    let param = Symbol::new(&env, "fee_bp");
 
-    env.as_contract(&contract_id, || {
-        let param = Symbol::new(&env, "fee_bp");
+    authed(&env, &contract_id, || {
         propose_parameter_change(&env, &admin, param.clone(), 250);
+    });
 
+    authed(&env, &contract_id, || {
         assert_eq!(
             execute_parameter_change(&env, &admin, param.clone()),
             Err(TimelockFailure::TooEarly)
         );
-        // One second short still counts as early.
-        env.ledger().set_timestamp(PARAMETER_TIMELOCK_SECONDS - 1);
+    });
+
+    // One second short still counts as early.
+    env.ledger().set_timestamp(PARAMETER_TIMELOCK_SECONDS - 1);
+    authed(&env, &contract_id, || {
         assert_eq!(
             execute_parameter_change(&env, &admin, param),
             Err(TimelockFailure::TooEarly)
@@ -150,15 +166,25 @@ fn executing_before_the_delay_elapses_is_refused() {
 fn executing_after_the_delay_commits_the_value() {
     let (env, contract_id) = setup();
     let admin = Address::generate(&env);
+    let param = Symbol::new(&env, "fee_bp");
+
+    authed(&env, &contract_id, || {
+        propose_parameter_change(&env, &admin, param.clone(), 250);
+    });
+
+    env.ledger().set_timestamp(PARAMETER_TIMELOCK_SECONDS);
 
     env.as_contract(&contract_id, || {
-        let param = Symbol::new(&env, "fee_bp");
-        propose_parameter_change(&env, &admin, param.clone(), 250);
-
-        env.ledger().set_timestamp(PARAMETER_TIMELOCK_SECONDS);
-
         assert!(is_parameter_change_ready(&env, param.clone()));
-        assert_eq!(execute_parameter_change(&env, &admin, param.clone()), Ok(250));
+    });
+    authed(&env, &contract_id, || {
+        assert_eq!(
+            execute_parameter_change(&env, &admin, param.clone()),
+            Ok(250)
+        );
+    });
+
+    env.as_contract(&contract_id, || {
         assert_eq!(get_parameter_value(&env, param.clone()), Some(250));
         // The proposal is consumed, so it cannot be replayed.
         assert!(get_parameter_proposal(&env, param).is_none());
@@ -169,21 +195,28 @@ fn executing_after_the_delay_commits_the_value() {
 fn a_matured_proposal_goes_stale_after_the_grace_period() {
     let (env, contract_id) = setup();
     let admin = Address::generate(&env);
+    let param = Symbol::new(&env, "treasury");
+
+    authed(&env, &contract_id, || {
+        propose_parameter_change(&env, &admin, param.clone(), 7);
+    });
+
+    // Long past maturity: the notice window this proposal provided expired
+    // ages ago, so executing on it now would defeat the mechanism.
+    env.ledger()
+        .set_timestamp(PARAMETER_TIMELOCK_SECONDS + PARAMETER_GRACE_SECONDS);
 
     env.as_contract(&contract_id, || {
-        let param = Symbol::new(&env, "treasury");
-        propose_parameter_change(&env, &admin, param.clone(), 7);
-
-        // Long past maturity: the notice window this proposal provided expired
-        // ages ago, so executing on it now would defeat the mechanism.
-        env.ledger()
-            .set_timestamp(PARAMETER_TIMELOCK_SECONDS + PARAMETER_GRACE_SECONDS);
-
         assert!(!is_parameter_change_ready(&env, param.clone()));
+    });
+    authed(&env, &contract_id, || {
         assert_eq!(
             execute_parameter_change(&env, &admin, param.clone()),
             Err(TimelockFailure::Expired)
         );
+    });
+
+    env.as_contract(&contract_id, || {
         // And it is cleared, so the parameter is not blocked by a dead entry.
         assert!(get_parameter_proposal(&env, param).is_none());
     });
@@ -206,25 +239,31 @@ fn executing_a_parameter_with_no_proposal_is_refused() {
 fn a_second_proposal_replaces_the_first_and_restarts_the_clock() {
     let (env, contract_id) = setup();
     let admin = Address::generate(&env);
+    let param = Symbol::new(&env, "fee_bp");
 
-    env.as_contract(&contract_id, || {
-        let param = Symbol::new(&env, "fee_bp");
+    authed(&env, &contract_id, || {
         propose_parameter_change(&env, &admin, param.clone(), 250);
+    });
 
-        env.ledger().set_timestamp(100_000);
+    env.ledger().set_timestamp(100_000);
+    authed(&env, &contract_id, || {
         propose_parameter_change(&env, &admin, param.clone(), 900);
+    });
 
-        // The clock restarts — otherwise an admin could propose something
-        // innocuous, wait 48 hours, then swap in a hostile value and execute
-        // immediately with no notice at all.
-        env.ledger().set_timestamp(PARAMETER_TIMELOCK_SECONDS);
+    // The clock restarts — otherwise an admin could propose something
+    // innocuous, wait 48 hours, then swap in a hostile value and execute
+    // immediately with no notice at all.
+    env.ledger().set_timestamp(PARAMETER_TIMELOCK_SECONDS);
+    authed(&env, &contract_id, || {
         assert_eq!(
             execute_parameter_change(&env, &admin, param.clone()),
             Err(TimelockFailure::TooEarly)
         );
+    });
 
-        env.ledger()
-            .set_timestamp(100_000 + PARAMETER_TIMELOCK_SECONDS);
+    env.ledger()
+        .set_timestamp(100_000 + PARAMETER_TIMELOCK_SECONDS);
+    authed(&env, &contract_id, || {
         assert_eq!(execute_parameter_change(&env, &admin, param), Ok(900));
     });
 }
@@ -233,15 +272,21 @@ fn a_second_proposal_replaces_the_first_and_restarts_the_clock() {
 fn cancelling_removes_a_pending_proposal() {
     let (env, contract_id) = setup();
     let admin = Address::generate(&env);
+    let param = Symbol::new(&env, "fee_bp");
 
-    env.as_contract(&contract_id, || {
-        let param = Symbol::new(&env, "fee_bp");
+    authed(&env, &contract_id, || {
         propose_parameter_change(&env, &admin, param.clone(), 250);
+    });
 
+    authed(&env, &contract_id, || {
         assert!(cancel_parameter_change(&env, &admin, param.clone()));
+    });
+    env.as_contract(&contract_id, || {
         assert!(get_parameter_proposal(&env, param.clone()).is_none());
+    });
 
-        env.ledger().set_timestamp(PARAMETER_TIMELOCK_SECONDS);
+    env.ledger().set_timestamp(PARAMETER_TIMELOCK_SECONDS);
+    authed(&env, &contract_id, || {
         assert_eq!(
             execute_parameter_change(&env, &admin, param),
             Err(TimelockFailure::NotFound)
@@ -267,19 +312,26 @@ fn cancelling_nothing_reports_that_it_did_nothing() {
 fn parameters_are_independent_of_each_other() {
     let (env, contract_id) = setup();
     let admin = Address::generate(&env);
+    let fee = Symbol::new(&env, "fee_bp");
+    let treasury = Symbol::new(&env, "treasury");
 
-    env.as_contract(&contract_id, || {
-        let fee = Symbol::new(&env, "fee_bp");
-        let treasury = Symbol::new(&env, "treasury");
-
+    authed(&env, &contract_id, || {
         propose_parameter_change(&env, &admin, fee.clone(), 250);
+    });
+    authed(&env, &contract_id, || {
         propose_parameter_change(&env, &admin, treasury.clone(), 7);
+    });
 
-        env.ledger().set_timestamp(PARAMETER_TIMELOCK_SECONDS);
+    env.ledger().set_timestamp(PARAMETER_TIMELOCK_SECONDS);
 
+    authed(&env, &contract_id, || {
         assert_eq!(execute_parameter_change(&env, &admin, fee.clone()), Ok(250));
+    });
+    env.as_contract(&contract_id, || {
         // Executing one must not consume the other.
         assert!(get_parameter_proposal(&env, treasury.clone()).is_some());
+    });
+    authed(&env, &contract_id, || {
         assert_eq!(execute_parameter_change(&env, &admin, treasury), Ok(7));
     });
 }
@@ -302,13 +354,21 @@ fn an_unset_parameter_falls_back_to_the_compiled_in_default() {
 fn a_negative_value_survives_the_round_trip() {
     let (env, contract_id) = setup();
     let admin = Address::generate(&env);
+    let param = Symbol::new(&env, "adjust");
+
+    authed(&env, &contract_id, || {
+        propose_parameter_change(&env, &admin, param.clone(), -1_500);
+    });
+
+    env.ledger().set_timestamp(PARAMETER_TIMELOCK_SECONDS);
+    authed(&env, &contract_id, || {
+        assert_eq!(
+            execute_parameter_change(&env, &admin, param.clone()),
+            Ok(-1_500)
+        );
+    });
 
     env.as_contract(&contract_id, || {
-        let param = Symbol::new(&env, "adjust");
-        propose_parameter_change(&env, &admin, param.clone(), -1_500);
-
-        env.ledger().set_timestamp(PARAMETER_TIMELOCK_SECONDS);
-        assert_eq!(execute_parameter_change(&env, &admin, param.clone()), Ok(-1_500));
         assert_eq!(get_parameter_value(&env, param), Some(-1_500));
     });
 }
