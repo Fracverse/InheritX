@@ -61,34 +61,10 @@
                     },
                     {
                       "key": {
-                        "symbol": "ltv_ratio_bps"
-                      },
-                      "val": {
-                        "u32": 2000
-                      }
-                    },
-                    {
-                      "key": {
-                        "symbol": "plan_id"
-                      },
-                      "val": {
-                        "u64": 0
-                      }
-                    },
-                    {
-                      "key": {
                         "symbol": "principal"
                       },
                       "val": {
                         "u64": 100
-                      }
-                    },
-                    {
-                      "key": {
-                        "symbol": "uri"
-                      },
-                      "val": {
-                        "string": "https://example.com/nft/4"
                       }
                     }
                   ]
@@ -357,34 +333,10 @@
                     },
                     {
                       "key": {
-                        "symbol": "ltv_ratio_bps"
-                      },
-                      "val": {
-                        "u32": 2000
-                      }
-                    },
-                    {
-                      "key": {
-                        "symbol": "plan_id"
-                      },
-                      "val": {
-                        "u64": 0
-                      }
-                    },
-                    {
-                      "key": {
                         "symbol": "principal"
                       },
                       "val": {
                         "u64": 100
-                      }
-                    },
-                    {
-                      "key": {
-                        "symbol": "uri"
-                      },
-                      "val": {
-                        "string": "https://example.com/nft/4"
                       }
                     }
                   ]
@@ -909,34 +861,10 @@
                     },
                     {
                       "key": {
-                        "symbol": "ltv_ratio_bps"
-                      },
-                      "val": {
-                        "u32": 2000
-                      }
-                    },
-                    {
-                      "key": {
-                        "symbol": "plan_id"
-                      },
-                      "val": {
-                        "u64": 0
-                      }
-                    },
-                    {
-                      "key": {
                         "symbol": "principal"
                       },
                       "val": {
                         "u64": 100
-                      }
-                    },
-                    {
-                      "key": {
-                        "symbol": "uri"
-                      },
-                      "val": {
-                        "string": "https://example.com/nft/4"
                       }
                     }
                   ]
