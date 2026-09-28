@@ -88,6 +88,7 @@ inheritance_errors! {
         DisputeActive = 25,
         ContractPaused = 26,
         IncompatibleVersion = 54,
+        InvalidBatchSize = 55,
     }
 }
 
@@ -120,8 +121,8 @@ mod tests {
                 assert_eq!(soroban_sdk::Error::from(error), wire);
             }
         }
-        // All legacy values 1..=53, the gaps 24..=26, and new code 54.
-        assert_eq!(seen, ((1u64 << 55) - 1) & !1);
+        // All legacy values 1..=53, the gaps 24..=26, and new codes 54..=55.
+        assert_eq!(seen, ((1u64 << 56) - 1) & !1);
     }
 
     #[test]
