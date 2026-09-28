@@ -3170,6 +3170,16 @@ impl InheritanceContract {
 
         let index = beneficiary_index.ok_or(InheritanceError::BeneficiaryNotFound)?;
 
+        // Genetic-kin beneficiaries must present a verified zero-knowledge
+        // proof of kinship before their claim is approved (#1176). The proof is
+        // recorded by `verify_genetic_kin_claim`, which fails closed when no
+        // verifier is configured.
+        if plan_maintenance::is_genetic_kin_required(env.clone(), plan_id, index)
+            && !plan_maintenance::has_verified_genetic_proof(env.clone(), plan_id, claimer.clone())
+        {
+            return Err(InheritanceError::ZkProofRequired);
+        }
+
         // Identity proof (Issue #1169). Runs before any balance is touched:
         // address auth proves a key was used, not that its holder is the
         // person the probate document names.
@@ -8280,7 +8290,7 @@ impl InheritanceContract {
         identity_hash: BytesN<32>,
     ) -> Result<(), InheritanceError> {
         owner.require_auth();
-        Self::check_not_paused(&env);
+        Self::check_not_paused(&env)?;
 
         let plan = Self::get_plan(&env, plan_id).ok_or(InheritanceError::PlanNotFound)?;
         if plan.owner != owner {
@@ -8317,7 +8327,7 @@ impl InheritanceContract {
         identity_hash: BytesN<32>,
     ) -> Result<(), InheritanceError> {
         owner.require_auth();
-        Self::check_not_paused(&env);
+        Self::check_not_paused(&env)?;
 
         let mut plan = Self::get_plan(&env, plan_id).ok_or(InheritanceError::PlanNotFound)?;
         if plan.owner != owner {
@@ -8432,7 +8442,7 @@ impl InheritanceContract {
         amount: u64,
     ) -> Result<(), InheritanceError> {
         owner.require_auth();
-        Self::check_not_paused(&env);
+        Self::check_not_paused(&env)?;
 
         let plan = Self::get_plan(&env, plan_id).ok_or(InheritanceError::PlanNotFound)?;
         if plan.owner != owner {
@@ -8533,7 +8543,7 @@ impl InheritanceContract {
     ) -> Result<Vec<(Address, u64)>, InheritanceError> {
         claimer.require_auth();
         Self::require_not_blacklisted(&env, &claimer)?;
-        Self::check_not_paused(&env);
+        Self::check_not_paused(&env)?;
         let _guard = access_control::ReentrancyGuard::lock_or_panic(&env);
 
         Self::check_kyc_approved(&env, &claimer)?;
@@ -8748,7 +8758,7 @@ impl InheritanceContract {
         new_value: i128,
     ) -> Result<u64, InheritanceError> {
         Self::require_admin(&env, &admin)?;
-        Self::check_not_paused(&env);
+        Self::check_not_paused(&env)?;
 
         let proposal =
             access_control::propose_parameter_change(&env, &admin, parameter_id, new_value);
@@ -8765,7 +8775,7 @@ impl InheritanceContract {
         parameter_id: Symbol,
     ) -> Result<i128, InheritanceError> {
         Self::require_admin(&env, &admin)?;
-        Self::check_not_paused(&env);
+        Self::check_not_paused(&env)?;
 
         // The library reports why it refused; the contract's error enum has no
         // room for three distinct variants, so all three map onto
