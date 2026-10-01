@@ -3,13 +3,17 @@ use axum::{
     http::{self, Request, StatusCode},
 };
 use ed25519_dalek::{Signer, SigningKey};
-use inheritx_backend::{create_router, AppState, PlanCache, PlanResponse};
+use inheritx_backend::{
+    auth::is_signature_processed, create_router, AppState, PlanCache, PlanResponse,
+};
 use serde_json::json;
 use std::sync::Arc;
 use std::time::Duration;
 use tower::ServiceExt; // for oneshot
 
-fn generate_valid_signature(body: &str, _public_key_hex: &str) -> (String, String) {
+/// Signs the canonical `"{timestamp}.{body}"` payload the replay-protected
+/// middleware expects and returns `(public_key_hex, signature_hex, timestamp)`.
+fn generate_valid_signature(body: &str, _public_key_hex: &str) -> (String, String, String) {
     // Use a fixed test keypair for deterministic testing
     let secret_bytes: [u8; 32] = [
         0x9d, 0x61, 0xb8, 0xbb, 0xd0, 0xa3, 0x0a, 0x78, 0x23, 0x34, 0x56, 0x78, 0x9a, 0xbc, 0xde,
@@ -21,10 +25,12 @@ fn generate_valid_signature(body: &str, _public_key_hex: &str) -> (String, Strin
     let verifying_key = signing_key.verifying_key();
     let public_key_hex = format!("0x{}", hex::encode(verifying_key.to_bytes()));
 
-    let signature = signing_key.sign(body.as_bytes());
+    let timestamp = chrono::Utc::now().timestamp();
+    let canonical = inheritx_backend::auth::canonical_signed_payload(timestamp, body);
+    let signature = signing_key.sign(canonical.as_bytes());
     let signature_hex = hex::encode(signature.to_bytes());
 
-    (public_key_hex, signature_hex)
+    (public_key_hex, signature_hex, timestamp.to_string())
 }
 
 fn setup_app() -> axum::Router {
@@ -210,7 +216,7 @@ async fn test_create_plan_validation_too_many_beneficiaries() {
     })
     .to_string();
 
-    let (public_key, signature) = generate_valid_signature(
+    let (public_key, signature, timestamp) = generate_valid_signature(
         &body,
         "0x1234567890abcdef1234567890abcdef1234567890abcdef1234567890abcdef",
     );
@@ -223,6 +229,7 @@ async fn test_create_plan_validation_too_many_beneficiaries() {
                 .header(http::header::CONTENT_TYPE, "application/json")
                 .header("X-Public-Key", public_key)
                 .header("X-Signature", signature)
+                .header("X-Timestamp", timestamp)
                 .body(Body::from(body))
                 .unwrap(),
         )
@@ -256,7 +263,7 @@ async fn test_create_plan_with_valid_signature() {
     })
     .to_string();
 
-    let (public_key, signature) = generate_valid_signature(
+    let (public_key, signature, timestamp) = generate_valid_signature(
         &body,
         "0x1234567890abcdef1234567890abcdef1234567890abcdef1234567890abcdef",
     );
@@ -269,6 +276,7 @@ async fn test_create_plan_with_valid_signature() {
                 .header(http::header::CONTENT_TYPE, "application/json")
                 .header("X-Public-Key", public_key)
                 .header("X-Signature", signature)
+                .header("X-Timestamp", timestamp)
                 .body(Body::from(body))
                 .unwrap(),
         )
@@ -386,11 +394,11 @@ async fn test_trigger_payout_invalid_signature() {
     .to_string();
 
     // Generate a valid signature for a different body
-    let (public_key, _correct_sig) = generate_valid_signature(
+    let (public_key, _correct_sig, timestamp) = generate_valid_signature(
         &body,
         "0x1234567890abcdef1234567890abcdef1234567890abcdef1234567890abcdef",
     );
-    let (_different_pub_key, invalid_signature) = generate_valid_signature(
+    let (_different_pub_key, invalid_signature, _) = generate_valid_signature(
         "different body",
         "0x1234567890abcdef1234567890abcdef1234567890abcdef1234567890abcdef",
     );
@@ -403,6 +411,7 @@ async fn test_trigger_payout_invalid_signature() {
                 .header(http::header::CONTENT_TYPE, "application/json")
                 .header("X-Public-Key", public_key)
                 .header("X-Signature", invalid_signature)
+                .header("X-Timestamp", timestamp)
                 .body(Body::from(body))
                 .unwrap(),
         )
@@ -428,7 +437,7 @@ async fn test_trigger_payout_valid_signature_not_found() {
     })
     .to_string();
 
-    let (public_key, signature) = generate_valid_signature(
+    let (public_key, signature, timestamp) = generate_valid_signature(
         &body,
         "0x1234567890abcdef1234567890abcdef1234567890abcdef1234567890abcdef",
     );
@@ -441,6 +450,7 @@ async fn test_trigger_payout_valid_signature_not_found() {
                 .header(http::header::CONTENT_TYPE, "application/json")
                 .header("X-Public-Key", public_key)
                 .header("X-Signature", signature)
+                .header("X-Timestamp", timestamp)
                 .body(Body::from(body))
                 .unwrap(),
         )
@@ -451,6 +461,66 @@ async fn test_trigger_payout_valid_signature_not_found() {
     // rather than an unauthorized error (401), proving that the request successfully passed auth
     // and reached the handler.
     assert_eq!(response.status(), StatusCode::INTERNAL_SERVER_ERROR);
+}
+
+#[tokio::test]
+async fn test_duplicate_signature_is_rejected_as_replay() {
+    let app = setup_app();
+
+    let body = json!({ "owner": "signature-replay-test-owner" }).to_string();
+    let (public_key, signature, timestamp) = generate_valid_signature(&body, "");
+
+    let build_request = || {
+        Request::builder()
+            .method(http::Method::POST)
+            .uri("/api/plans/payout")
+            .header(http::header::CONTENT_TYPE, "application/json")
+            .header("X-Public-Key", public_key.clone())
+            .header("X-Signature", signature.clone())
+            .header("X-Timestamp", timestamp.clone())
+            .body(Body::from(body.clone()))
+            .unwrap()
+    };
+
+    // First submission: signature is valid and fresh, so auth succeeds and the
+    // request reaches the handler (unreachable DB → 500, not 401).
+    let first = app.clone().oneshot(build_request()).await.unwrap();
+    assert_eq!(first.status(), StatusCode::INTERNAL_SERVER_ERROR);
+
+    // Replay of the exact same signed message must be rejected.
+    let second = app.oneshot(build_request()).await.unwrap();
+    assert_eq!(second.status(), StatusCode::UNAUTHORIZED);
+}
+
+#[tokio::test]
+async fn test_invalid_signature_does_not_poison_replay_cache() {
+    let app = setup_app();
+
+    let body = json!({ "owner": "signature-poison-test-owner" }).to_string();
+    // A signature over a *different* payload: verification fails.
+    let (public_key, invalid_signature, timestamp) = generate_valid_signature("different body", "");
+
+    let raw_signature = hex::decode(&invalid_signature).unwrap();
+
+    let response = app
+        .oneshot(
+            Request::builder()
+                .method(http::Method::POST)
+                .uri("/api/plans/payout")
+                .header(http::header::CONTENT_TYPE, "application/json")
+                .header("X-Public-Key", public_key)
+                .header("X-Signature", invalid_signature)
+                .header("X-Timestamp", timestamp)
+                .body(Body::from(body))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
+    // Verify-then-nonce: a signature that fails verification must never be
+    // inserted into the process-wide replay cache.
+    assert!(!is_signature_processed(&raw_signature));
 }
 
 // --- Health check endpoint tests ---
@@ -832,7 +902,7 @@ async fn test_liquidate_settle_requires_auth() {
 async fn test_freeze_loans_valid_signature_reaches_handler() {
     let app = setup_app();
     let body = "{}";
-    let (public_key, signature) = generate_valid_signature(body, "");
+    let (public_key, signature, timestamp) = generate_valid_signature(body, "");
 
     let response = app
         .oneshot(
@@ -842,6 +912,7 @@ async fn test_freeze_loans_valid_signature_reaches_handler() {
                 .header(http::header::CONTENT_TYPE, "application/json")
                 .header("X-Public-Key", public_key)
                 .header("X-Signature", signature)
+                .header("X-Timestamp", timestamp)
                 .body(Body::from(body))
                 .unwrap(),
         )

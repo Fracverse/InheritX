@@ -284,6 +284,7 @@ pub fn create_router(state: Arc<AppState>) -> Router {
             axum::http::header::AUTHORIZATION,
             HeaderName::from_static("x-public-key"),
             HeaderName::from_static("x-signature"),
+            HeaderName::from_static("x-timestamp"),
         ])
         .max_age(std::time::Duration::from_secs(3600));
 
