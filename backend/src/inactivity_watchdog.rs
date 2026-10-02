@@ -824,3 +824,26 @@ mod tests {
         assert!(service.stellar.is_none());
     }
 }
+
+impl InactivityWatchdogService {
+    /// Retry wrapper for triggering on-chain payouts with sequence retry tolerance.
+    pub async fn trigger_with_retry(
+        &self,
+        plan_id: u64,
+        max_attempts: usize,
+    ) -> Result<(), String> {
+        let mut attempts = 0;
+        while attempts < max_attempts {
+            attempts += 1;
+            if let Some(stellar) = &self.stellar {
+                if stellar.trigger_inheritance(plan_id).await.is_ok() {
+                    return Ok(());
+                }
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+        }
+        Err(format!(
+            "Failed to trigger inheritance for plan {plan_id} after {max_attempts} attempts"
+        ))
+    }
+}
