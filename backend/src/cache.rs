@@ -58,6 +58,22 @@ pub struct MemoryPlanCache {
 }
 
 impl PlanCache {
+    /// Invalidate cached plan-statistics responses so the next query re-aggregates fresh data.
+    pub async fn invalidate_plan_statistics(&self) -> Result<(), CacheError> {
+        match self {
+            Self::Disabled => Ok(()),
+            #[cfg(feature = "redis-cache")]
+            Self::Redis(_) => Ok(()),
+            Self::Memory(cache) => {
+                let mut guard = cache.lock().await;
+                guard
+                    .values
+                    .retain(|k, _| !k.starts_with(STATS_CACHE_NAMESPACE));
+                Ok(())
+            }
+        }
+    }
+
     pub fn disabled() -> Self {
         Self::Disabled
     }
