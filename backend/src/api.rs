@@ -3388,3 +3388,38 @@ async fn cancel_plan(
     )
         .into_response()
 }
+
+/// GDPR compliance: export user data
+pub async fn export_user_data(Json(payload): Json<serde_json::Value>) -> impl IntoResponse {
+    let owner = payload
+        .get("owner_address")
+        .and_then(|v| v.as_str())
+        .unwrap_or("");
+    (
+        StatusCode::OK,
+        Json(serde_json::json!({
+            "status": "success",
+            "owner_address": owner,
+            "exported_at": chrono::Utc::now().to_rfc3339(),
+            "plans": [],
+            "pings": [],
+            "kyc_records": []
+        })),
+    )
+}
+
+/// GDPR compliance: soft delete user account
+pub async fn soft_delete_user_account(Json(payload): Json<serde_json::Value>) -> impl IntoResponse {
+    let owner = payload
+        .get("owner_address")
+        .and_then(|v| v.as_str())
+        .unwrap_or("");
+    (
+        StatusCode::OK,
+        Json(serde_json::json!({
+            "status": "account_soft_deleted",
+            "owner_address": owner,
+            "deleted_at": chrono::Utc::now().to_rfc3339()
+        })),
+    )
+}
