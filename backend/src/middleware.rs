@@ -43,6 +43,13 @@ struct RateLimitState {
 pub struct RateLimitStore(Arc<DashMap<IpAddr, RateLimitState>>);
 
 impl RateLimitStore {
+    /// Prunes expired rate limit entries to prevent memory accumulation.
+    pub fn evict_expired(&self, max_age: Duration) {
+        let now = Instant::now();
+        self.0
+            .retain(|_, state| now.duration_since(state.window_start) < max_age);
+    }
+
     pub fn new() -> Self {
         Self(Arc::new(DashMap::new()))
     }
