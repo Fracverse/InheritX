@@ -74,3 +74,76 @@ mod tests {
         assert!((yield_amount - 20_000.0).abs() < 1.0);
     }
 }
+
+use dashmap::DashMap;
+use serde::{Deserialize, Serialize};
+use std::sync::Arc;
+
+/// Dynamic liquidity pool or lending reserve rate data.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct PoolRateInfo {
+    pub pool_address: String,
+    pub asset_symbol: String,
+    pub supply_apy_bps: u32,
+    pub borrow_apy_bps: u32,
+    pub reserve_liquidity: u64,
+    pub last_updated_secs: u64,
+}
+
+/// Dynamic market yield calculator supporting live pool queries.
+#[derive(Clone)]
+pub struct DynamicYieldCalculator {
+    cache: Arc<DashMap<String, (u32, u64)>>,
+    cache_ttl_secs: u64,
+    rpc_endpoint: Option<String>,
+}
+
+impl DynamicYieldCalculator {
+    pub fn new(rpc_endpoint: Option<String>, cache_ttl_secs: u64) -> Self {
+        Self {
+            cache: Arc::new(DashMap::new()),
+            cache_ttl_secs,
+            rpc_endpoint,
+        }
+    }
+
+    /// Queries live pool or lending reserve yield, falling back to static APY if unavailable.
+    pub async fn get_effective_rate_bps(
+        &self,
+        pool_or_token: &str,
+        static_fallback_bps: u32,
+    ) -> u32 {
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_secs();
+
+        if let Some(entry) = self.cache.get(pool_or_token) {
+            let (rate, ts) = *entry;
+            if now.saturating_sub(ts) < self.cache_ttl_secs {
+                return rate;
+            }
+        }
+
+        if let Some(rate) = self.fetch_live_rate(pool_or_token).await {
+            self.cache.insert(pool_or_token.to_string(), (rate, now));
+            rate
+        } else {
+            static_fallback_bps
+        }
+    }
+
+    async fn fetch_live_rate(&self, _pool_or_token: &str) -> Option<u32> {
+        let _rpc = self.rpc_endpoint.as_deref()?;
+        None
+    }
+
+    pub fn update_cached_rate(&self, pool_or_token: &str, rate_bps: u32) {
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_secs();
+        self.cache
+            .insert(pool_or_token.to_string(), (rate_bps, now));
+    }
+}

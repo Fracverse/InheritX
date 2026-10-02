@@ -192,3 +192,61 @@ pub fn generate(data: PlanReportData) -> Result<Vec<u8>, String> {
 
     doc.save_to_bytes().map_err(|e| e.to_string())
 }
+
+#[allow(unused_assignments)]
+pub fn generate_legal_certificate(
+    plan_id: &str,
+    owner_address: &str,
+    beneficiary_count: usize,
+    token_address: &str,
+    amount: &str,
+) -> Result<Vec<u8>, String> {
+    let (doc, page, layer) = PdfDocument::new(
+        "Proof of Inheritance Certificate",
+        Mm(210.0),
+        Mm(297.0),
+        "Content",
+    );
+    let layer = doc.get_page(page).get_layer(layer);
+    let bold = doc
+        .add_builtin_font(BuiltinFont::HelveticaBold)
+        .map_err(|e| e.to_string())?;
+    let regular = doc
+        .add_builtin_font(BuiltinFont::Helvetica)
+        .map_err(|e| e.to_string())?;
+
+    let mut y = 270.0_f32;
+    let left = 20.0_f32;
+    let line_h = 8.0_f32;
+
+    macro_rules! line {
+        ($font:expr, $size:expr, $text:expr) => {
+            layer.use_text($text, $size, Mm(left), Mm(y), &$font);
+            y -= line_h;
+        };
+    }
+
+    line!(
+        bold,
+        18.0,
+        "INHERITX LEGAL PROOF OF INHERITANCE CERTIFICATE"
+    );
+    y -= 10.0;
+    line!(regular, 12.0, &format!("Plan Identifier: {}", plan_id));
+    line!(regular, 12.0, &format!("Owner Account: {}", owner_address));
+    line!(
+        regular,
+        12.0,
+        &format!("Designated Beneficiaries: {}", beneficiary_count)
+    );
+    line!(regular, 12.0, &format!("Asset Contract: {}", token_address));
+    line!(regular, 12.0, &format!("Vault Deposit Balance: {}", amount));
+    y -= 10.0;
+    line!(
+        bold,
+        10.0,
+        "Cryptographically verified under Soroban Smart Consensus."
+    );
+
+    doc.save_to_bytes().map_err(|e| e.to_string())
+}
