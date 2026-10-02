@@ -84,6 +84,9 @@ pub fn init() {
     Lazy::force(&DB_POOL_SIZE);
     Lazy::force(&DB_POOL_IDLE);
     Lazy::force(&WATCHDOG_ONCHAIN_TRIGGERS);
+    Lazy::force(&PAYOUTS_TRIGGERED_TOTAL);
+    Lazy::force(&PINGS_RECEIVED_TOTAL);
+    Lazy::force(&SNAPSHOT_COUNT);
 }
 
 /// Updates DB pool gauges from the current sqlx pool state.
@@ -135,3 +138,36 @@ pub async fn latency_middleware(req: Request, next: Next) -> impl IntoResponse {
     ACTIVE_CONNECTIONS.dec();
     response
 }
+
+pub static PAYOUTS_TRIGGERED_TOTAL: Lazy<CounterVec> = Lazy::new(|| {
+    register_counter_vec!(
+        opts!(
+            "inheritx_payouts_triggered_total",
+            "Total inheritance payouts triggered"
+        ),
+        &["status"]
+    )
+    .expect("failed to register payouts_triggered_total")
+});
+
+pub static PINGS_RECEIVED_TOTAL: Lazy<CounterVec> = Lazy::new(|| {
+    register_counter_vec!(
+        opts!(
+            "inheritx_pings_received_total",
+            "Total user activity keepalive pings received"
+        ),
+        &["status"]
+    )
+    .expect("failed to register pings_received_total")
+});
+
+pub static SNAPSHOT_COUNT: Lazy<CounterVec> = Lazy::new(|| {
+    register_counter_vec!(
+        opts!(
+            "inheritx_database_snapshots_total",
+            "Total database snapshots created"
+        ),
+        &["status"]
+    )
+    .expect("failed to register snapshot_count")
+});
