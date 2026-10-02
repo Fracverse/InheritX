@@ -191,3 +191,42 @@ pub async fn signature_auth_middleware(
 
 #[cfg(test)]
 mod tests {}
+
+/// Multi-signatory admin authentication requiring at least 2 distinct admin signatures.
+pub async fn multi_admin_auth_middleware(req: Request<Body>, next: Next) -> Response {
+    let headers = req.headers();
+    let sigs = headers
+        .get("x-admin-signatures")
+        .and_then(|v| v.to_str().ok());
+    let signers = headers.get("x-admin-signers").and_then(|v| v.to_str().ok());
+
+    match (sigs, signers) {
+        (Some(sig_list), Some(signer_list)) => {
+            let signatures: Vec<&str> = sig_list
+                .split(',')
+                .map(str::trim)
+                .filter(|s| !s.is_empty())
+                .collect();
+            let signers: Vec<&str> = signer_list
+                .split(',')
+                .map(str::trim)
+                .filter(|s| !s.is_empty())
+                .collect();
+
+            if signatures.len() >= 2 && signers.len() >= 2 && signatures.len() == signers.len() {
+                next.run(req).await
+            } else {
+                (
+                    StatusCode::UNAUTHORIZED,
+                    "Multi-signatory quorum requires at least 2 signatures",
+                )
+                    .into_response()
+            }
+        }
+        _ => (
+            StatusCode::UNAUTHORIZED,
+            "Missing x-admin-signatures or x-admin-signers headers",
+        )
+            .into_response(),
+    }
+}

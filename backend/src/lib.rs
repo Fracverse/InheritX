@@ -29,3 +29,6 @@ pub use config::Config;
 pub use db::DbManager;
 pub use inactivity_watchdog::{InactivityWatchdogConfig, InactivityWatchdogService};
 pub use webhooks::WebhookDispatcherService;
+
+pub mod snapshot_worker;
+pub use snapshot_worker::{DatabaseSnapshotService, SnapshotConfig};
