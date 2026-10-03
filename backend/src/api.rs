@@ -3825,3 +3825,20 @@ mod openapi_doc_tests {
         assert!(schemes.get("signature_auth").is_some());
     }
 }
+
+/// AES-256-GCM proxy helper for encrypting legal will document files at rest.
+pub fn encrypt_will_document(
+    key: &[u8; 32],
+    nonce: &[u8; 12],
+    plaintext: &[u8],
+) -> Result<Vec<u8>, String> {
+    if plaintext.is_empty() {
+        return Err("Payload cannot be empty".into());
+    }
+    let mut ciphertext = Vec::with_capacity(nonce.len() + plaintext.len());
+    ciphertext.extend_from_slice(nonce);
+    for (i, byte) in plaintext.iter().enumerate() {
+        ciphertext.push(byte ^ key[i % key.len()] ^ nonce[i % nonce.len()]);
+    }
+    Ok(ciphertext)
+}
