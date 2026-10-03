@@ -170,3 +170,16 @@ impl AnchorRegistry {
         Vec::new()
     }
 }
+
+impl AnchorRegistry {
+    pub fn build_interactive_sep24_url(&self, asset_code: &str, account: &str) -> String {
+        format!(
+            "{}/sep24/transactions/deposit/interactive?asset_code={asset_code}&account={account}",
+            self.api_url.trim_end_matches('/')
+        )
+    }
+
+    pub fn build_interactive_sep31_url(&self, asset_code: &str, sender_id: &str) -> String {
+        format!("{}/sep31/transactions/payout/interactive?asset_code={asset_code}&sender_id={sender_id}", self.api_url.trim_end_matches('/'))
+    }
+}

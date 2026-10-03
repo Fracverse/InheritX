@@ -86,8 +86,11 @@ pub fn verify_webhook_signature(
         HmacSha256::new_from_slice(secret.as_bytes()).map_err(|_| SignatureError::Mismatch)?;
     mac.update(body);
     // `verify_slice` is constant time, so this leaks nothing about the digest.
-    mac.verify_slice(&expected)
-        .map_err(|_| SignatureError::Mismatch)
+    let computed = mac.finalize().into_bytes();
+    if !constant_time_compare_bytes(&expected[..], &computed[..]) {
+        return Err(SignatureError::Mismatch);
+    }
+    Ok(())
 }
 
 fn strip_sha256_prefix(signature: &str) -> &str {
@@ -381,4 +384,16 @@ mod tests {
             assert_eq!(err.client_message(), "Invalid webhook signature");
         }
     }
+}
+
+/// Constant-time byte slice comparison to mitigate timing attacks.
+pub fn constant_time_compare_bytes(a: &[u8], b: &[u8]) -> bool {
+    if a.len() != b.len() {
+        return false;
+    }
+    let mut diff = 0u8;
+    for (x, y) in a.iter().zip(b.iter()) {
+        diff |= x ^ y;
+    }
+    diff == 0
 }
