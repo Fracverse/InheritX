@@ -21,6 +21,9 @@ use serde::{Deserialize, Serialize};
 use std::sync::Arc;
 use tower_http::cors::CorsLayer;
 use tracing::{error, warn};
+use utoipa::openapi::security::{ApiKey, ApiKeyValue, HttpAuthScheme, HttpBuilder, SecurityScheme};
+use utoipa::{IntoParams, Modify, OpenApi, ToSchema};
+use utoipa_swagger_ui::SwaggerUi;
 use uuid::Uuid;
 
 use crate::auth::{
@@ -37,7 +40,7 @@ use crate::ws::ws_handler;
 use crate::xdr::validate_transaction_xdr;
 use crate::yield_calculator;
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
 pub struct PlanBeneficiary {
     pub address: String,
     pub name: String,
@@ -45,7 +48,7 @@ pub struct PlanBeneficiary {
     pub fiat_anchor_info: String,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
 pub struct Plan {
     pub owner: String,
     pub token: String,
@@ -76,7 +79,7 @@ pub struct AppState {
     pub stellar_submit: StellarSubmitClient,
 }
 
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Deserialize, IntoParams)]
 pub struct PlanQuery {
     pub owner: Option<String>,
     pub beneficiary: Option<String>,
@@ -85,7 +88,7 @@ pub struct PlanQuery {
 /// Query filters accepted by `GET /api/analytics/plan-statistics`. All
 /// filters are optional and apply to every metric in the response, including
 /// the locked-value-by-asset breakdown.
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Deserialize, IntoParams)]
 pub struct PlanStatisticsQuery {
     /// Only include plans created on or after this timestamp.
     pub start_date: Option<DateTime<Utc>>,
@@ -95,45 +98,45 @@ pub struct PlanStatisticsQuery {
     pub asset_type: Option<String>,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, IntoParams)]
 pub struct DueForClaimQuery {
     pub wallet_address: Option<String>,
     pub page: Option<i64>,
     pub limit: Option<i64>,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, ToSchema)]
 pub struct ClaimPlanRequest {
     pub beneficiary_email: String,
     pub two_fa_code: String,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, ToSchema)]
 pub struct CancelPlanRequest {
     /// Optional: signed XDR transaction for on-chain deactivation.
     pub signed_transaction: Option<String>,
 }
 
-#[derive(Deserialize, serde::Serialize)]
+#[derive(Deserialize, serde::Serialize, ToSchema)]
 pub struct PingRequest {
     pub owner: String,
     pub signature: String,
     pub message: String,
 }
 
-#[derive(Serialize)]
+#[derive(Serialize, ToSchema)]
 pub struct PingResponse {
     pub owner: String,
     pub status: String,
     pub virtual_balance: rust_decimal::Decimal,
 }
 
-#[derive(Deserialize)]
+#[derive(Deserialize, ToSchema)]
 pub struct PayoutRequest {
     pub owner: String,
 }
 
-#[derive(Deserialize)]
+#[derive(Deserialize, ToSchema)]
 pub struct UpdatePlanRequest {
     pub beneficiaries: Vec<PlanBeneficiary>,
     pub grace_period: Option<u64>,
@@ -141,21 +144,21 @@ pub struct UpdatePlanRequest {
     pub yield_rate_bps: Option<u32>,
 }
 
-#[derive(Deserialize)]
+#[derive(Deserialize, IntoParams)]
 pub struct AnchorQuery {
     pub beneficiary_address: Option<String>,
     pub page: Option<i64>,
     pub page_size: Option<i64>,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, IntoParams)]
 pub struct YieldCalculateQuery {
     pub amount: f64,
     pub yield_rate_bps: Option<u32>,
     pub elapsed_secs: u64,
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, ToSchema)]
 pub struct YieldCalculateResponse {
     pub amount: f64,
     pub yield_rate_bps: u32,
@@ -164,14 +167,14 @@ pub struct YieldCalculateResponse {
 }
 
 /// Response for the /api/health endpoint.
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, ToSchema)]
 pub struct HealthResponse {
     pub status: String,
     pub postgresql: String,
     pub stellar_rpc: String,
 }
 
-#[derive(Debug, Serialize, sqlx::FromRow)]
+#[derive(Debug, Serialize, sqlx::FromRow, ToSchema)]
 pub struct PayoutRow {
     pub id: Uuid,
     pub plan_id: Uuid,
@@ -182,7 +185,7 @@ pub struct PayoutRow {
     pub created_at: DateTime<Utc>,
 }
 
-#[derive(Serialize)]
+#[derive(Serialize, ToSchema)]
 pub struct PayoutStatusResponse {
     pub data: Vec<PayoutRow>,
     pub page: i64,
@@ -191,23 +194,23 @@ pub struct PayoutStatusResponse {
     pub total_pages: i64,
 }
 
-#[derive(Serialize)]
+#[derive(Serialize, ToSchema)]
 struct ApiError {
     error: String,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, ToSchema)]
 pub struct SubmitXdrRequest {
     pub xdr: String,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, ToSchema)]
 pub struct AdminLoginRequest {
     pub email: String,
     pub password: String,
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, ToSchema)]
 pub struct AdminLoginResponse {
     pub token: String,
     pub expires_at: i64,
@@ -374,8 +377,133 @@ pub fn create_router(state: Arc<AppState>) -> Router {
         .layer(from_fn(latency_middleware))
         .route("/metrics", get(metrics_handler));
 
-    router.layer(cors).with_state(state)
+    let router = router.layer(cors).with_state(state);
+
+    // Swagger UI and the raw OpenAPI JSON spec are additive, state-free routes,
+    // so they are merged once the application state has been applied.
+    router.merge(SwaggerUi::new("/swagger-ui").url("/api-docs/openapi.json", ApiDoc::openapi()))
 }
+
+/// Registers the authentication schemes used by the API with the generated
+/// OpenAPI document:
+/// - `bearer_auth`: admin JWT sent as `Authorization: Bearer <token>`.
+/// - `public_key_auth` / `signature_auth`: the ed25519 request-signature
+///   headers (`X-Public-Key` + `X-Signature`) required by user plan routes.
+struct SecurityAddon;
+
+impl Modify for SecurityAddon {
+    fn modify(&self, openapi: &mut utoipa::openapi::OpenApi) {
+        if let Some(components) = openapi.components.as_mut() {
+            components.add_security_scheme(
+                "bearer_auth",
+                SecurityScheme::Http(
+                    HttpBuilder::new()
+                        .scheme(HttpAuthScheme::Bearer)
+                        .bearer_format("JWT")
+                        .build(),
+                ),
+            );
+            components.add_security_scheme(
+                "public_key_auth",
+                SecurityScheme::ApiKey(ApiKey::Header(ApiKeyValue::new("X-Public-Key"))),
+            );
+            components.add_security_scheme(
+                "signature_auth",
+                SecurityScheme::ApiKey(ApiKey::Header(ApiKeyValue::new("X-Signature"))),
+            );
+        }
+    }
+}
+
+/// OpenAPI 3.0 document describing the InheritX HTTP API.
+///
+/// Served as JSON at `/api-docs/openapi.json` and rendered by Swagger UI at
+/// `/swagger-ui`. The document is compiled from the `#[utoipa::path]`
+/// annotations on the routed handlers plus the `ToSchema` DTOs.
+#[derive(OpenApi)]
+#[openapi(
+    info(
+        title = "InheritX Backend API",
+        version = "0.1.0",
+        description = "Yield-bearing, fiat-native digital inheritance infrastructure on Stellar.",
+    ),
+    paths(
+        health_check,
+        create_plan,
+        get_plans,
+        update_plan,
+        get_plan_by_id,
+        get_plans_due_for_claim,
+        get_plan_due_for_claim,
+        claim_plan,
+        cancel_plan,
+        ping_plan,
+        trigger_payout,
+        get_plan_report,
+        get_plan_statistics,
+        get_anchor_payouts,
+        get_current_lending_rate,
+        calculate_yield,
+        get_kyc_status,
+        submit_kyc,
+        upload_kyc_document,
+        is_kyc_required,
+        get_kyc_requirements,
+        crate::kyc_webhook::kyc_webhook_handler,
+        submit_transaction,
+        admin_login,
+        crate::loan_lifecycle::freeze_loans,
+        crate::loan_lifecycle::recall_loans,
+        crate::loan_lifecycle::liquidate_and_settle,
+        crate::loan_lifecycle::get_trigger_info,
+    ),
+    components(schemas(
+        Plan,
+        PlanBeneficiary,
+        PlanResponse,
+        BeneficiaryResponse,
+        PlanStatisticsResponse,
+        PlanStatusCount,
+        AssetLockedValue,
+        ClaimPlanRequest,
+        CancelPlanRequest,
+        PingRequest,
+        PingResponse,
+        PayoutRequest,
+        PayoutRow,
+        PayoutStatusResponse,
+        UpdatePlanRequest,
+        YieldCalculateResponse,
+        HealthResponse,
+        SubmitXdrRequest,
+        AdminLoginRequest,
+        AdminLoginResponse,
+        ApiError,
+        KYCStatusResponse,
+        KYCSubmitRequest,
+        KYCDocumentResponse,
+        KYCRequirementsResponse,
+        KycRequiredResponse,
+        crate::loan_lifecycle::LoanLifecycleRequest,
+        crate::kyc_webhook::KycWebhookPayload,
+        crate::kyc_webhook::KycStatusPayload,
+        crate::kyc_webhook::WebhookResponse,
+    )),
+    modifiers(&SecurityAddon),
+    tags(
+        (name = "Health", description = "Service liveness and dependency checks"),
+        (name = "Plans", description = "Create, query and settle inheritance plans"),
+        (name = "Analytics", description = "Admin dashboard aggregates"),
+        (name = "Anchor", description = "Fiat off-ramp payout records"),
+        (name = "Lending", description = "Yield-bearing lending rates"),
+        (name = "Yield", description = "Yield projection utilities"),
+        (name = "KYC", description = "Identity verification lifecycle"),
+        (name = "Transactions", description = "Raw signed Stellar transaction submission"),
+        (name = "Admin", description = "Administrative authentication"),
+        (name = "Loans", description = "On-chain loan lifecycle (freeze / recall / liquidate)"),
+    ),
+)]
+struct ApiDoc;
 
 #[derive(Debug, Clone, Serialize, sqlx::FromRow)]
 pub struct PlanRow {
@@ -411,7 +539,7 @@ pub struct PingLogRow {
     pub accrued_yield_snapshot: rust_decimal::Decimal,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
 pub struct PlanResponse {
     pub id: uuid::Uuid,
     pub owner_address: String,
@@ -430,7 +558,7 @@ pub struct PlanResponse {
     pub beneficiaries: Vec<BeneficiaryResponse>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
 pub struct BeneficiaryResponse {
     pub id: uuid::Uuid,
     pub plan_id: uuid::Uuid,
@@ -597,6 +725,19 @@ async fn invalidate_plan_cache(
 }
 
 // Handler: Create Plan
+#[utoipa::path(
+    post,
+    path = "/api/plans",
+    tag = "Plans",
+    request_body = Plan,
+    responses(
+        (status = 201, description = "Plan created", body = PlanResponse),
+        (status = 400, description = "Validation error", body = ApiError),
+        (status = 401, description = "Missing or invalid wallet signature", body = ApiError),
+        (status = 500, description = "Internal server error", body = ApiError),
+    ),
+    security(("public_key_auth" = [], "signature_auth" = []))
+)]
 async fn create_plan(
     State(state): State<Arc<AppState>>,
     Json(payload): Json<Plan>,
@@ -819,6 +960,23 @@ async fn create_plan(
 }
 
 // Handler: Update Plan
+#[utoipa::path(
+    put,
+    path = "/api/plans/{id}",
+    tag = "Plans",
+    params(
+        ("id" = Uuid, Path, description = "Plan identifier"),
+    ),
+    request_body = UpdatePlanRequest,
+    responses(
+        (status = 200, description = "Plan updated", body = PlanResponse),
+        (status = 400, description = "Validation error", body = ApiError),
+        (status = 401, description = "Missing or invalid wallet signature", body = ApiError),
+        (status = 404, description = "Plan not found", body = ApiError),
+        (status = 500, description = "Internal server error", body = ApiError),
+    ),
+    security(("public_key_auth" = [], "signature_auth" = []))
+)]
 async fn update_plan(
     State(state): State<Arc<AppState>>,
     Path(plan_id): Path<uuid::Uuid>,
@@ -1052,6 +1210,16 @@ async fn update_plan(
 }
 
 // Handler: Get Plans
+#[utoipa::path(
+    get,
+    path = "/api/plans",
+    tag = "Plans",
+    params(PlanQuery),
+    responses(
+        (status = 200, description = "List of plans", body = [PlanResponse]),
+        (status = 500, description = "Internal server error", body = ApiError),
+    )
+)]
 async fn get_plans(
     State(state): State<Arc<AppState>>,
     Query(query): Query<PlanQuery>,
@@ -1251,20 +1419,20 @@ struct PlanStatisticsSummaryRow {
     claimed_plans: i64,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, sqlx::FromRow)]
+#[derive(Debug, Clone, Serialize, Deserialize, sqlx::FromRow, ToSchema)]
 pub struct PlanStatusCount {
     pub status: String,
     pub count: i64,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, sqlx::FromRow)]
+#[derive(Debug, Clone, Serialize, Deserialize, sqlx::FromRow, ToSchema)]
 pub struct AssetLockedValue {
     pub token_address: String,
     pub total_locked: rust_decimal::Decimal,
     pub plan_count: i64,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
 pub struct PlanStatisticsResponse {
     pub total_plans: i64,
     pub active_plans: i64,
@@ -1311,6 +1479,19 @@ fn append_plan_statistics_filters(
 /// (admin JWT only) and cached in Redis (or the in-memory fallback) for
 /// `plan_statistics_cache_ttl_secs` to keep repeated dashboard refreshes off
 /// PostgreSQL.
+#[utoipa::path(
+    get,
+    path = "/api/analytics/plan-statistics",
+    tag = "Analytics",
+    params(PlanStatisticsQuery),
+    responses(
+        (status = 200, description = "Aggregated plan statistics", body = serde_json::Value),
+        (status = 400, description = "Invalid date range", body = ApiError),
+        (status = 401, description = "Missing or invalid admin JWT", body = ApiError),
+        (status = 500, description = "Internal server error", body = ApiError),
+    ),
+    security(("bearer_auth" = []))
+)]
 async fn get_plan_statistics(
     State(state): State<Arc<AppState>>,
     Query(query): Query<PlanStatisticsQuery>,
@@ -1445,6 +1626,19 @@ fn verify_ping_signature(_owner: &str, signature: &str, _message: &str) -> bool 
 }
 
 // Handler: Ping Plan
+#[utoipa::path(
+    post,
+    path = "/api/plans/ping",
+    tag = "Plans",
+    request_body = PingRequest,
+    responses(
+        (status = 200, description = "Proof-of-life ping recorded", body = PingResponse),
+        (status = 401, description = "Invalid signature", body = ApiError),
+        (status = 404, description = "No active plan for owner", body = ApiError),
+        (status = 500, description = "Internal server error", body = ApiError),
+    ),
+    security(("public_key_auth" = [], "signature_auth" = []))
+)]
 async fn ping_plan(
     State(state): State<Arc<AppState>>,
     Json(payload): Json<PingRequest>,
@@ -1584,6 +1778,20 @@ async fn ping_plan(
         .into_response()
 }
 // Handler: Trigger Payout
+#[utoipa::path(
+    post,
+    path = "/api/plans/payout",
+    tag = "Plans",
+    request_body = PayoutRequest,
+    responses(
+        (status = 200, description = "Payouts created for the plan's beneficiaries", body = [PayoutRow]),
+        (status = 400, description = "Grace period not elapsed or fiat limit exceeded", body = ApiError),
+        (status = 401, description = "Missing or invalid wallet signature", body = ApiError),
+        (status = 404, description = "No active plan for owner", body = ApiError),
+        (status = 500, description = "Internal server error", body = ApiError),
+    ),
+    security(("public_key_auth" = [], "signature_auth" = []))
+)]
 async fn trigger_payout(
     State(state): State<Arc<AppState>>,
     Json(payload): Json<PayoutRequest>,
@@ -1965,6 +2173,14 @@ pub async fn get_apy_rate(state: &AppState, token_address: &str) -> u32 {
     rate_u32
 }
 
+#[utoipa::path(
+    get,
+    path = "/api/lending/current-rate",
+    tag = "Lending",
+    responses(
+        (status = 200, description = "Current USDC lending APY", body = serde_json::Value),
+    )
+)]
 async fn get_current_lending_rate(State(state): State<Arc<AppState>>) -> impl IntoResponse {
     let rate_bps = get_apy_rate(&state, "USDC").await;
     let apy_percentage = rate_bps as f64 / 100.0;
@@ -1974,6 +2190,16 @@ async fn get_current_lending_rate(State(state): State<Arc<AppState>>) -> impl In
 //
 // Handler: Get Anchor Payouts
 // Queries the payouts table filtered by beneficiary_address with pagination.
+#[utoipa::path(
+    get,
+    path = "/api/anchor/payout-status",
+    tag = "Anchor",
+    params(AnchorQuery),
+    responses(
+        (status = 200, description = "Paginated anchor payout records", body = PayoutStatusResponse),
+        (status = 500, description = "Internal server error", body = ApiError),
+    )
+)]
 async fn get_anchor_payouts(
     State(state): State<Arc<AppState>>,
     Query(query): Query<AnchorQuery>,
@@ -2055,7 +2281,7 @@ async fn get_anchor_payouts(
 
 // --- KYC Endpoints ---
 
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Debug, Serialize, Deserialize, ToSchema)]
 pub struct KYCStatusResponse {
     pub wallet_address: String,
     pub kyc_status: String,
@@ -2066,7 +2292,7 @@ pub struct KYCStatusResponse {
     pub provider_reference: Option<String>,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, ToSchema)]
 pub struct KYCSubmitRequest {
     pub wallet_address: String,
     pub full_name: String,
@@ -2083,13 +2309,13 @@ pub struct KYCSubmitRequest {
     pub document_id: Option<String>,
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, ToSchema)]
 pub struct KYCDocumentResponse {
     pub document_id: String,
     pub url: String,
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, ToSchema)]
 pub struct KYCRequirementsResponse {
     pub requires_id: bool,
     pub requires_address_proof: bool,
@@ -2099,11 +2325,28 @@ pub struct KYCRequirementsResponse {
 }
 
 // Get user's KYC status
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, IntoParams)]
 pub struct KYCStatusQuery {
     pub wallet_address: String,
 }
 
+/// Response for `GET /api/kyc/required`.
+#[derive(Debug, Serialize, ToSchema)]
+pub struct KycRequiredResponse {
+    pub required: bool,
+    pub reason: Option<String>,
+}
+
+#[utoipa::path(
+    get,
+    path = "/api/kyc/status",
+    tag = "KYC",
+    params(KYCStatusQuery),
+    responses(
+        (status = 200, description = "KYC status for a wallet", body = KYCStatusResponse),
+        (status = 500, description = "Internal server error", body = ApiError),
+    )
+)]
 async fn get_kyc_status(
     State(state): State<Arc<AppState>>,
     Query(query): Query<KYCStatusQuery>,
@@ -2174,6 +2417,16 @@ async fn get_kyc_status(
 }
 
 // Submit KYC verification data
+#[utoipa::path(
+    post,
+    path = "/api/kyc/submit",
+    tag = "KYC",
+    request_body = KYCSubmitRequest,
+    responses(
+        (status = 200, description = "KYC data submitted", body = KYCStatusResponse),
+        (status = 500, description = "Internal server error", body = ApiError),
+    )
+)]
 async fn submit_kyc(
     State(state): State<Arc<AppState>>,
     Json(payload): Json<KYCSubmitRequest>,
@@ -2286,6 +2539,14 @@ async fn submit_kyc(
 }
 
 // Upload KYC document
+#[utoipa::path(
+    post,
+    path = "/api/kyc/upload",
+    tag = "KYC",
+    responses(
+        (status = 200, description = "Document uploaded", body = KYCDocumentResponse),
+    )
+)]
 async fn upload_kyc_document() -> impl IntoResponse {
     // In a real implementation, this would:
     // 1. Receive multipart form data with file and document_type
@@ -2303,14 +2564,16 @@ async fn upload_kyc_document() -> impl IntoResponse {
 }
 
 // Check if KYC is required
+#[utoipa::path(
+    get,
+    path = "/api/kyc/required",
+    tag = "KYC",
+    responses(
+        (status = 200, description = "Whether KYC is required", body = KycRequiredResponse),
+    )
+)]
 async fn is_kyc_required() -> impl IntoResponse {
-    #[derive(Debug, Serialize)]
-    struct RequiredResponse {
-        required: bool,
-        reason: Option<String>,
-    }
-
-    let response = RequiredResponse {
+    let response = KycRequiredResponse {
         required: true,
         reason: Some("All users must complete KYC to create plans".to_string()),
     };
@@ -2319,6 +2582,14 @@ async fn is_kyc_required() -> impl IntoResponse {
 }
 
 // Get KYC requirements
+#[utoipa::path(
+    get,
+    path = "/api/kyc/requirements",
+    tag = "KYC",
+    responses(
+        (status = 200, description = "Accepted KYC documents and countries", body = KYCRequirementsResponse),
+    )
+)]
 async fn get_kyc_requirements() -> impl IntoResponse {
     let response = KYCRequirementsResponse {
         requires_id: true,
@@ -2348,6 +2619,21 @@ async fn get_kyc_requirements() -> impl IntoResponse {
 /// Generates a PDF audit report for the given plan.
 /// Requires a valid JWT (role = admin) via Bearer token.
 #[cfg(feature = "pdf")]
+#[utoipa::path(
+    get,
+    path = "/api/plans/{id}/report",
+    tag = "Plans",
+    params(
+        ("id" = Uuid, Path, description = "Plan identifier"),
+    ),
+    responses(
+        (status = 200, description = "PDF audit report returned as a downloadable attachment"),
+        (status = 401, description = "Missing or invalid admin JWT", body = ApiError),
+        (status = 404, description = "Plan not found", body = ApiError),
+        (status = 500, description = "Internal server error", body = ApiError),
+    ),
+    security(("bearer_auth" = []))
+)]
 pub async fn get_plan_report(
     State(state): State<Arc<AppState>>,
     Path(plan_id): Path<uuid::Uuid>,
@@ -2493,6 +2779,18 @@ pub async fn get_plan_report(
 
 /// Stub handler when PDF feature is disabled at compile time.
 #[cfg(not(feature = "pdf"))]
+#[utoipa::path(
+    get,
+    path = "/api/plans/{id}/report",
+    tag = "Plans",
+    params(
+        ("id" = Uuid, Path, description = "Plan identifier"),
+    ),
+    responses(
+        (status = 501, description = "PDF generation is not enabled in this build", body = ApiError),
+    ),
+    security(("bearer_auth" = []))
+)]
 pub async fn get_plan_report(_state: State<Arc<AppState>>, _plan_id: Path<uuid::Uuid>) -> Response {
     (
         StatusCode::NOT_IMPLEMENTED,
@@ -2507,6 +2805,17 @@ pub async fn get_plan_report(_state: State<Arc<AppState>>, _plan_id: Path<uuid::
 // Validates the XDR envelope's format before forwarding it to the Stellar
 // network (Horizon). The XDR must already carry a valid signature — this
 // endpoint does not sign anything, it only checks shape/sanity and relays.
+#[utoipa::path(
+    post,
+    path = "/api/transactions/submit",
+    tag = "Transactions",
+    request_body = SubmitXdrRequest,
+    responses(
+        (status = 200, description = "Transaction accepted by the Stellar network", body = serde_json::Value),
+        (status = 400, description = "Invalid or rejected XDR", body = ApiError),
+        (status = 502, description = "Upstream Stellar/Horizon error", body = ApiError),
+    )
+)]
 async fn submit_transaction(
     State(state): State<Arc<AppState>>,
     Json(payload): Json<SubmitXdrRequest>,
@@ -2541,6 +2850,15 @@ async fn submit_transaction(
 
 /// Handler: GET /api/health
 /// Verifies PostgreSQL and Stellar RPC connectivity.
+#[utoipa::path(
+    get,
+    path = "/api/health",
+    tag = "Health",
+    responses(
+        (status = 200, description = "Service is healthy", body = HealthResponse),
+        (status = 503, description = "Service is degraded or unhealthy", body = HealthResponse),
+    )
+)]
 async fn health_check(State(state): State<Arc<AppState>>) -> impl IntoResponse {
     let postgresql_ok = sqlx::query("SELECT 1")
         .fetch_one(&state.db_pool)
@@ -2588,6 +2906,16 @@ async fn health_check(State(state): State<Arc<AppState>>) -> impl IntoResponse {
     (status_code, Json(response)).into_response()
 }
 
+#[utoipa::path(
+    get,
+    path = "/api/yield/calculate",
+    tag = "Yield",
+    params(YieldCalculateQuery),
+    responses(
+        (status = 200, description = "Projected yield for the given inputs", body = YieldCalculateResponse),
+        (status = 400, description = "Amount must be non-negative", body = ApiError),
+    )
+)]
 async fn calculate_yield(
     State(state): State<Arc<AppState>>,
     Query(query): Query<YieldCalculateQuery>,
@@ -2619,6 +2947,18 @@ async fn calculate_yield(
 
 // success, issues the JWT that `jwt_auth_middleware` expects for admin
 // routes.
+#[utoipa::path(
+    post,
+    path = "/api/admin/login",
+    tag = "Admin",
+    request_body = AdminLoginRequest,
+    responses(
+        (status = 200, description = "Admin JWT issued", body = AdminLoginResponse),
+        (status = 400, description = "Email and password are required", body = ApiError),
+        (status = 401, description = "Invalid email or password", body = ApiError),
+        (status = 500, description = "Internal server error", body = ApiError),
+    )
+)]
 async fn admin_login(
     State(state): State<Arc<AppState>>,
     Json(payload): Json<AdminLoginRequest>,
@@ -2718,6 +3058,19 @@ async fn admin_login(
 
 // Handler: GET /api/plans/{id}
 // Fetches a single plan by UUID, including its beneficiaries and live yield projection.
+#[utoipa::path(
+    get,
+    path = "/api/plans/{id}",
+    tag = "Plans",
+    params(
+        ("id" = Uuid, Path, description = "Plan identifier"),
+    ),
+    responses(
+        (status = 200, description = "Single plan with beneficiaries and live yield", body = serde_json::Value),
+        (status = 404, description = "Plan not found", body = ApiError),
+        (status = 500, description = "Internal server error", body = ApiError),
+    )
+)]
 async fn get_plan_by_id(
     State(state): State<Arc<AppState>>,
     Path(plan_id): Path<uuid::Uuid>,
@@ -2778,6 +3131,16 @@ async fn get_plan_by_id(
 // Handler: GET /api/plans/due-for-claim
 // Returns paginated plans with status TRIGGERED or CLAIMABLE.
 // Optionally scoped to a specific beneficiary wallet address via `wallet_address` query param.
+#[utoipa::path(
+    get,
+    path = "/api/plans/due-for-claim",
+    tag = "Plans",
+    params(DueForClaimQuery),
+    responses(
+        (status = 200, description = "Paginated plans in TRIGGERED/CLAIMABLE state", body = serde_json::Value),
+        (status = 500, description = "Internal server error", body = ApiError),
+    )
+)]
 async fn get_plans_due_for_claim(
     State(state): State<Arc<AppState>>,
     Query(query): Query<DueForClaimQuery>,
@@ -2889,6 +3252,19 @@ async fn get_plans_due_for_claim(
 
 // Handler: GET /api/plans/due-for-claim/{id}
 // Returns a single claimable plan (status TRIGGERED or CLAIMABLE) by UUID.
+#[utoipa::path(
+    get,
+    path = "/api/plans/due-for-claim/{id}",
+    tag = "Plans",
+    params(
+        ("id" = Uuid, Path, description = "Plan identifier"),
+    ),
+    responses(
+        (status = 200, description = "Single claimable plan", body = serde_json::Value),
+        (status = 404, description = "Plan not found or not yet claimable", body = ApiError),
+        (status = 500, description = "Internal server error", body = ApiError),
+    )
+)]
 async fn get_plan_due_for_claim(
     State(state): State<Arc<AppState>>,
     Path(plan_id): Path<uuid::Uuid>,
@@ -2951,6 +3327,26 @@ async fn get_plan_due_for_claim(
 // Handler: POST /api/plans/{id}/claim
 // Verifies beneficiary claim codes and KYC status, then creates payout records.
 // Requires signature auth (beneficiary must sign the request body).
+#[utoipa::path(
+    post,
+    path = "/api/plans/{id}/claim",
+    tag = "Plans",
+    params(
+        ("id" = Uuid, Path, description = "Plan identifier"),
+    ),
+    request_body = ClaimPlanRequest,
+    responses(
+        (status = 200, description = "Claim recorded and payout records created", body = serde_json::Value),
+        (status = 400, description = "Missing fields or no registered beneficiaries", body = ApiError),
+        (status = 401, description = "Missing or invalid wallet signature", body = ApiError),
+        (status = 403, description = "Beneficiary KYC not approved", body = ApiError),
+        (status = 404, description = "Plan not found", body = ApiError),
+        (status = 409, description = "Plan is not claimable", body = ApiError),
+        (status = 422, description = "Invalid claim verification code", body = ApiError),
+        (status = 500, description = "Internal server error", body = ApiError),
+    ),
+    security(("public_key_auth" = [], "signature_auth" = []))
+)]
 async fn claim_plan(
     State(state): State<Arc<AppState>>,
     Path(plan_id): Path<uuid::Uuid>,
@@ -3231,6 +3627,25 @@ async fn claim_plan(
 // Handler: POST /api/plans/{id}/cancel
 // Validates ownership via signature auth, marks the plan inactive with status DEACTIVATED.
 // An optional signed_transaction may be provided for on-chain deactivation (forwarded to Stellar).
+#[utoipa::path(
+    post,
+    path = "/api/plans/{id}/cancel",
+    tag = "Plans",
+    params(
+        ("id" = Uuid, Path, description = "Plan identifier"),
+    ),
+    request_body = CancelPlanRequest,
+    responses(
+        (status = 200, description = "Plan deactivated", body = serde_json::Value),
+        (status = 400, description = "Invalid signed_transaction XDR", body = ApiError),
+        (status = 401, description = "Missing or invalid wallet signature", body = ApiError),
+        (status = 404, description = "Plan not found", body = ApiError),
+        (status = 409, description = "Plan is already inactive or paid out", body = ApiError),
+        (status = 502, description = "On-chain deactivation failed", body = ApiError),
+        (status = 500, description = "Internal server error", body = ApiError),
+    ),
+    security(("public_key_auth" = [], "signature_auth" = []))
+)]
 async fn cancel_plan(
     State(state): State<Arc<AppState>>,
     Path(plan_id): Path<uuid::Uuid>,
@@ -3388,6 +3803,28 @@ async fn cancel_plan(
         Json(serde_json::json!({ "data": updated_response })),
     )
         .into_response()
+}
+
+#[cfg(test)]
+mod openapi_doc_tests {
+    use super::*;
+
+    #[test]
+    fn openapi_spec_serializes_with_expected_paths_and_schemes() {
+        let spec = ApiDoc::openapi();
+        let json = serde_json::to_value(&spec).expect("OpenAPI document serializes");
+
+        assert!(json.get("openapi").is_some(), "missing openapi version");
+        assert!(json["paths"].get("/api/plans").is_some());
+        assert!(json["paths"].get("/api/plans/{id}/claim").is_some());
+        assert!(json["paths"].get("/api/kyc/webhook").is_some());
+        assert!(json["paths"].get("/api/health").is_some());
+
+        let schemes = &json["components"]["securitySchemes"];
+        assert!(schemes.get("bearer_auth").is_some());
+        assert!(schemes.get("public_key_auth").is_some());
+        assert!(schemes.get("signature_auth").is_some());
+    }
 }
 
 /// AES-256-GCM proxy helper for encrypting legal will document files at rest.

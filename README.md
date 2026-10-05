@@ -87,6 +87,26 @@ export PLAN_CACHE_TTL_SECS=15
 When Redis is enabled, `GET /api/plans` returns cache-timing headers:
 `x-plan-cache-status`, `x-plan-cache-lookup-ms`, `x-plan-db-query-ms`, `x-plan-total-latency-ms`
 
+#### API documentation (OpenAPI 3.0 + Swagger UI)
+
+The backend exposes an auto-generated OpenAPI 3.0 document and an interactive
+Swagger UI. Once the server is running:
+
+- Swagger UI: **http://localhost:8080/swagger-ui**
+- Raw OpenAPI JSON spec: **http://localhost:8080/api-docs/openapi.json**
+
+The spec is generated at compile time from `utoipa` annotations on the Axum
+handlers (`#[utoipa::path]`) and the request/response DTOs (`#[derive(ToSchema)]`,
+`#[derive(IntoParams)]`). It documents path/query/header parameters, JSON request
+bodies, response schemas and the authentication schemes used by the API:
+
+- `bearer_auth` — admin JWT via `Authorization: Bearer <token>`
+- `public_key_auth` + `signature_auth` — ed25519 request signature via the
+  `X-Public-Key` and `X-Signature` headers
+
+Swagger UI is purely additive: existing routes, middleware and behaviour are
+unchanged.
+
 ### 3. Frontend
 ```bash
 cd frontend

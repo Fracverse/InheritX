@@ -10,6 +10,7 @@ use serde::{Deserialize, Serialize};
 use sha2::Sha256;
 use std::sync::Arc;
 use tracing::{error, info, warn};
+use utoipa::ToSchema;
 
 use crate::api::AppState;
 use crate::ws::KycUpdateEvent;
@@ -100,7 +101,7 @@ fn strip_sha256_prefix(signature: &str) -> &str {
     }
 }
 
-#[derive(Debug, Deserialize, Serialize, Clone)]
+#[derive(Debug, Deserialize, Serialize, Clone, ToSchema)]
 #[serde(rename_all = "lowercase")]
 pub enum KycStatusPayload {
     Pending,
@@ -120,7 +121,7 @@ impl KycStatusPayload {
     }
 }
 
-#[derive(Debug, Deserialize, Serialize)]
+#[derive(Debug, Deserialize, Serialize, ToSchema)]
 pub struct KycWebhookPayload {
     pub wallet_address: String,
     pub status: KycStatusPayload,
@@ -128,12 +129,27 @@ pub struct KycWebhookPayload {
     pub event_type: String,
 }
 
-#[derive(Serialize)]
+#[derive(Serialize, ToSchema)]
 pub struct WebhookResponse {
     pub success: bool,
     pub message: String,
 }
 
+#[utoipa::path(
+    post,
+    path = "/api/kyc/webhook",
+    tag = "KYC",
+    params(
+        ("x-kyc-signature" = String, Header, description = "HMAC-SHA256 signature of the raw request body"),
+    ),
+    request_body(content = KycWebhookPayload, content_type = "application/json"),
+    responses(
+        (status = 200, description = "Webhook accepted and KYC status applied", body = WebhookResponse),
+        (status = 400, description = "Invalid payload", body = WebhookResponse),
+        (status = 401, description = "Missing or invalid webhook signature", body = WebhookResponse),
+        (status = 503, description = "KYC webhook secret is not configured", body = WebhookResponse),
+    )
+)]
 pub async fn kyc_webhook_handler(
     State(state): State<Arc<AppState>>,
     headers: HeaderMap,

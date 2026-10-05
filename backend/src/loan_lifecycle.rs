@@ -11,6 +11,7 @@ use serde::{Deserialize, Serialize};
 use sqlx::FromRow;
 use std::sync::Arc;
 use tracing::{error, warn};
+use utoipa::ToSchema;
 use uuid::Uuid;
 
 use crate::api::AppState;
@@ -23,7 +24,7 @@ const LIQUIDATE_EVENT_TOPICS: [&str; 2] = ["LOAN", "LIQUIDAT"];
 
 const ALLOWED_STATUSES: [&str; 2] = ["TRIGGERED", "CLAIMABLE"];
 
-#[derive(Debug, Default, Deserialize)]
+#[derive(Debug, Default, Deserialize, ToSchema)]
 pub struct LoanLifecycleRequest {
     pub recall_amount: Option<u64>,
 }
@@ -55,6 +56,23 @@ struct OutstandingLoan {
     status: String,
 }
 
+#[utoipa::path(
+    post,
+    path = "/api/plans/{id}/freeze-loans",
+    tag = "Loans",
+    params(
+        ("id" = Uuid, Path, description = "Plan identifier"),
+    ),
+    request_body = LoanLifecycleRequest,
+    responses(
+        (status = 200, description = "Loans frozen for the plan", body = serde_json::Value),
+        (status = 401, description = "Missing or invalid admin JWT / wallet signature", body = serde_json::Value),
+        (status = 404, description = "Plan not found", body = serde_json::Value),
+        (status = 409, description = "Plan is not in a claimable state", body = serde_json::Value),
+        (status = 502, description = "Stellar/Soroban invocation failed", body = serde_json::Value),
+    ),
+    security(("bearer_auth" = []), ("public_key_auth" = [], "signature_auth" = []))
+)]
 pub async fn freeze_loans(
     State(state): State<Arc<AppState>>,
     Path(plan_id): Path<Uuid>,
@@ -141,6 +159,23 @@ pub async fn freeze_loans(
     )
 }
 
+#[utoipa::path(
+    post,
+    path = "/api/plans/{id}/recall-loans",
+    tag = "Loans",
+    params(
+        ("id" = Uuid, Path, description = "Plan identifier"),
+    ),
+    request_body = LoanLifecycleRequest,
+    responses(
+        (status = 200, description = "Loans recalled for the plan", body = serde_json::Value),
+        (status = 401, description = "Missing or invalid admin JWT / wallet signature", body = serde_json::Value),
+        (status = 404, description = "Plan not found", body = serde_json::Value),
+        (status = 409, description = "Plan is not in a claimable state", body = serde_json::Value),
+        (status = 502, description = "Stellar/Soroban invocation failed", body = serde_json::Value),
+    ),
+    security(("bearer_auth" = []), ("public_key_auth" = [], "signature_auth" = []))
+)]
 pub async fn recall_loans(
     State(state): State<Arc<AppState>>,
     Path(plan_id): Path<Uuid>,
@@ -260,6 +295,23 @@ pub async fn recall_loans(
     )
 }
 
+#[utoipa::path(
+    post,
+    path = "/api/plans/{id}/liquidate-settle",
+    tag = "Loans",
+    params(
+        ("id" = Uuid, Path, description = "Plan identifier"),
+    ),
+    request_body = LoanLifecycleRequest,
+    responses(
+        (status = 200, description = "Loans liquidated and settled", body = serde_json::Value),
+        (status = 401, description = "Missing or invalid admin JWT / wallet signature", body = serde_json::Value),
+        (status = 404, description = "Plan not found", body = serde_json::Value),
+        (status = 409, description = "Plan is not in a claimable state", body = serde_json::Value),
+        (status = 502, description = "Stellar/Soroban invocation failed", body = serde_json::Value),
+    ),
+    security(("bearer_auth" = []), ("public_key_auth" = [], "signature_auth" = []))
+)]
 pub async fn liquidate_and_settle(
     State(state): State<Arc<AppState>>,
     Path(plan_id): Path<Uuid>,
@@ -377,6 +429,20 @@ pub async fn liquidate_and_settle(
     )
 }
 
+#[utoipa::path(
+    get,
+    path = "/api/plans/{id}/trigger-info",
+    tag = "Loans",
+    params(
+        ("id" = Uuid, Path, description = "Plan identifier"),
+    ),
+    responses(
+        (status = 200, description = "Loan lifecycle / trigger information", body = serde_json::Value),
+        (status = 401, description = "Missing or invalid admin JWT / wallet signature", body = serde_json::Value),
+        (status = 404, description = "Plan not found", body = serde_json::Value),
+    ),
+    security(("bearer_auth" = []), ("public_key_auth" = [], "signature_auth" = []))
+)]
 pub async fn get_trigger_info(
     State(state): State<Arc<AppState>>,
     Path(plan_id): Path<Uuid>,
