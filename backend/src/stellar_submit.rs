@@ -1,3 +1,5 @@
+use std::future::Future;
+use std::pin::Pin;
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -7,12 +9,15 @@ use serde::Deserialize;
 use serde_json::{json, Value};
 use sha2::{Digest, Sha256};
 use stellar_xdr::{
-    ContractEvent, ContractEventBody, ContractId, DecoratedSignature, Hash, HostFunction,
-    InvokeContractArgs, InvokeHostFunctionOp, Limits, Memo, MuxedAccount, Operation, OperationBody,
-    Preconditions, ReadXdr, ScAddress, ScSymbol, ScVal, SequenceNumber, Signature, SignatureHint,
-    SorobanAuthorizationEntry, SorobanTransactionData, TimeBounds, TimePoint, Transaction,
-    TransactionEnvelope, TransactionExt, TransactionMeta, TransactionSignaturePayload,
-    TransactionSignaturePayloadTaggedTransaction, TransactionV1Envelope, Uint256, VecM, WriteXdr,
+    ContractEvent, ContractEventBody, ContractId, DecoratedSignature, FeeBumpTransaction,
+    FeeBumpTransactionEnvelope, FeeBumpTransactionExt, FeeBumpTransactionInnerTx, Hash,
+    HostFunction, InnerTransactionResultResult, InvokeContractArgs, InvokeHostFunctionOp, Limits,
+    Memo, MuxedAccount, Operation, OperationBody, Preconditions, ReadXdr, ScAddress, ScSymbol,
+    ScVal, SequenceNumber, Signature, SignatureHint, SorobanAuthorizationEntry,
+    SorobanTransactionData, TimeBounds, TimePoint, Transaction, TransactionEnvelope,
+    TransactionExt, TransactionMeta, TransactionResult, TransactionResultResult,
+    TransactionSignaturePayload, TransactionSignaturePayloadTaggedTransaction,
+    TransactionV1Envelope, Uint256, VecM, WriteXdr,
 };
 use thiserror::Error;
 use tracing::{debug, warn};
@@ -20,6 +25,11 @@ use tracing::{debug, warn};
 /// Per-operation base fee, in stroops. The Soroban resource fee reported by
 /// `simulateTransaction` is added on top of this.
 const BASE_FEE_STROOPS: i64 = 100;
+
+/// Maximum extra fee, in stroops, that a single fee-bump retry adds on top of
+/// the fee the transaction was originally assembled with. The bump is bounded
+/// so an unexpected fee spike cannot make the signer overpay without limit.
+const FEE_BUMP_MAX_STROOPS: i64 = 1000;
 
 /// How long a watchdog-built transaction stays valid once assembled. Bounding
 /// this means a submission that never lands cannot be replayed later by a node
@@ -357,14 +367,16 @@ impl StellarSubmitClient {
             TransactionExt::V1(simulation.transaction_data),
         )?;
 
-        // 3. Sign and submit.
-        let (envelope, tx_hash) = sign(ctx, assembled)?;
-        let envelope_xdr = envelope
+        // 3. Sign and submit. When the network rejects the transaction because
+        //    the inclusion fee spiked, `submit_with_fee_bump` retries once with
+        //    a bounded fee bump instead of surfacing a hard failure.
+        let inner_fee = i64::from(assembled.fee);
+        let (inner, tx_hash) = sign(ctx, assembled)?;
+        let envelope_xdr = TransactionEnvelope::Tx(inner.clone())
             .to_xdr_base64(Limits::none())
             .map_err(|e| StellarSubmitError::Xdr(e.to_string()))?;
 
-        self.send_transaction(ctx, &envelope_xdr, &tx_hash).await?;
-        self.await_transaction(ctx, &tx_hash).await
+        submit_with_fee_bump(self, ctx, inner, &envelope_xdr, &tx_hash, inner_fee).await
     }
 
     /// Simulates a contract invocation without submitting it. Used for view
@@ -746,12 +758,12 @@ fn build_transaction(
     })
 }
 
-/// Signs `transaction` for the configured network, returning the envelope and
-/// the transaction hash (hex) that identifies it on-chain.
+/// Signs `transaction` for the configured network, returning the signed v1
+/// envelope and the transaction hash (hex) that identifies it on-chain.
 fn sign(
     ctx: &SorobanContext,
     transaction: Transaction,
-) -> Result<(TransactionEnvelope, String), StellarSubmitError> {
+) -> Result<(TransactionV1Envelope, String), StellarSubmitError> {
     let payload = TransactionSignaturePayload {
         network_id: ctx.network_id.clone(),
         tagged_transaction: TransactionSignaturePayloadTaggedTransaction::Tx(transaction.clone()),
@@ -774,14 +786,230 @@ fn sign(
         ),
     };
 
-    let envelope = TransactionEnvelope::Tx(TransactionV1Envelope {
+    let envelope = TransactionV1Envelope {
         tx: transaction,
+        signatures: vec![decorated]
+            .try_into()
+            .map_err(|e| StellarSubmitError::Xdr(format!("signatures: {e:?}")))?,
+    };
+
+    Ok((envelope, hex::encode(tx_hash)))
+}
+
+/// Internal seam over the network round-trip of a single submit attempt, so
+/// the fee-bump retry can be exercised in unit tests without a live Stellar
+/// RPC. Production uses the [`StellarSubmitClient`] implementation below.
+type TransportFuture<'a, T> = Pin<Box<dyn Future<Output = T> + Send + 'a>>;
+
+trait SubmitTransport {
+    /// Sends `envelope_xdr` and waits for it to land, returning the emitted
+    /// outcome or the submission failure.
+    fn submit_once<'a>(
+        &'a self,
+        ctx: &'a SorobanContext,
+        envelope_xdr: &'a str,
+        expected_hash: &'a str,
+    ) -> TransportFuture<'a, Result<InvocationOutcome, StellarSubmitError>>;
+}
+
+impl SubmitTransport for StellarSubmitClient {
+    fn submit_once<'a>(
+        &'a self,
+        ctx: &'a SorobanContext,
+        envelope_xdr: &'a str,
+        expected_hash: &'a str,
+    ) -> TransportFuture<'a, Result<InvocationOutcome, StellarSubmitError>> {
+        Box::pin(async move {
+            self.send_transaction(ctx, envelope_xdr, expected_hash)
+                .await?;
+            self.await_transaction(ctx, expected_hash).await
+        })
+    }
+}
+
+/// Submits `inner` and, if — and only if — the network rejects it because the
+/// inclusion fee was too small, retries exactly once with a v1 fee-bump
+/// transaction that raises `inner_fee` by at most [`FEE_BUMP_MAX_STROOPS`].
+///
+/// Invariant: a fee bump is attempted for `txINSUFFICIENT_FEE` failures only.
+/// Every other failure is returned unchanged, and if the fee-bump attempt does
+/// not succeed the *original* error is surfaced so callers keep their existing
+/// diagnostics. The retry never loops, so a persistent fee spike cannot pin the
+/// submitter in a retry cycle.
+async fn submit_with_fee_bump<T: SubmitTransport>(
+    transport: &T,
+    ctx: &SorobanContext,
+    inner: TransactionV1Envelope,
+    inner_xdr: &str,
+    inner_hash: &str,
+    inner_fee: i64,
+) -> Result<InvocationOutcome, StellarSubmitError> {
+    match transport.submit_once(ctx, inner_xdr, inner_hash).await {
+        Ok(outcome) => Ok(outcome),
+        Err(original) => {
+            if !is_insufficient_fee_error(&original) {
+                return Err(original);
+            }
+
+            warn!(
+                tx_hash = %inner_hash,
+                "Soroban submission rejected for insufficient fee; retrying once with a fee bump"
+            );
+
+            let (bump_envelope, bump_hash) = match sign_fee_bump(ctx, inner, inner_fee) {
+                Ok(bumped) => bumped,
+                Err(error) => {
+                    debug!(%error, "could not build fee-bump transaction; returning original error");
+                    return Err(original);
+                }
+            };
+            let bump_xdr = match bump_envelope.to_xdr_base64(Limits::none()) {
+                Ok(xdr) => xdr,
+                Err(error) => {
+                    debug!(%error, "could not encode fee-bump transaction; returning original error");
+                    return Err(original);
+                }
+            };
+
+            match transport.submit_once(ctx, &bump_xdr, &bump_hash).await {
+                Ok(outcome) => Ok(outcome),
+                Err(retry_error) => {
+                    debug!(
+                        %retry_error,
+                        "fee-bump retry failed; returning the original submission error"
+                    );
+                    Err(original)
+                }
+            }
+        }
+    }
+}
+
+/// Signs `inner` with a fee-bump transaction whose total fee is
+/// [`fee_bump_fee`] stroops, reusing the configured signer as the fee source.
+/// Returns the fee-bump envelope and its on-chain transaction hash.
+fn sign_fee_bump(
+    ctx: &SorobanContext,
+    inner: TransactionV1Envelope,
+    inner_fee: i64,
+) -> Result<(TransactionEnvelope, String), StellarSubmitError> {
+    let fee_bump = FeeBumpTransaction {
+        fee_source: MuxedAccount::Ed25519(Uint256(ctx.public_key)),
+        fee: fee_bump_fee(inner_fee),
+        inner_tx: FeeBumpTransactionInnerTx::Tx(inner),
+        ext: FeeBumpTransactionExt::V0,
+    };
+
+    let payload = TransactionSignaturePayload {
+        network_id: ctx.network_id.clone(),
+        tagged_transaction: TransactionSignaturePayloadTaggedTransaction::TxFeeBump(
+            fee_bump.clone(),
+        ),
+    };
+    let encoded = payload
+        .to_xdr(Limits::none())
+        .map_err(|e| StellarSubmitError::Xdr(e.to_string()))?;
+
+    let tx_hash: [u8; 32] = Sha256::digest(&encoded).into();
+    let signature = ctx.signing_key.sign(&tx_hash);
+
+    let decorated = DecoratedSignature {
+        hint: signature_hint(&ctx.public_key),
+        signature: Signature(
+            signature
+                .to_bytes()
+                .to_vec()
+                .try_into()
+                .map_err(|e| StellarSubmitError::Xdr(format!("signature: {e:?}")))?,
+        ),
+    };
+
+    let envelope = TransactionEnvelope::TxFeeBump(FeeBumpTransactionEnvelope {
+        tx: fee_bump,
         signatures: vec![decorated]
             .try_into()
             .map_err(|e| StellarSubmitError::Xdr(format!("signatures: {e:?}")))?,
     });
 
     Ok((envelope, hex::encode(tx_hash)))
+}
+
+/// Total fee, in stroops, charged by a fee-bump retry: the original fee plus at
+/// most [`FEE_BUMP_MAX_STROOPS`].
+fn fee_bump_fee(original_fee: i64) -> i64 {
+    original_fee.saturating_add(FEE_BUMP_MAX_STROOPS)
+}
+
+/// Whether `error` is the protocol's `txINSUFFICIENT_FEE` rejection — the one
+/// submission failure a fee bump is able to recover from.
+fn is_insufficient_fee_error(error: &StellarSubmitError) -> bool {
+    match error {
+        StellarSubmitError::TransactionFailed { detail, .. } => {
+            transaction_result_is_insufficient_fee(detail)
+        }
+        StellarSubmitError::Rejected(body) => value_mentions_insufficient_fee(body),
+        _ => false,
+    }
+}
+
+/// Detects an insufficient-fee failure from either a human-readable detail or
+/// the base64 `TransactionResult` XDR Stellar RPC returns in the failure body.
+fn transaction_result_is_insufficient_fee(detail: &str) -> bool {
+    if text_mentions_insufficient_fee(detail) {
+        return true;
+    }
+
+    let trimmed = detail.trim();
+    if result_xdr_is_insufficient_fee(trimmed) {
+        return true;
+    }
+
+    extract_parenthesised(trimmed)
+        .map(result_xdr_is_insufficient_fee)
+        .unwrap_or(false)
+}
+
+fn result_xdr_is_insufficient_fee(xdr: &str) -> bool {
+    TransactionResult::from_xdr_base64(xdr, Limits::none())
+        .is_ok_and(|result| result_code_is_insufficient_fee(&result.result))
+}
+
+/// The `txINSUFFICIENT_FEE` code, whether it failed directly or inside a
+/// previously-attempted fee bump.
+fn result_code_is_insufficient_fee(result: &TransactionResultResult) -> bool {
+    match result {
+        TransactionResultResult::TxInsufficientFee => true,
+        TransactionResultResult::TxFeeBumpInnerFailed(pair) => {
+            matches!(
+                pair.result.result,
+                InnerTransactionResultResult::TxInsufficientFee
+            )
+        }
+        _ => false,
+    }
+}
+
+fn extract_parenthesised(value: &str) -> Option<&str> {
+    let start = value.rfind('(')? + 1;
+    let rest = value.get(start..)?;
+    let end = rest.find(')')?;
+    rest.get(..end)
+}
+
+fn text_mentions_insufficient_fee(value: &str) -> bool {
+    let lower = value.to_ascii_lowercase();
+    lower.contains("insufficient_fee")
+        || lower.contains("insufficientfee")
+        || lower.contains("insufficient fee")
+}
+
+fn value_mentions_insufficient_fee(value: &Value) -> bool {
+    match value {
+        Value::String(text) => text_mentions_insufficient_fee(text),
+        Value::Array(items) => items.iter().any(value_mentions_insufficient_fee),
+        Value::Object(map) => map.values().any(value_mentions_insufficient_fee),
+        _ => false,
+    }
 }
 
 /// SHA-256 of the network passphrase — the network id mixed into every
@@ -982,9 +1210,11 @@ fn parse_env_u64(key: &str, default: u64) -> u64 {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::collections::VecDeque;
+    use std::sync::Mutex;
     use stellar_xdr::{
         ExtensionPoint, ScMap, ScMapEntry, SorobanTransactionMeta, SorobanTransactionMetaExt,
-        TransactionMetaV3,
+        TransactionMetaV3, TransactionResultExt,
     };
 
     fn symbol(value: &str) -> ScVal {
@@ -1269,5 +1499,234 @@ mod tests {
 
         let liquidate = find_event(&events, &contract(1), &["LOAN", "LIQUIDAT"]).unwrap();
         assert_eq!(event_u64_field(liquidate, "settled_amount"), Some(500));
+    }
+
+    // ── Fee-bump retry ──────────────────────────────────────────────────────
+
+    fn test_client() -> StellarSubmitClient {
+        StellarSubmitClient::new("https://horizon-testnet.stellar.org".to_string())
+            .with_soroban(test_config())
+            .expect("valid config")
+    }
+
+    fn sample_inner(client: &StellarSubmitClient, fee: i64) -> TransactionV1Envelope {
+        let ctx = client.soroban().expect("soroban configured");
+        let invocation = InvokeContractArgs {
+            contract_address: ScAddress::Contract(ctx.contract.clone()),
+            function_name: ScSymbol("noop".try_into().unwrap()),
+            args: VecM::default(),
+        };
+        let transaction = build_transaction(
+            ctx,
+            1,
+            1_700_000_000,
+            fee,
+            invocation,
+            VecM::default(),
+            TransactionExt::V0,
+        )
+        .expect("build transaction");
+        sign(ctx, transaction).expect("sign transaction").0
+    }
+
+    fn encode_inner(inner: &TransactionV1Envelope) -> String {
+        TransactionEnvelope::Tx(inner.clone())
+            .to_xdr_base64(Limits::none())
+            .expect("encode inner envelope")
+    }
+
+    fn outcome(hash: &str) -> InvocationOutcome {
+        InvocationOutcome {
+            tx_hash: hash.to_string(),
+            events: Vec::new(),
+            return_value: None,
+        }
+    }
+
+    fn insufficient_fee_error() -> StellarSubmitError {
+        StellarSubmitError::TransactionFailed {
+            hash: "original".to_string(),
+            detail: "txINSUFFICIENT_FEE".to_string(),
+        }
+    }
+
+    struct MockTransport {
+        replies: Mutex<VecDeque<Result<InvocationOutcome, StellarSubmitError>>>,
+        submitted: Mutex<Vec<(String, String)>>,
+    }
+
+    impl MockTransport {
+        fn new(replies: Vec<Result<InvocationOutcome, StellarSubmitError>>) -> Self {
+            Self {
+                replies: Mutex::new(replies.into()),
+                submitted: Mutex::new(Vec::new()),
+            }
+        }
+
+        fn submitted(&self) -> Vec<(String, String)> {
+            self.submitted.lock().unwrap().clone()
+        }
+    }
+
+    impl SubmitTransport for MockTransport {
+        fn submit_once<'a>(
+            &'a self,
+            _ctx: &'a SorobanContext,
+            envelope_xdr: &'a str,
+            expected_hash: &'a str,
+        ) -> TransportFuture<'a, Result<InvocationOutcome, StellarSubmitError>> {
+            self.submitted
+                .lock()
+                .unwrap()
+                .push((envelope_xdr.to_string(), expected_hash.to_string()));
+            let reply = self.replies.lock().unwrap().pop_front().unwrap_or_else(|| {
+                Err(StellarSubmitError::Rpc(
+                    "mock transport exhausted".to_string(),
+                ))
+            });
+            Box::pin(async move { reply })
+        }
+    }
+
+    #[test]
+    fn detects_insufficient_fee_from_text_and_result_xdr() {
+        assert!(is_insufficient_fee_error(&insufficient_fee_error()));
+
+        assert!(!is_insufficient_fee_error(
+            &StellarSubmitError::TransactionFailed {
+                hash: "h".to_string(),
+                detail: "txBAD_SEQ".to_string(),
+            }
+        ));
+
+        // A real TransactionResult XDR encoding `txINSUFFICIENT_FEE`, as
+        // getTransaction returns in its `resultXdr` field.
+        let result = TransactionResult {
+            fee_charged: 0,
+            result: TransactionResultResult::TxInsufficientFee,
+            ext: TransactionResultExt::V0,
+        };
+        let xdr = result.to_xdr_base64(Limits::none()).unwrap();
+        assert!(is_insufficient_fee_error(
+            &StellarSubmitError::TransactionFailed {
+                hash: "h".to_string(),
+                detail: xdr,
+            }
+        ));
+    }
+
+    #[tokio::test]
+    async fn successful_submission_is_returned_unchanged() {
+        let client = test_client();
+        let ctx = client.soroban().unwrap();
+        let inner = sample_inner(&client, 500);
+        let inner_xdr = encode_inner(&inner);
+        let transport = MockTransport::new(vec![Ok(outcome("ok"))]);
+
+        let result = submit_with_fee_bump(&transport, ctx, inner, &inner_xdr, "hash", 500)
+            .await
+            .expect("submission succeeds");
+
+        assert_eq!(result.tx_hash, "ok");
+        let submitted = transport.submitted();
+        assert_eq!(submitted.len(), 1);
+        assert_eq!(submitted[0].1, "hash");
+    }
+
+    #[tokio::test]
+    async fn insufficient_fee_is_retried_with_a_bounded_fee_bump() {
+        let client = test_client();
+        let ctx = client.soroban().unwrap();
+        let inner = sample_inner(&client, 500);
+        let inner_xdr = encode_inner(&inner);
+        let transport =
+            MockTransport::new(vec![Err(insufficient_fee_error()), Ok(outcome("bumped"))]);
+
+        let result = submit_with_fee_bump(&transport, ctx, inner, &inner_xdr, "inner-hash", 500)
+            .await
+            .expect("fee-bump retry succeeds");
+        assert_eq!(result.tx_hash, "bumped");
+
+        let submitted = transport.submitted();
+        assert_eq!(
+            submitted.len(),
+            2,
+            "there must be one original attempt and one fee-bump retry"
+        );
+
+        let bump = TransactionEnvelope::from_xdr_base64(submitted[1].0.as_str(), Limits::none())
+            .expect("fee-bump envelope decodes");
+        let TransactionEnvelope::TxFeeBump(envelope) = bump else {
+            panic!("the retry must submit a fee-bump transaction");
+        };
+        assert_eq!(envelope.tx.fee, 500 + FEE_BUMP_MAX_STROOPS);
+        assert!(
+            envelope.tx.fee <= 500 + FEE_BUMP_MAX_STROOPS,
+            "the bump may add at most {FEE_BUMP_MAX_STROOPS} stroops"
+        );
+
+        let inner_envelope = match envelope.tx.inner_tx {
+            FeeBumpTransactionInnerTx::Tx(inner) => inner,
+        };
+        assert_eq!(
+            inner_envelope.tx.fee, 500,
+            "the fee bump must wrap the original transaction unchanged"
+        );
+    }
+
+    #[tokio::test]
+    async fn non_fee_failure_is_returned_without_a_fee_bump() {
+        let client = test_client();
+        let ctx = client.soroban().unwrap();
+        let inner = sample_inner(&client, 500);
+        let inner_xdr = encode_inner(&inner);
+        let transport = MockTransport::new(vec![Err(StellarSubmitError::TransactionFailed {
+            hash: "h".to_string(),
+            detail: "txBAD_SEQ".to_string(),
+        })]);
+
+        let error = submit_with_fee_bump(&transport, ctx, inner, &inner_xdr, "h", 500)
+            .await
+            .expect_err("a non-fee failure propagates");
+
+        match error {
+            StellarSubmitError::TransactionFailed { detail, .. } => assert_eq!(detail, "txBAD_SEQ"),
+            other => panic!("unexpected error: {other}"),
+        }
+        assert_eq!(
+            transport.submitted().len(),
+            1,
+            "no fee bump may be attempted for a non-fee failure"
+        );
+    }
+
+    #[tokio::test]
+    async fn failed_fee_bump_surfaces_the_original_error() {
+        let client = test_client();
+        let ctx = client.soroban().unwrap();
+        let inner = sample_inner(&client, 500);
+        let inner_xdr = encode_inner(&inner);
+        let transport = MockTransport::new(vec![
+            Err(insufficient_fee_error()),
+            Err(StellarSubmitError::Network(
+                "retry network down".to_string(),
+            )),
+        ]);
+
+        let error = submit_with_fee_bump(&transport, ctx, inner, &inner_xdr, "h", 500)
+            .await
+            .expect_err("a failed retry surfaces the original error");
+
+        match error {
+            StellarSubmitError::TransactionFailed { detail, .. } => {
+                assert_eq!(detail, "txINSUFFICIENT_FEE");
+            }
+            other => panic!("expected the original error, got {other}"),
+        }
+        assert_eq!(
+            transport.submitted().len(),
+            2,
+            "the fee bump must have been attempted"
+        );
     }
 }
