@@ -2,7 +2,7 @@
 use inheritx_backend::metrics;
 use inheritx_backend::{
     create_router, telemetry, AppState, Config, DbManager, InactivityWatchdogConfig,
-    InactivityWatchdogService,
+    InactivityWatchdogService, KycExpiryPollerConfig, KycExpiryPollerService,
 };
 use std::net::SocketAddr;
 use std::sync::Arc;
@@ -142,6 +142,13 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     inheritx_backend::loan_lifecycle::LoanLiquidationWatchdogService::spawn(
         state.clone(),
         inheritx_backend::loan_lifecycle::LoanLiquidationWatchdogConfig::from_env(),
+        shutdown_rx.clone(),
+    );
+
+    // Start KYC document re-verification expiry poller (annual identity check)
+    KycExpiryPollerService::spawn(
+        db_pool.clone(),
+        KycExpiryPollerConfig::from_env(),
         shutdown_rx.clone(),
     );
 
