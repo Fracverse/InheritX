@@ -60,6 +60,10 @@ dotenvy = "0.15"
 # HTTP client (Stellar anchor calls)
 reqwest = { version = "0.11", default-features = false, features = ["json", "rustls-tls"] }
 
+# Email delivery (SMTP / SendGrid) for beneficiary verification tokens
+lettre = { version = "0.11", default-features = false, features = ["builder", "smtp-transport", "tokio1-rustls-tls", "hostname"] }
+async-trait = "0.1"
+
 # Crypto / auth
 hmac = "0.12"
 sha2 = "0.10"
@@ -70,6 +74,9 @@ stellar-strkey = "0.0.13"
 ed25519-dalek = { version = "2.1", features = ["pkcs8", "rand_core"] }
 stellar-xdr = { version = "27", features = ["base64"] }
 argon2 = "0.5"
+
+# URL parsing / building for verification links
+url = "2.5"
 
 # Utilities
 dashmap = "6"

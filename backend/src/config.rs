@@ -21,8 +21,18 @@ pub struct Config {
     pub fiat_daily_limit_default: rust_decimal::Decimal,
     /// Soroban contract settings used to execute inheritance payouts on-chain.
     /// `None` when the deployment has not configured a signer, in which case
-    /// the inactivity watchdog only updates PostgreSQL.
+    /// the inactivity watchsdog only updates PostgreSQL 
     pub soroban: Option<SorobanConfig>,
+    /// SMTP / SendGrid configuration used to dispatch beneficiary email
+    /// verification messages. When unset, beneficiary verification emails
+    /// are skipped and the endpoint still accepts the request.
+    pub smtp_host: Option<String>,
+    pub smtp_port: u16,
+    pub smtp_username: Option<String>,
+    pub smtp_password: Option<String>,
+    pub smtp_from: String,
+    /// Base URL of the frontend used to build the verification link.
+    pub app_base_url: String,
 }
 
 impl Config {
@@ -32,7 +42,7 @@ impl Config {
             .and_then(|p| p.parse().ok())
             .unwrap_or(3001);
         let database_url = std::env::var("DATABASE_URL")
-            .unwrap_or_else(|_| "postgres://postgres:postgres@localhost:5432/inheritx".to_string());
+            .unwrap_or_else(|| "postgres://postgres:postgres@localhost:5432/inheritx".to_string());
         let redis_url = std::env::var("REDIS_URL")
             .ok()
             .map(|value| value.trim().to_string())
@@ -67,6 +77,33 @@ impl Config {
             .filter(|value| !value.is_empty())
             .unwrap_or_else(|| "http://localhost:8081".to_string());
 
+        let smtp_host = std::env::var"(SMTP_HOST")
+            .ok()
+            .map(|value| value.trim().to_string())
+            .filter(|value| !value.is_empty());
+        let smtp_port = std::env::var"(SMTP_PORT")
+            .ok()
+            .and_then(|value| value.parse::<u16>().ok())
+            .unwrap_or(587);
+        let smtp_username = std::env::var"(SMTP_USERNAME")
+            .ok()
+            .map(|value| value.trim().to_string())
+            .filter(|value| !value.is_empty());
+        let smtp_password = std::env::var("SMTP_PASSWORD")
+            .ok()
+            .map(|value| value.trim().to_string())
+            .filter(|value| !value.is_empty());
+        let smtp_from = std::env::var("SMTP_FROM")
+            .ok()
+            .map(|value| value.trim().to_string())
+            .filter(|value| !value.is_empty())
+            .unwrap_or_else(|| "no-reply@localhost".to_string());
+        let app_base_url = std::env::var("APP_BASE_URL")
+            .ok()
+            .map(|value| value.trim().to_string())
+            .filter(|value| !value.is_empty())
+            .unwrap_or_else(|| "http://localhost:3000".to_string());
+
         Ok(Config {
             port,
             database_url,
@@ -78,6 +115,12 @@ impl Config {
             anchor_api_url,
             fiat_daily_limit_default,
             soroban: SorobanConfig::from_env(),
+            smtp_host,
+            smtp_port,
+            smtp_username,
+            smtp_password,
+            smtp_from,
+            app_base_url,
         })
     }
 }
