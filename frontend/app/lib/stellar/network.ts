@@ -20,6 +20,14 @@ export function getInheritanceContractId(): string {
   return process.env.NEXT_PUBLIC_INHERITANCE_CONTRACT_ID ?? "";
 }
 
+/**
+ * Deployed `lending-contract` Soroban contract id (C... strkey). Read lazily
+ * for the same per-test configurability as `getInheritanceContractId`.
+ */
+export function getLendingContractId(): string {
+  return process.env.NEXT_PUBLIC_LENDING_CONTRACT_ID ?? "";
+}
+
 /** Stellar Expert network segment used to build explorer links. */
 const STELLAR_EXPERT_NETWORK =
   STELLAR_NETWORK_PASSPHRASE === Networks.PUBLIC ? "public" : "testnet";

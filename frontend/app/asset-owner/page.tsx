@@ -6,6 +6,9 @@ import { useWallet } from "@/context/WalletContext";
 import { type Plan } from "@/app/lib/api/plans";
 import { getPlans } from "@/lib/api/dataSource";
 import InactivityTimerCard from "@/components/plans/InactivityTimerCard";
+import LoanHealthCard from "@/components/loans/LoanHealthCard";
+import RepayLoanModal from "@/components/loans/RepayLoanModal";
+import { getActiveLoan, type LoanPosition } from "@/app/services/loanRepaymentService";
 import { formatAddress } from "@/util/address";
 import {
   TrendingUp,
@@ -84,6 +87,42 @@ export default function AssetOwnerPage() {
     return () => { cancelled = true; };
   }, [address]);
 
+  // Loan state is keyed by the wallet it was loaded for, so switching wallets
+  // shows a loading state instead of the previous wallet's position.
+  const [loanState, setLoanState] = useState<{
+    address: string | null;
+    loan: LoanPosition | null;
+    error: string | null;
+    justRepaid: boolean;
+  }>({ address: null, loan: null, error: null, justRepaid: false });
+  const isCurrentLoan = !!address && loanState.address === address;
+  const loan = isCurrentLoan ? loanState.loan : null;
+  const loanError = isCurrentLoan ? loanState.error : null;
+  const justRepaid = isCurrentLoan && loanState.justRepaid;
+  const loanLoading = !!address && !isCurrentLoan;
+  // Snapshot of the loan being repaid, so the modal can show its success
+  // state after `loan` itself has been cleared.
+  const [repayTarget, setRepayTarget] = useState<LoanPosition | null>(null);
+
+  useEffect(() => {
+    if (!address) return;
+    let cancelled = false;
+    getActiveLoan(address)
+      .then((next) => { if (!cancelled) setLoanState({ address, loan: next, error: null, justRepaid: false }); })
+      .catch((err) => {
+        if (!cancelled) {
+          setLoanState({ address, loan: null, error: err instanceof Error ? err.message : "Failed to load loan.", justRepaid: false });
+        }
+      });
+    return () => { cancelled = true; };
+  }, [address]);
+
+  // `repay` settles the whole balance and returns all collateral, so the
+  // position closes on confirmation and the LTV gauge drops to 0% immediately.
+  const handleRepaid = () => {
+    setLoanState({ address, loan: null, error: null, justRepaid: true });
+  };
+
   const activePlans = plans.filter((p) => p.status?.toUpperCase() === "ACTIVE");
   const totalYield = plans.reduce((s, p) => s + (p.accrued_yield ?? 0), 0);
   const totalBeneficiaries = plans.reduce((s, p) => s + (p.beneficiaries?.length ?? 0), 0);
@@ -123,6 +162,25 @@ export default function AssetOwnerPage() {
         <StatCard label="Yield Earned" value={loading ? "—" : `$${totalYield.toFixed(2)}`} sub="Accrued across plans" icon={TrendingUp} color="bg-emerald-500/10 text-emerald-400" loading={loading} />
         <StatCard label="Beneficiaries" value={loading ? "—" : String(totalBeneficiaries)} sub="Across all plans" icon={Users} color="bg-orange-500/10 text-orange-400" loading={loading} />
       </div>
+
+      {/* Loan health & repayment */}
+      {isConnected && (loanLoading || loan || justRepaid || loanError) && (
+        <LoanHealthCard
+          loan={loan}
+          loading={loanLoading}
+          error={loanError}
+          justRepaid={justRepaid}
+          onRepay={() => setRepayTarget(loan)}
+        />
+      )}
+      {repayTarget && (
+        <RepayLoanModal
+          isOpen
+          loan={repayTarget}
+          onClose={() => setRepayTarget(null)}
+          onRepaid={handleRepaid}
+        />
+      )}
 
       {/* Proof-of-life controls */}
       {!loading && activePlans.length > 0 && (
