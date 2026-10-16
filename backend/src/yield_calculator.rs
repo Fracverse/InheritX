@@ -143,7 +143,7 @@ pub async fn get_daily_yield_snapshots_for_plan(
         "#,
     )
     .bind(plan_id)
-    .bind(limit.max(1).min(365))
+    .bind(limit.clamp(1, 365))
     .fetch_all(pool)
     .await
 }
