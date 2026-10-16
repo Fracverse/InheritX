@@ -291,6 +291,25 @@ impl StellarSubmitClient {
         .await
     }
 
+    /// Calls `liquidate_loan(liquidator, loan_id, amount)` to trigger on-chain
+    /// liquidation when loan LTV exceeds the liquidation threshold (Issue #1119).
+    pub async fn liquidate_loan(
+        &self,
+        loan_id: u64,
+        amount: u64,
+    ) -> Result<InvocationOutcome, StellarSubmitError> {
+        let ctx = self.soroban()?;
+        self.invoke_contract(
+            "liquidate_loan",
+            vec![
+                signer_account_scval(ctx),
+                ScVal::U64(loan_id),
+                ScVal::U64(amount),
+            ],
+        )
+        .await
+    }
+
     /// Simulates `get_inheritance_trigger(plan_id)` and, when the plan has
     /// been triggered, returns the outstanding loaned amount still sitting
     /// against the vault.

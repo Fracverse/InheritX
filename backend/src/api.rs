@@ -219,69 +219,211 @@ struct AdminRow {
     password_hash: String,
 }
 
+/// Parse allowed origins from the ALLOWED_ORIGINS comma-separated environment variable (Issue #1118).
+/// Strictly disallows wildcards ('*') to prevent wildcard injection.
+pub fn parse_allowed_origins_from_env() -> Vec<String> {
+    match std::env::var("ALLOWED_ORIGINS") {
+        Ok(val) => val
+            .split(',')
+            .map(|s| s.trim().to_string())
+            .filter(|s| !s.is_empty())
+            .filter(|s| {
+                // Wildcard prevention: reject '*' or origins containing '*'
+                if s == "*" || s.contains('*') {
+                    tracing::warn!("Wildcard origin '{s}' in ALLOWED_ORIGINS is prohibited and ignored");
+                    return false;
+                }
+                // Validate origin has valid scheme and host
+                if let Ok(uri) = s.parse::<axum::http::uri::Uri>() {
+                    let scheme_ok = uri
+                        .scheme_str()
+                        .map(|sc| sc == "http" || sc == "https")
+                        .unwrap_or(false);
+                    let host_ok = uri.host().map(|h| !h.is_empty()).unwrap_or(false);
+                    scheme_ok && host_ok
+                } else {
+                    tracing::warn!("Invalid origin '{s}' in ALLOWED_ORIGINS ignored");
+                    false
+                }
+            })
+            .collect(),
+        Err(_) => Vec::new(),
+    }
+}
+
+/// Evaluates if an origin is permitted under strict validation rules (Issue #1118).
+pub fn is_origin_allowed(origin_str: &str, custom_allowed: &[String]) -> bool {
+    // Wildcard prevention: explicitly reject '*'
+    if origin_str == "*" || origin_str.contains('*') {
+        return false;
+    }
+
+    let uri = match origin_str.parse::<axum::http::uri::Uri>() {
+        Ok(u) => u,
+        Err(_) => return false,
+    };
+
+    let scheme = match uri.scheme_str() {
+        Some(s) => s,
+        None => return false,
+    };
+
+    let host = match uri.host() {
+        Some(h) => h,
+        None => return false,
+    };
+
+    // Strict URI validation: reject paths, queries, and fragments in Origin header
+    if !uri.path().is_empty() && uri.path() != "/" {
+        return false;
+    }
+    if uri.query().is_some() {
+        return false;
+    }
+
+    // Check runtime environment variable override (e.g. for staging testnet URLs)
+    for allowed in custom_allowed {
+        if let Ok(allowed_uri) = allowed.parse::<axum::http::uri::Uri>() {
+            if let (Some(a_scheme), Some(a_host)) = (allowed_uri.scheme_str(), allowed_uri.host()) {
+                if scheme.eq_ignore_ascii_case(a_scheme) && host.eq_ignore_ascii_case(a_host) {
+                    if let (Some(o_port), Some(a_port)) = (uri.port_u16(), allowed_uri.port_u16()) {
+                        if o_port == a_port {
+                            return true;
+                        }
+                    } else if uri.port_u16().is_none() && allowed_uri.port_u16().is_none() {
+                        return true;
+                    }
+                }
+            }
+        }
+    }
+
+    // Check for localhost / loopback addresses for development
+    let is_localhost =
+        host == "localhost" || host == "127.0.0.1" || host == "[::1]" || host == "::1";
+
+    if is_localhost {
+        // Local development allows http or https schemes
+        scheme == "http" || scheme == "https"
+    } else {
+        // Production environments require secure https scheme
+        if scheme != "https" {
+            return false;
+        }
+
+        // Verify exact domain or subdomains
+        if host == "inheritx.vercel.app" {
+            true
+        } else if host.ends_with(".inheritx.vercel.app") {
+            // Ensure it's a valid subdomain of inheritx.vercel.app and not a substring match
+            host.len() > ".inheritx.vercel.app".len()
+        } else {
+            false
+        }
+    }
+}
+
+/// Validates that a User-Agent header is non-empty, contains standard printable ASCII,
+/// and does not contain null bytes or illegal control characters.
+pub fn is_standard_user_agent(ua: &str) -> bool {
+    let trimmed = ua.trim();
+    if trimmed.is_empty() || trimmed.len() > 512 {
+        return false;
+    }
+    trimmed.chars().all(|c| c.is_ascii() && !c.is_ascii_control())
+}
+
+/// Middleware enforcing strict Origin validation and standard User-Agent headers (Issue #1118).
+pub async fn strict_origin_and_user_agent_middleware(
+    req: axum::extract::Request,
+    next: axum::middleware::Next,
+) -> Response {
+    let custom_allowed = parse_allowed_origins_from_env();
+
+    // 1. Strict Origin Validation: reject invalid origin headers
+    if let Some(origin_val) = req.headers().get(axum::http::header::ORIGIN) {
+        let origin_str = match origin_val.to_str() {
+            Ok(s) => s,
+            Err(_) => {
+                return (
+                    StatusCode::FORBIDDEN,
+                    Json(serde_json::json!({ "error": "Forbidden: Invalid origin header encoding" })),
+                )
+                    .into_response();
+            }
+        };
+
+        if !is_origin_allowed(origin_str, &custom_allowed) {
+            return (
+                StatusCode::FORBIDDEN,
+                Json(serde_json::json!({ "error": "Forbidden: Origin is not allowed" })),
+            )
+                .into_response();
+        }
+    }
+
+    // 2. User-Agent Validation: reject malformed user-agents, or missing user-agents when strictly required
+    let user_agent = req.headers().get(axum::http::header::USER_AGENT);
+    let strict_enforcement = std::env::var("STRICT_USER_AGENT_REQUIRED")
+        .map(|v| v == "true" || v == "1")
+        .unwrap_or(false);
+
+    match user_agent {
+        Some(ua_val) => {
+            let ua_str = match ua_val.to_str() {
+                Ok(s) => s,
+                Err(_) => {
+                    return (
+                        StatusCode::BAD_REQUEST,
+                        Json(serde_json::json!({ "error": "Invalid User-Agent header encoding" })),
+                    )
+                        .into_response();
+                }
+            };
+            if !is_standard_user_agent(ua_str) {
+                return (
+                    StatusCode::BAD_REQUEST,
+                    Json(serde_json::json!({ "error": "Invalid or non-standard User-Agent header" })),
+                )
+                    .into_response();
+            }
+        }
+        None => {
+            if strict_enforcement {
+                return (
+                    StatusCode::BAD_REQUEST,
+                    Json(serde_json::json!({ "error": "Missing standard User-Agent header" })),
+                )
+                    .into_response();
+            }
+        }
+    }
+
+    next.run(req).await
+}
+
 pub fn create_router(state: Arc<AppState>) -> Router {
-    // Secure CORS validation: verify origin schemas and support multiple subdomains of inheritx.vercel.app
-    // and localhost for development environments.
+    // Secure CORS validation: verify origin schemas and support ALLOWED_ORIGINS runtime override,
+    // subdomains of inheritx.vercel.app, and localhost for development environments.
+    let custom_origins = parse_allowed_origins_from_env();
+    let custom_origins_cors = custom_origins.clone();
+
     let cors = CorsLayer::new()
         .allow_origin(tower_http::cors::AllowOrigin::predicate(
-            |origin: &HeaderValue, _parts| {
+            move |origin: &HeaderValue, _parts| {
                 let origin_str = match origin.to_str() {
                     Ok(s) => s,
                     Err(_) => return false,
                 };
 
-                let uri = match origin_str.parse::<axum::http::uri::Uri>() {
-                    Ok(u) => u,
-                    Err(_) => return false,
-                };
-
-                let scheme = match uri.scheme_str() {
-                    Some(s) => s,
-                    None => return false,
-                };
-
-                let host = match uri.host() {
-                    Some(h) => h,
-                    None => return false,
-                };
-
-                // Strict URI validation: reject paths, queries, and fragments in Origin header
-                if !uri.path().is_empty() && uri.path() != "/" {
-                    return false;
-                }
-                if uri.query().is_some() {
-                    return false;
-                }
-
-                // Check for localhost / loopback addresses for development
-                let is_localhost =
-                    host == "localhost" || host == "127.0.0.1" || host == "[::1]" || host == "::1";
-
-                if is_localhost {
-                    // Local development allows http or https schemes
-                    scheme == "http" || scheme == "https"
-                } else {
-                    // Production environments require secure https scheme
-                    if scheme != "https" {
-                        return false;
-                    }
-
-                    // Verify exact domain or subdomains
-                    if host == "inheritx.vercel.app" {
-                        true
-                    } else if host.ends_with(".inheritx.vercel.app") {
-                        // Ensure it's a valid subdomain of inheritx.vercel.app and not a substring match
-                        host.len() > ".inheritx.vercel.app".len()
-                    } else {
-                        false
-                    }
-                }
+                is_origin_allowed(origin_str, &custom_origins_cors)
             },
         ))
         .allow_methods([Method::GET, Method::POST, Method::OPTIONS])
         .allow_headers([
             axum::http::header::CONTENT_TYPE,
             axum::http::header::AUTHORIZATION,
+            axum::http::header::USER_AGENT,
             HeaderName::from_static("x-public-key"),
             HeaderName::from_static("x-signature"),
             HeaderName::from_static("x-timestamp"),
@@ -351,12 +493,17 @@ pub fn create_router(state: Arc<AppState>) -> Router {
         .route("/api/transactions/submit", post(submit_transaction))
         .route("/api/admin/login", post(admin_login))
         .route("/api/yield/calculate", get(calculate_yield))
+        .route(
+            "/api/plans/{id}/yield-snapshots",
+            get(get_plan_yield_snapshots),
+        )
         .route("/ws/kyc", get(ws_handler));
     let router = Router::new()
         .merge(user_routes)
         .merge(admin_routes)
         .merge(loan_lifecycle_routes)
         .merge(public_routes)
+        .layer(axum::middleware::from_fn(strict_origin_and_user_agent_middleware))
         .layer(axum::middleware::from_fn(move |req, next| {
             rate_limit_middleware(req, next, store.clone(), config.clone())
         }))
@@ -2615,6 +2762,43 @@ async fn calculate_yield(
         }),
     )
         .into_response()
+}
+
+#[derive(Debug, Deserialize)]
+pub struct YieldSnapshotsQuery {
+    pub limit: Option<i64>,
+}
+
+pub async fn get_plan_yield_snapshots(
+    State(state): State<Arc<AppState>>,
+    Path(plan_id): Path<Uuid>,
+    Query(query): Query<YieldSnapshotsQuery>,
+) -> Response {
+    let limit = query.limit.unwrap_or(30);
+    match crate::yield_calculator::get_daily_yield_snapshots_for_plan(
+        &state.db_pool,
+        plan_id,
+        limit,
+    )
+    .await
+    {
+        Ok(snapshots) => (
+            StatusCode::OK,
+            Json(serde_json::json!({
+                "status": "ok",
+                "plan_id": plan_id,
+                "snapshots": snapshots,
+            })),
+        )
+            .into_response(),
+        Err(e) => (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(serde_json::json!({
+                "error": format!("Failed to retrieve yield snapshots: {e}")
+            })),
+        )
+            .into_response(),
+    }
 }
 
 // success, issues the JWT that `jwt_auth_middleware` expects for admin

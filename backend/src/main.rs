@@ -125,6 +125,26 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     ));
     webhook_dispatcher.start(shutdown_rx.clone());
 
+    // Start daily yield snapshot service (Issue #1130)
+    let snapshot_interval = std::time::Duration::from_secs(
+        std::env::var("DAILY_YIELD_SNAPSHOT_INTERVAL_SECS")
+            .ok()
+            .and_then(|s| s.parse::<u64>().ok())
+            .unwrap_or(86_400),
+    );
+    inheritx_backend::yield_calculator::DailyYieldSnapshotService::spawn(
+        db_pool.clone(),
+        snapshot_interval,
+        shutdown_rx.clone(),
+    );
+
+    // Start automated loan liquidation watchdog task (Issue #1119)
+    inheritx_backend::loan_lifecycle::LoanLiquidationWatchdogService::spawn(
+        state.clone(),
+        inheritx_backend::loan_lifecycle::LoanLiquidationWatchdogConfig::from_env(),
+        shutdown_rx.clone(),
+    );
+
     // Periodically refresh DB pool metrics
     #[cfg(feature = "metrics")]
     {

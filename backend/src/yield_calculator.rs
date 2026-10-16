@@ -1,3 +1,12 @@
+use chrono::{DateTime, NaiveDate, Utc};
+use rust_decimal::prelude::*;
+use rust_decimal::Decimal;
+use serde::{Deserialize, Serialize};
+use sqlx::{FromRow, PgPool};
+use std::time::Duration;
+use tracing::{error, info, warn};
+use uuid::Uuid;
+
 /// Configuration for yield calculations.
 #[derive(Debug, Clone, Copy, Default)]
 pub struct ApyConfig {
@@ -32,6 +41,178 @@ pub fn calculate_yield(amount: f64, yield_rate_bps: u32, elapsed_secs: u64) -> f
     let time_years = elapsed_secs as f64 / seconds_per_year;
 
     amount * rate * time_years
+}
+
+// ─── Daily Yield Snapshot Ledger (#1130) ─────────────────────────
+
+/// A persisted daily snapshot record representing a point-in-time balance and
+/// accrued yield ledger entry for an active inheritance plan.
+#[derive(Debug, Clone, Serialize, Deserialize, FromRow)]
+pub struct DailyYieldSnapshot {
+    pub id: Uuid,
+    pub plan_id: Uuid,
+    pub snapshot_date: NaiveDate,
+    pub principal_balance: Decimal,
+    pub yield_rate_bps: i32,
+    pub daily_accrued_yield: Decimal,
+    pub total_accrued_yield: Decimal,
+    pub created_at: DateTime<Utc>,
+}
+
+#[derive(Debug, FromRow)]
+struct ActivePlanYieldRow {
+    id: Uuid,
+    amount: Decimal,
+    yield_rate_bps: i32,
+    accrued_yield: Option<Decimal>,
+    earn_yield: bool,
+}
+
+/// Takes a snapshot of balance and yield for every active inheritance plan,
+/// persisting the audit entry into `daily_yield_snapshots`.
+///
+/// Time complexity: O(N) where N is the number of active plans.
+/// Space complexity: O(1) streaming/batch database writes.
+pub async fn take_daily_yield_snapshots(pool: &PgPool) -> Result<usize, sqlx::Error> {
+    let today = Utc::now().date_naive();
+    let rows = sqlx::query_as::<_, ActivePlanYieldRow>(
+        r#"
+        SELECT id, amount, yield_rate_bps, accrued_yield, earn_yield
+        FROM plans
+        WHERE is_active = true
+        "#,
+    )
+    .fetch_all(pool)
+    .await?;
+
+    let count = rows.len();
+    for plan in rows {
+        let amount_f64 = plan.amount.to_f64().unwrap_or(0.0);
+        let daily_yield_f64 = if plan.earn_yield && plan.yield_rate_bps > 0 {
+            // Exactly 1 day (86,400s) of simple interest accrual
+            calculate_yield(amount_f64, plan.yield_rate_bps as u32, 86_400)
+        } else {
+            0.0
+        };
+
+        let daily_yield_dec = Decimal::from_f64_retain(daily_yield_f64).unwrap_or(Decimal::ZERO);
+        let current_accrued = plan.accrued_yield.unwrap_or(Decimal::ZERO);
+        let total_accrued = current_accrued + daily_yield_dec;
+
+        sqlx::query(
+            r#"
+            INSERT INTO daily_yield_snapshots (
+                plan_id, snapshot_date, principal_balance, yield_rate_bps,
+                daily_accrued_yield, total_accrued_yield, created_at
+            )
+            VALUES ($1, $2, $3, $4, $5, $6, NOW())
+            ON CONFLICT (plan_id, snapshot_date) DO UPDATE SET
+                principal_balance = EXCLUDED.principal_balance,
+                yield_rate_bps = EXCLUDED.yield_rate_bps,
+                daily_accrued_yield = EXCLUDED.daily_accrued_yield,
+                total_accrued_yield = EXCLUDED.total_accrued_yield
+            "#,
+        )
+        .bind(plan.id)
+        .bind(today)
+        .bind(plan.amount)
+        .bind(plan.yield_rate_bps)
+        .bind(daily_yield_dec)
+        .bind(total_accrued)
+        .execute(pool)
+        .await?;
+    }
+
+    Ok(count)
+}
+
+/// Retrieve historical daily yield snapshots for a plan.
+pub async fn get_daily_yield_snapshots_for_plan(
+    pool: &PgPool,
+    plan_id: Uuid,
+    limit: i64,
+) -> Result<Vec<DailyYieldSnapshot>, sqlx::Error> {
+    sqlx::query_as::<_, DailyYieldSnapshot>(
+        r#"
+        SELECT id, plan_id, snapshot_date, principal_balance, yield_rate_bps,
+               daily_accrued_yield, total_accrued_yield, created_at
+        FROM daily_yield_snapshots
+        WHERE plan_id = $1
+        ORDER BY snapshot_date DESC
+        LIMIT $2
+        "#,
+    )
+    .bind(plan_id)
+    .bind(limit.max(1).min(365))
+    .fetch_all(pool)
+    .await
+}
+
+pub const DAILY_SNAPSHOT_LOCK_KEY: i64 = 821;
+
+/// Background task that executes daily snapshots for active plans.
+pub struct DailyYieldSnapshotService;
+
+impl DailyYieldSnapshotService {
+    pub fn spawn(
+        pool: PgPool,
+        interval: Duration,
+        mut shutdown_rx: tokio::sync::watch::Receiver<bool>,
+    ) -> tokio::task::JoinHandle<()> {
+        tokio::spawn(async move {
+            let mut ticker = tokio::time::interval(interval);
+            ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+
+            info!("Daily yield snapshot service started with interval {:?}", interval);
+
+            loop {
+                tokio::select! {
+                    _ = ticker.tick() => {
+                        let mut tx = match pool.begin().await {
+                            Ok(tx) => tx,
+                            Err(e) => {
+                                warn!("Failed to start transaction for daily snapshot lock: {e}");
+                                continue;
+                            }
+                        };
+
+                        let lock_result = sqlx::query_scalar::<_, bool>(
+                            "SELECT pg_try_advisory_xact_lock($1)",
+                        )
+                        .bind(DAILY_SNAPSHOT_LOCK_KEY)
+                        .fetch_one(&mut *tx)
+                        .await;
+
+                        match lock_result {
+                            Ok(true) => {
+                                match take_daily_yield_snapshots(&pool).await {
+                                    Ok(count) => {
+                                        info!("Successfully recorded daily yield snapshots for {count} active plans");
+                                    }
+                                    Err(e) => {
+                                        error!("Failed to record daily yield snapshots: {e}");
+                                    }
+                                }
+                                let _ = tx.commit().await;
+                            }
+                            Ok(false) => {
+                                tracing::debug!("Another worker holds daily snapshot advisory lock; skipping tick");
+                                let _ = tx.rollback().await;
+                            }
+                            Err(e) => {
+                                warn!("Failed to acquire advisory lock for daily snapshot: {e}");
+                                let _ = tx.rollback().await;
+                            }
+                        }
+                    }
+                    _ = shutdown_rx.changed() => {
+                        info!("Daily yield snapshot service received shutdown signal");
+                        break;
+                    }
+                }
+            }
+        })
+    }
 }
 
 #[cfg(test)]
@@ -73,4 +254,13 @@ mod tests {
         // 2% of 1,000,000 = 20,000
         assert!((yield_amount - 20_000.0).abs() < 1.0);
     }
+
+    #[test]
+    fn test_daily_accrual_calculation() {
+        // 1 day = 86,400 seconds at 5% APY
+        let daily = calculate_yield(10_000.0, 500, 86_400);
+        // 5% of 10,000 = 500 per year, ~1.3689 per day
+        assert!(daily > 1.35 && daily < 1.38);
+    }
 }
+

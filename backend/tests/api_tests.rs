@@ -958,3 +958,172 @@ async fn test_plan_statistics_requires_auth() {
 
     assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
 }
+
+// ─── Tests for Issues #1118, #1130, #1119 ────────────────────────
+
+#[tokio::test]
+async fn test_allowed_origins_env_override_and_wildcard_prevention() {
+    // Set environment variable with staging testnet URLs and an illegal wildcard
+    std::env::set_var(
+        "ALLOWED_ORIGINS",
+        "https://staging.inheritx.io, https://testnet.inheritx.io, *",
+    );
+
+    let origins = inheritx_backend::api::parse_allowed_origins_from_env();
+    assert!(origins.contains(&"https://staging.inheritx.io".to_string()));
+    assert!(origins.contains(&"https://testnet.inheritx.io".to_string()));
+    assert!(!origins.contains(&"*".to_string()), "Wildcard must be stripped");
+
+    let app = setup_app();
+
+    // 1. Allowed testnet staging origin should succeed with CORS header
+    let response = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method(http::Method::GET)
+                .uri("/api/health")
+                .header(http::header::ORIGIN, "https://staging.inheritx.io")
+                .header(http::header::USER_AGENT, "InheritX-TestAgent/1.0")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+
+    let acao = response
+        .headers()
+        .get(http::header::ACCESS_CONTROL_ALLOW_ORIGIN);
+    assert_eq!(
+        acao.and_then(|v| v.to_str().ok()),
+        Some("https://staging.inheritx.io")
+    );
+
+    // 2. Wildcard origin '*' must be strictly rejected
+    let response = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method(http::Method::GET)
+                .uri("/api/health")
+                .header(http::header::ORIGIN, "*")
+                .header(http::header::USER_AGENT, "InheritX-TestAgent/1.0")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(response.status(), StatusCode::FORBIDDEN);
+
+    // 3. Untrusted origin must be rejected with 403 Forbidden
+    let response = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method(http::Method::GET)
+                .uri("/api/health")
+                .header(http::header::ORIGIN, "https://malicious-attacker.com")
+                .header(http::header::USER_AGENT, "InheritX-TestAgent/1.0")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(response.status(), StatusCode::FORBIDDEN);
+
+    // Cleanup env var
+    std::env::remove_var("ALLOWED_ORIGINS");
+}
+
+#[tokio::test]
+async fn test_strict_user_agent_validation() {
+    let app = setup_app();
+
+    // 1. Whitespace user-agent should be rejected
+    let response = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method(http::Method::GET)
+                .uri("/api/health")
+                .header(http::header::USER_AGENT, "   ")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+
+    // 2. Empty user-agent string should be rejected
+    let response = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method(http::Method::GET)
+                .uri("/api/health")
+                .header(http::header::USER_AGENT, "")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+
+    // 3. When STRICT_USER_AGENT_REQUIRED is enabled, missing user-agent is rejected
+    std::env::set_var("STRICT_USER_AGENT_REQUIRED", "true");
+    let response = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method(http::Method::GET)
+                .uri("/api/health")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+    std::env::remove_var("STRICT_USER_AGENT_REQUIRED");
+
+    // 4. Standard valid user-agent is accepted
+    let response = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method(http::Method::GET)
+                .uri("/api/health")
+                .header(http::header::USER_AGENT, "InheritX-Client/1.0")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+
+    assert_ne!(response.status(), StatusCode::BAD_REQUEST);
+}
+
+#[test]
+fn test_calculate_ltv_bps_logic() {
+    // 50% LTV: 5,000 debt on 10,000 collateral at 1.0 price
+    let ltv = inheritx_backend::loan_lifecycle::calculate_ltv_bps(5_000, 10_000.0, 1.0);
+    assert_eq!(ltv, 5_000); // 5000 bps = 50%
+
+    // 80% LTV: 8,000 debt on 10,000 collateral at 1.0 price
+    let ltv = inheritx_backend::loan_lifecycle::calculate_ltv_bps(8_000, 10_000.0, 1.0);
+    assert_eq!(ltv, 8_000); // 8000 bps = 80%
+
+    // 85% LTV: 8,500 debt on 10,000 collateral at 1.0 price -> exceeds threshold (> 80%)
+    let ltv = inheritx_backend::loan_lifecycle::calculate_ltv_bps(8_500, 10_000.0, 1.0);
+    assert_eq!(ltv, 8_500);
+    assert!(ltv > 8_000);
+
+    // Collateral price drop from 1.0 to 0.7 on 6,000 debt with 10,000 collateral:
+    // Collateral value = 7,000 -> LTV = 6000 / 7000 = ~85.7% (8571 bps)
+    let ltv = inheritx_backend::loan_lifecycle::calculate_ltv_bps(6_000, 10_000.0, 0.7);
+    assert!(ltv > 8_000);
+}

@@ -740,3 +740,263 @@ fn ok_response(message: &str, data: serde_json::Value) -> Response {
     )
         .into_response()
 }
+
+// ─── Automated Loan Liquidation Watchdog Task (#1119) ─────────
+
+pub const DEFAULT_LIQUIDATION_LTV_THRESHOLD_BPS: u32 = 8000; // 80% LTV threshold
+pub const DEFAULT_LIQUIDATION_WATCHDOG_INTERVAL_SECS: u64 = 60;
+pub const LOAN_WATCHDOG_LOCK_KEY: i64 = 822;
+
+/// Configuration for the Automated Loan Liquidation Watchdog.
+#[derive(Debug, Clone, Copy)]
+pub struct LoanLiquidationWatchdogConfig {
+    pub interval: std::time::Duration,
+    pub liquidation_ltv_threshold_bps: u32,
+    pub batch_size: i64,
+}
+
+impl LoanLiquidationWatchdogConfig {
+    pub fn from_env() -> Self {
+        let interval_secs = std::env::var("LOAN_LIQUIDATION_WATCHDOG_INTERVAL_SECS")
+            .ok()
+            .and_then(|s| s.parse::<u64>().ok())
+            .unwrap_or(DEFAULT_LIQUIDATION_WATCHDOG_INTERVAL_SECS);
+        let threshold_bps = std::env::var("LOAN_LIQUIDATION_LTV_THRESHOLD_BPS")
+            .ok()
+            .and_then(|s| s.parse::<u32>().ok())
+            .unwrap_or(DEFAULT_LIQUIDATION_LTV_THRESHOLD_BPS);
+        Self {
+            interval: std::time::Duration::from_secs(interval_secs.max(1)),
+            liquidation_ltv_threshold_bps: threshold_bps,
+            batch_size: 100,
+        }
+    }
+}
+
+/// Price Oracle trait for fetching market prices of collateral assets.
+pub trait CollateralPriceOracle: Send + Sync {
+    /// Returns the price ratio of collateral / debt asset.
+    /// E.g. 1.0 means 1 unit of collateral = 1 unit of debt currency.
+    fn get_collateral_price(&self, collateral_asset: &str) -> f64;
+}
+
+#[derive(Debug, Clone, Default)]
+pub struct EnvPriceOracle;
+
+impl CollateralPriceOracle for EnvPriceOracle {
+    fn get_collateral_price(&self, _collateral_asset: &str) -> f64 {
+        std::env::var("COLLATERAL_MARKET_PRICE")
+            .ok()
+            .and_then(|s| s.parse::<f64>().ok())
+            .unwrap_or(1.0)
+    }
+}
+
+#[derive(Debug, Clone, FromRow)]
+pub struct UndercollateralizedLoanCandidate {
+    pub plan_id: Uuid,
+    pub owner_address: String,
+    pub onchain_plan_id: Option<i64>,
+    pub outstanding_loaned: i64,
+    pub plan_amount: rust_decimal::Decimal,
+}
+
+/// Computes the Loan-to-Value (LTV) ratio in basis points.
+/// LTV = (debt / (collateral_amount * price)) * 10000
+pub fn calculate_ltv_bps(debt: u64, collateral_amount: f64, collateral_price: f64) -> u32 {
+    let collateral_value = collateral_amount * collateral_price;
+    if collateral_value <= 0.0 {
+        return 100_000; // 1000% LTV (insolvent)
+    }
+    let ltv = (debt as f64 / collateral_value) * 10_000.0;
+    ltv.min(100_000.0) as u32
+}
+
+pub struct LoanLiquidationWatchdogService;
+
+impl LoanLiquidationWatchdogService {
+    /// Executes one sweep over active loans, evaluating current market LTV.
+    /// Triggers on-chain liquidation whenever LTV > liquidation threshold (default 80%).
+    pub async fn sweep_candidates(
+        state: &AppState,
+        oracle: &dyn CollateralPriceOracle,
+        config: &LoanLiquidationWatchdogConfig,
+    ) -> Result<usize, String> {
+        let candidates = match sqlx::query_as::<_, UndercollateralizedLoanCandidate>(
+            r#"
+            SELECT l.plan_id, p.owner_address, p.onchain_plan_id,
+                   l.outstanding_loaned, p.amount as plan_amount
+            FROM plan_loan_lifecycle l
+            JOIN plans p ON p.id = l.plan_id
+            WHERE l.settlement_status != 'SETTLED'
+              AND l.outstanding_loaned > 0
+              AND p.is_active = true
+            LIMIT $1
+            "#,
+        )
+        .bind(config.batch_size)
+        .fetch_all(&state.db_pool)
+        .await
+        {
+            Ok(c) => c,
+            Err(e) => return Err(format!("Failed to query loan candidates: {e}")),
+        };
+
+        let mut liquidated_count = 0;
+
+        for candidate in candidates {
+            let collateral_price = oracle.get_collateral_price("COLLATERAL");
+            let collateral_amount = rust_decimal::prelude::ToPrimitive::to_f64(&candidate.plan_amount).unwrap_or(0.0);
+            let ltv_bps = calculate_ltv_bps(
+                candidate.outstanding_loaned as u64,
+                collateral_amount,
+                collateral_price,
+            );
+
+            if ltv_bps > config.liquidation_ltv_threshold_bps {
+                tracing::warn!(
+                    plan_id = %candidate.plan_id,
+                    ltv_bps = ltv_bps,
+                    threshold_bps = config.liquidation_ltv_threshold_bps,
+                    "Loan LTV exceeded liquidation threshold (> 80%). Triggering automated liquidation."
+                );
+
+                let mut tx_hash = None;
+                if state.stellar_submit.soroban_enabled() {
+                    if let Some(onchain_id) = candidate.onchain_plan_id {
+                        if onchain_id >= 0 {
+                            match state.stellar_submit.liquidate_loan(onchain_id as u64, candidate.outstanding_loaned as u64).await {
+                                Ok(outcome) => {
+                                    tx_hash = Some(outcome.tx_hash);
+                                }
+                                Err(err) => {
+                                    tracing::error!(
+                                        plan_id = %candidate.plan_id,
+                                        error = %err,
+                                        "Automated liquidation on-chain submission failed"
+                                    );
+                                    continue;
+                                }
+                            }
+                        }
+                    }
+                }
+
+                // Update lifecycle to SETTLED
+                let _ = upsert_lifecycle(
+                    state,
+                    candidate.plan_id,
+                    Some("LIQUIDATED"),
+                    Some(100),
+                    Some("SETTLED"),
+                    0,
+                    tx_hash.as_deref(),
+                ).await;
+
+                let _ = sqlx::query("UPDATE plans SET status = 'CLAIMABLE' WHERE id = $1")
+                    .bind(candidate.plan_id)
+                    .execute(&state.db_pool)
+                    .await;
+
+                let plan_ref = PlanRef {
+                    id: candidate.plan_id,
+                    owner_address: candidate.owner_address.clone(),
+                    status: "CLAIMABLE".into(),
+                    is_active: true,
+                    onchain_plan_id: candidate.onchain_plan_id,
+                };
+
+                invalidate_cache(state, &plan_ref).await;
+                emit_status(
+                    state,
+                    PlanStatusEvent {
+                        event_type: "plan.liquidated".into(),
+                        plan_id: candidate.plan_id,
+                        status: "SETTLED".into(),
+                        message: "Automated liquidation triggered by loan watchdog (LTV > 80%)".into(),
+                        tx_hash: tx_hash.clone(),
+                        freeze_status: Some("LIQUIDATED".into()),
+                        recall_progress: Some(100),
+                        settlement_status: Some("SETTLED".into()),
+                        remaining_loaned: Some(0),
+                    },
+                    "plan.liquidated",
+                    &plan_ref,
+                    tx_hash.as_deref(),
+                ).await;
+
+                liquidated_count += 1;
+            }
+        }
+
+        Ok(liquidated_count)
+    }
+
+    /// Spawns the background watchdog worker.
+    pub fn spawn(
+        state: Arc<AppState>,
+        config: LoanLiquidationWatchdogConfig,
+        mut shutdown_rx: tokio::sync::watch::Receiver<bool>,
+    ) -> tokio::task::JoinHandle<()> {
+        tokio::spawn(async move {
+            let mut ticker = tokio::time::interval(config.interval);
+            ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+            let oracle = EnvPriceOracle;
+
+            tracing::info!(
+                interval = ?config.interval,
+                threshold_bps = config.liquidation_ltv_threshold_bps,
+                "Automated loan liquidation watchdog service started"
+            );
+
+            loop {
+                tokio::select! {
+                    _ = ticker.tick() => {
+                        let mut tx = match state.db_pool.begin().await {
+                            Ok(tx) => tx,
+                            Err(e) => {
+                                tracing::warn!("Failed to start transaction for loan watchdog lock: {e}");
+                                continue;
+                            }
+                        };
+
+                        let lock_result = sqlx::query_scalar::<_, bool>(
+                            "SELECT pg_try_advisory_xact_lock($1)",
+                        )
+                        .bind(LOAN_WATCHDOG_LOCK_KEY)
+                        .fetch_one(&mut *tx)
+                        .await;
+
+                        match lock_result {
+                            Ok(true) => {
+                                match Self::sweep_candidates(&state, &oracle, &config).await {
+                                    Ok(count) => {
+                                        if count > 0 {
+                                            tracing::info!("Loan watchdog liquidated {count} underwater loans");
+                                        }
+                                    }
+                                    Err(err) => {
+                                        tracing::error!("Loan watchdog sweep failed: {err}");
+                                    }
+                                }
+                                let _ = tx.commit().await;
+                            }
+                            Ok(false) => {
+                                tracing::debug!("Another worker holds loan watchdog advisory lock; skipping tick");
+                                let _ = tx.rollback().await;
+                            }
+                            Err(e) => {
+                                tracing::warn!("Failed to acquire advisory lock for loan watchdog: {e}");
+                                let _ = tx.rollback().await;
+                            }
+                        }
+                    }
+                    _ = shutdown_rx.changed() => {
+                        tracing::info!("Loan liquidation watchdog service received shutdown signal");
+                        break;
+                    }
+                }
+            }
+        })
+    }
+}

@@ -43,6 +43,11 @@ const MAX_YIELD_BOOST_BPS: u32 = 2_000; // 20% additional rate, absolute ceiling
 const MAX_PLAN_YIELD_POSITIONS: u32 = 200; // Bounds the index scan
 const MAX_YIELD_CLAIM_BATCH: u32 = 25; // Bounds one batch claim
 
+// Liquidation Dutch Auction constants
+pub const AUCTION_DURATION_SECONDS: u64 = 86_400; // 24 hours
+pub const AUCTION_START_PRICE_BPS: u32 = 10_000;  // 100% price (1:1 collateral per debt)
+pub const AUCTION_MIN_PRICE_BPS: u32 = 6_000;    // 60% price (~1.66x collateral per debt)
+
 // ─────────────────────────────────────────────────
 // Data Types
 // ─────────────────────────────────────────────────
@@ -371,6 +376,44 @@ pub struct FlashLoanEvent {
 
 #[contracttype]
 #[derive(Clone, Debug, Eq, PartialEq)]
+pub struct LiquidationAuction {
+    pub loan_id: u64,
+    pub borrower: Address,
+    pub start_time: u64,
+    pub auction_duration: u64,
+    pub start_price_bps: u32,
+    pub min_price_bps: u32,
+    pub debt_amount: u64,
+    pub collateral_amount: u64,
+    pub collateral_token: Address,
+    pub debt_asset: Address,
+    pub is_completed: bool,
+}
+
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct LiquidationAuctionStartedEvent {
+    pub loan_id: u64,
+    pub borrower: Address,
+    pub debt_amount: u64,
+    pub collateral_amount: u64,
+    pub start_time: u64,
+    pub duration: u64,
+}
+
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct LiquidationAuctionSettledEvent {
+    pub loan_id: u64,
+    pub liquidator: Address,
+    pub borrower: Address,
+    pub debt_repaid: u64,
+    pub collateral_seized: u64,
+    pub acquisition_price_bps: u32,
+}
+
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
 pub struct LoanRefinancedEvent {
     pub old_loan_id: u64,
     pub new_loan_id: u64,
@@ -645,6 +688,9 @@ pub enum LendingError {
     InvalidAllocation = 44,
     DisputeActive = 45,
     FlashLoanCallbackFailed = 46,
+    AuctionAlreadyActive = 47,
+    AuctionNotFound = 48,
+    AuctionExpired = 49,
 }
 
 pub type Error = LendingError;
@@ -686,6 +732,7 @@ pub enum DataKey {
     PlanYield(u64),                    // plan_id -> PlanYieldPosition
     PlanYieldIndex,                    // Vec<u64> of every registered plan_id
     DepositLedger(Address, Address),   // (User, Asset) -> deposit ledger sequence number
+    LiquidationAuction(u64),           // loan_id -> LiquidationAuction
 }
 
 // ─────────────────────────────────────────────────
@@ -3071,6 +3118,262 @@ impl LendingContract {
 
         Self::exit_reentrancy_guard(&env);
         Ok(collateral_to_seize)
+    }
+
+    // ─── Dutch Auction Liquidation Functions (#1149) ─────────────
+
+    /// Start a 24-hour Dutch auction to liquidate a defaulted or underwater loan.
+    /// Over the 24-hour window, the collateral acquisition price drops linearly from
+    /// 10,000 bps (100% price) down to 6,000 bps (60% price / ~40% discount)
+    /// to incentivize fair-market price discovery by liquidators.
+    pub fn start_liquidation_auction(env: Env, loan_id: u64) -> Result<(), LendingError> {
+        Self::require_initialized(&env)?;
+        Self::require_not_paused(&env)?;
+
+        let loan: LoanRecord = env
+            .storage()
+            .persistent()
+            .get(&DataKey::LoanById(loan_id))
+            .ok_or(LendingError::LoanNotFound)?;
+
+        let is_after_grace = Self::is_after_grace_period(&env, &loan).unwrap_or(false);
+        let health_factor = (loan.collateral_amount as u128)
+            .checked_mul(10000)
+            .and_then(|v| v.checked_div(loan.principal as u128))
+            .unwrap_or(0) as u32;
+        let is_underwater = health_factor < LIQUIDATION_THRESHOLD_BPS;
+
+        if !is_after_grace && !is_underwater {
+            return Err(LendingError::InvalidAmount);
+        }
+
+        if let Some(existing) = env
+            .storage()
+            .persistent()
+            .get::<_, LiquidationAuction>(&DataKey::LiquidationAuction(loan_id))
+        {
+            if !existing.is_completed {
+                return Err(LendingError::AuctionAlreadyActive);
+            }
+        }
+
+        let start_time = env.ledger().timestamp();
+        let auction = LiquidationAuction {
+            loan_id,
+            borrower: loan.borrower.clone(),
+            start_time,
+            auction_duration: AUCTION_DURATION_SECONDS,
+            start_price_bps: AUCTION_START_PRICE_BPS,
+            min_price_bps: AUCTION_MIN_PRICE_BPS,
+            debt_amount: loan.principal,
+            collateral_amount: loan.collateral_amount,
+            collateral_token: loan.collateral_token.clone(),
+            debt_asset: loan.asset.clone(),
+            is_completed: false,
+        };
+
+        env.storage()
+            .persistent()
+            .set(&DataKey::LiquidationAuction(loan_id), &auction);
+
+        env.events().publish(
+            (symbol_short!("AUCTION"), symbol_short!("START")),
+            LiquidationAuctionStartedEvent {
+                loan_id,
+                borrower: loan.borrower,
+                debt_amount: loan.principal,
+                collateral_amount: loan.collateral_amount,
+                start_time,
+                duration: AUCTION_DURATION_SECONDS,
+            },
+        );
+
+        log!(
+            &env,
+            "Liquidation auction started for loan_id={}, debt={}, collateral={}, start_time={}",
+            loan_id,
+            loan.principal,
+            loan.collateral_amount,
+            start_time
+        );
+
+        Ok(())
+    }
+
+    /// Read the current Dutch auction collateral acquisition price in basis points.
+    /// Price starts at 10,000 bps (100%) and reduces linearly to 6,000 bps (60%)
+    /// over the 24-hour (86,400s) window.
+    pub fn get_auction_price(env: Env, loan_id: u64) -> Result<u32, LendingError> {
+        let auction: LiquidationAuction = env
+            .storage()
+            .persistent()
+            .get(&DataKey::LiquidationAuction(loan_id))
+            .ok_or(LendingError::AuctionNotFound)?;
+
+        if auction.is_completed {
+            return Err(LendingError::AuctionExpired);
+        }
+
+        let now = env.ledger().timestamp();
+        let elapsed = now.saturating_sub(auction.start_time);
+        if elapsed >= auction.auction_duration {
+            Ok(auction.min_price_bps)
+        } else {
+            let price_drop = (auction.start_price_bps - auction.min_price_bps) as u64;
+            let reduction = (elapsed * price_drop) / auction.auction_duration;
+            let current_price = auction.start_price_bps.saturating_sub(reduction as u32);
+            Ok(current_price.max(auction.min_price_bps))
+        }
+    }
+
+    /// Retrieve the current auction state for a given loan ID.
+    pub fn get_liquidation_auction(env: Env, loan_id: u64) -> Option<LiquidationAuction> {
+        env.storage()
+            .persistent()
+            .get(&DataKey::LiquidationAuction(loan_id))
+    }
+
+    /// Purchase collateral from an active Dutch auction by paying down debt.
+    pub fn buy_liquidation_auction(
+        env: Env,
+        liquidator: Address,
+        loan_id: u64,
+        amount: u64,
+    ) -> Result<u64, LendingError> {
+        Self::require_initialized(&env)?;
+        Self::require_not_paused(&env)?;
+        let _guard = access_control::ReentrancyGuard::lock(&env, LendingError::ReentrantCall)?;
+        liquidator.require_auth();
+
+        let mut loan: LoanRecord = env
+            .storage()
+            .persistent()
+            .get(&DataKey::LoanById(loan_id))
+            .ok_or(LendingError::LoanNotFound)?;
+
+        let mut auction: LiquidationAuction = env
+            .storage()
+            .persistent()
+            .get(&DataKey::LiquidationAuction(loan_id))
+            .ok_or(LendingError::AuctionNotFound)?;
+
+        if auction.is_completed {
+            return Err(LendingError::AuctionExpired);
+        }
+
+        let repay_amount = if amount == 0 || amount > loan.principal {
+            loan.principal
+        } else {
+            amount
+        };
+
+        let price_bps = Self::get_auction_price(env.clone(), loan_id)?;
+
+        let collateral_to_seize = (repay_amount as u128)
+            .checked_mul(10000)
+            .and_then(|v| v.checked_div(price_bps as u128))
+            .unwrap_or(repay_amount as u128) as u64;
+
+        let collateral_to_seize = collateral_to_seize.min(loan.collateral_amount);
+
+        let contract_id = env.current_contract_address();
+
+        // Transfer debt token payment from liquidator to pool
+        Self::transfer(&env, &loan.asset, &liquidator, &contract_id, repay_amount)?;
+
+        // Transfer collateral from contract to liquidator
+        Self::transfer(
+            &env,
+            &loan.collateral_token,
+            &contract_id,
+            &liquidator,
+            collateral_to_seize,
+        )?;
+
+        let mut pool = Self::get_pool(&env, &loan.asset)?;
+        pool.total_borrowed = pool.total_borrowed.saturating_sub(repay_amount);
+        pool.total_deposits += repay_amount;
+        Self::set_pool(&env, &loan.asset, &pool);
+
+        if repay_amount >= loan.principal {
+            let remaining_collateral = loan.collateral_amount.saturating_sub(collateral_to_seize);
+            if remaining_collateral > 0 {
+                // Refund remaining collateral to borrower
+                Self::transfer(
+                    &env,
+                    &loan.collateral_token,
+                    &contract_id,
+                    &loan.borrower,
+                    remaining_collateral,
+                )?;
+            }
+
+            env.storage()
+                .persistent()
+                .remove(&DataKey::Loan(loan.borrower.clone()));
+            env.storage()
+                .persistent()
+                .remove(&DataKey::LoanById(loan_id));
+            Self::remove_user_loan(&env, &loan.borrower, loan_id);
+
+            auction.is_completed = true;
+            auction.debt_amount = 0;
+            auction.collateral_amount = 0;
+            env.storage()
+                .persistent()
+                .set(&DataKey::LiquidationAuction(loan_id), &auction);
+        } else {
+            loan.principal -= repay_amount;
+            loan.collateral_amount = loan.collateral_amount.saturating_sub(collateral_to_seize);
+            env.storage()
+                .persistent()
+                .set(&DataKey::Loan(loan.borrower.clone()), &loan);
+            env.storage()
+                .persistent()
+                .set(&DataKey::LoanById(loan_id), &loan);
+
+            auction.debt_amount = loan.principal;
+            auction.collateral_amount = loan.collateral_amount;
+            env.storage()
+                .persistent()
+                .set(&DataKey::LiquidationAuction(loan_id), &auction);
+        }
+
+        env.events().publish(
+            (symbol_short!("AUCTION"), symbol_short!("SETTLE")),
+            LiquidationAuctionSettledEvent {
+                loan_id,
+                liquidator: liquidator.clone(),
+                borrower: loan.borrower.clone(),
+                debt_repaid: repay_amount,
+                collateral_seized: collateral_to_seize,
+                acquisition_price_bps: price_bps,
+            },
+        );
+
+        Self::exit_reentrancy_guard(&env);
+        Ok(collateral_to_seize)
+    }
+
+    /// Liquidate a loan by loan ID. Automatically starts an auction if not yet started,
+    /// or purchases through the existing Dutch auction.
+    pub fn liquidate_loan(
+        env: Env,
+        liquidator: Address,
+        loan_id: u64,
+        amount: u64,
+    ) -> Result<u64, LendingError> {
+        let has_auction = if let Some(auction) = Self::get_liquidation_auction(env.clone(), loan_id) {
+            !auction.is_completed
+        } else {
+            false
+        };
+
+        if !has_auction {
+            Self::start_liquidation_auction(env.clone(), loan_id)?;
+        }
+
+        Self::buy_liquidation_auction(env, liquidator, loan_id, amount)
     }
 
     // ─── Refinancing Functions ───────────────────────

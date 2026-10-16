@@ -3922,3 +3922,162 @@ fn test_error_diagnostics_insurance_transfer_failure_rolls_back_accounting() {
     );
     assert_eq!(client.get_insurance_fund_state(), before);
 }
+
+// ─── Dutch Auction Liquidation Tests (#1149) ───────────────────────
+
+#[test]
+fn test_dutch_auction_linear_price_reduction() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let (client, token_addr, collateral_addr, _admin) = setup(&env);
+
+    let depositor = Address::generate(&env);
+    let borrower = Address::generate(&env);
+    mint_to(&env, &token_addr, &depositor, 50_000);
+    mint_to(&env, &collateral_addr, &borrower, 50_000);
+
+    client.deposit(&depositor, &token_addr, &20_000u64);
+
+    let loan_id = client.borrow(
+        &borrower,
+        &token_addr,
+        &5_000u64,
+        &collateral_addr,
+        &7_500u64,
+        &(24 * 60 * 60),
+    );
+
+    // Fast-forward past grace period (due_date + 3 days grace floor = 4 days, so jump 5 days)
+    let start_time = env.ledger().timestamp() + 5 * 24 * 60 * 60;
+    env.ledger().set_timestamp(start_time);
+
+    // Start auction
+    client.start_liquidation_auction(&loan_id);
+
+    // At t = 0: price = 10,000 bps
+    assert_eq!(client.get_auction_price(&loan_id), 10_000);
+
+    // At t = 6 hours (25% elapsed): price drops by 25% of (10000 - 6000) = 1000 -> 9000
+    env.ledger().set_timestamp(start_time + 6 * 3600);
+    assert_eq!(client.get_auction_price(&loan_id), 9_000);
+
+    // At t = 12 hours (50% elapsed): price drops by 50% of 4000 = 2000 -> 8000
+    env.ledger().set_timestamp(start_time + 12 * 3600);
+    assert_eq!(client.get_auction_price(&loan_id), 8_000);
+
+    // At t = 18 hours (75% elapsed): price drops by 75% of 4000 = 3000 -> 7000
+    env.ledger().set_timestamp(start_time + 18 * 3600);
+    assert_eq!(client.get_auction_price(&loan_id), 7_000);
+
+    // At t = 24 hours (100% elapsed): price hits floor 6000 bps
+    env.ledger().set_timestamp(start_time + 24 * 3600);
+    assert_eq!(client.get_auction_price(&loan_id), 6_000);
+
+    // Beyond 24 hours: stays at floor 6000 bps
+    env.ledger().set_timestamp(start_time + 30 * 3600);
+    assert_eq!(client.get_auction_price(&loan_id), 6_000);
+}
+
+#[test]
+fn test_dutch_auction_liquidation_purchase_and_settlement() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let (client, token_addr, collateral_addr, _admin) = setup(&env);
+
+    let depositor = Address::generate(&env);
+    let borrower = Address::generate(&env);
+    let liquidator = Address::generate(&env);
+
+    mint_to(&env, &token_addr, &depositor, 50_000);
+    mint_to(&env, &collateral_addr, &borrower, 50_000);
+    mint_to(&env, &token_addr, &liquidator, 50_000);
+
+    client.deposit(&depositor, &token_addr, &20_000u64);
+
+    let loan_id = client.borrow(
+        &borrower,
+        &token_addr,
+        &4_000u64,
+        &collateral_addr,
+        &8_000u64,
+        &(24 * 60 * 60),
+    );
+
+    // Advance past grace period
+    let start_time = env.ledger().timestamp() + 5 * 24 * 60 * 60;
+    env.ledger().set_timestamp(start_time);
+
+    // Start auction
+    client.start_liquidation_auction(&loan_id);
+    let auction = client.get_liquidation_auction(&loan_id).unwrap();
+    assert_eq!(auction.loan_id, loan_id);
+    assert_eq!(auction.debt_amount, 4_000);
+    assert_eq!(auction.is_completed, false);
+
+    // Liquidator buys at 12 hours (price = 8000 bps)
+    env.ledger().set_timestamp(start_time + 12 * 3600);
+
+    // Liquidator repays full 4000 debt
+    // At 8000 bps price: collateral seized = 4000 * 10000 / 8000 = 5000
+    // Remaining collateral refunded to borrower = 8000 - 5000 = 3000
+    let liquidator_collateral_before = tok_client(&env, &collateral_addr).balance(&liquidator);
+    let borrower_collateral_before = tok_client(&env, &collateral_addr).balance(&borrower);
+
+    let seized = client.buy_liquidation_auction(&liquidator, &loan_id, &4_000u64);
+    assert_eq!(seized, 5_000);
+
+    // Verify liquidator received 5000 collateral
+    assert_eq!(
+        tok_client(&env, &collateral_addr).balance(&liquidator),
+        liquidator_collateral_before + 5_000
+    );
+
+    // Verify borrower received refund of remaining 3000 collateral
+    assert_eq!(
+        tok_client(&env, &collateral_addr).balance(&borrower),
+        borrower_collateral_before + 3_000
+    );
+
+    // Loan should be closed and auction marked completed
+    assert!(client.get_loan(&borrower).is_none());
+    assert!(client.get_loan_by_id(&loan_id).is_none());
+    let auction_after = client.get_liquidation_auction(&loan_id).unwrap();
+    assert_eq!(auction_after.is_completed, true);
+}
+
+#[test]
+fn test_liquidate_loan_auto_starts_auction() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let (client, token_addr, collateral_addr, _admin) = setup(&env);
+
+    let depositor = Address::generate(&env);
+    let borrower = Address::generate(&env);
+    let liquidator = Address::generate(&env);
+
+    mint_to(&env, &token_addr, &depositor, 50_000);
+    mint_to(&env, &collateral_addr, &borrower, 50_000);
+    mint_to(&env, &token_addr, &liquidator, 50_000);
+
+    client.deposit(&depositor, &token_addr, &20_000u64);
+
+    let loan_id = client.borrow(
+        &borrower,
+        &token_addr,
+        &2_000u64,
+        &collateral_addr,
+        &4_000u64,
+        &(24 * 60 * 60),
+    );
+
+    // Advance past grace period
+    env.ledger().set_timestamp(env.ledger().timestamp() + 5 * 24 * 60 * 60);
+
+    // Call liquidate_loan directly without prior start_liquidation_auction call
+    let seized = client.liquidate_loan(&liquidator, &loan_id, &2_000u64);
+    // At t = 0 of auto-started auction, price = 10000 bps -> seized = 2000 * 10000 / 10000 = 2000
+    assert_eq!(seized, 2_000);
+
+    // Loan is settled, remaining 2000 collateral refunded to borrower
+    assert!(client.get_loan_by_id(&loan_id).is_none());
+}
