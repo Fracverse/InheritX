@@ -972,7 +972,10 @@ async fn test_allowed_origins_env_override_and_wildcard_prevention() {
     let origins = inheritx_backend::api::parse_allowed_origins_from_env();
     assert!(origins.contains(&"https://staging.inheritx.io".to_string()));
     assert!(origins.contains(&"https://testnet.inheritx.io".to_string()));
-    assert!(!origins.contains(&"*".to_string()), "Wildcard must be stripped");
+    assert!(
+        !origins.contains(&"*".to_string()),
+        "Wildcard must be stripped"
+    );
 
     let app = setup_app();
 

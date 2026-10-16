@@ -163,7 +163,10 @@ impl DailyYieldSnapshotService {
             let mut ticker = tokio::time::interval(interval);
             ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
 
-            info!("Daily yield snapshot service started with interval {:?}", interval);
+            info!(
+                "Daily yield snapshot service started with interval {:?}",
+                interval
+            );
 
             loop {
                 tokio::select! {
@@ -263,4 +266,3 @@ mod tests {
         assert!(daily > 1.35 && daily < 1.38);
     }
 }
-

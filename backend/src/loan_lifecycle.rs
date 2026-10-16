@@ -846,7 +846,8 @@ impl LoanLiquidationWatchdogService {
 
         for candidate in candidates {
             let collateral_price = oracle.get_collateral_price("COLLATERAL");
-            let collateral_amount = rust_decimal::prelude::ToPrimitive::to_f64(&candidate.plan_amount).unwrap_or(0.0);
+            let collateral_amount =
+                rust_decimal::prelude::ToPrimitive::to_f64(&candidate.plan_amount).unwrap_or(0.0);
             let ltv_bps = calculate_ltv_bps(
                 candidate.outstanding_loaned as u64,
                 collateral_amount,
@@ -865,7 +866,14 @@ impl LoanLiquidationWatchdogService {
                 if state.stellar_submit.soroban_enabled() {
                     if let Some(onchain_id) = candidate.onchain_plan_id {
                         if onchain_id >= 0 {
-                            match state.stellar_submit.liquidate_loan(onchain_id as u64, candidate.outstanding_loaned as u64).await {
+                            match state
+                                .stellar_submit
+                                .liquidate_loan(
+                                    onchain_id as u64,
+                                    candidate.outstanding_loaned as u64,
+                                )
+                                .await
+                            {
                                 Ok(outcome) => {
                                     tx_hash = Some(outcome.tx_hash);
                                 }
@@ -891,7 +899,8 @@ impl LoanLiquidationWatchdogService {
                     Some("SETTLED"),
                     0,
                     tx_hash.as_deref(),
-                ).await;
+                )
+                .await;
 
                 let _ = sqlx::query("UPDATE plans SET status = 'CLAIMABLE' WHERE id = $1")
                     .bind(candidate.plan_id)
@@ -913,7 +922,8 @@ impl LoanLiquidationWatchdogService {
                         event_type: "plan.liquidated".into(),
                         plan_id: candidate.plan_id,
                         status: "SETTLED".into(),
-                        message: "Automated liquidation triggered by loan watchdog (LTV > 80%)".into(),
+                        message: "Automated liquidation triggered by loan watchdog (LTV > 80%)"
+                            .into(),
                         tx_hash: tx_hash.clone(),
                         freeze_status: Some("LIQUIDATED".into()),
                         recall_progress: Some(100),
@@ -923,7 +933,8 @@ impl LoanLiquidationWatchdogService {
                     "plan.liquidated",
                     &plan_ref,
                     tx_hash.as_deref(),
-                ).await;
+                )
+                .await;
 
                 liquidated_count += 1;
             }

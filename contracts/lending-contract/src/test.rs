@@ -4071,7 +4071,8 @@ fn test_liquidate_loan_auto_starts_auction() {
     );
 
     // Advance past grace period
-    env.ledger().set_timestamp(env.ledger().timestamp() + 5 * 24 * 60 * 60);
+    env.ledger()
+        .set_timestamp(env.ledger().timestamp() + 5 * 24 * 60 * 60);
 
     // Call liquidate_loan directly without prior start_liquidation_auction call
     let seized = client.liquidate_loan(&liquidator, &loan_id, &2_000u64);

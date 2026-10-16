@@ -230,7 +230,9 @@ pub fn parse_allowed_origins_from_env() -> Vec<String> {
             .filter(|s| {
                 // Wildcard prevention: reject '*' or origins containing '*'
                 if s == "*" || s.contains('*') {
-                    tracing::warn!("Wildcard origin '{s}' in ALLOWED_ORIGINS is prohibited and ignored");
+                    tracing::warn!(
+                        "Wildcard origin '{s}' in ALLOWED_ORIGINS is prohibited and ignored"
+                    );
                     return false;
                 }
                 // Validate origin has valid scheme and host
@@ -330,7 +332,9 @@ pub fn is_standard_user_agent(ua: &str) -> bool {
     if trimmed.is_empty() || trimmed.len() > 512 {
         return false;
     }
-    trimmed.chars().all(|c| c.is_ascii() && !c.is_ascii_control())
+    trimmed
+        .chars()
+        .all(|c| c.is_ascii() && !c.is_ascii_control())
 }
 
 /// Middleware enforcing strict Origin validation and standard User-Agent headers (Issue #1118).
@@ -347,7 +351,9 @@ pub async fn strict_origin_and_user_agent_middleware(
             Err(_) => {
                 return (
                     StatusCode::FORBIDDEN,
-                    Json(serde_json::json!({ "error": "Forbidden: Invalid origin header encoding" })),
+                    Json(
+                        serde_json::json!({ "error": "Forbidden: Invalid origin header encoding" }),
+                    ),
                 )
                     .into_response();
             }
@@ -383,7 +389,9 @@ pub async fn strict_origin_and_user_agent_middleware(
             if !is_standard_user_agent(ua_str) {
                 return (
                     StatusCode::BAD_REQUEST,
-                    Json(serde_json::json!({ "error": "Invalid or non-standard User-Agent header" })),
+                    Json(
+                        serde_json::json!({ "error": "Invalid or non-standard User-Agent header" }),
+                    ),
                 )
                     .into_response();
             }
@@ -503,7 +511,9 @@ pub fn create_router(state: Arc<AppState>) -> Router {
         .merge(admin_routes)
         .merge(loan_lifecycle_routes)
         .merge(public_routes)
-        .layer(axum::middleware::from_fn(strict_origin_and_user_agent_middleware))
+        .layer(axum::middleware::from_fn(
+            strict_origin_and_user_agent_middleware,
+        ))
         .layer(axum::middleware::from_fn(move |req, next| {
             rate_limit_middleware(req, next, store.clone(), config.clone())
         }))

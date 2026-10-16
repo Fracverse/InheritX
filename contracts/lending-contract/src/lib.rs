@@ -45,8 +45,8 @@ const MAX_YIELD_CLAIM_BATCH: u32 = 25; // Bounds one batch claim
 
 // Liquidation Dutch Auction constants
 pub const AUCTION_DURATION_SECONDS: u64 = 86_400; // 24 hours
-pub const AUCTION_START_PRICE_BPS: u32 = 10_000;  // 100% price (1:1 collateral per debt)
-pub const AUCTION_MIN_PRICE_BPS: u32 = 6_000;    // 60% price (~1.66x collateral per debt)
+pub const AUCTION_START_PRICE_BPS: u32 = 10_000; // 100% price (1:1 collateral per debt)
+pub const AUCTION_MIN_PRICE_BPS: u32 = 6_000; // 60% price (~1.66x collateral per debt)
 
 // ─────────────────────────────────────────────────
 // Data Types
@@ -3363,7 +3363,8 @@ impl LendingContract {
         loan_id: u64,
         amount: u64,
     ) -> Result<u64, LendingError> {
-        let has_auction = if let Some(auction) = Self::get_liquidation_auction(env.clone(), loan_id) {
+        let has_auction = if let Some(auction) = Self::get_liquidation_auction(env.clone(), loan_id)
+        {
             !auction.is_completed
         } else {
             false
