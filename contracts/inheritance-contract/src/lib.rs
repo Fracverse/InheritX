@@ -8072,14 +8072,14 @@ impl InheritanceContract {
                 }
             };
 
-        let new_principal =
-            match yield_math::safe_add(state.registered_principal, net_to_principal) {
-                Ok(p) => p,
-                Err(e) => {
-                    Self::exit_guard(&env);
-                    return Err(e);
-                }
-            };
+        let new_principal = match yield_math::safe_add(state.registered_principal, net_to_principal)
+        {
+            Ok(p) => p,
+            Err(e) => {
+                Self::exit_guard(&env);
+                return Err(e);
+            }
+        };
 
         let reg_args: Vec<Val> = vec![
             &env,
@@ -8143,16 +8143,16 @@ impl InheritanceContract {
             if let Some(plan) = Self::get_plan(&env, plan_id) {
                 if plan.is_active {
                     if plan.token == token {
-                        total_recorded_liabilities = total_recorded_liabilities
-                            .saturating_add(plan.total_amount as i128);
+                        total_recorded_liabilities =
+                            total_recorded_liabilities.saturating_add(plan.total_amount as i128);
                     }
                     if let Some(basket_bal) = env
                         .storage()
                         .persistent()
                         .get::<_, u64>(&AuxKey::Bbl(plan_id, token.clone()))
                     {
-                        total_recorded_liabilities = total_recorded_liabilities
-                            .saturating_add(basket_bal as i128);
+                        total_recorded_liabilities =
+                            total_recorded_liabilities.saturating_add(basket_bal as i128);
                     }
                 }
             }
@@ -8163,7 +8163,11 @@ impl InheritanceContract {
         }
 
         let is_fully_backed = actual_vault_balance >= total_recorded_liabilities;
-        (total_recorded_liabilities, actual_vault_balance, is_fully_backed)
+        (
+            total_recorded_liabilities,
+            actual_vault_balance,
+            is_fully_backed,
+        )
     }
 
     /// Configure the native XLM Stellar Asset Contract (SAC) address. Admin only.
@@ -8182,9 +8186,7 @@ impl InheritanceContract {
 
     /// Read the configured native XLM Stellar Asset Contract (SAC) address.
     pub fn get_native_token(env: Env) -> Option<Address> {
-        env.storage()
-            .instance()
-            .get(&symbol_short!("nat_xlm"))
+        env.storage().instance().get(&symbol_short!("nat_xlm"))
     }
 
     /// Helper to deposit native XLM into an inheritance plan, automatically wrapping
@@ -8195,8 +8197,8 @@ impl InheritanceContract {
         plan_id: u64,
         amount: u64,
     ) -> Result<(), InheritanceError> {
-        let native_token = Self::get_native_token(env.clone())
-            .ok_or(InheritanceError::AdminNotSet)?;
+        let native_token =
+            Self::get_native_token(env.clone()).ok_or(InheritanceError::AdminNotSet)?;
         Self::deposit(env, caller, native_token, plan_id, amount)
     }
 

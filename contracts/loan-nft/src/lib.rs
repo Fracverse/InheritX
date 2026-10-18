@@ -1,5 +1,7 @@
 #![no_std]
-use soroban_sdk::{contract, contracterror, contractimpl, contracttype, Address, Env, String, Symbol};
+use soroban_sdk::{
+    contract, contracterror, contractimpl, contracttype, Address, Env, String, Symbol,
+};
 
 const DEFAULT_APPROVAL_EXPIRATION_SECONDS: u64 = 60 * 60 * 24 * 7; // 7 days
 

@@ -2126,17 +2126,21 @@ impl LendingContract {
 
         if let Ok(pool) = Self::get_pool(&env, &token) {
             let liquid_deposits = pool.total_deposits.saturating_sub(pool.total_borrowed);
-            total_recorded_liabilities = total_recorded_liabilities
-                .saturating_add(liquid_deposits as i128);
+            total_recorded_liabilities =
+                total_recorded_liabilities.saturating_add(liquid_deposits as i128);
         }
 
         if let Ok(reserve) = Self::get_reserve(&env, &token) {
-            total_recorded_liabilities = total_recorded_liabilities
-                .saturating_add(reserve.total_collateral as i128);
+            total_recorded_liabilities =
+                total_recorded_liabilities.saturating_add(reserve.total_collateral as i128);
         }
 
         let is_fully_backed = actual_vault_balance >= total_recorded_liabilities;
-        (total_recorded_liabilities, actual_vault_balance, is_fully_backed)
+        (
+            total_recorded_liabilities,
+            actual_vault_balance,
+            is_fully_backed,
+        )
     }
 
     /// Returns the current dynamic interest rate that would be given to a new loan for a specific asset
