@@ -10,6 +10,21 @@
   --animate-pulse-glow: pulseGlow 2s ease-in-out infinite;
 }
 
+/* Dark mode variables */
+[data-theme='dark'],
+.dark {
+  --background: #0a0a0a;
+  --foreground: #ededed;
+}
+
+/* Light mode variables */
+[data-theme='light'],
+html:not([data-theme]) {
+  --background: #ffffff;
+  --foreground: #1a1a1a;
+  --primary: #0066cc;
+}
+
 @theme inline {
   --color-background: var(--background);
   --color-foreground: var(--foreground);

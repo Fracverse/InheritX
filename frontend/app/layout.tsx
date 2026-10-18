@@ -4,6 +4,7 @@ import "./globals.css";
 import { WalletProvider } from "@/context/WalletContext";
 import { AdminAuthProvider } from "@/context/AdminAuthContext";
 import { KYCProvider } from "@/context/KYCContext";
+import { ThemeProvider } from "@/context/ThemeContext";
 import { WalletModal } from "@/components/WalletModal";
 
 import {
@@ -110,14 +111,16 @@ export default function RootLayout({
         suppressHydrationWarning
       >
         <Vitals />
-        <AdminAuthProvider>
-          <WalletProvider>
-            <KYCProvider>
-              <main className="">{children}</main>
-              <WalletModal />
-            </KYCProvider>
-          </WalletProvider>
-        </AdminAuthProvider>
+        <ThemeProvider>
+          <AdminAuthProvider>
+            <WalletProvider>
+              <KYCProvider>
+                <main className="">{children}</main>
+                <WalletModal />
+              </KYCProvider>
+            </WalletProvider>
+          </AdminAuthProvider>
+        </ThemeProvider>
       </body>
     </html>
   );
