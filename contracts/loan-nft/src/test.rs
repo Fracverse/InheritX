@@ -72,11 +72,17 @@ fn test_transfer() {
 
     client.mint(&user1, &metadata);
     client.set_transferable(&2, &true);
-    client.transfer(&user1, &user2, &2);
 
-    assert_eq!(client.owner_of(&2), Some(user2.clone()));
+    // Arbitrary wallet-to-wallet transfer must revert with TokenNonTransferable
+    let err = client.try_transfer(&user1, &user2, &2);
+    assert_eq!(err, Err(Ok(crate::Error::TokenNonTransferable)));
+
+    // Transfer to lending contract vault (admin) succeeds
+    client.transfer(&user1, &admin, &2);
+
+    assert_eq!(client.owner_of(&2), Some(admin.clone()));
     assert_eq!(client.balance_of(&user1), 0);
-    assert_eq!(client.balance_of(&user2), 1);
+    assert_eq!(client.balance_of(&admin), 1);
 }
 
 #[test]
@@ -112,9 +118,14 @@ fn test_approve_and_transfer_from() {
     client.approve(&user1, &operator, &3);
     assert_eq!(client.get_approved(&3), Some(operator.clone()));
 
-    client.transfer_from(&operator, &user1, &user2, &3);
+    // Arbitrary recipient reverts
+    let err = client.try_transfer_from(&operator, &user1, &user2, &3);
+    assert_eq!(err, Err(Ok(crate::Error::TokenNonTransferable)));
 
-    assert_eq!(client.owner_of(&3), Some(user2.clone()));
+    // Lending vault recipient succeeds
+    client.transfer_from(&operator, &user1, &admin, &3);
+
+    assert_eq!(client.owner_of(&3), Some(admin.clone()));
     // Approval should be cleared after transfer
     assert_eq!(client.get_approved(&3), None);
 }
@@ -129,7 +140,7 @@ fn test_approval_for_all() {
 
     let admin = Address::generate(&env);
     let user1 = Address::generate(&env);
-    let user2 = Address::generate(&env);
+    let _user2 = Address::generate(&env);
     let operator = Address::generate(&env);
     let token = Address::generate(&env);
 
@@ -151,8 +162,8 @@ fn test_approval_for_all() {
     client.set_approval_for_all(&user1, &operator, &true);
     assert!(client.is_approved_for_all(&user1, &operator));
 
-    client.transfer_from(&operator, &user1, &user2, &4);
-    assert_eq!(client.owner_of(&4), Some(user2));
+    client.transfer_from(&operator, &user1, &admin, &4);
+    assert_eq!(client.owner_of(&4), Some(admin));
 }
 
 #[test]
@@ -246,7 +257,7 @@ fn test_transfer_events_use_standard_names() {
     let admin = Address::generate(&env);
     let owner = Address::generate(&env);
     let operator = Address::generate(&env);
-    let recipient = Address::generate(&env);
+    let _recipient = Address::generate(&env);
     let token = Address::generate(&env);
 
     client.initialize(&admin);
@@ -265,7 +276,7 @@ fn test_transfer_events_use_standard_names() {
     client.set_transferable(&46, &true);
     client.approve(&owner, &operator, &46);
     client.set_approval_for_all(&owner, &operator, &true);
-    client.transfer_from(&operator, &owner, &recipient, &46);
+    client.transfer_from(&operator, &owner, &admin, &46);
 
     let events = env.events().all();
     assert_eq!(
@@ -288,12 +299,11 @@ fn test_transfer_events_use_standard_names() {
     );
     assert_eq!(
         events.get(events.len() - 1).unwrap().1,
-        (Symbol::new(&env, "Transfer"), owner, recipient).into_val(&env)
+        (Symbol::new(&env, "Transfer"), owner, admin).into_val(&env)
     );
 }
 
 #[test]
-#[should_panic(expected = "NFT transfer is restricted for an active loan")]
 fn test_transfer_restriction() {
     let env = Env::default();
     env.mock_all_auths();
@@ -321,7 +331,48 @@ fn test_transfer_restriction() {
     client.mint(&user1, &metadata);
 
     client.set_transferable(&5, &false);
-    client.transfer(&user1, &user2, &5);
+    let res = client.try_transfer(&user1, &user2, &5);
+    assert_eq!(res, Err(Ok(crate::Error::TokenNonTransferable)));
+}
+
+#[test]
+fn test_sbt_restrictions_reject_arbitrary_wallet_transfer() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let contract_id = env.register_contract(None, LoanNFT);
+    let client = LoanNFTClient::new(&env, &contract_id);
+
+    let admin = Address::generate(&env);
+    let vault = Address::generate(&env);
+    let user1 = Address::generate(&env);
+    let user2 = Address::generate(&env);
+    let token = Address::generate(&env);
+
+    client.initialize(&admin);
+    client.set_lending_vault(&vault);
+
+    let metadata = LoanMetadata {
+        loan_id: 10,
+        borrower: user1.clone(),
+        principal: 500,
+        collateral_amount: 250,
+        collateral_token: token,
+        due_date: 0,
+        ltv_ratio_bps: 2000,
+        plan_id: 0,
+        uri: String::from_str(&env, "https://example.com/nft/10"),
+    };
+    client.mint(&user1, &metadata);
+
+    // Arbitrary wallet transfer fails even if set_transferable is true
+    client.set_transferable(&10, &true);
+    let err = client.try_transfer(&user1, &user2, &10);
+    assert_eq!(err, Err(Ok(crate::Error::TokenNonTransferable)));
+
+    // Transfer to configured lending vault succeeds
+    client.transfer(&user1, &vault, &10);
+    assert_eq!(client.owner_of(&10), Some(vault));
 }
 
 #[test]
