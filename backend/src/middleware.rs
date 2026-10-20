@@ -91,10 +91,10 @@ pub async fn rate_limit_middleware(
 }
 
 /// ISO 3166-1 alpha-2 codes for jurisdictions subject to OFAC comprehensive
-/// sanctions programs (Cuba, Iran, North Korea, Syria). This is the default
+/// sanctions programs (Cuba, Iran, North Korea). This is the default
 /// deny-list; override or extend it by setting `OFAC_BLOCKED_COUNTRIES` to a
 /// comma-separated list of ISO codes.
-pub const DEFAULT_SANCTIONED_COUNTRIES: &[&str] = &["CU", "IR", "KP", "SY"];
+pub const DEFAULT_SANCTIONED_COUNTRIES: &[&str] = &["CU", "IR", "KP"];
 
 /// Configuration for the sanctions-region guard.
 #[derive(Debug, Clone)]

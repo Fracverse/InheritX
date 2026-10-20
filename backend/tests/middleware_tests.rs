@@ -161,13 +161,13 @@ async fn request_with_country(app: &Router, country: Option<&str>) -> StatusCode
 
 #[tokio::test]
 async fn test_geo_guard_allows_non_sanctioned_country() {
-    let app = build_geo_guarded_app(&["CU", "IR", "KP", "SY"], None);
+    let app = build_geo_guarded_app(&["CU", "IR", "KP"], None);
     assert_eq!(request_with_country(&app, Some("US")).await, StatusCode::OK);
 }
 
 #[tokio::test]
 async fn test_geo_guard_blocks_sanctioned_country_header() {
-    let app = build_geo_guarded_app(&["CU", "IR", "KP", "SY"], None);
+    let app = build_geo_guarded_app(&["CU", "IR", "KP"], None);
     assert_eq!(
         request_with_country(&app, Some("IR")).await,
         StatusCode::FORBIDDEN
@@ -176,7 +176,7 @@ async fn test_geo_guard_blocks_sanctioned_country_header() {
 
 #[tokio::test]
 async fn test_geo_guard_header_check_is_case_insensitive() {
-    let app = build_geo_guarded_app(&["CU", "IR", "KP", "SY"], None);
+    let app = build_geo_guarded_app(&["CU", "IR", "KP"], None);
     assert_eq!(
         request_with_country(&app, Some("kp")).await,
         StatusCode::FORBIDDEN
@@ -185,7 +185,7 @@ async fn test_geo_guard_header_check_is_case_insensitive() {
 
 #[tokio::test]
 async fn test_geo_guard_allows_missing_header_with_no_resolver() {
-    let app = build_geo_guarded_app(&["CU", "IR", "KP", "SY"], None);
+    let app = build_geo_guarded_app(&["CU", "IR", "KP"], None);
     assert_eq!(request_with_country(&app, None).await, StatusCode::OK);
 }
 
@@ -200,8 +200,8 @@ async fn test_geo_guard_treats_unresolved_cf_codes_as_unknown() {
 
 #[tokio::test]
 async fn test_geo_guard_falls_back_to_resolver_when_header_absent() {
-    let resolver: Arc<dyn CountryResolver> = Arc::new(StubResolver(Some("SY")));
-    let app = build_geo_guarded_app(&["CU", "IR", "KP", "SY"], Some(resolver));
+    let resolver: Arc<dyn CountryResolver> = Arc::new(StubResolver(Some("CU")));
+    let app = build_geo_guarded_app(&["CU", "IR", "KP"], Some(resolver));
 
     assert_eq!(
         request_with_country(&app, None).await,
@@ -214,7 +214,7 @@ async fn test_geo_guard_prefers_header_over_resolver() {
     // Resolver says sanctioned, but the CF header (authoritative at the edge)
     // says a clean country — the header should win.
     let resolver: Arc<dyn CountryResolver> = Arc::new(StubResolver(Some("IR")));
-    let app = build_geo_guarded_app(&["CU", "IR", "KP", "SY"], Some(resolver));
+    let app = build_geo_guarded_app(&["CU", "IR", "KP"], Some(resolver));
 
     assert_eq!(request_with_country(&app, Some("US")).await, StatusCode::OK);
 }
@@ -225,6 +225,7 @@ async fn test_geo_guard_config_uses_defaults_when_unset() {
     assert!(config.is_blocked("IR"));
     assert!(config.is_blocked("ir"));
     assert!(!config.is_blocked("US"));
+    assert!(!config.is_blocked("SY"));
 }
 
 #[tokio::test]
