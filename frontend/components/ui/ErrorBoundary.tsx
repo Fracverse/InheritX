@@ -43,7 +43,6 @@ const DEFAULT_RPC_NODES = [
   "https://rpc.lightsail.network",
 ];
 
-const TRANSIENT_HTTP_CODES = [502, 503, 504, 522, 524];
 const MAX_AUTO_RETRIES = 3;
 
 export class ErrorBoundary extends Component<Props, State> {
