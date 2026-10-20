@@ -59,9 +59,7 @@ pub async fn fetch_vault_secrets(
         let status = response.status();
         let body = response.text().await.unwrap_or_default();
         return Err(anyhow::anyhow!(
-            "Vault responded with status {}: {}",
-            status,
-            body
+            "Vault responded with status {status}: {body}"
         ));
     }
 

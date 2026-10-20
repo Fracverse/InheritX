@@ -283,8 +283,7 @@ impl AnchorRegistry {
                                 created_at: now.clone(),
                                 updated_at: now,
                                 error_message: Some(format!(
-                                    "Failed to parse anchor response: {}",
-                                    e
+                                    "Failed to parse anchor response: {e}"
                                 )),
                             }
                         }
@@ -308,7 +307,7 @@ impl AnchorRegistry {
                         status: AnchorPayoutStatus::Failed,
                         created_at: now.clone(),
                         updated_at: now,
-                        error_message: Some(format!("Anchor API error {}: {}", status_code, body)),
+                        error_message: Some(format!("Anchor API error {status_code}: {body}")),
                     }
                 }
             }
@@ -328,7 +327,7 @@ impl AnchorRegistry {
                     status: AnchorPayoutStatus::Failed,
                     created_at: now.clone(),
                     updated_at: now,
-                    error_message: Some(format!("Failed to reach anchor API: {}", e)),
+                    error_message: Some(format!("Failed to reach anchor API: {e}")),
                 }
             }
         }

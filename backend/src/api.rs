@@ -2861,7 +2861,7 @@ async fn fund_account_internal(public_key_opt: Option<String>) -> Response {
                 (
                     StatusCode::BAD_GATEWAY,
                     Json(serde_json::json!({
-                        "error": format!("Stellar Friendbot returned error (status {}): {}", status, err_body)
+                        "error": format!("Stellar Friendbot returned error (status {status}): {err_body}")
                     })),
                 )
                     .into_response()
@@ -2872,7 +2872,7 @@ async fn fund_account_internal(public_key_opt: Option<String>) -> Response {
             (
                 StatusCode::BAD_GATEWAY,
                 Json(serde_json::json!({
-                    "error": format!("Failed to reach Stellar Friendbot: {}", e)
+                    "error": format!("Failed to reach Stellar Friendbot: {e}")
                 })),
             )
                 .into_response()
