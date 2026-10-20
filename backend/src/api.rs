@@ -505,7 +505,10 @@ pub fn create_router(state: Arc<AppState>) -> Router {
             "/api/plans/{id}/yield-snapshots",
             get(get_plan_yield_snapshots),
         )
-        .route("/api/faucet/fund", post(faucet_fund_post).get(faucet_fund_get))
+        .route(
+            "/api/faucet/fund",
+            post(faucet_fund_post).get(faucet_fund_get),
+        )
         .route("/ws/kyc", get(ws_handler));
     let router = Router::new()
         .merge(user_routes)
@@ -2769,9 +2772,7 @@ pub struct FaucetFundResponse {
     pub public_key: String,
 }
 
-pub async fn faucet_fund_post(
-    Json(payload): Json<FaucetFundRequest>,
-) -> Response {
+pub async fn faucet_fund_post(Json(payload): Json<FaucetFundRequest>) -> Response {
     fund_account_internal(payload.public_key).await
 }
 
@@ -2830,7 +2831,9 @@ async fn fund_account_internal(public_key_opt: Option<String>) -> Response {
                             Json(FaucetFundResponse {
                                 success: true,
                                 tx_hash,
-                                message: "Account funded successfully via Stellar Testnet Friendbot".to_string(),
+                                message:
+                                    "Account funded successfully via Stellar Testnet Friendbot"
+                                        .to_string(),
                                 public_key: key,
                             }),
                         )
@@ -2843,7 +2846,9 @@ async fn fund_account_internal(public_key_opt: Option<String>) -> Response {
                             Json(FaucetFundResponse {
                                 success: true,
                                 tx_hash: "confirmed".to_string(),
-                                message: "Account funded successfully via Stellar Testnet Friendbot".to_string(),
+                                message:
+                                    "Account funded successfully via Stellar Testnet Friendbot"
+                                        .to_string(),
                                 public_key: key,
                             }),
                         )

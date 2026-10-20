@@ -98,10 +98,18 @@ impl AnchorRegistry {
             tier_limits: Arc::new(dashmap::DashMap::new()),
         };
 
-        registry.tier_limits.insert(KycTier::Tier0, KycTier::Tier0.default_daily_limit_usd());
-        registry.tier_limits.insert(KycTier::Tier1, KycTier::Tier1.default_daily_limit_usd());
-        registry.tier_limits.insert(KycTier::Tier2, KycTier::Tier2.default_daily_limit_usd());
-        registry.tier_limits.insert(KycTier::Tier3, KycTier::Tier3.default_daily_limit_usd());
+        registry
+            .tier_limits
+            .insert(KycTier::Tier0, KycTier::Tier0.default_daily_limit_usd());
+        registry
+            .tier_limits
+            .insert(KycTier::Tier1, KycTier::Tier1.default_daily_limit_usd());
+        registry
+            .tier_limits
+            .insert(KycTier::Tier2, KycTier::Tier2.default_daily_limit_usd());
+        registry
+            .tier_limits
+            .insert(KycTier::Tier3, KycTier::Tier3.default_daily_limit_usd());
 
         registry
     }
@@ -183,7 +191,9 @@ impl AnchorRegistry {
         let tier = req.user_tier.unwrap_or(KycTier::Tier2);
 
         // Check 24h cumulative payout limit before initiating off-ramp
-        if let Err(limit_err) = self.check_daily_limit(&req.beneficiary_address, req.token_amount, tier) {
+        if let Err(limit_err) =
+            self.check_daily_limit(&req.beneficiary_address, req.token_amount, tier)
+        {
             let now = Utc::now().to_rfc3339();
             warn!(
                 beneficiary = %req.beneficiary_address,
@@ -236,7 +246,10 @@ impl AnchorRegistry {
                             let now = Utc::now().to_rfc3339();
                             let fiat_amount = api_resp.fiat_amount.unwrap_or(req.token_amount);
                             let payout = AnchorPayout {
-                                id: api_resp.id.or(api_resp.transaction_id).unwrap_or_else(|| uuid::Uuid::new_v4().to_string()),
+                                id: api_resp
+                                    .id
+                                    .or(api_resp.transaction_id)
+                                    .unwrap_or_else(|| uuid::Uuid::new_v4().to_string()),
                                 request: req,
                                 exchange_rate: api_resp.exchange_rate.unwrap_or(1.0),
                                 fiat_amount,
@@ -269,7 +282,10 @@ impl AnchorRegistry {
                                 status: AnchorPayoutStatus::Failed,
                                 created_at: now.clone(),
                                 updated_at: now,
-                                error_message: Some(format!("Failed to parse anchor response: {}", e)),
+                                error_message: Some(format!(
+                                    "Failed to parse anchor response: {}",
+                                    e
+                                )),
                             }
                         }
                     }
@@ -377,12 +393,21 @@ mod tests {
         assert_eq!(registry.get_24h_payout_volume(addr), 0.0);
 
         // Tier 2 limit is $10,000 USD/day
-        assert!(registry.check_daily_limit(addr, 5_000.0, KycTier::Tier2).is_ok());
+        assert!(registry
+            .check_daily_limit(addr, 5_000.0, KycTier::Tier2)
+            .is_ok());
 
         // Attempting $10,001 on fresh account should exceed Tier 2
-        let err = registry.check_daily_limit(addr, 10_001.0, KycTier::Tier2).unwrap_err();
+        let err = registry
+            .check_daily_limit(addr, 10_001.0, KycTier::Tier2)
+            .unwrap_err();
         match err {
-            FiatLimitError::LimitExceeded { limit, requested, used_24h, .. } => {
+            FiatLimitError::LimitExceeded {
+                limit,
+                requested,
+                used_24h,
+                ..
+            } => {
                 assert_eq!(limit, 10_000.0);
                 assert_eq!(requested, 10_001.0);
                 assert_eq!(used_24h, 0.0);
@@ -408,10 +433,14 @@ mod tests {
         assert_eq!(registry.get_24h_payout_volume(addr), 6_000.0);
 
         // An additional $4,000 should be allowed (6000 + 4000 = 10000 <= 10000)
-        assert!(registry.check_daily_limit(addr, 4_000.0, KycTier::Tier2).is_ok());
+        assert!(registry
+            .check_daily_limit(addr, 4_000.0, KycTier::Tier2)
+            .is_ok());
 
         // An additional $4,001 should be rejected (6000 + 4001 = 10001 > 10000)
-        assert!(registry.check_daily_limit(addr, 4_001.0, KycTier::Tier2).is_err());
+        assert!(registry
+            .check_daily_limit(addr, 4_001.0, KycTier::Tier2)
+            .is_err());
     }
 
     #[test]
@@ -436,7 +465,9 @@ mod tests {
 
         // Payout outside 24h does not count towards current 24h volume
         assert_eq!(registry.get_24h_payout_volume(addr), 0.0);
-        assert!(registry.check_daily_limit(addr, 10_000.0, KycTier::Tier2).is_ok());
+        assert!(registry
+            .check_daily_limit(addr, 10_000.0, KycTier::Tier2)
+            .is_ok());
     }
 
     #[test]
@@ -469,7 +500,9 @@ mod tests {
         let payout = registry.create_payout(req).await;
         assert_eq!(payout.status, AnchorPayoutStatus::Failed);
         assert!(payout.error_message.is_some());
-        assert!(payout.error_message.unwrap().contains("Daily fiat payout limit exceeded"));
+        assert!(payout
+            .error_message
+            .unwrap()
+            .contains("Daily fiat payout limit exceeded"));
     }
 }
-

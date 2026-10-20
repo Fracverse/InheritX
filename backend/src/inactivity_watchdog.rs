@@ -167,7 +167,10 @@ impl InactivityWatchdogService {
         self
     }
 
-    pub fn start(self: Arc<Self>, mut shutdown_rx: watch::Receiver<bool>) -> tokio::task::JoinHandle<()> {
+    pub fn start(
+        self: Arc<Self>,
+        mut shutdown_rx: watch::Receiver<bool>,
+    ) -> tokio::task::JoinHandle<()> {
         tokio::spawn(async move {
             let mut interval = tokio::time::interval(self.config.interval);
             interval.set_missed_tick_behavior(MissedTickBehavior::Delay);

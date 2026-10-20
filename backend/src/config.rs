@@ -40,7 +40,11 @@ pub async fn fetch_vault_secrets(
         .timeout(Duration::from_secs(10))
         .build()?;
 
-    let url = format!("{}/v1/{}", vault_addr.trim_end_matches('/'), secret_path.trim_start_matches('/'));
+    let url = format!(
+        "{}/v1/{}",
+        vault_addr.trim_end_matches('/'),
+        secret_path.trim_start_matches('/')
+    );
 
     // Protect the token in memory
     let token_header = Zeroizing::new(vault_token.to_string());
@@ -54,7 +58,11 @@ pub async fn fetch_vault_secrets(
     if !response.status().is_success() {
         let status = response.status();
         let body = response.text().await.unwrap_or_default();
-        return Err(anyhow::anyhow!("Vault responded with status {}: {}", status, body));
+        return Err(anyhow::anyhow!(
+            "Vault responded with status {}: {}",
+            status,
+            body
+        ));
     }
 
     let mut body_text = Zeroizing::new(response.text().await?);
@@ -64,14 +72,20 @@ pub async fn fetch_vault_secrets(
     body_text.zeroize();
 
     // Support KV v2 (data.data), KV v1 (data), or root key-value object
-    let secret_obj = if let Some(kv2) = val.get("data").and_then(|d| d.get("data")).and_then(|d| d.as_object()) {
+    let secret_obj = if let Some(kv2) = val
+        .get("data")
+        .and_then(|d| d.get("data"))
+        .and_then(|d| d.as_object())
+    {
         kv2
     } else if let Some(kv1) = val.get("data").and_then(|d| d.as_object()) {
         kv1
     } else if let Some(root) = val.as_object() {
         root
     } else {
-        return Err(anyhow::anyhow!("Unrecognized Vault secret response structure"));
+        return Err(anyhow::anyhow!(
+            "Unrecognized Vault secret response structure"
+        ));
     };
 
     let mut secrets = HashMap::new();
@@ -114,13 +128,18 @@ impl Config {
 
         if vault_enabled {
             info!("VAULT_ENABLED=true: Fetching dynamic secrets from Secret Manager / Vault provider...");
-            let vault_addr = std::env::var("VAULT_ADDR").unwrap_or_else(|_| "http://127.0.0.1:8200".to_string());
+            let vault_addr =
+                std::env::var("VAULT_ADDR").unwrap_or_else(|_| "http://127.0.0.1:8200".to_string());
             let mut vault_token = Zeroizing::new(std::env::var("VAULT_TOKEN").unwrap_or_default());
-            let secret_path = std::env::var("VAULT_SECRET_PATH").unwrap_or_else(|_| "secret/data/inheritx".to_string());
+            let secret_path = std::env::var("VAULT_SECRET_PATH")
+                .unwrap_or_else(|_| "secret/data/inheritx".to_string());
 
             match fetch_vault_secrets(&vault_addr, &vault_token, &secret_path).await {
                 Ok(secrets) => {
-                    info!("Successfully retrieved {} secret(s) dynamically from Vault", secrets.len());
+                    info!(
+                        "Successfully retrieved {} secret(s) dynamically from Vault",
+                        secrets.len()
+                    );
                     vault_secrets = secrets;
                 }
                 Err(e) => {
@@ -150,9 +169,13 @@ impl Config {
         let database_url = vault_secrets
             .remove("DATABASE_URL")
             .or_else(|| {
-                if let Some(mut db_pass) = vault_secrets.remove("DATABASE_PASSWORD").or_else(|| vault_secrets.remove("DB_PASSWORD")) {
-                    let base = std::env::var("DATABASE_URL")
-                        .unwrap_or_else(|_| "postgres://postgres:postgres@localhost:5432/inheritx".to_string());
+                if let Some(mut db_pass) = vault_secrets
+                    .remove("DATABASE_PASSWORD")
+                    .or_else(|| vault_secrets.remove("DB_PASSWORD"))
+                {
+                    let base = std::env::var("DATABASE_URL").unwrap_or_else(|_| {
+                        "postgres://postgres:postgres@localhost:5432/inheritx".to_string()
+                    });
                     let res = inject_password_into_db_url(&base, &db_pass);
                     db_pass.zeroize();
                     Some(res)
@@ -221,7 +244,9 @@ impl Config {
                 .or_else(|| std::env::var("STELLAR_SIGNER_SECRET").ok())
                 .filter(|s| !s.trim().is_empty());
 
-            if let (Some(rpc_url), Some(contract_id), Some(signer_secret)) = (rpc_url, contract_id, signer_secret) {
+            if let (Some(rpc_url), Some(contract_id), Some(signer_secret)) =
+                (rpc_url, contract_id, signer_secret)
+            {
                 let network_passphrase = vault_secrets
                     .remove("STELLAR_NETWORK_PASSPHRASE")
                     .or_else(|| std::env::var("STELLAR_NETWORK_PASSPHRASE").ok())
@@ -315,7 +340,13 @@ mod tests {
         );
 
         let config = Config::build_config(vault_secrets).unwrap();
-        assert_eq!(config.database_url, "postgres://vaultuser:vaultpass@remote:5432/vaultdb");
-        assert_eq!(config.kyc_webhook_secret.as_deref(), Some("vault-webhook-secret-999"));
+        assert_eq!(
+            config.database_url,
+            "postgres://vaultuser:vaultpass@remote:5432/vaultdb"
+        );
+        assert_eq!(
+            config.kyc_webhook_secret.as_deref(),
+            Some("vault-webhook-secret-999")
+        );
     }
 }

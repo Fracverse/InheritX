@@ -1162,7 +1162,9 @@ async fn test_faucet_fund_invalid_public_key() {
                 .uri("/api/faucet/fund")
                 .header(http::header::CONTENT_TYPE, "application/json")
                 .header(http::header::USER_AGENT, "InheritX-Client/1.0")
-                .body(Body::from(json!({ "public_key": "invalid_stellar_address" }).to_string()))
+                .body(Body::from(
+                    json!({ "public_key": "invalid_stellar_address" }).to_string(),
+                ))
                 .unwrap(),
         )
         .await
@@ -1189,4 +1191,3 @@ async fn test_faucet_fund_get_missing_param() {
 
     assert_eq!(response.status(), StatusCode::BAD_REQUEST);
 }
-

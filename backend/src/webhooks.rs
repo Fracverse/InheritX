@@ -26,7 +26,10 @@ impl WebhookDispatcherService {
         }
     }
 
-    pub fn start(self: Arc<Self>, mut shutdown_rx: watch::Receiver<bool>) -> tokio::task::JoinHandle<()> {
+    pub fn start(
+        self: Arc<Self>,
+        mut shutdown_rx: watch::Receiver<bool>,
+    ) -> tokio::task::JoinHandle<()> {
         tokio::spawn(async move {
             loop {
                 tokio::select! {

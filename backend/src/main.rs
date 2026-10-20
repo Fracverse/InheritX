@@ -133,18 +133,22 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             .and_then(|s| s.parse::<u64>().ok())
             .unwrap_or(86_400),
     );
-    worker_handles.push(inheritx_backend::yield_calculator::DailyYieldSnapshotService::spawn(
-        db_pool.clone(),
-        snapshot_interval,
-        shutdown_rx.clone(),
-    ));
+    worker_handles.push(
+        inheritx_backend::yield_calculator::DailyYieldSnapshotService::spawn(
+            db_pool.clone(),
+            snapshot_interval,
+            shutdown_rx.clone(),
+        ),
+    );
 
     // Start automated loan liquidation watchdog task (Issue #1119)
-    worker_handles.push(inheritx_backend::loan_lifecycle::LoanLiquidationWatchdogService::spawn(
-        state.clone(),
-        inheritx_backend::loan_lifecycle::LoanLiquidationWatchdogConfig::from_env(),
-        shutdown_rx.clone(),
-    ));
+    worker_handles.push(
+        inheritx_backend::loan_lifecycle::LoanLiquidationWatchdogService::spawn(
+            state.clone(),
+            inheritx_backend::loan_lifecycle::LoanLiquidationWatchdogConfig::from_env(),
+            shutdown_rx.clone(),
+        ),
+    );
 
     // Periodically refresh DB pool metrics
     #[cfg(feature = "metrics")]
@@ -219,7 +223,12 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         }
     };
 
-    match tokio::time::timeout(std::time::Duration::from_secs(GRACE_PERIOD_SECS), grace_wait).await {
+    match tokio::time::timeout(
+        std::time::Duration::from_secs(GRACE_PERIOD_SECS),
+        grace_wait,
+    )
+    .await
+    {
         Ok(_) => {
             info!("All server connections and background workers completed clean exit within grace window");
         }
