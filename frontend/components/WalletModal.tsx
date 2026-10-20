@@ -5,6 +5,7 @@ import { motion, AnimatePresence } from "framer-motion";
 import { Loader2, Check } from "lucide-react";
 import React from "react";
 import UserIcon from "./userIcon";
+import { DevKeypairConnect } from "./DevKeypairConnect";
 
 export function WalletModal() {
   const { isModalOpen, closeModal, supportedWallets, connect, isConnecting } =
@@ -120,6 +121,18 @@ export function WalletModal() {
                  <UserIcon />
                   <span>Connect Wallet</span>
                 </button>
+
+                {/* Dev-mode keypair quick-connect for E2E testing */}
+                <DevKeypairConnect
+                  onConnect={(secretKey, publicKey) => {
+                    if (publicKey) {
+                      // Store for testnet E2E use
+                      sessionStorage.setItem("dev_wallet_public", publicKey);
+                      sessionStorage.setItem("dev_wallet_secret", secretKey);
+                    }
+                    closeModal();
+                  }}
+                />
               </div>
             </motion.div>
           </div>
