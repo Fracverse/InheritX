@@ -5,7 +5,6 @@ import {
   Shield,
   ShieldCheck,
   ShieldAlert,
-  Users,
   CheckCircle,
   XCircle,
   Clock,
@@ -46,7 +45,6 @@ export function GuardianMatrixCard({
 
   const signedCount = guardians.filter((g) => g.hasSigned).length;
   const quorumMet = signedCount >= quorum;
-  const canInitiate = isOwner && !isTriggered && !showConfirm;
 
   const handleInitiate = async () => {
     if (!onInitiateTrigger) return;
