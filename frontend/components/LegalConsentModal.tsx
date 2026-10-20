@@ -6,7 +6,6 @@ import {
   AlertTriangle,
   Check,
   ExternalLink,
-  X,
   Globe,
 } from "lucide-react";
 
@@ -24,13 +23,12 @@ interface ConsentData {
 async function computeConsentHash(data: string): Promise<string> {
   const encoder = new TextEncoder();
   const buffer = encoder.encode(data);
-  const hashBuffer = await crypto.subtle.digest("SHA-256", buffer);
+  const hashBuffer = await crypto.subtle.digest("SHA-256", buffer as unknown as BufferSource);
   const hashArray = Array.from(new Uint8Array(hashBuffer));
   return hashArray.map((b) => b.toString(16).padStart(2, "0")).join("");
 }
 
 export function LegalConsentModal() {
-  const [isOpen, setIsOpen] = useState(false);
   const [tosChecked, setTosChecked] = useState(false);
   const [jurisdictionChecked, setJurisdictionChecked] = useState(false);
   const [dismissed, setDismissed] = useState(true);
@@ -39,17 +37,14 @@ export function LegalConsentModal() {
     try {
       const stored = localStorage.getItem(CONSENT_STORAGE_KEY);
       if (!stored) {
-        setIsOpen(true);
         setDismissed(false);
       } else {
         const data = JSON.parse(stored) as ConsentData;
         if (data.version !== CONSENT_VERSION) {
-          setIsOpen(true);
           setDismissed(false);
         }
       }
     } catch {
-      setIsOpen(true);
       setDismissed(false);
     }
   }, []);
@@ -81,7 +76,6 @@ export function LegalConsentModal() {
       // storage unavailable
     }
 
-    setIsOpen(false);
     setDismissed(true);
   }, [canAccept]);
 
