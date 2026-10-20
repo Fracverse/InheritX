@@ -20,7 +20,7 @@ export function WalletSessionTimeout({
 }: WalletSessionTimeoutProps) {
   const [showWarning, setShowWarning] = useState(false);
   const [remainingSeconds, setRemainingSeconds] = useState(60);
-  const lastActivityRef = useRef<number>(Date.now());
+  const lastActivityRef = useRef<number>(0);
   const warningShownRef = useRef(false);
 
   const resetActivity = useCallback(() => {
@@ -36,6 +36,8 @@ export function WalletSessionTimeout({
 
   useEffect(() => {
     if (!isEnabled) return;
+
+    lastActivityRef.current = Date.now();
 
     const events = ["mousedown", "keydown", "touchstart", "scroll", "wheel"];
     const handleActivity = () => resetActivity();
