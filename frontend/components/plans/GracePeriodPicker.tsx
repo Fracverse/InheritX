@@ -60,8 +60,6 @@ export function GracePeriodPicker({
   const [inputValue, setInputValue] = useState(String(value));
   const [inputError, setInputError] = useState<string | null>(null);
 
-  const isPreset = PRESET_DAYS.includes(value as (typeof PRESET_DAYS)[number]) && !customMode;
-
   const validateInput = useCallback(
     (val: string): string | null => {
       const num = Number(val);
@@ -237,7 +235,7 @@ export function GracePeriodPicker({
         <div className="flex items-start gap-2 text-[11px] pt-1 border-t border-[#33C5E0]/10">
           <Info size={11} className="text-slate-500 flex-shrink-0 mt-0.5" />
           <p className="text-slate-500 leading-relaxed">
-            If you don't ping before this date, your plan will be triggerable by beneficiaries.
+            If you don&apos;t ping before this date, your plan will be triggerable by beneficiaries.
             The grace period begins from your last ping.
           </p>
         </div>
