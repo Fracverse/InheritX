@@ -119,7 +119,8 @@ export function BridgeFeeBreakdown({
     { label: "Destination fee", value: quote.destinationFeeUsd },
   ];
 
-  const maxSlippageAmount = (quote.estimatedReceiveAmount * slippagePct) / 100;
+  const receiveAmount = Number(quote.estimatedReceiveAmount) || 0;
+  const maxSlippageAmount = (receiveAmount * slippagePct) / 100;
 
   return (
     <div className="rounded-xl border border-[#2A3338] bg-[#0A0F11] p-4 space-y-4" data-testid="bridge-fee-breakdown">
