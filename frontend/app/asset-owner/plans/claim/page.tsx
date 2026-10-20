@@ -73,7 +73,7 @@ function PlanClaimCard({ initialPlan, onSuccess }: PlanClaimCardProps) {
     try {
       setClaimStatus("submitting");
       
-      const mockStore = require("@/lib/mockStore").mockStore;
+      import("@/lib/mockStore").then((mod) => { const mockStore = mod.mockStore; })
       const updatedPlan = mockStore.updatePlan(currentPlan.id, { status: "COMPLETED" });
       if (!updatedPlan) throw new Error("Plan not found");
 
@@ -325,7 +325,7 @@ export default function ClaimPlanPage() {
           Claim Inherited Assets
         </h1>
         <p className="text-sm sm:text-base text-gray-500 max-w-2xl">
-          Search for inheritance plans using the owner's Stellar address to check their status, view inactivity timer progress, and claim payouts.
+          Search for inheritance plans using the owner&apos;s Stellar address to check their status, view inactivity timer progress, and claim payouts.
         </p>
       </div>
 

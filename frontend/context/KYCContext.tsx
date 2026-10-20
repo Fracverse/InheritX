@@ -146,13 +146,15 @@ export const KYCProvider = ({ children }: { children: React.ReactNode }) => {
     setError(null);
     try {
       if (useMockData) {
-        const mockStore = require("@/lib/mockStore").mockStore;
-        mockStore.setKYCStatus("pending");
-        setKycStatus("pending");
-        setTimeout(() => {
-          mockStore.setKYCStatus("approved");
-          setKycStatus("approved");
-        }, 8000);
+        import("@/lib/mockStore").then((mod) => {
+          const mockStore = mod.mockStore;
+          mockStore.setKYCStatus("pending");
+          setKycStatus("pending");
+          setTimeout(() => {
+            mockStore.setKYCStatus("approved");
+            setKycStatus("approved");
+          }, 8000);
+        });
       } else {
         await kycAPI.submitKYC({
           wallet_address: address ?? "",

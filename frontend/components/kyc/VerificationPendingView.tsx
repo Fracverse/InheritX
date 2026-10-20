@@ -31,7 +31,7 @@ export function VerificationPendingView({ response }: VerificationPendingViewPro
       <h2 className="text-2xl font-bold text-[#33C5E0]">Under Review</h2>
 
       <p className="text-sm text-[#92A5A8] max-w-sm mx-auto">
-        Your KYC verification is being reviewed. This typically takes 24-48 hours. You'll
+        Your KYC verification is being reviewed. This typically takes 24-48 hours. You&apos;ll
         receive an email notification once the review is complete.
       </p>
 

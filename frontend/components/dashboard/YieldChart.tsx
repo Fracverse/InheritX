@@ -42,7 +42,7 @@ function YieldTooltip({
           <span className="text-xs text-gray-300">Principal:</span>
           <span className="text-sm font-semibold text-slate-100">
             {currency}
-            {data.principal.toLocaleString('en-US', {
+            {data.principal.toLocaleString("en-US", {
               minimumFractionDigits: 2,
               maximumFractionDigits: 2,
             })}
@@ -52,7 +52,7 @@ function YieldTooltip({
           <span className="text-xs text-gray-300">Accrued Yield:</span>
           <span className="text-sm font-semibold text-emerald-300">
             {currency}
-            {data.accruedYield.toLocaleString('en-US', {
+            {data.accruedYield.toLocaleString("en-US", {
               minimumFractionDigits: 2,
               maximumFractionDigits: 2,
             })}
@@ -62,7 +62,7 @@ function YieldTooltip({
           <span className="text-xs text-gray-300">Total:</span>
           <span className="text-sm font-bold text-primary">
             {currency}
-            {data.total.toLocaleString('en-US', {
+            {data.total.toLocaleString("en-US", {
               minimumFractionDigits: 2,
               maximumFractionDigits: 2,
             })}

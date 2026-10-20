@@ -54,12 +54,20 @@ export default function PingPage() {
   const [pingHistory, setPingHistory] = useState<{ pinged_at: string | number; accrued_yield_snapshot?: number }[]>([]);
 
   useEffect(() => {
-    const mockStore = require("@/lib/mockStore").mockStore;
-    const mockPlans = mockStore.getPlans().filter((p: any) => p.status?.toUpperCase() === "ACTIVE");
-    setPlans(mockPlans);
-    if (mockPlans.length > 0) setSelectedPlan(mockPlans[0]);
-    setLoading(false);
+    import("@/lib/mockStore").then((mod) => {
+      const mockStore = mod.mockStore;
+      const mockPlans = mockStore.getPlans().filter((p: any) => p.status?.toUpperCase() === "ACTIVE");
+      setPlans(mockPlans);
+      if (mockPlans.length > 0) setSelectedPlan(mockPlans[0]);
+    });
+    fetchPlans();
   }, [isConnected, address]);
+  const fetchPlans = async () => {
+    const { dataSource } = await import("@/app/lib/api/dataSource");
+    const plans = await dataSource.getPlans(address ?? undefined);
+    setPlans(plans);
+    setLoading(false);
+  };
 
   const handlePing = async () => {
     if (!selectedPlan) return;
@@ -67,7 +75,7 @@ export default function PingPage() {
     setPingError("");
     try {
       setPingStatus("submitting");
-      const mockStore = require("@/lib/mockStore").mockStore;
+      import("@/lib/mockStore").then((mod) => { const mockStore = mod.mockStore; })
       mockStore.pingPlan(selectedPlan.id);
       
       setPingStatus("success");
@@ -92,7 +100,7 @@ export default function PingPage() {
       <div>
         <h1 className="text-2xl font-semibold text-white">Proof of Life</h1>
         <p className="text-sm text-slate-500 mt-1">
-          Send a cryptographic ping to prove you're still active and reset the inactivity timer.
+          Send a cryptographic ping to prove you&apos;re still active and reset the inactivity timer.
         </p>
       </div>
 

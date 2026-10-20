@@ -33,7 +33,7 @@ export default function EditPlanPage() {
   const handleSaved = (updated: Plan) => {
     // EditInheritancePlanPanel already persists the change via plansAPI.updatePlan
     // and hands back the backend-confirmed plan — just sync local state here.
-    if (useMockData) require("@/lib/mockStore").mockStore.updatePlan(planId, updated);
+    if (useMockData) { import("@/lib/mockStore").then((mod) => { mod.mockStore.updatePlan(planId, updated); }); }
     setPlan(updated);
     router.back();
   };

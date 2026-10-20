@@ -16,7 +16,7 @@ export function DashboardLayout({ children }: { children: React.ReactNode }) {
 
 export function AdminDashboardLayout({ children }: { children: React.ReactNode }) {
   // Dynamically imported to avoid circular deps
-  const { AdminSidebarNav } = require("./AdminSidebarNav");
+  import AdminSidebarNav from "./AdminSidebarNav";
   return (
     <div className="flex min-h-screen bg-[#161E22]">
       <AdminSidebarNav />

@@ -175,6 +175,7 @@ export default function CreateInheritancePlanPage() {
     setSubmissionState("submitting");
 
     try {
+      /* eslint-disable @typescript-eslint/no-require-imports */
       const newPlan = useMockData
         ? require("@/lib/mockStore").mockStore.createPlan({
             owner_address: hydratedDraft.owner,
