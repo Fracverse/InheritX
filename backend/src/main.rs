@@ -23,7 +23,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     dotenvy::dotenv().ok();
 
     // Load configuration
-    let config = Config::load()?;
+    let config = Config::load().await?;
     let plan_cache = inheritx_backend::PlanCache::from_redis_url(
         config.redis_url.as_deref(),
         config.plan_cache_ttl_secs,
@@ -108,6 +108,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     // Shutdown channel — all background tasks watch this for cancellation
     let (shutdown_tx, shutdown_rx) = tokio::sync::watch::channel(false);
+    let mut worker_handles = Vec::new();
 
     // Start inactivity watchdog
     let inactivity_watchdog = Arc::new(
@@ -118,12 +119,12 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         )
         .with_stellar(stellar_submit),
     );
-    inactivity_watchdog.start(shutdown_rx.clone());
+    worker_handles.push(inactivity_watchdog.start(shutdown_rx.clone()));
 
     let webhook_dispatcher = Arc::new(inheritx_backend::WebhookDispatcherService::new(
         db_pool.clone(),
     ));
-    webhook_dispatcher.start(shutdown_rx.clone());
+    worker_handles.push(webhook_dispatcher.start(shutdown_rx.clone()));
 
     // Start daily yield snapshot service (Issue #1130)
     let snapshot_interval = std::time::Duration::from_secs(
@@ -132,25 +133,25 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             .and_then(|s| s.parse::<u64>().ok())
             .unwrap_or(86_400),
     );
-    inheritx_backend::yield_calculator::DailyYieldSnapshotService::spawn(
+    worker_handles.push(inheritx_backend::yield_calculator::DailyYieldSnapshotService::spawn(
         db_pool.clone(),
         snapshot_interval,
         shutdown_rx.clone(),
-    );
+    ));
 
     // Start automated loan liquidation watchdog task (Issue #1119)
-    inheritx_backend::loan_lifecycle::LoanLiquidationWatchdogService::spawn(
+    worker_handles.push(inheritx_backend::loan_lifecycle::LoanLiquidationWatchdogService::spawn(
         state.clone(),
         inheritx_backend::loan_lifecycle::LoanLiquidationWatchdogConfig::from_env(),
         shutdown_rx.clone(),
-    );
+    ));
 
     // Periodically refresh DB pool metrics
     #[cfg(feature = "metrics")]
     {
         let pool = db_pool.clone();
         let mut rx = shutdown_rx.clone();
-        tokio::spawn(async move {
+        worker_handles.push(tokio::spawn(async move {
             let mut interval = tokio::time::interval(std::time::Duration::from_secs(15));
             loop {
                 tokio::select! {
@@ -163,7 +164,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                     }
                 }
             }
-        });
+        }));
     }
 
     // Create Axum application
@@ -175,14 +176,59 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     let listener = tokio::net::TcpListener::bind(addr).await?;
 
-    axum::serve(listener, app)
-        .with_graceful_shutdown(shutdown_signal())
-        .await?;
+    let (shutdown_notify_tx, mut shutdown_notify_rx) = tokio::sync::broadcast::channel::<()>(1);
+    let notify_tx = shutdown_notify_tx.clone();
 
-    // Signal all background tasks to stop
-    drop(shutdown_tx);
+    // Spawn signal listener for Ctrl+C and SIGTERM
+    tokio::spawn(async move {
+        shutdown_signal().await;
+        let _ = notify_tx.send(());
+    });
 
-    // Close database connections
+    let server_handle = tokio::spawn({
+        let mut rx = shutdown_notify_tx.subscribe();
+        async move {
+            if let Err(e) = axum::serve(listener, app)
+                .with_graceful_shutdown(async move {
+                    let _ = rx.recv().await;
+                })
+                .await
+            {
+                error!("Axum server stopped with error: {e}");
+            }
+        }
+    });
+
+    // Wait until shutdown signal triggers (Ctrl+C or SIGTERM)
+    let _ = shutdown_notify_rx.recv().await;
+
+    // Signal all background workers to initiate clean shutdown
+    info!("Broadcasting stop signal to all background tasks...");
+    let _ = shutdown_tx.send(true);
+
+    // Allow 15-second grace window for background tasks and in-flight operations to complete cleanly (Issue #1126)
+    const GRACE_PERIOD_SECS: u64 = 15;
+    info!("Waiting up to {GRACE_PERIOD_SECS} seconds grace window for in-flight tasks and server to exit cleanly...");
+
+    let grace_wait = async {
+        // Wait for Axum in-flight HTTP requests to drain
+        let _ = server_handle.await;
+        // Wait for all background workers to finish in-flight loops
+        for handle in worker_handles {
+            let _ = handle.await;
+        }
+    };
+
+    match tokio::time::timeout(std::time::Duration::from_secs(GRACE_PERIOD_SECS), grace_wait).await {
+        Ok(_) => {
+            info!("All server connections and background workers completed clean exit within grace window");
+        }
+        Err(_) => {
+            warn!("Grace window ({GRACE_PERIOD_SECS}s) expired before background tasks completed; proceeding with exit");
+        }
+    }
+
+    // Close database connections safely
     db_pool.close().await;
     info!("Database connections closed. Goodbye.");
 
@@ -190,7 +236,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 }
 
 /// Waits for SIGTERM (Unix) or CTRL+C (Windows/Unix) to initiate graceful shutdown.
-async fn shutdown_signal() {
+pub async fn shutdown_signal() {
     let ctrl_c = async {
         signal::ctrl_c()
             .await

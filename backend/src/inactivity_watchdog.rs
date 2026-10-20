@@ -167,7 +167,7 @@ impl InactivityWatchdogService {
         self
     }
 
-    pub fn start(self: Arc<Self>, mut shutdown_rx: watch::Receiver<bool>) {
+    pub fn start(self: Arc<Self>, mut shutdown_rx: watch::Receiver<bool>) -> tokio::task::JoinHandle<()> {
         tokio::spawn(async move {
             let mut interval = tokio::time::interval(self.config.interval);
             interval.set_missed_tick_behavior(MissedTickBehavior::Delay);
@@ -189,7 +189,7 @@ impl InactivityWatchdogService {
                     Err(e) => error!("Inactivity watchdog sweep failed: {e}"),
                 }
             }
-        });
+        })
     }
 
     /// Runs a single sweep and returns how many plans ended up `TRIGGERED`.
