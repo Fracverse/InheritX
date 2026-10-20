@@ -2,7 +2,7 @@
 
 import { useWallet } from "../context/WalletContext";
 import { motion, AnimatePresence } from "framer-motion";
-import { Loader2, Check } from "lucide-react";
+import { Check } from "lucide-react";
 import React from "react";
 import UserIcon from "./userIcon";
 import { DevKeypairConnect } from "./DevKeypairConnect";
