@@ -1130,3 +1130,63 @@ fn test_calculate_ltv_bps_logic() {
     let ltv = inheritx_backend::loan_lifecycle::calculate_ltv_bps(6_000, 10_000.0, 0.7);
     assert!(ltv > 8_000);
 }
+
+#[tokio::test]
+async fn test_faucet_fund_missing_public_key() {
+    let app = setup_app();
+
+    let response = app
+        .oneshot(
+            Request::builder()
+                .method(http::Method::POST)
+                .uri("/api/faucet/fund")
+                .header(http::header::CONTENT_TYPE, "application/json")
+                .header(http::header::USER_AGENT, "InheritX-Client/1.0")
+                .body(Body::from(json!({}).to_string()))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+}
+
+#[tokio::test]
+async fn test_faucet_fund_invalid_public_key() {
+    let app = setup_app();
+
+    let response = app
+        .oneshot(
+            Request::builder()
+                .method(http::Method::POST)
+                .uri("/api/faucet/fund")
+                .header(http::header::CONTENT_TYPE, "application/json")
+                .header(http::header::USER_AGENT, "InheritX-Client/1.0")
+                .body(Body::from(json!({ "public_key": "invalid_stellar_address" }).to_string()))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+}
+
+#[tokio::test]
+async fn test_faucet_fund_get_missing_param() {
+    let app = setup_app();
+
+    let response = app
+        .oneshot(
+            Request::builder()
+                .method(http::Method::GET)
+                .uri("/api/faucet/fund")
+                .header(http::header::USER_AGENT, "InheritX-Client/1.0")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+}
+

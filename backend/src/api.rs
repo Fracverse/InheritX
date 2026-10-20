@@ -505,6 +505,7 @@ pub fn create_router(state: Arc<AppState>) -> Router {
             "/api/plans/{id}/yield-snapshots",
             get(get_plan_yield_snapshots),
         )
+        .route("/api/faucet/fund", post(faucet_fund_post).get(faucet_fund_get))
         .route("/ws/kyc", get(ws_handler));
     let router = Router::new()
         .merge(user_routes)
@@ -1929,6 +1930,7 @@ async fn trigger_payout(
                 fiat_currency,
                 bank_name,
                 account_number,
+                user_tier: Some(crate::stellar_anchor::KycTier::Tier2),
             };
             state.anchor.create_payout(req).await;
 
@@ -2743,6 +2745,134 @@ async fn health_check(State(state): State<Arc<AppState>>) -> impl IntoResponse {
     };
 
     (status_code, Json(response)).into_response()
+}
+
+// --- Automated Testnet Faucet Proxy Endpoint (Issue #1131) ---
+
+#[derive(Debug, Deserialize, Serialize)]
+pub struct FaucetFundRequest {
+    #[serde(alias = "address", alias = "account_id")]
+    pub public_key: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct FaucetFundQuery {
+    #[serde(alias = "address", alias = "account_id")]
+    pub public_key: Option<String>,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+pub struct FaucetFundResponse {
+    pub success: bool,
+    pub tx_hash: String,
+    pub message: String,
+    pub public_key: String,
+}
+
+pub async fn faucet_fund_post(
+    Json(payload): Json<FaucetFundRequest>,
+) -> Response {
+    fund_account_internal(payload.public_key).await
+}
+
+pub async fn faucet_fund_get(
+    axum::extract::Query(query): axum::extract::Query<FaucetFundQuery>,
+) -> Response {
+    fund_account_internal(query.public_key).await
+}
+
+async fn fund_account_internal(public_key_opt: Option<String>) -> Response {
+    let key = match public_key_opt {
+        Some(k) if !k.trim().is_empty() => k.trim().to_string(),
+        _ => {
+            return (
+                StatusCode::BAD_REQUEST,
+                Json(serde_json::json!({ "error": "Missing required field: public_key" })),
+            )
+                .into_response();
+        }
+    };
+
+    if stellar_strkey::ed25519::PublicKey::from_string(&key).is_err() {
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(serde_json::json!({
+                "error": "Invalid Stellar public key format. Expected 56-character Ed25519 public key starting with 'G'"
+            })),
+        )
+            .into_response();
+    }
+
+    let friendbot_url = std::env::var("STELLAR_FRIENDBOT_URL")
+        .unwrap_or_else(|_| "https://friendbot.stellar.org".to_string());
+    let target_url = format!("{}?addr={}", friendbot_url.trim_end_matches('/'), key);
+
+    let client = reqwest::Client::builder()
+        .timeout(std::time::Duration::from_secs(15))
+        .build()
+        .unwrap_or_else(|_| reqwest::Client::new());
+
+    match client.get(&target_url).send().await {
+        Ok(resp) => {
+            let status = resp.status();
+            if status.is_success() {
+                match resp.json::<serde_json::Value>().await {
+                    Ok(body_json) => {
+                        let tx_hash = body_json
+                            .get("hash")
+                            .and_then(|v| v.as_str())
+                            .or_else(|| body_json.get("id").and_then(|v| v.as_str()))
+                            .unwrap_or("confirmed")
+                            .to_string();
+
+                        (
+                            StatusCode::OK,
+                            Json(FaucetFundResponse {
+                                success: true,
+                                tx_hash,
+                                message: "Account funded successfully via Stellar Testnet Friendbot".to_string(),
+                                public_key: key,
+                            }),
+                        )
+                            .into_response()
+                    }
+                    Err(e) => {
+                        error!(error = %e, "Failed to parse Friendbot response JSON");
+                        (
+                            StatusCode::OK,
+                            Json(FaucetFundResponse {
+                                success: true,
+                                tx_hash: "confirmed".to_string(),
+                                message: "Account funded successfully via Stellar Testnet Friendbot".to_string(),
+                                public_key: key,
+                            }),
+                        )
+                            .into_response()
+                    }
+                }
+            } else {
+                let err_body = resp.text().await.unwrap_or_default();
+                warn!(status = %status, body = %err_body, "Friendbot funding request returned an error");
+                (
+                    StatusCode::BAD_GATEWAY,
+                    Json(serde_json::json!({
+                        "error": format!("Stellar Friendbot returned error (status {}): {}", status, err_body)
+                    })),
+                )
+                    .into_response()
+            }
+        }
+        Err(e) => {
+            error!(error = %e, "Failed to connect to Stellar Friendbot");
+            (
+                StatusCode::BAD_GATEWAY,
+                Json(serde_json::json!({
+                    "error": format!("Failed to reach Stellar Friendbot: {}", e)
+                })),
+            )
+                .into_response()
+        }
+    }
 }
 
 async fn calculate_yield(
