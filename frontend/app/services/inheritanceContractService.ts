@@ -89,12 +89,18 @@ export async function submitSignedTransaction(
     );
 
     const hash = typeof response.hash === "string" ? response.hash : "";
-    const successful = response.successful !== false;
+    const successful = response.successful === true;
 
     if (!hash) {
       throw new TransactionSubmissionError(
         "The network accepted the request but returned no transaction hash.",
         response
+      );
+    }
+
+    if (successful && typeof window !== "undefined") {
+      window.dispatchEvent(
+        new CustomEvent("stellar:transaction-confirmed", { detail: { hash } })
       );
     }
 
