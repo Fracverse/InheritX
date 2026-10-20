@@ -3,7 +3,7 @@
 import React, { useState, useCallback, useRef, useEffect } from "react";
 import Link from "next/link";
 import { usePathname } from "next/navigation";
-import { motion, AnimatePresence, useMotionValue, useTransform } from "framer-motion";
+import { motion, AnimatePresence, useMotionValue } from "framer-motion";
 import { X, Menu, ChevronRight } from "lucide-react";
 
 interface NavItem {
@@ -30,7 +30,6 @@ export function MobileNavDrawer({ items, isOpen, onClose }: MobileNavDrawerProps
   const [activeIndex, setActiveIndex] = useState(-1);
 
   const x = useMotionValue(0);
-  const opacity = useTransform(x, [-300, 0], [0, 1]);
 
   const handleTouchStart = useCallback((e: React.TouchEvent) => {
     startXRef.current = e.touches[0].clientX;
