@@ -104,7 +104,9 @@
     "activePlans": "Planes activos",
     "guardians": "Guardianes",
     "createdPlans": "Planes creados",
-    "recentActivity": "Actividad reciente"
+    "recentActivity": "Actividad reciente",
+    "searchPlans": "Buscar planes",
+    "filterStatus": "Filtrar por estado"
   },
   "errors": {
     "networkError": "Error de red. Verifica tu conexión.",
@@ -112,5 +114,27 @@
     "notFound": "Recurso no encontrado.",
     "serverError": "Error del servidor. Inténtalo de nuevo.",
     "unauthorized": "No estás autorizado para realizar esta acción."
+  },
+  "admin": {
+    "title": "Panel de administración",
+    "users": "Usuarios",
+    "plans": "Planes",
+    "payouts": "Pagos",
+    "settings": "Configuración",
+    "totalValueLocked": "Valor total bloqueado",
+    "totalUsers": "Usuarios totales",
+    "activePlans": "Planes activos",
+    "pendingKyc": "KYC pendiente",
+    "recentTransactions": "Transacciones recientes",
+    "manageUsers": "Gestionar usuarios",
+    "viewAll": "Ver todo",
+    "approve": "Aprobar",
+    "reject": "Rechazar",
+    "suspend": "Suspender",
+    "activate": "Activar",
+    "searchUsers": "Buscar usuarios",
+    "filterByStatus": "Filtrar por estado",
+    "exportData": "Exportar datos",
+    "refresh": "Actualizar"
   }
 }

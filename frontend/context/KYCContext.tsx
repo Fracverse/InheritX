@@ -4,6 +4,7 @@ import React, { createContext, useContext, useState, useEffect, useCallback } fr
 import { kycAPI, type KYCStatus, type KYCResponse } from "@/app/lib/api/kyc";
 import { useWallet } from "./WalletContext";
 import { getKYCStatus, useMockData } from "@/lib/api/dataSource";
+import { mockStore } from "@/lib/mockStore";
 
 export type { KYCStatus };
 
@@ -146,7 +147,6 @@ export const KYCProvider = ({ children }: { children: React.ReactNode }) => {
     setError(null);
     try {
       if (useMockData) {
-        const mockStore = require("@/lib/mockStore").mockStore;
         mockStore.setKYCStatus("pending");
         setKycStatus("pending");
         setTimeout(() => {

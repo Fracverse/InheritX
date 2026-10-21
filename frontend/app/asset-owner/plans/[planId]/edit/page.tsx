@@ -4,6 +4,7 @@ import { useState, useEffect } from "react";
 import { useRouter, useParams } from "next/navigation";
 import type { Plan } from "@/app/lib/api/plans";
 import { getPlan, useMockData } from "@/lib/api/dataSource";
+import { mockStore } from "@/lib/mockStore";
 import { EditInheritancePlanPanel } from "@/components/plans/EditInheritancePlanPanel";
 import { Skeleton } from "@/components/ui/Skeleton";
 import { AlertCircle } from "lucide-react";
@@ -33,7 +34,7 @@ export default function EditPlanPage() {
   const handleSaved = (updated: Plan) => {
     // EditInheritancePlanPanel already persists the change via plansAPI.updatePlan
     // and hands back the backend-confirmed plan — just sync local state here.
-    if (useMockData) require("@/lib/mockStore").mockStore.updatePlan(planId, updated);
+    if (useMockData) mockStore.updatePlan(planId, updated);
     setPlan(updated);
     router.back();
   };

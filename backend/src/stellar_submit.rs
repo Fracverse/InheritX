@@ -243,6 +243,30 @@ impl StellarSubmitClient {
         .await
     }
 
+    /// Calls `guardian_emergency_trigger(plan_id, signers)` after the backend
+    /// has aggregated the configured quorum of guardian signatures. The
+    /// contract validates that every supplied address is a registered guardian
+    /// and that the quorum threshold is met.
+    pub async fn guardian_emergency_trigger(
+        &self,
+        plan_id: u64,
+        signers: &[String],
+    ) -> Result<InvocationOutcome, StellarSubmitError> {
+        let signer_scvals = signers
+            .iter()
+            .map(|signer| account_scval_from_strkey(signer))
+            .collect::<Result<Vec<_>, _>>()?;
+        let signer_scvals: VecM<ScVal> = signer_scvals
+            .try_into()
+            .map_err(|e| StellarSubmitError::Xdr(format!("guardian signers: {e:?}")))?;
+
+        self.invoke_contract(
+            "guardian_emergency_trigger",
+            vec![ScVal::U64(plan_id), ScVal::Vec(Some(signer_scvals.into()))],
+        )
+        .await
+    }
+
     /// Calls `freeze_loans(admin, plan_id)` to halt new borrowing against the
     /// plan's vault collateral after inheritance has been triggered.
     pub async fn freeze_loans(
@@ -905,6 +929,18 @@ fn signer_account_scval(ctx: &SorobanContext) -> ScVal {
     ScVal::Address(ScAddress::Account(stellar_xdr::AccountId(
         stellar_xdr::PublicKey::PublicKeyTypeEd25519(Uint256(ctx.public_key)),
     )))
+}
+
+/// Converts a `G…` Stellar account strkey into the `Address` ScVal expected by
+/// contract functions that take guardian signers.
+fn account_scval_from_strkey(value: &str) -> Result<ScVal, StellarSubmitError> {
+    let public_key = stellar_strkey::ed25519::PublicKey::from_string(value).map_err(|e| {
+        StellarSubmitError::Config(format!("invalid guardian address {value}: {e}"))
+    })?;
+
+    Ok(ScVal::Address(ScAddress::Account(stellar_xdr::AccountId(
+        stellar_xdr::PublicKey::PublicKeyTypeEd25519(Uint256(public_key.0)),
+    ))))
 }
 
 /// Outstanding loaned amount still encumbering the vault, derived from a

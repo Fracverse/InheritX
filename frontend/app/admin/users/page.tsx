@@ -1,10 +1,12 @@
 "use client";
 import { useState, useMemo } from "react";
+import { Download, FileText } from "lucide-react";
 import { mockUsers } from "@/lib/mockAdminUsers";
 import { AdminUser, KYCStatus, UserStatus } from "@/lib/adminTypes";
 import { SearchFilterBar } from "@/components/admin/SearchFilterBar";
 import { UserManagementTable } from "@/components/admin/UserManagementTable";
 import { Pagination } from "@/components/admin/Pagination";
+import { exportUsersAsCsv, exportUsersAsPdf } from "@/lib/export";
 
 const PAGE_SIZE = 10;
 
@@ -65,9 +67,29 @@ export default function AdminUsersPage() {
 
   return (
     <div className="animate-fade-in space-y-6 max-w-5xl">
-      <div>
-        <h1 className="text-2xl font-semibold text-white">Users</h1>
-        <p className="text-sm text-slate-500 mt-1">Platform user accounts and KYC oversight</p>
+      <div className="flex items-center justify-between">
+        <div>
+          <h1 className="text-2xl font-semibold text-white">Users</h1>
+          <p className="text-sm text-slate-500 mt-1">Platform user accounts and KYC oversight. Showing {filtered.length} of {users.length} users.</p>
+        </div>
+        <div className="flex items-center gap-2">
+          <button
+            onClick={() => exportUsersAsCsv(filtered, `users-${new Date().toISOString().split('T')[0]}.csv`)}
+            className="px-3 py-2 rounded-lg bg-white/5 border border-white/10 text-slate-300 hover:text-white hover:bg-white/10 transition-colors flex items-center gap-2 text-sm"
+            title="Export as CSV"
+          >
+            <Download size={16} />
+            CSV
+          </button>
+          <button
+            onClick={() => exportUsersAsPdf(filtered)}
+            className="px-3 py-2 rounded-lg bg-white/5 border border-white/10 text-slate-300 hover:text-white hover:bg-white/10 transition-colors flex items-center gap-2 text-sm"
+            title="Export as PDF"
+          >
+            <FileText size={16} />
+            PDF
+          </button>
+        </div>
       </div>
 
       <SearchFilterBar

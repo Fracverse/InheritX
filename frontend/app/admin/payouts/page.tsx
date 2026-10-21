@@ -2,7 +2,8 @@
 
 import { useState, useMemo } from "react";
 import Link from "next/link";
-import { Search, Landmark, ArrowUpRight, HelpCircle } from "lucide-react";
+import { Search, Landmark, ArrowUpRight, HelpCircle, Download, FileText } from "lucide-react";
+import { exportPayoutsAsCsv, exportPayoutsAsPdf } from "@/lib/export";
 
 // Mock payouts matching anchor flow
 const mockPayouts = [
@@ -36,23 +37,76 @@ const mockPayouts = [
     status: "FAILED",
     date: "2026-07-02T14:00:00Z",
   },
+  {
+    id: "pay_04jm8v56qx",
+    planId: "plan_05nm8w90pb",
+    beneficiary: "GCXY1Z...2J5K",
+    amount: 25000,
+    currency: "ZAR",
+    anchor: "Stellar ZAR Anchor",
+    status: "SETTLED",
+    date: "2026-07-10T08:15:00Z",
+  },
+  {
+    id: "pay_05km9v67ry",
+    planId: "plan_06nm8w90pc",
+    beneficiary: "GDRS3M...4L6N",
+    amount: 45000,
+    currency: "GHS",
+    anchor: "Stellar GHS Anchor",
+    status: "PROCESSING",
+    date: "2026-07-14T16:45:00Z",
+  },
+  {
+    id: "pay_06lm1v78sz",
+    planId: "plan_07nm8w90pd",
+    beneficiary: "GBUK5P...7O9R",
+    amount: 15000,
+    currency: "USD",
+    anchor: "Stellar USD Anchor",
+    status: "SETTLED",
+    date: "2026-07-09T11:30:00Z",
+  },
 ];
+
+const ITEMS_PER_PAGE = 10;
 
 export default function AdminPayoutsPage() {
   const [payouts, setPayouts] = useState(mockPayouts);
   const [search, setSearch] = useState("");
+  const [beneficiaryFilter, setBeneficiaryFilter] = useState("");
+  const [payoutTypeFilter, setPayoutTypeFilter] = useState("ALL");
   const [statusFilter, setStatusFilter] = useState("ALL");
+  const [currentPage, setCurrentPage] = useState(1);
 
   const filtered = useMemo(() => {
     return payouts.filter((p) => {
       const matchesSearch =
         p.id.toLowerCase().includes(search.toLowerCase()) ||
-        p.beneficiary.toLowerCase().includes(search.toLowerCase()) ||
         p.planId.toLowerCase().includes(search.toLowerCase());
+      const matchesBeneficiary =
+        !beneficiaryFilter ||
+        p.beneficiary.toLowerCase().includes(beneficiaryFilter.toLowerCase());
+      const matchesType =
+        payoutTypeFilter === "ALL" ||
+        (payoutTypeFilter === "DIRECT" && p.anchor.includes("Direct")) ||
+        (payoutTypeFilter === "ANCHOR" && !p.anchor.includes("Direct"));
       const matchesStatus = statusFilter === "ALL" || p.status === statusFilter;
-      return matchesSearch && matchesStatus;
+      return matchesSearch && matchesBeneficiary && matchesType && matchesStatus;
     });
-  }, [payouts, search, statusFilter]);
+  }, [payouts, search, beneficiaryFilter, payoutTypeFilter, statusFilter]);
+
+  const totalPages = Math.ceil(filtered.length / ITEMS_PER_PAGE);
+  const paginatedPayouts = filtered.slice(
+    (currentPage - 1) * ITEMS_PER_PAGE,
+    currentPage * ITEMS_PER_PAGE
+  );
+
+  // Reset to page 1 when filters change
+  const handleFilterChange = (callback: () => void) => {
+    callback();
+    setCurrentPage(1);
+  };
 
   const handleRetryPayout = (payoutId: string) => {
     alert(`Retrying settlement for payout transaction: ${payoutId}`);
@@ -60,37 +114,89 @@ export default function AdminPayoutsPage() {
   };
 
   return (
-    <div className="animate-fade-in space-y-6 max-w-5xl">
-      <div>
-        <h1 className="text-2xl font-semibold text-white">Payout Settlements</h1>
-        <p className="text-sm text-slate-500 mt-1">
-          Monitor and retry fiat settlements initiated via Stellar Anchors.
-        </p>
+    <div className="animate-fade-in space-y-6 max-w-6xl">
+      <div className="flex items-center justify-between">
+        <div>
+          <h1 className="text-2xl font-semibold text-white">Payout Settlements</h1>
+          <p className="text-sm text-slate-500 mt-1">
+            Monitor and retry fiat settlements initiated via Stellar Anchors. Showing {filtered.length} of {payouts.length} payouts.
+          </p>
+        </div>
+        <div className="flex items-center gap-2">
+          <button
+            onClick={() => exportPayoutsAsCsv(filtered, `payouts-${new Date().toISOString().split('T')[0]}.csv`)}
+            className="px-3 py-2 rounded-lg bg-white/5 border border-white/10 text-slate-300 hover:text-white hover:bg-white/10 transition-colors flex items-center gap-2 text-sm"
+            title="Export as CSV"
+          >
+            <Download size={16} />
+            CSV
+          </button>
+          <button
+            onClick={() => exportPayoutsAsPdf(filtered)}
+            className="px-3 py-2 rounded-lg bg-white/5 border border-white/10 text-slate-300 hover:text-white hover:bg-white/10 transition-colors flex items-center gap-2 text-sm"
+            title="Export as PDF"
+          >
+            <FileText size={16} />
+            PDF
+          </button>
+        </div>
       </div>
 
       {/* Filters */}
-      <div className="flex flex-col sm:flex-row gap-3">
-        <div className="relative flex-1">
-          <Search size={14} className="absolute left-3 top-1/2 -translate-y-1/2 text-slate-500" />
-          <input
-            value={search}
-            onChange={(e) => setSearch(e.target.value)}
-            placeholder="Search by payout ID, plan ID, or beneficiary address…"
-            className="w-full pl-9 pr-4 py-2.5 rounded-xl bg-white/5 border border-white/10 text-sm text-slate-200 placeholder-slate-600 focus:outline-none focus:border-violet-500/50 transition-colors"
-          />
+      <div className="space-y-3">
+        <div className="flex flex-col sm:flex-row gap-3">
+          <div className="relative flex-1 min-w-64">
+            <Search size={14} className="absolute left-3 top-1/2 -translate-y-1/2 text-slate-500" />
+            <input
+              value={search}
+              onChange={(e) => handleFilterChange(() => setSearch(e.target.value))}
+              placeholder="Search by payout ID or plan ID…"
+              className="w-full pl-9 pr-4 py-2.5 rounded-xl bg-white/5 border border-white/10 text-sm text-slate-200 placeholder-slate-600 focus:outline-none focus:border-violet-500/50 transition-colors"
+            />
+          </div>
         </div>
-        <div className="flex items-center gap-1 p-1 rounded-xl bg-white/5 border border-white/10 flex-shrink-0">
-          {["ALL", "SETTLED", "PROCESSING", "FAILED"].map((f) => (
-            <button
-              key={f}
-              onClick={() => setStatusFilter(f)}
-              className={`px-3 py-1.5 rounded-lg text-xs font-medium transition-colors ${
-                statusFilter === f ? "bg-violet-500 text-white" : "text-slate-400 hover:text-white"
-              }`}
+
+        <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
+          {/* Beneficiary Filter */}
+          <div>
+            <label className="text-xs font-semibold text-slate-400 mb-1.5 block">Beneficiary Address</label>
+            <input
+              type="text"
+              value={beneficiaryFilter}
+              onChange={(e) => handleFilterChange(() => setBeneficiaryFilter(e.target.value))}
+              placeholder="Filter by beneficiary…"
+              className="w-full px-3 py-2 rounded-lg bg-white/5 border border-white/10 text-sm text-slate-200 placeholder-slate-600 focus:outline-none focus:border-violet-500/50 transition-colors"
+            />
+          </div>
+
+          {/* Payout Type Filter */}
+          <div>
+            <label className="text-xs font-semibold text-slate-400 mb-1.5 block">Payout Type</label>
+            <select
+              value={payoutTypeFilter}
+              onChange={(e) => handleFilterChange(() => setPayoutTypeFilter(e.target.value))}
+              className="w-full px-3 py-2 rounded-lg bg-white/5 border border-white/10 text-sm text-slate-200 focus:outline-none focus:border-violet-500/50 transition-colors cursor-pointer"
             >
-              {f}
-            </button>
-          ))}
+              <option value="ALL">All Types</option>
+              <option value="ANCHOR">Anchor Fiat</option>
+              <option value="DIRECT">Direct Transfer</option>
+            </select>
+          </div>
+
+          {/* Status Filter */}
+          <div>
+            <label className="text-xs font-semibold text-slate-400 mb-1.5 block">Status</label>
+            <select
+              value={statusFilter}
+              onChange={(e) => handleFilterChange(() => setStatusFilter(e.target.value))}
+              className="w-full px-3 py-2 rounded-lg bg-white/5 border border-white/10 text-sm text-slate-200 focus:outline-none focus:border-violet-500/50 transition-colors cursor-pointer"
+            >
+              <option value="ALL">All Statuses</option>
+              <option value="SETTLED">Settled</option>
+              <option value="PROCESSING">Processing</option>
+              <option value="FAILED">Failed</option>
+            </select>
+          </div>
         </div>
       </div>
 
@@ -111,7 +217,7 @@ export default function AdminPayoutsPage() {
               </tr>
             </thead>
             <tbody className="divide-y divide-white/5">
-              {filtered.map((pay) => (
+              {paginatedPayouts.map((pay) => (
                 <tr key={pay.id} className="hover:bg-white/[0.01] transition-colors text-slate-300">
                   <td className="p-4 font-mono font-medium text-violet-400">{pay.id}</td>
                   <td className="p-4 font-mono text-slate-400">
@@ -156,10 +262,10 @@ export default function AdminPayoutsPage() {
                   </td>
                 </tr>
               ))}
-              {filtered.length === 0 && (
+              {paginatedPayouts.length === 0 && (
                 <tr>
                   <td colSpan={8} className="p-8 text-center text-slate-500">
-                    No settlements found.
+                    {filtered.length === 0 ? "No settlements found." : ""}
                   </td>
                 </tr>
               )}
@@ -167,6 +273,54 @@ export default function AdminPayoutsPage() {
           </table>
         </div>
       </div>
+
+      {/* Pagination */}
+      {totalPages > 1 && (
+        <div className="flex items-center justify-between">
+          <div className="text-sm text-slate-400">
+            Page {currentPage} of {totalPages} ({filtered.length} total)
+          </div>
+          <div className="flex items-center gap-2">
+            <button
+              onClick={() => setCurrentPage(Math.max(1, currentPage - 1))}
+              disabled={currentPage === 1}
+              className="px-3 py-2 rounded-lg bg-white/5 border border-white/10 text-slate-300 hover:text-white hover:bg-white/10 transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
+            >
+              Previous
+            </button>
+            <div className="flex items-center gap-1">
+              {Array.from({ length: Math.min(5, totalPages) }, (_, i) => {
+                let pageNum = i + 1;
+                if (totalPages > 5 && currentPage > 3) {
+                  pageNum = currentPage - 2 + i;
+                }
+                if (pageNum > totalPages) return null;
+                
+                return (
+                  <button
+                    key={pageNum}
+                    onClick={() => setCurrentPage(pageNum)}
+                    className={`px-3 py-2 rounded-lg text-sm transition-colors ${
+                      currentPage === pageNum
+                        ? "bg-violet-500 text-white"
+                        : "bg-white/5 border border-white/10 text-slate-300 hover:text-white hover:bg-white/10"
+                    }`}
+                  >
+                    {pageNum}
+                  </button>
+                );
+              })}
+            </div>
+            <button
+              onClick={() => setCurrentPage(Math.min(totalPages, currentPage + 1))}
+              disabled={currentPage === totalPages}
+              className="px-3 py-2 rounded-lg bg-white/5 border border-white/10 text-slate-300 hover:text-white hover:bg-white/10 transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
+            >
+              Next
+            </button>
+          </div>
+        </div>
+      )}
     </div>
   );
 }
