@@ -233,10 +233,8 @@ impl ReadPoolBalancer {
         if self.replicas.is_empty() {
             return &self.primary;
         }
-        let idx = self
-            .next
-            .fetch_add(1, std::sync::atomic::Ordering::Relaxed)
-            % self.replicas.len();
+        let idx =
+            self.next.fetch_add(1, std::sync::atomic::Ordering::Relaxed) % self.replicas.len();
         &self.replicas[idx]
     }
 

@@ -37,7 +37,7 @@ impl Config {
             .and_then(|p| p.parse().ok())
             .unwrap_or_else(3001);
         let database_url = std::env::var("DATABASE_URL")
-            .unwrap_or_else(|_ | "postgres://postgres:postgres@localhost:5432/inheritx".to_string());
+            .unwrap_or_else(|_| "postgres://postgres:postgres@localhost:5432/inheritx".to_string());
         // Optional read-replica URL. Empty values are treated as unset so
         // operators can leave the var blank in .env without disabling the
         // primary fallback.
