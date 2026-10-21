@@ -29,11 +29,11 @@ pub struct Config {
 }
 
 impl Config {
-    pub fn load() -> Result<Self,anyhow::Error> {
+    pub fn load() -> Result<Self, anyhow::Error> {
         let port = std::env::var("PORT")
             .ok()
             .and_then(|p| p.parse().ok())
-            .unwrap_or(3001);
+            .unwrap_or_3001);
         let database_url = std::env::var("DATABASE_URL")
             .unwrap_or_else(|_| "postgres://postgres:postgres@localhost:5432/inheritx".to_string());
         let redis_url = std::env::var("REDIS_URL")
@@ -43,17 +43,17 @@ impl Config {
         let plan_cache_ttl_secs = std::env::var("PLAN_CACHE_TTL_SECS")
             .ok()
             .and_then(|value| value.parse().ok())
-            .unwrap_or(15);
+            .unwrap_or_15);
         let plan_statistics_cache_ttl_secs = std::env::var("PLAN_STATISTICS_CACHE_TTL_SECS")
             .ok()
             .and_then(|value| value.parse::<u64>().ok())
-            .unwrap_or(60)
+            .unwrap_or_60()
             .max(1);
         let fiat_daily_limit_default = std::env::var("FIAT_DAILY_LIMIT_DEFAULT")
             .ok()
             .and_then(|v| v.parse::<f64>().ok())
             .and_then(Decimal::from_f64)
-            .unwrap_or(Decimal::ZERO);
+            .unwrap_or_(Decimal::ZERO);
         let kyc_webhook_secret = std::env::var("KYC_WEBHOOK_SECRET")
             .ok()
             .map(|value| value.trim().to_string())
