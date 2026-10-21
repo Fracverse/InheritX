@@ -4,6 +4,7 @@ import { useState } from "react";
 import { useWallet } from "@/context/WalletContext";
 import { plansAPI, type Plan } from "@/app/lib/api/plans";
 import { getPlans, useMockData } from "@/lib/api/dataSource";
+import { mockStore } from "@/lib/mockStore";
 import inheritanceAPI, { type PlanResponse } from "@/app/lib/api/inheritance";
 import { useInactivityTimer } from "@/app/hooks/useInactivityTimer";
 import { formatAddress } from "@/util/address";
@@ -73,7 +74,6 @@ function PlanClaimCard({ initialPlan, onSuccess }: PlanClaimCardProps) {
     try {
       setClaimStatus("submitting");
       
-      import("@/lib/mockStore").then((mod) => { const mockStore = mod.mockStore; })
       const updatedPlan = mockStore.updatePlan(currentPlan.id, { status: "COMPLETED" });
       if (!updatedPlan) throw new Error("Plan not found");
 
@@ -445,7 +445,7 @@ export default function ClaimPlanPage() {
                 </span>
                 <h4 className="font-bold text-foreground">Locate Inheritance Plan</h4>
                 <p className="mt-1 text-xs leading-relaxed">
-                  Enter the Asset Owner's Stellar address in the search bar. This queries active smart contracts set up by the owner.
+                  Enter the Asset Owner&apos;s Stellar address in the search bar. This queries active smart contracts set up by the owner.
                 </p>
               </li>
 

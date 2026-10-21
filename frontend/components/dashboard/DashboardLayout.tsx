@@ -1,5 +1,6 @@
 "use client";
 import { OwnerSidebarNav } from "./OwnerSidebarNav";
+import { AdminSidebarNav } from "./AdminSidebarNav";
 import { DashboardHeader } from "./DashboardHeader";
 
 export function DashboardLayout({ children }: { children: React.ReactNode }) {
@@ -15,8 +16,6 @@ export function DashboardLayout({ children }: { children: React.ReactNode }) {
 }
 
 export function AdminDashboardLayout({ children }: { children: React.ReactNode }) {
-  // Dynamically imported to avoid circular deps
-  import AdminSidebarNav from "./AdminSidebarNav";
   return (
     <div className="flex min-h-screen bg-[#161E22]">
       <AdminSidebarNav />

@@ -5,6 +5,8 @@ import { useWallet } from "@/context/WalletContext";
 import { plansAPI, type Plan } from "@/app/lib/api/plans";
 import inheritanceAPI from "@/app/lib/api/inheritance";
 import { formatAddress } from "@/util/address";
+import { getPlans, useMockData } from "@/lib/api/dataSource";
+import { mockStore } from "@/lib/mockStore";
 import {
   Zap,
   CheckCircle2,
@@ -54,20 +56,31 @@ export default function PingPage() {
   const [pingHistory, setPingHistory] = useState<{ pinged_at: string | number; accrued_yield_snapshot?: number }[]>([]);
 
   useEffect(() => {
-    import("@/lib/mockStore").then((mod) => {
-      const mockStore = mod.mockStore;
-      const mockPlans = mockStore.getPlans().filter((p: any) => p.status?.toUpperCase() === "ACTIVE");
-      setPlans(mockPlans);
-      if (mockPlans.length > 0) setSelectedPlan(mockPlans[0]);
-    });
-    fetchPlans();
+    let cancelled = false;
+    setLoading(true);
+
+    const loadPlans = async () => {
+      let source: Plan[] = [];
+      try {
+        source = useMockData
+          ? mockStore.getPlans()
+          : await getPlans(address ?? undefined);
+      } catch (err) {
+        if (!cancelled) {
+          setPingError(err instanceof Error ? err.message : "Failed to load plans.");
+        }
+      }
+      if (cancelled) return;
+
+      const activePlans = source.filter((p) => p.status?.toUpperCase() === "ACTIVE");
+      setPlans(activePlans);
+      if (activePlans.length > 0) setSelectedPlan(activePlans[0]);
+      setLoading(false);
+    };
+
+    loadPlans();
+    return () => { cancelled = true; };
   }, [isConnected, address]);
-  const fetchPlans = async () => {
-    const { dataSource } = await import("@/app/lib/api/dataSource");
-    const plans = await dataSource.getPlans(address ?? undefined);
-    setPlans(plans);
-    setLoading(false);
-  };
 
   const handlePing = async () => {
     if (!selectedPlan) return;
@@ -75,7 +88,6 @@ export default function PingPage() {
     setPingError("");
     try {
       setPingStatus("submitting");
-      import("@/lib/mockStore").then((mod) => { const mockStore = mod.mockStore; })
       mockStore.pingPlan(selectedPlan.id);
       
       setPingStatus("success");
