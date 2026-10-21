@@ -77,6 +77,9 @@ pub struct AppState {
     pub apy_cache: dashmap::DashMap<String, u32>,
     pub kyc_tx: tokio::sync::broadcast::Sender<crate::ws::KycUpdateEvent>,
     pub status_tx: tokio::sync::broadcast::Sender<crate::ws::PlanStatusEvent>,
+    /// Broadcasts system banner announcement changes to WebSocket clients
+    /// (Issue #1136).
+    pub announcement_tx: tokio::sync::broadcast::Sender<crate::ws::AnnouncementEvent>,
     pub stellar_submit: StellarSubmitClient,
 }
 
@@ -476,7 +479,13 @@ pub fn create_router(state: Arc<AppState>) -> Router {
                 is_origin_allowed(origin_str, &custom_origins_cors)
             },
         ))
-        .allow_methods([Method::GET, Method::POST, Method::OPTIONS])
+        .allow_methods([
+            Method::GET,
+            Method::POST,
+            Method::PUT,
+            Method::DELETE,
+            Method::OPTIONS,
+        ])
         .allow_headers([
             axum::http::header::CONTENT_TYPE,
             axum::http::header::AUTHORIZATION,
@@ -510,6 +519,17 @@ pub fn create_router(state: Arc<AppState>) -> Router {
     let admin_routes = Router::new()
         .route("/api/plans/{id}/report", get(get_plan_report))
         .route("/api/analytics/plan-statistics", get(get_plan_statistics))
+        // System banner notification management (Issue #1136)
+        .route(
+            "/api/admin/announcements",
+            post(create_announcement).get(list_announcements),
+        )
+        .route(
+            "/api/admin/announcements/{id}",
+            get(get_announcement)
+                .put(update_announcement)
+                .delete(delete_announcement),
+        )
         .route_layer(from_fn(jwt_auth_middleware));
 
     // Loan lifecycle: admin JWT or wallet signature.
@@ -549,6 +569,7 @@ pub fn create_router(state: Arc<AppState>) -> Router {
         .route("/api/kyc/required", get(is_kyc_required))
         .route("/api/kyc/requirements", get(get_kyc_requirements))
         .route("/api/health", get(health_check))
+        .route("/api/announcements", get(list_active_announcements))
         .route("/api/transactions/submit", post(submit_transaction))
         .route("/api/admin/login", post(admin_login))
         .route("/api/yield/calculate", get(calculate_yield))
@@ -2478,6 +2499,385 @@ async fn get_plan_statistics(
     }
 
     (StatusCode::OK, Json(serde_json::json!({ "data": stats }))).into_response()
+}
+
+// ─── System banner announcements (Issue #1136) ──────────────────────────────
+
+/// Severities a system banner may carry, least to most severe.
+pub const ANNOUNCEMENT_SEVERITIES: [&str; 3] = ["info", "warning", "critical"];
+
+/// A persisted system banner notification (maintenance windows, testnet
+/// resets, …) managed by admins and pushed to web users over WebSocket.
+#[derive(Debug, Clone, Serialize, Deserialize, sqlx::FromRow)]
+pub struct Announcement {
+    pub id: Uuid,
+    pub title: String,
+    pub message: String,
+    pub severity: String,
+    pub active: bool,
+    /// When the banner starts being shown; `NULL` means "immediately".
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub starts_at: Option<DateTime<Utc>>,
+    /// When the banner stops being shown; `NULL` means "no expiry".
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub ends_at: Option<DateTime<Utc>>,
+    /// Admin (JWT `sub`) that created the banner.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub created_by: Option<String>,
+    pub created_at: DateTime<Utc>,
+    pub updated_at: DateTime<Utc>,
+}
+
+/// Body accepted by `POST /api/admin/announcements`.
+#[derive(Debug, Deserialize)]
+pub struct CreateAnnouncementRequest {
+    pub title: String,
+    pub message: String,
+    /// One of [`ANNOUNCEMENT_SEVERITIES`]; defaults to `"info"`.
+    pub severity: Option<String>,
+    /// Defaults to `true`.
+    pub active: Option<bool>,
+    pub starts_at: Option<DateTime<Utc>>,
+    pub ends_at: Option<DateTime<Utc>>,
+}
+
+/// Body accepted by `PUT /api/admin/announcements/{id}`. Omitted fields keep
+/// their current value.
+#[derive(Debug, Default, Deserialize)]
+pub struct UpdateAnnouncementRequest {
+    pub title: Option<String>,
+    pub message: Option<String>,
+    pub severity: Option<String>,
+    pub active: Option<bool>,
+    pub starts_at: Option<DateTime<Utc>>,
+    pub ends_at: Option<DateTime<Utc>>,
+}
+
+/// Query filters accepted by `GET /api/admin/announcements`.
+#[derive(Debug, Default, Deserialize)]
+pub struct AnnouncementListQuery {
+    pub active: Option<bool>,
+}
+
+/// Validates announcement fields before they touch PostgreSQL, mirroring the
+/// table's CHECK constraints so callers get a 400 instead of a DB error.
+fn validate_announcement(
+    title: &str,
+    message: &str,
+    severity: &str,
+    starts_at: Option<DateTime<Utc>>,
+    ends_at: Option<DateTime<Utc>>,
+) -> Result<(), String> {
+    let title = title.trim();
+    if title.is_empty() {
+        return Err("title must not be empty".to_string());
+    }
+    if title.chars().count() > 200 {
+        return Err("title must be at most 200 characters".to_string());
+    }
+
+    let message = message.trim();
+    if message.is_empty() {
+        return Err("message must not be empty".to_string());
+    }
+    if message.chars().count() > 2000 {
+        return Err("message must be at most 2000 characters".to_string());
+    }
+
+    if !ANNOUNCEMENT_SEVERITIES.contains(&severity) {
+        return Err(format!(
+            "severity must be one of {}",
+            ANNOUNCEMENT_SEVERITIES.join(", ")
+        ));
+    }
+
+    if let (Some(start), Some(end)) = (starts_at, ends_at) {
+        if start > end {
+            return Err("starts_at must not be after ends_at".to_string());
+        }
+    }
+
+    Ok(())
+}
+
+/// Emits an announcement change to every connected WebSocket client. A send
+/// error only means nobody is listening right now, which is not a failure.
+fn broadcast_announcement(state: &Arc<AppState>, event_type: &str, announcement: Announcement) {
+    let _ = state.announcement_tx.send(crate::ws::AnnouncementEvent {
+        event_type: event_type.to_string(),
+        announcement,
+    });
+}
+
+/// Handler: POST /api/admin/announcements (admin JWT only)
+/// Creates a system banner and broadcasts it to WebSocket clients.
+async fn create_announcement(
+    State(state): State<Arc<AppState>>,
+    Extension(admin): Extension<crate::auth::UserContext>,
+    Json(payload): Json<CreateAnnouncementRequest>,
+) -> Response {
+    let severity = payload
+        .severity
+        .as_deref()
+        .unwrap_or("info")
+        .trim()
+        .to_lowercase();
+
+    if let Err(message) = validate_announcement(
+        &payload.title,
+        &payload.message,
+        &severity,
+        payload.starts_at,
+        payload.ends_at,
+    ) {
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(serde_json::json!({ "error": message })),
+        )
+            .into_response();
+    }
+
+    let inserted = sqlx::query_as::<_, Announcement>(
+        "INSERT INTO announcements (title, message, severity, active, starts_at, ends_at, created_by) \
+         VALUES ($1, $2, $3, $4, $5, $6, $7) RETURNING *",
+    )
+    .bind(payload.title.trim())
+    .bind(payload.message.trim())
+    .bind(&severity)
+    .bind(payload.active.unwrap_or(true))
+    .bind(payload.starts_at)
+    .bind(payload.ends_at)
+    .bind(admin.user_id.as_str())
+    .fetch_one(&state.db_pool)
+    .await;
+
+    match inserted {
+        Ok(announcement) => {
+            broadcast_announcement(&state, "ANNOUNCEMENT_CREATED", announcement.clone());
+            (
+                StatusCode::CREATED,
+                Json(serde_json::json!({ "data": announcement })),
+            )
+                .into_response()
+        }
+        Err(e) => db_error_response("create announcement", e),
+    }
+}
+
+/// Handler: GET /api/admin/announcements (admin JWT only)
+/// Lists every announcement, newest first; `?active=true|false` narrows it.
+async fn list_announcements(
+    State(state): State<Arc<AppState>>,
+    Query(query): Query<AnnouncementListQuery>,
+) -> Response {
+    let rows = match query.active {
+        Some(active) => {
+            sqlx::query_as::<_, Announcement>(
+                "SELECT * FROM announcements WHERE active = $1 ORDER BY created_at DESC",
+            )
+            .bind(active)
+            .fetch_all(&state.db_pool)
+            .await
+        }
+        None => {
+            sqlx::query_as::<_, Announcement>(
+                "SELECT * FROM announcements ORDER BY created_at DESC",
+            )
+            .fetch_all(&state.db_pool)
+            .await
+        }
+    };
+
+    match rows {
+        Ok(rows) => (StatusCode::OK, Json(serde_json::json!({ "data": rows }))).into_response(),
+        Err(e) => db_error_response("list announcements", e),
+    }
+}
+
+/// Handler: GET /api/admin/announcements/{id} (admin JWT only)
+async fn get_announcement(State(state): State<Arc<AppState>>, Path(id): Path<Uuid>) -> Response {
+    match fetch_announcement(&state, id).await {
+        Ok(Some(announcement)) => (
+            StatusCode::OK,
+            Json(serde_json::json!({ "data": announcement })),
+        )
+            .into_response(),
+        Ok(None) => (
+            StatusCode::NOT_FOUND,
+            Json(serde_json::json!({ "error": "Announcement not found" })),
+        )
+            .into_response(),
+        Err(e) => db_error_response("fetch announcement", e),
+    }
+}
+
+/// Handler: PUT /api/admin/announcements/{id} (admin JWT only)
+/// Applies the provided fields, leaves the rest untouched, then broadcasts
+/// the updated banner to WebSocket clients.
+async fn update_announcement(
+    State(state): State<Arc<AppState>>,
+    Path(id): Path<Uuid>,
+    Json(payload): Json<UpdateAnnouncementRequest>,
+) -> Response {
+    let existing = match fetch_announcement(&state, id).await {
+        Ok(Some(row)) => row,
+        Ok(None) => {
+            return (
+                StatusCode::NOT_FOUND,
+                Json(serde_json::json!({ "error": "Announcement not found" })),
+            )
+                .into_response()
+        }
+        Err(e) => return db_error_response("fetch announcement", e),
+    };
+
+    let severity = payload
+        .severity
+        .as_deref()
+        .map(|value| value.trim().to_lowercase())
+        .unwrap_or_else(|| existing.severity.clone());
+    let merged_title = payload
+        .title
+        .clone()
+        .unwrap_or_else(|| existing.title.clone());
+    let merged_message = payload
+        .message
+        .clone()
+        .unwrap_or_else(|| existing.message.clone());
+    let starts_at = payload.starts_at.or(existing.starts_at);
+    let ends_at = payload.ends_at.or(existing.ends_at);
+
+    if let Err(message) = validate_announcement(
+        &merged_title,
+        &merged_message,
+        &severity,
+        starts_at,
+        ends_at,
+    ) {
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(serde_json::json!({ "error": message })),
+        )
+            .into_response();
+    }
+
+    let updated = sqlx::query_as::<_, Announcement>(
+        "UPDATE announcements SET \
+            title = COALESCE($2, title), \
+            message = COALESCE($3, message), \
+            severity = COALESCE($4, severity), \
+            active = COALESCE($5, active), \
+            starts_at = COALESCE($6, starts_at), \
+            ends_at = COALESCE($7, ends_at), \
+            updated_at = NOW() \
+         WHERE id = $1 \
+         RETURNING *",
+    )
+    .bind(id)
+    .bind(payload.title.as_deref().map(str::trim))
+    .bind(payload.message.as_deref().map(str::trim))
+    .bind(payload.severity.as_deref().map(|_| severity.as_str()))
+    .bind(payload.active)
+    .bind(payload.starts_at)
+    .bind(payload.ends_at)
+    .fetch_optional(&state.db_pool)
+    .await;
+
+    match updated {
+        Ok(Some(announcement)) => {
+            broadcast_announcement(&state, "ANNOUNCEMENT_UPDATED", announcement.clone());
+            (
+                StatusCode::OK,
+                Json(serde_json::json!({ "data": announcement })),
+            )
+                .into_response()
+        }
+        Ok(None) => (
+            StatusCode::NOT_FOUND,
+            Json(serde_json::json!({ "error": "Announcement not found" })),
+        )
+            .into_response(),
+        Err(e) => db_error_response("update announcement", e),
+    }
+}
+
+/// Handler: DELETE /api/admin/announcements/{id} (admin JWT only)
+/// Removes the banner and broadcasts the deletion so clients can drop it.
+async fn delete_announcement(State(state): State<Arc<AppState>>, Path(id): Path<Uuid>) -> Response {
+    let existing = match fetch_announcement(&state, id).await {
+        Ok(Some(row)) => row,
+        Ok(None) => {
+            return (
+                StatusCode::NOT_FOUND,
+                Json(serde_json::json!({ "error": "Announcement not found" })),
+            )
+                .into_response()
+        }
+        Err(e) => return db_error_response("fetch announcement", e),
+    };
+
+    match sqlx::query("DELETE FROM announcements WHERE id = $1")
+        .bind(id)
+        .execute(&state.db_pool)
+        .await
+    {
+        Ok(result) if result.rows_affected() > 0 => {
+            broadcast_announcement(&state, "ANNOUNCEMENT_DELETED", existing.clone());
+            (
+                StatusCode::OK,
+                Json(serde_json::json!({ "data": existing })),
+            )
+                .into_response()
+        }
+        Ok(_) => (
+            StatusCode::NOT_FOUND,
+            Json(serde_json::json!({ "error": "Announcement not found" })),
+        )
+            .into_response(),
+        Err(e) => db_error_response("delete announcement", e),
+    }
+}
+
+/// Handler: GET /api/announcements (public)
+/// Banners a web user should see right now: active, inside their scheduled
+/// window, newest first. Used by the frontend to render system banners
+/// without an admin session.
+async fn list_active_announcements(State(state): State<Arc<AppState>>) -> Response {
+    let rows = sqlx::query_as::<_, Announcement>(
+        "SELECT * FROM announcements \
+         WHERE active = TRUE \
+           AND (starts_at IS NULL OR starts_at <= NOW()) \
+           AND (ends_at IS NULL OR ends_at >= NOW()) \
+         ORDER BY created_at DESC",
+    )
+    .fetch_all(&state.db_pool)
+    .await;
+
+    match rows {
+        Ok(rows) => (StatusCode::OK, Json(serde_json::json!({ "data": rows }))).into_response(),
+        Err(e) => db_error_response("list active announcements", e),
+    }
+}
+
+/// Loads a single announcement by id.
+async fn fetch_announcement(
+    state: &Arc<AppState>,
+    id: Uuid,
+) -> Result<Option<Announcement>, sqlx::Error> {
+    sqlx::query_as::<_, Announcement>("SELECT * FROM announcements WHERE id = $1")
+        .bind(id)
+        .fetch_optional(&state.db_pool)
+        .await
+}
+
+/// Uniform 500 for announcement handlers, with the underlying error logged.
+fn db_error_response(action: &str, error: sqlx::Error) -> Response {
+    error!(error = %error, "Failed to {action}");
+    (
+        StatusCode::INTERNAL_SERVER_ERROR,
+        Json(serde_json::json!({ "error": format!("Failed to {action}") })),
+    )
+        .into_response()
 }
 
 /// Verify the ping signature using ed25519.
@@ -4676,5 +5076,56 @@ mod guardian_tests {
             .verifying_key()
             .verify(message.as_bytes(), &signature)
             .is_ok());
+    }
+}
+
+#[cfg(test)]
+mod announcement_tests {
+    use super::*;
+    use chrono::TimeZone;
+
+    #[test]
+    fn accepts_a_well_formed_banner() {
+        assert!(validate_announcement(
+            "Scheduled maintenance",
+            "The testnet UI will be unavailable for 30 minutes.",
+            "warning",
+            None,
+            None,
+        )
+        .is_ok());
+    }
+
+    #[test]
+    fn accepts_every_published_severity() {
+        for severity in ANNOUNCEMENT_SEVERITIES {
+            assert!(
+                validate_announcement("title", "message", severity, None, None).is_ok(),
+                "severity {severity} must be accepted"
+            );
+        }
+    }
+
+    #[test]
+    fn rejects_blank_and_oversized_fields() {
+        assert!(validate_announcement("   ", "message", "info", None, None).is_err());
+        assert!(validate_announcement("title", "   ", "info", None, None).is_err());
+        assert!(validate_announcement(&"t".repeat(201), "message", "info", None, None).is_err());
+        assert!(validate_announcement("title", &"m".repeat(2001), "info", None, None).is_err());
+    }
+
+    #[test]
+    fn rejects_an_unpublished_severity() {
+        assert!(validate_announcement("title", "message", "catastrophic", None, None).is_err());
+        assert!(validate_announcement("title", "message", "INFO", None, None).is_err());
+    }
+
+    #[test]
+    fn rejects_a_schedule_that_ends_before_it_starts() {
+        let start = Utc.timestamp_opt(1_800_000_000, 0).unwrap();
+        let end = Utc.timestamp_opt(1_700_000_000, 0).unwrap();
+
+        assert!(validate_announcement("title", "message", "info", Some(start), Some(end)).is_err());
+        assert!(validate_announcement("title", "message", "info", Some(end), Some(start)).is_ok());
     }
 }

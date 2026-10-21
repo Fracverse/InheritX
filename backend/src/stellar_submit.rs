@@ -7,12 +7,14 @@ use serde::Deserialize;
 use serde_json::{json, Value};
 use sha2::{Digest, Sha256};
 use stellar_xdr::{
-    ContractEvent, ContractEventBody, ContractId, DecoratedSignature, Hash, HostFunction,
-    InvokeContractArgs, InvokeHostFunctionOp, Limits, Memo, MuxedAccount, Operation, OperationBody,
-    Preconditions, ReadXdr, ScAddress, ScSymbol, ScVal, SequenceNumber, Signature, SignatureHint,
-    SorobanAuthorizationEntry, SorobanTransactionData, TimeBounds, TimePoint, Transaction,
-    TransactionEnvelope, TransactionExt, TransactionMeta, TransactionSignaturePayload,
-    TransactionSignaturePayloadTaggedTransaction, TransactionV1Envelope, Uint256, VecM, WriteXdr,
+    ContractDataDurability, ContractEvent, ContractEventBody, ContractExecutable, ContractId,
+    DecoratedSignature, Hash, HostFunction, InvokeContractArgs, InvokeHostFunctionOp,
+    LedgerEntryData, LedgerKey, LedgerKeyContractCode, LedgerKeyContractData, Limits, Memo,
+    MuxedAccount, Operation, OperationBody, Preconditions, ReadXdr, ScAddress, ScSymbol, ScVal,
+    SequenceNumber, Signature, SignatureHint, SorobanAuthorizationEntry, SorobanTransactionData,
+    TimeBounds, TimePoint, Transaction, TransactionEnvelope, TransactionExt, TransactionMeta,
+    TransactionSignaturePayload, TransactionSignaturePayloadTaggedTransaction,
+    TransactionV1Envelope, Uint256, VecM, WriteXdr,
 };
 use thiserror::Error;
 use tracing::{debug, warn};
@@ -31,6 +33,21 @@ const DEFAULT_POLL_TIMEOUT_SECS: u64 = 60;
 
 /// Passphrase of the network the backend talks to by default.
 pub const TESTNET_PASSPHRASE: &str = "Test SDF Network ; September 2015";
+
+/// Hex-encoded SHA-256 hash of the official compiled inheritance-contract
+/// WASM release this backend is allowed to interact with (Issue #1137).
+///
+/// Startup refuses to run when the deployed contract's WASM hash differs
+/// from this value, so a corrupted or unverified testnet deployment can
+/// never receive transactions. When a new contract release is cut, rebuild
+/// it and update this constant:
+///
+/// ```text
+/// cd contracts && cargo build --release --target wasm32-unknown-unknown -p inheritance-contract
+/// sha256sum target/wasm32-unknown-unknown/release/inheritance_contract.wasm
+/// ```
+pub const EXPECTED_WASM_HASH: &str =
+    "db6115e10e431b5e024eacf43ea7cb091bf7f5f07b683782a9491964fbe2edc5";
 
 #[derive(Debug, Error)]
 pub enum StellarSubmitError {
@@ -52,6 +69,14 @@ pub enum StellarSubmitError {
     TransactionFailed { hash: String, detail: String },
     #[error("timed out waiting for transaction {hash} to be included in a ledger")]
     Timeout { hash: String },
+    #[error(
+        "deployed contract WASM hash {actual} does not match the expected release hash {expected}"
+    )]
+    ArtifactMismatch { expected: String, actual: String },
+    #[error("contract bytecode failed its hash check: {detail}")]
+    ArtifactCorrupted { detail: String },
+    #[error("contract artifact could not be verified: {0}")]
+    ArtifactUnavailable(String),
 }
 
 /// Everything needed to build, sign and submit a Soroban contract invocation.
@@ -225,6 +250,122 @@ impl StellarSubmitClient {
             .await
             .map(|r| r.status().is_success())
             .unwrap_or(false)
+    }
+
+    /// Fetches the WASM hash the configured contract is currently running,
+    /// from Soroban RPC (`getLedgerEntries` on the contract-instance entry),
+    /// hex-encoded (Issue #1137).
+    pub async fn deployed_wasm_hash(&self) -> Result<String, StellarSubmitError> {
+        let ctx = self.soroban()?;
+        let key = LedgerKey::ContractData(LedgerKeyContractData {
+            contract: ScAddress::Contract(ctx.contract.clone()),
+            key: ScVal::LedgerKeyContractInstance,
+            durability: ContractDataDurability::Persistent,
+        });
+        let entry = self.fetch_ledger_entry(ctx, &key).await?;
+        parse_instance_wasm_hash(&entry)
+    }
+
+    /// Startup contract artifact verification (Issue #1137): fetches the
+    /// deployed contract's WASM hash from Soroban RPC, compares it against
+    /// the hardcoded [`EXPECTED_WASM_HASH`], and — on a match — re-hashes the
+    /// stored bytecode to confirm the code really is the binary the hash
+    /// describes.
+    ///
+    /// Returns the verified hex hash on success. Any mismatch, corrupted
+    /// bytecode, or inability to reach the RPC produces an error so callers
+    /// (the server startup path) can refuse to run against a contract they
+    /// could not verify.
+    pub async fn verify_contract_artifact(&self) -> Result<String, StellarSubmitError> {
+        self.verify_contract_artifact_against(EXPECTED_WASM_HASH)
+            .await
+    }
+
+    /// Same as [`Self::verify_contract_artifact`] but pinned to an explicitly
+    /// supplied release hash, e.g. while validating a newer official release
+    /// before updating [`EXPECTED_WASM_HASH`].
+    pub async fn verify_contract_artifact_against(
+        &self,
+        expected_wasm_hash: &str,
+    ) -> Result<String, StellarSubmitError> {
+        let ctx = self.soroban()?;
+        let expected = expected_wasm_hash.trim();
+
+        let deployed = self.deployed_wasm_hash().await?;
+        if !deployed.eq_ignore_ascii_case(expected) {
+            return Err(StellarSubmitError::ArtifactMismatch {
+                expected: expected.to_string(),
+                actual: deployed.clone(),
+            });
+        }
+
+        // Bytecode hash check: the stored contract code must hash to exactly
+        // the WASM hash the contract instance references.
+        let code = self.fetch_contract_code(ctx, expected).await?;
+        verify_bytecode_hash(&code, &deployed)?;
+
+        Ok(deployed)
+    }
+
+    /// Reads a single ledger entry through Soroban RPC's `getLedgerEntries`.
+    async fn fetch_ledger_entry(
+        &self,
+        ctx: &SorobanContext,
+        key: &LedgerKey,
+    ) -> Result<LedgerEntryData, StellarSubmitError> {
+        #[derive(Deserialize)]
+        struct GetLedgerEntriesResponse {
+            entries: Option<Vec<LedgerEntryXdr>>,
+        }
+
+        #[derive(Deserialize)]
+        struct LedgerEntryXdr {
+            xdr: String,
+        }
+
+        let key_xdr = key
+            .to_xdr_base64(Limits::none())
+            .map_err(|e| StellarSubmitError::Xdr(e.to_string()))?;
+
+        let response: GetLedgerEntriesResponse = self
+            .rpc(ctx, "getLedgerEntries", json!({ "keys": [key_xdr] }))
+            .await?;
+
+        let entry = response
+            .entries
+            .and_then(|entries| entries.into_iter().next())
+            .ok_or_else(|| {
+                StellarSubmitError::ArtifactUnavailable(
+                    "Soroban RPC returned no ledger entry for the requested key".to_string(),
+                )
+            })?;
+
+        LedgerEntryData::from_xdr_base64(entry.xdr.trim(), Limits::none())
+            .map_err(|e| StellarSubmitError::Xdr(format!("ledger entry: {e}")))
+    }
+
+    /// Downloads the contract bytecode for `wasm_hash_hex` from Soroban RPC.
+    async fn fetch_contract_code(
+        &self,
+        ctx: &SorobanContext,
+        wasm_hash_hex: &str,
+    ) -> Result<Vec<u8>, StellarSubmitError> {
+        let decoded = hex::decode(wasm_hash_hex.trim()).map_err(|_| {
+            StellarSubmitError::ArtifactUnavailable(format!("'{wasm_hash_hex}' is not a hex hash"))
+        })?;
+        let bytes: [u8; 32] = decoded.try_into().map_err(|_| {
+            StellarSubmitError::ArtifactUnavailable(format!(
+                "'{wasm_hash_hex}' is not a 32-byte hash"
+            ))
+        })?;
+
+        let key = LedgerKey::ContractCode(LedgerKeyContractCode { hash: Hash(bytes) });
+        match self.fetch_ledger_entry(ctx, &key).await? {
+            LedgerEntryData::ContractCode(entry) => Ok(entry.code.to_vec()),
+            _ => Err(StellarSubmitError::ArtifactUnavailable(
+                "expected a ContractCode ledger entry for the deployed WASM".to_string(),
+            )),
+        }
     }
 
     /// Calls `trigger_inheritance(caller, plan_id)` on the configured
@@ -943,6 +1084,109 @@ fn account_scval_from_strkey(value: &str) -> Result<ScVal, StellarSubmitError> {
     ))))
 }
 
+/// Extracts the hex-encoded WASM hash from a contract-instance ledger entry.
+///
+/// Understands the current encoding (`ScVal::ContractInstance`) as well as the
+/// pre-protocol-23 map encoding
+/// (`{"instance": {"executable": ["wasm", <bytes>]}}`) so verification keeps
+/// working against older testnet deployments (Issue #1137).
+pub fn parse_instance_wasm_hash(entry: &LedgerEntryData) -> Result<String, StellarSubmitError> {
+    let LedgerEntryData::ContractData(data) = entry else {
+        return Err(StellarSubmitError::ArtifactUnavailable(
+            "expected a ContractData ledger entry for the contract instance".to_string(),
+        ));
+    };
+
+    let hash = executable_wasm_hash(&data.val)?;
+    Ok(hex::encode(hash.0))
+}
+
+/// Recovers the WASM hash of the contract's executable from the stored
+/// contract-instance value.
+fn executable_wasm_hash(value: &ScVal) -> Result<Hash, StellarSubmitError> {
+    let malformed = |detail: &str| {
+        StellarSubmitError::ArtifactUnavailable(format!(
+            "contract instance entry is malformed: {detail}"
+        ))
+    };
+
+    let instance = match value {
+        ScVal::ContractInstance(instance) => instance,
+        ScVal::Map(Some(map)) => {
+            let nested =
+                map_field(map, "instance").ok_or_else(|| malformed("missing 'instance'"))?;
+            match nested {
+                ScVal::ContractInstance(instance) => instance,
+                // Pre-protocol-23 shape: the executable was a vector
+                // [symbol("wasm"), bytes(hash)].
+                ScVal::Map(Some(inner)) => {
+                    let executable = map_field(inner, "executable")
+                        .ok_or_else(|| malformed("missing 'executable'"))?;
+                    return legacy_wasm_hash(executable);
+                }
+                _ => return Err(malformed("'instance' is not a contract instance")),
+            }
+        }
+        _ => return Err(malformed("value is neither an instance nor a map")),
+    };
+
+    match &instance.executable {
+        ContractExecutable::Wasm(hash) => Ok(hash.clone()),
+        other => Err(StellarSubmitError::ArtifactUnavailable(format!(
+            "contract is not backed by WASM (executable: {other:?})"
+        ))),
+    }
+}
+
+/// Looks up a symbol-keyed field in an `ScMap`.
+fn map_field<'a>(map: &'a stellar_xdr::ScMap, field: &str) -> Option<&'a ScVal> {
+    map.0
+        .iter()
+        .find(|entry| matches_symbol(&entry.key, field))
+        .map(|entry| &entry.val)
+}
+
+/// Decodes the legacy `[symbol("wasm"), bytes(hash)]` executable encoding.
+fn legacy_wasm_hash(executable: &ScVal) -> Result<Hash, StellarSubmitError> {
+    let malformed = |detail: &str| {
+        StellarSubmitError::ArtifactUnavailable(format!(
+            "legacy executable encoding is malformed: {detail}"
+        ))
+    };
+
+    let ScVal::Vec(Some(items)) = executable else {
+        return Err(malformed("executable is not a vector"));
+    };
+    let items = items.as_slice();
+    if items.len() != 2 || !matches_symbol(&items[0], "wasm") {
+        return Err(malformed("expected [\"wasm\", <32-byte hash>]"));
+    }
+    let ScVal::Bytes(bytes) = &items[1] else {
+        return Err(malformed("hash is not a byte string"));
+    };
+    let hash: [u8; 32] = bytes
+        .as_slice()
+        .try_into()
+        .map_err(|_| malformed("hash is not 32 bytes"))?;
+    Ok(Hash(hash))
+}
+
+/// Re-hashes downloaded bytecode and compares it with the WASM hash the
+/// contract instance references — the bytecode integrity check half of
+/// Issue #1137.
+fn verify_bytecode_hash(code: &[u8], expected_wasm_hash: &str) -> Result<(), StellarSubmitError> {
+    let actual: [u8; 32] = Sha256::digest(code).into();
+    let actual_hex = hex::encode(actual);
+    if !actual_hex.eq_ignore_ascii_case(expected_wasm_hash.trim()) {
+        return Err(StellarSubmitError::ArtifactCorrupted {
+            detail: format!(
+                "sha256(bytecode) = {actual_hex}, contract references {expected_wasm_hash}"
+            ),
+        });
+    }
+    Ok(())
+}
+
 /// Outstanding loaned amount still encumbering the vault, derived from a
 /// `get_inheritance_trigger` return value. `None` means the plan has not
 /// been triggered (the contract returns a Soroban `Option::None`).
@@ -1167,27 +1411,25 @@ mod tests {
     #[test]
     fn with_soroban_rejects_an_invalid_secret() {
         let client = StellarSubmitClient::new("https://horizon-testnet.stellar.org".to_string());
-        let error = client
-            .with_soroban(SorobanConfig {
-                signer_secret: "not-a-secret".to_string(),
-                ..test_config()
-            })
-            .err()
-            .expect("invalid secret must be rejected");
+        let Err(error) = client.with_soroban(SorobanConfig {
+            signer_secret: "not-a-secret".to_string(),
+            ..test_config()
+        }) else {
+            panic!("invalid secret must be rejected");
+        };
         assert!(matches!(error, StellarSubmitError::Config(_)));
     }
 
     #[test]
     fn with_soroban_rejects_an_invalid_contract_id() {
         let client = StellarSubmitClient::new("https://horizon-testnet.stellar.org".to_string());
-        let error = client
-            .with_soroban(SorobanConfig {
-                // An account strkey where a contract strkey is required.
-                contract_id: stellar_strkey::ed25519::PublicKey([2u8; 32]).to_string(),
-                ..test_config()
-            })
-            .err()
-            .expect("invalid contract id must be rejected");
+        // An account strkey where a contract strkey is required.
+        let Err(error) = client.with_soroban(SorobanConfig {
+            contract_id: stellar_strkey::ed25519::PublicKey([2u8; 32]).to_string(),
+            ..test_config()
+        }) else {
+            panic!("invalid contract id must be rejected");
+        };
         assert!(matches!(error, StellarSubmitError::Config(_)));
     }
 
@@ -1324,5 +1566,336 @@ mod tests {
 
         let liquidate = find_event(&events, &contract(1), &["LOAN", "LIQUIDAT"]).unwrap();
         assert_eq!(event_u64_field(liquidate, "settled_amount"), Some(500));
+    }
+
+    // ─── Contract artifact verification (Issue #1137) ─────────────────────
+
+    /// Fixture bytecode whose SHA-256 becomes the "deployed" WASM hash in
+    /// the happy-path test.
+    fn official_bytecode() -> Vec<u8> {
+        b"inheritance contract official release bytes".to_vec()
+    }
+
+    fn bytecode_hash_hex(code: &[u8]) -> String {
+        hex::encode(Sha256::digest(code))
+    }
+
+    /// Derives a hash that is guaranteed to differ from the hardcoded release
+    /// hash by flipping a byte.
+    fn not_the_release_hash() -> String {
+        let mut bytes = hex::decode(EXPECTED_WASM_HASH).expect("EXPECTED_WASM_HASH is hex");
+        bytes[0] ^= 0xff;
+        hex::encode(bytes)
+    }
+
+    fn instance_entry_xdr(wasm_hash: &[u8; 32]) -> String {
+        LedgerEntryData::ContractData(stellar_xdr::ContractDataEntry {
+            ext: ExtensionPoint::V0,
+            contract: ScAddress::Contract(contract(7)),
+            key: ScVal::LedgerKeyContractInstance,
+            durability: ContractDataDurability::Persistent,
+            val: ScVal::ContractInstance(stellar_xdr::ScContractInstance {
+                executable: ContractExecutable::Wasm(Hash(*wasm_hash)),
+                storage: None,
+            }),
+        })
+        .to_xdr_base64(Limits::none())
+        .expect("instance entry encodes")
+    }
+
+    fn code_entry_xdr(wasm_hash: &[u8; 32], code: &[u8]) -> String {
+        LedgerEntryData::ContractCode(stellar_xdr::ContractCodeEntry {
+            ext: stellar_xdr::ContractCodeEntryExt::V0,
+            hash: Hash(*wasm_hash),
+            code: code.to_vec().try_into().expect("code fits BytesM"),
+        })
+        .to_xdr_base64(Limits::none())
+        .expect("code entry encodes")
+    }
+
+    /// What the mock Soroban RPC serves for `getLedgerEntries`.
+    #[derive(Clone)]
+    struct MockLedger {
+        /// WASM hash the contract instance references.
+        wasm_hash: String,
+        /// Code bytes returned for the `LedgerKey::ContractCode` lookup.
+        code: Vec<u8>,
+        /// When `true`, the RPC reports an empty entry set.
+        empty: bool,
+    }
+
+    /// Spins up a local JSON-RPC server that answers `getLedgerEntries` from
+    /// `ledger` and returns its URL.
+    async fn spawn_mock_rpc(ledger: MockLedger) -> String {
+        use axum::{routing::post, Json, Router};
+
+        let app = Router::new().route(
+            "/",
+            post(move |Json(body): Json<Value>| {
+                let ledger = ledger.clone();
+                async move {
+                    let method = body
+                        .get("method")
+                        .and_then(Value::as_str)
+                        .unwrap_or_default()
+                        .to_string();
+
+                    if method != "getLedgerEntries" {
+                        return Json(json!({
+                            "jsonrpc": "2.0",
+                            "id": 1,
+                            "error": {
+                                "code": -32601,
+                                "message": format!("unexpected method {method}"),
+                            },
+                        }));
+                    }
+
+                    if ledger.empty {
+                        return Json(
+                            json!({ "jsonrpc": "2.0", "id": 1, "result": { "entries": [] } }),
+                        );
+                    }
+
+                    let wasm_hash: [u8; 32] = hex::decode(&ledger.wasm_hash)
+                        .expect("mock wasm hash is hex")
+                        .try_into()
+                        .expect("mock wasm hash is 32 bytes");
+                    let keys = body
+                        .pointer("/params/keys")
+                        .and_then(Value::as_array)
+                        .cloned()
+                        .unwrap_or_default();
+                    let entries = keys
+                        .iter()
+                        .filter_map(Value::as_str)
+                        .map(|key| {
+                            let key = LedgerKey::from_xdr_base64(key, Limits::none())
+                                .expect("request key is valid XDR");
+                            let xdr = match key {
+                                LedgerKey::ContractCode(_) => {
+                                    code_entry_xdr(&wasm_hash, &ledger.code)
+                                }
+                                _ => instance_entry_xdr(&wasm_hash),
+                            };
+                            json!({ "key": "", "xdr": xdr })
+                        })
+                        .collect::<Vec<_>>();
+
+                    Json(json!({ "jsonrpc": "2.0", "id": 1, "result": { "entries": entries } }))
+                }
+            }),
+        );
+
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("bind mock RPC");
+        let address = listener.local_addr().expect("mock RPC address");
+        tokio::spawn(async move {
+            axum::serve(listener, app).await.expect("mock RPC serves");
+        });
+        format!("http://{address}")
+    }
+
+    fn artifact_client(rpc_url: &str) -> StellarSubmitClient {
+        StellarSubmitClient::new("https://horizon-testnet.stellar.org".to_string())
+            .with_soroban(SorobanConfig {
+                rpc_url: rpc_url.to_string(),
+                ..test_config()
+            })
+            .expect("valid soroban config")
+    }
+
+    #[tokio::test]
+    async fn verifies_when_deployed_hash_and_bytecode_match_the_release() {
+        let code = official_bytecode();
+        let expected = bytecode_hash_hex(&code);
+        let rpc = spawn_mock_rpc(MockLedger {
+            wasm_hash: expected.clone(),
+            code,
+            empty: false,
+        })
+        .await;
+
+        let verified = artifact_client(&rpc)
+            .verify_contract_artifact_against(&expected)
+            .await
+            .expect("matching artifact must verify");
+
+        assert_eq!(verified, expected);
+    }
+
+    #[tokio::test]
+    async fn rejects_a_deployed_hash_that_differs_from_the_hardcoded_release() {
+        let rpc = spawn_mock_rpc(MockLedger {
+            wasm_hash: not_the_release_hash(),
+            code: official_bytecode(),
+            empty: false,
+        })
+        .await;
+
+        let error = artifact_client(&rpc)
+            .verify_contract_artifact()
+            .await
+            .expect_err("a hash mismatch must fail verification");
+
+        assert!(
+            matches!(error, StellarSubmitError::ArtifactMismatch { .. }),
+            "expected ArtifactMismatch, got: {error}"
+        );
+    }
+
+    #[tokio::test]
+    async fn rejects_bytecode_that_does_not_hash_to_the_release_hash() {
+        let expected = bytecode_hash_hex(&official_bytecode());
+        let rpc = spawn_mock_rpc(MockLedger {
+            wasm_hash: expected.clone(),
+            code: b"tampered bytecode".to_vec(),
+            empty: false,
+        })
+        .await;
+
+        let error = artifact_client(&rpc)
+            .verify_contract_artifact_against(&expected)
+            .await
+            .expect_err("corrupted bytecode must fail verification");
+
+        assert!(
+            matches!(error, StellarSubmitError::ArtifactCorrupted { .. }),
+            "expected ArtifactCorrupted, got: {error}"
+        );
+    }
+
+    #[tokio::test]
+    async fn fails_when_the_rpc_returns_no_ledger_entry() {
+        let rpc = spawn_mock_rpc(MockLedger {
+            wasm_hash: bytecode_hash_hex(&official_bytecode()),
+            code: official_bytecode(),
+            empty: true,
+        })
+        .await;
+
+        let error = artifact_client(&rpc)
+            .verify_contract_artifact()
+            .await
+            .expect_err("an unverifiable contract must fail closed");
+
+        assert!(
+            matches!(error, StellarSubmitError::ArtifactUnavailable(_)),
+            "expected ArtifactUnavailable, got: {error}"
+        );
+    }
+
+    #[tokio::test]
+    async fn fails_when_the_rpc_endpoint_is_unreachable() {
+        // Port 9 (discard) on loopback: nothing listens there, so the fetch
+        // errors before any comparison can happen.
+        let error = artifact_client("http://127.0.0.1:9")
+            .verify_contract_artifact()
+            .await
+            .expect_err("an unreachable RPC must fail closed");
+
+        assert!(
+            matches!(
+                error,
+                StellarSubmitError::Network(_) | StellarSubmitError::Rpc(_)
+            ),
+            "expected a network-level error, got: {error}"
+        );
+    }
+
+    #[test]
+    fn expected_wasm_hash_is_a_hex_encoded_sha256_digest() {
+        let decoded = hex::decode(EXPECTED_WASM_HASH).expect("EXPECTED_WASM_HASH is hex");
+        assert_eq!(decoded.len(), 32, "EXPECTED_WASM_HASH must be 32 bytes");
+    }
+
+    #[test]
+    fn parses_the_wasm_hash_from_the_current_instance_encoding() {
+        let hash = [4u8; 32];
+        let entry = LedgerEntryData::ContractData(stellar_xdr::ContractDataEntry {
+            ext: ExtensionPoint::V0,
+            contract: ScAddress::Contract(contract(7)),
+            key: ScVal::LedgerKeyContractInstance,
+            durability: ContractDataDurability::Persistent,
+            val: ScVal::ContractInstance(stellar_xdr::ScContractInstance {
+                executable: ContractExecutable::Wasm(Hash(hash)),
+                storage: None,
+            }),
+        });
+
+        assert_eq!(parse_instance_wasm_hash(&entry).unwrap(), hex::encode(hash));
+    }
+
+    #[test]
+    fn parses_the_wasm_hash_from_the_pre_protocol_23_instance_encoding() {
+        let hash = [9u8; 32];
+        let legacy = ScVal::Map(Some(ScMap(
+            vec![ScMapEntry {
+                key: symbol("instance"),
+                val: ScVal::Map(Some(ScMap(
+                    vec![
+                        ScMapEntry {
+                            key: symbol("executable"),
+                            val: ScVal::Vec(Some(
+                                vec![
+                                    symbol("wasm"),
+                                    ScVal::Bytes(hash.to_vec().try_into().unwrap()),
+                                ]
+                                .try_into()
+                                .unwrap(),
+                            )),
+                        },
+                        ScMapEntry {
+                            key: symbol("storage"),
+                            val: ScVal::Void,
+                        },
+                    ]
+                    .try_into()
+                    .unwrap(),
+                ))),
+            }]
+            .try_into()
+            .unwrap(),
+        )));
+
+        let entry = LedgerEntryData::ContractData(stellar_xdr::ContractDataEntry {
+            ext: ExtensionPoint::V0,
+            contract: ScAddress::Contract(contract(7)),
+            key: ScVal::LedgerKeyContractInstance,
+            durability: ContractDataDurability::Persistent,
+            val: legacy,
+        });
+
+        assert_eq!(parse_instance_wasm_hash(&entry).unwrap(), hex::encode(hash));
+    }
+
+    #[test]
+    fn rejects_an_asset_backed_contract_instance() {
+        let entry = LedgerEntryData::ContractData(stellar_xdr::ContractDataEntry {
+            ext: ExtensionPoint::V0,
+            contract: ScAddress::Contract(contract(7)),
+            key: ScVal::LedgerKeyContractInstance,
+            durability: ContractDataDurability::Persistent,
+            val: ScVal::ContractInstance(stellar_xdr::ScContractInstance {
+                executable: ContractExecutable::StellarAsset,
+                storage: None,
+            }),
+        });
+
+        let error = parse_instance_wasm_hash(&entry).expect_err("must fail");
+        assert!(matches!(error, StellarSubmitError::ArtifactUnavailable(_)));
+    }
+
+    #[test]
+    fn rejects_a_non_instance_ledger_entry() {
+        let entry = LedgerEntryData::ContractCode(stellar_xdr::ContractCodeEntry {
+            ext: stellar_xdr::ContractCodeEntryExt::V0,
+            hash: Hash([1u8; 32]),
+            code: official_bytecode().try_into().unwrap(),
+        });
+
+        let error = parse_instance_wasm_hash(&entry).expect_err("must fail");
+        assert!(matches!(error, StellarSubmitError::ArtifactUnavailable(_)));
     }
 }

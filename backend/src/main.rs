@@ -68,11 +68,27 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             let contract_id = soroban.contract_id.clone();
             match stellar_submit.clone().with_soroban(soroban) {
                 Ok(client) => {
-                    info!(
-                        contract_id = %contract_id,
-                        "On-chain inheritance triggering enabled"
-                    );
                     stellar_submit = client;
+                    // Refuse to talk to a contract we cannot verify: fetch the
+                    // deployed WASM hash from Soroban RPC and compare it with
+                    // the official release hash before any transaction is
+                    // submitted (Issue #1137).
+                    match stellar_submit.verify_contract_artifact().await {
+                        Ok(deployed_hash) => {
+                            info!(
+                                contract_id = %contract_id,
+                                wasm_hash = %deployed_hash,
+                                "Contract artifact verified against the official release hash"
+                            );
+                        }
+                        Err(e) => {
+                            error!(
+                                contract_id = %contract_id,
+                                "Contract artifact verification failed: {e}"
+                            );
+                            std::process::exit(1);
+                        }
+                    }
                 }
                 Err(e) => {
                     // Running with a half-configured signer would silently skip
@@ -90,6 +106,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     let (kyc_tx, _) = tokio::sync::broadcast::channel(100);
     let (status_tx, _) = tokio::sync::broadcast::channel(100);
+    // System banner announcements pushed to WebSocket clients (Issue #1136)
+    let (announcement_tx, _) = tokio::sync::broadcast::channel(100);
     // Initialize state
     let state = Arc::new(AppState {
         anchor: Arc::new(inheritx_backend::stellar_anchor::AnchorRegistry::new(
@@ -103,6 +121,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         apy_cache: dashmap::DashMap::new(),
         kyc_tx: kyc_tx.clone(),
         status_tx,
+        announcement_tx,
         stellar_submit: stellar_submit.clone(),
     });
 

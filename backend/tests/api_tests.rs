@@ -54,6 +54,7 @@ fn setup_app_with_cache(plan_cache: PlanCache) -> axum::Router {
         db_pool,
         kyc_tx: tokio::sync::broadcast::channel(16).0,
         status_tx: tokio::sync::broadcast::channel(16).0,
+        announcement_tx: tokio::sync::broadcast::channel(16).0,
         kyc_webhook_secret: None,
         apy_config: inheritx_backend::yield_calculator::ApyConfig::default(),
         plan_cache,
@@ -590,6 +591,7 @@ async fn test_health_endpoint_without_db_yields_service_unavailable() {
         db_pool,
         kyc_tx: tokio::sync::broadcast::channel(16).0,
         status_tx: tokio::sync::broadcast::channel(16).0,
+        announcement_tx: tokio::sync::broadcast::channel(16).0,
         kyc_webhook_secret: None,
         apy_config: inheritx_backend::yield_calculator::ApyConfig::default(),
         plan_cache: PlanCache::disabled(),
@@ -645,6 +647,7 @@ async fn test_get_current_rate_cached() {
         db_pool,
         kyc_tx: tokio::sync::broadcast::channel(16).0,
         status_tx: tokio::sync::broadcast::channel(16).0,
+        announcement_tx: tokio::sync::broadcast::channel(16).0,
         kyc_webhook_secret: None,
         apy_config: inheritx_backend::yield_calculator::ApyConfig::default(),
         plan_cache,
@@ -1190,4 +1193,186 @@ async fn test_faucet_fund_get_missing_param() {
         .unwrap();
 
     assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+}
+
+// ─── System banner announcements (Issue #1136) ─────────────────────────────
+
+/// Signs an admin JWT with the process-wide `JWT_SECRET` the auth middleware
+/// reads, so the announcement CRUD handlers can be exercised past their
+/// auth gate without a database.
+fn sign_admin_jwt(role: &str) -> String {
+    std::env::set_var("JWT_SECRET", "announcement-test-secret");
+    let claims = inheritx_backend::auth::Claims {
+        sub: "admin-1".to_string(),
+        role: role.to_string(),
+        exp: (chrono::Utc::now().timestamp() + 3600) as usize,
+    };
+    jsonwebtoken::encode(
+        &jsonwebtoken::Header::default(),
+        &claims,
+        &jsonwebtoken::EncodingKey::from_secret(b"announcement-test-secret"),
+    )
+    .expect("token must sign")
+}
+
+#[tokio::test]
+async fn test_announcement_admin_routes_reject_missing_token() {
+    let app = setup_app();
+    let id = uuid::Uuid::new_v4();
+    let cases = [
+        (http::Method::POST, "/api/admin/announcements".to_string()),
+        (http::Method::GET, "/api/admin/announcements".to_string()),
+        (http::Method::GET, format!("/api/admin/announcements/{id}")),
+        (http::Method::PUT, format!("/api/admin/announcements/{id}")),
+        (
+            http::Method::DELETE,
+            format!("/api/admin/announcements/{id}"),
+        ),
+    ];
+
+    for (method, uri) in cases {
+        let response = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method(method.clone())
+                    .uri(&uri)
+                    .header(http::header::CONTENT_TYPE, "application/json")
+                    .header(http::header::USER_AGENT, "InheritX-Client/1.0")
+                    .body(Body::from(
+                        json!({ "title": "t", "message": "m" }).to_string(),
+                    ))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(
+            response.status(),
+            StatusCode::UNAUTHORIZED,
+            "{method} {uri} must require an admin JWT"
+        );
+    }
+}
+
+#[tokio::test]
+async fn test_announcement_admin_routes_reject_non_admin_token() {
+    let app = setup_app();
+    let token = sign_admin_jwt("user");
+
+    let response = app
+        .oneshot(
+            Request::builder()
+                .method(http::Method::POST)
+                .uri("/api/admin/announcements")
+                .header(http::header::CONTENT_TYPE, "application/json")
+                .header(http::header::AUTHORIZATION, format!("Bearer {token}"))
+                .header(http::header::USER_AGENT, "InheritX-Client/1.0")
+                .body(Body::from(
+                    json!({ "title": "t", "message": "m" }).to_string(),
+                ))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
+}
+
+#[tokio::test]
+async fn test_create_announcement_validates_before_touching_the_database() {
+    let app = setup_app();
+    let token = sign_admin_jwt("admin");
+
+    // Empty title → 400 from validation, never reaching PostgreSQL.
+    let response = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method(http::Method::POST)
+                .uri("/api/admin/announcements")
+                .header(http::header::CONTENT_TYPE, "application/json")
+                .header(http::header::AUTHORIZATION, format!("Bearer {token}"))
+                .header(http::header::USER_AGENT, "InheritX-Client/1.0")
+                .body(Body::from(
+                    json!({ "title": "   ", "message": "maintenance window" }).to_string(),
+                ))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+
+    // Unknown severity → 400 as well.
+    let response = app
+        .oneshot(
+            Request::builder()
+                .method(http::Method::POST)
+                .uri("/api/admin/announcements")
+                .header(http::header::CONTENT_TYPE, "application/json")
+                .header(http::header::AUTHORIZATION, format!("Bearer {token}"))
+                .header(http::header::USER_AGENT, "InheritX-Client/1.0")
+                .body(Body::from(
+                    json!({
+                        "title": "Testnet reset",
+                        "message": "The testnet resets at 12:00 UTC.",
+                        "severity": "catastrophic"
+                    })
+                    .to_string(),
+                ))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+}
+
+#[tokio::test]
+async fn test_public_announcements_endpoint_is_not_auth_gated() {
+    let app = setup_app();
+
+    let response = app
+        .oneshot(
+            Request::builder()
+                .method(http::Method::GET)
+                .uri("/api/announcements")
+                .header(http::header::USER_AGENT, "InheritX-Client/1.0")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+
+    // Public web users must never be bounced by the auth gate; without a
+    // reachable database the handler degrades to a 500, never a 401.
+    assert_ne!(response.status(), StatusCode::UNAUTHORIZED);
+    assert_ne!(response.status(), StatusCode::NOT_FOUND);
+}
+
+#[tokio::test]
+async fn test_announcement_event_serializes_for_websocket_consumers() {
+    let announcement = inheritx_backend::api::Announcement {
+        id: uuid::Uuid::new_v4(),
+        title: "Scheduled maintenance".to_string(),
+        message: "Back in 30 minutes.".to_string(),
+        severity: "warning".to_string(),
+        active: true,
+        starts_at: None,
+        ends_at: None,
+        created_by: Some("admin-1".to_string()),
+        created_at: chrono::Utc::now(),
+        updated_at: chrono::Utc::now(),
+    };
+    let event = inheritx_backend::ws::AnnouncementEvent {
+        event_type: "ANNOUNCEMENT_CREATED".to_string(),
+        announcement,
+    };
+
+    let value = serde_json::to_value(&event).expect("event serializes");
+    assert_eq!(value["event_type"], "ANNOUNCEMENT_CREATED");
+    assert_eq!(value["announcement"]["title"], "Scheduled maintenance");
+    assert_eq!(value["announcement"]["severity"], "warning");
+    // Unset schedule fields are omitted rather than sent as nulls.
+    assert!(value["announcement"].get("starts_at").is_none());
+    assert!(value["announcement"].get("ends_at").is_none());
 }

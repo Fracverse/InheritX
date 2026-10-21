@@ -43,6 +43,7 @@ fn app(db: PgPool) -> axum::Router {
         db_pool: db,
         kyc_tx: tokio::sync::broadcast::channel(16).0,
         status_tx: tokio::sync::broadcast::channel(16).0,
+        announcement_tx: tokio::sync::broadcast::channel(16).0,
         kyc_webhook_secret: None,
         apy_config: inheritx_backend::yield_calculator::ApyConfig::default(),
         plan_cache: PlanCache::disabled(),
