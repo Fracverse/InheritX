@@ -20,7 +20,7 @@ pub mod stellar_submit;
 pub mod telemetry;
 pub mod webhooks;
 pub mod ws;
-pub mod xdr to;
+pub mod xdr_to;
 pub mod yield_calculator;
 
 pub use api::{create_router, AppState, PlanResponse};
