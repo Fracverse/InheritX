@@ -39,7 +39,7 @@ fn setup_app() -> axum::Router {
 
 fn setup_app_with_cache(plan_cache: PlanCache) -> axum::Router {
     let database_url = std::env::var("DATABASE_URL")
-        .unwrap_or_else(|_| "postgres://postgres:password@localhost:5432/test".to_string());
+        .unwrap_or_else(|_| "postgres://localhost:1/nonexistent".to_string());
 
     // Lazy pool: no connection at setup time; these tests assert auth/validation
     // before most handlers touch the database.
