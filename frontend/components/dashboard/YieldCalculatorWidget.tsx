@@ -1,8 +1,8 @@
 'use client';
 
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 import { Info, TrendingUp } from 'lucide-react';
-import { useYieldCalculations } from '@/app/hooks/useYieldCalculations';
+import { fetchLiveYieldRateBps, useYieldCalculations } from '@/app/hooks/useYieldCalculations';
 import { YieldChart } from './YieldChart';
 
 interface TokenRateConfig {
@@ -29,7 +29,6 @@ interface YieldCalculatorWidgetProps {
   compact?: boolean;
 }
 
-// Default token configurations
 const DEFAULT_TOKEN_RATES: TokenRateConfig[] = [
   { name: 'XLM', displayName: 'Stellar (XLM)', rateBps: 200, description: '2% annual yield' },
   { name: 'USDC', displayName: 'USDC', rateBps: 300, description: '3% annual yield' },
@@ -70,7 +69,7 @@ function InfoTooltip({ text }: { text: string }) {
 export function YieldCalculatorWidget({
   initialAmount = 10000,
   initialYears = 5,
-  tokenRates = DEFAULT_TOKEN_RATES,
+  tokenRates,
   currency = '$',
   onChange,
   showComparison = true,
@@ -79,15 +78,52 @@ export function YieldCalculatorWidget({
   const [principal, setPrincipal] = useState(initialAmount);
   const [years, setYears] = useState(initialYears);
   const [selectedTokenIndex, setSelectedTokenIndex] = useState(0);
+  const [resolvedTokenRates, setResolvedTokenRates] = useState<TokenRateConfig[]>(
+    tokenRates && tokenRates.length > 0 ? tokenRates : DEFAULT_TOKEN_RATES,
+  );
 
-  // Calculate yield for the selected token
+  useEffect(() => {
+    if (tokenRates && tokenRates.length > 0) {
+      setResolvedTokenRates(tokenRates);
+      return;
+    }
+
+    let isMounted = true;
+
+    fetchLiveYieldRateBps()
+      .then((liveRateBps) => {
+        if (!isMounted) {
+          return;
+        }
+
+        setResolvedTokenRates(
+          DEFAULT_TOKEN_RATES.map((token) => ({
+            ...token,
+            rateBps: liveRateBps,
+          })),
+        );
+      })
+      .catch(() => {
+        if (isMounted) {
+          setResolvedTokenRates(DEFAULT_TOKEN_RATES);
+        }
+      });
+
+    return () => {
+      isMounted = false;
+    };
+  }, [tokenRates]);
+
   const selectedCalculation = useYieldCalculations(
     principal,
     years,
-    tokenRates[selectedTokenIndex]?.rateBps || 0
+    resolvedTokenRates[selectedTokenIndex]?.rateBps || 0,
   );
 
-  const selectedToken = tokenRates[selectedTokenIndex];
+  const selectedToken = resolvedTokenRates[selectedTokenIndex] || DEFAULT_TOKEN_RATES[0];
+  const idleValue = principal;
+  const sorobanYield = selectedCalculation.finalAccruedYield;
+  const sorobanTotal = selectedCalculation.finalTotal;
 
   // Notify parent component of changes
   const handleAmountChange = (value: string) => {
@@ -189,11 +225,11 @@ export function YieldCalculatorWidget({
       </div>
 
       {/* Token Selection */}
-      {showComparison && tokenRates.length > 1 && (
+      {showComparison && resolvedTokenRates.length > 1 && (
         <div>
           <label className="text-xs uppercase tracking-wider text-gray-500">Token Selection</label>
           <div className="mt-3 grid gap-2 sm:grid-cols-3">
-            {tokenRates.map((token, index) => (
+            {resolvedTokenRates.map((token, index) => (
               <button
                 key={token.name}
                 type="button"
@@ -213,6 +249,39 @@ export function YieldCalculatorWidget({
           </div>
         </div>
       )}
+
+      <div className="grid gap-3 sm:grid-cols-3">
+        <div className="rounded-lg border border-white/10 bg-white/[0.02] p-3">
+          <p className="text-[10px] uppercase tracking-[0.12em] text-gray-500">Idle value</p>
+          <p className="mt-2 text-lg font-semibold text-slate-100">
+            {currency}
+            {idleValue.toLocaleString('en-US', {
+              minimumFractionDigits: 2,
+              maximumFractionDigits: 2,
+            })}
+          </p>
+        </div>
+        <div className="rounded-lg border border-emerald-500/20 bg-emerald-500/5 p-3">
+          <p className="text-[10px] uppercase tracking-[0.12em] text-emerald-300/80">Soroban yield</p>
+          <p className="mt-2 text-lg font-semibold text-emerald-300">
+            +{currency}
+            {sorobanYield.toLocaleString('en-US', {
+              minimumFractionDigits: 2,
+              maximumFractionDigits: 2,
+            })}
+          </p>
+        </div>
+        <div className="rounded-lg border border-primary/30 bg-primary/5 p-3">
+          <p className="text-[10px] uppercase tracking-[0.12em] text-primary/80">Net value</p>
+          <p className="mt-2 text-lg font-semibold text-primary">
+            {currency}
+            {sorobanTotal.toLocaleString('en-US', {
+              minimumFractionDigits: 2,
+              maximumFractionDigits: 2,
+            })}
+          </p>
+        </div>
+      </div>
 
       {/* Yield Chart */}
       <YieldChart
