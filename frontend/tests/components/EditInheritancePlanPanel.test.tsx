@@ -219,7 +219,9 @@ describe("EditInheritancePlanPanel", () => {
       />
     );
 
-    const toggle = screen.getByRole("switch");
+    // The yield harvesting switch is the first switch rendered, ahead of the
+    // Genetic Privacy toggles.
+    const toggle = screen.getAllByRole("switch")[0];
     expect(toggle).toHaveAttribute("aria-checked", "false");
 
     await user.click(toggle);

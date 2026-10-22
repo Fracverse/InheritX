@@ -16,6 +16,8 @@
  * in the meantime.
  */
 
+import type { RetryConfig } from "./client";
+
 // ─── Enums (mirrors contract enums) ────────────────────────────────────────
 
 export type DNAVerificationStatus =
@@ -107,15 +109,22 @@ export interface PrivacySettings {
   shareWithFamily: boolean;
   allowHealthAnalysis: boolean;
   visibleToRelatives: boolean;
-  /** -1 means "indefinite" */
-  dataRetentionDays: number;
+  /** Opt in to matching this plan's DNA hash against relatives who have opted in. */
+  allowFamilyMatching: boolean;
+  /** Compare genetic data via zero-knowledge hashes instead of raw data. */
+  zeroKnowledgeHashing: boolean;
+  /** Days until stored genetic data expires. -1 means "indefinite". */
+  dataExpiryDays: number;
 }
 
 export const DEFAULT_PRIVACY_SETTINGS: PrivacySettings = {
   shareWithFamily: false,
   allowHealthAnalysis: false,
   visibleToRelatives: false,
-  dataRetentionDays: 365,
+  allowFamilyMatching: false,
+  // Privacy-preserving default: hashing is on unless the user opts out.
+  zeroKnowledgeHashing: true,
+  dataExpiryDays: 365,
 };
 
 export interface GeneticUploadResult {
@@ -141,11 +150,36 @@ export interface FamilyInvitation {
 
 // ─── API Client ─────────────────────────────────────────────────────────────
 
+/**
+ * Retry policy for privacy-settings writes: transient network failures and the
+ * listed statuses are retried with exponential backoff and full jitter
+ * (mirrors `ApiClient`'s default policy in ./client.ts).
+ */
+const PRIVACY_RETRY: RetryConfig = {
+  maxRetries: 3,
+  baseDelayMs: 1000,
+  maxDelayMs: 10_000,
+  retryOnStatuses: [408, 429, 500, 502, 503, 504],
+};
+
 export class GeneticVerificationAPI {
   private baseUrl: string;
 
   constructor(baseUrl: string = "") {
     this.baseUrl = baseUrl;
+  }
+
+  /** Exponential backoff with full jitter for a given retry attempt. */
+  private computeRetryDelay(attempt: number): number {
+    const exponentialDelay = PRIVACY_RETRY.baseDelayMs * Math.pow(2, attempt);
+    const cappedDelay = Math.min(exponentialDelay, PRIVACY_RETRY.maxDelayMs);
+    const randomBytes = new Uint32Array(1);
+    globalThis.crypto?.getRandomValues(randomBytes);
+    return ((randomBytes[0] ?? 0) / 0xffffffff) * cappedDelay;
+  }
+
+  private delay(ms: number): Promise<void> {
+    return new Promise((resolve) => setTimeout(resolve, ms));
   }
 
   /**
@@ -205,21 +239,54 @@ export class GeneticVerificationAPI {
     return data.data;
   }
 
-  /** TODO(backend): `/api/genetic/:planId/privacy` does not exist yet. */
-  async updatePrivacySettings(
+  /**
+   * Persist a plan's genetic privacy preferences.
+   *
+   * Transient failures (network errors and the statuses listed in
+   * `PRIVACY_RETRY.retryOnStatuses`) are retried with exponential backoff and
+   * full jitter; non-retryable responses (e.g. 400/403) fail immediately.
+   *
+   * TODO(backend): `/api/genetic/:planId/privacy` does not exist yet.
+   */
+  async updateGeneticPrivacySettings(
     planId: string,
     settings: PrivacySettings,
   ): Promise<PrivacySettings> {
-    const response = await fetch(
-      `${this.baseUrl}/api/genetic/${planId}/privacy`,
-      {
-        method: "PUT",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(settings),
-      },
-    );
+    const maxAttempts = PRIVACY_RETRY.maxRetries + 1;
 
-    if (!response.ok) {
+    for (let attempt = 0; attempt < maxAttempts; attempt++) {
+      if (attempt > 0) {
+        await this.delay(this.computeRetryDelay(attempt - 1));
+      }
+
+      let response: Response;
+      try {
+        response = await fetch(
+          `${this.baseUrl}/api/genetic/${planId}/privacy`,
+          {
+            method: "PUT",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify(settings),
+          },
+        );
+      } catch (err) {
+        // Network-level failure — retry until attempts are exhausted.
+        if (attempt < maxAttempts - 1) continue;
+        throw err;
+      }
+
+      if (response.ok) {
+        const data = await response.json();
+        return data.data;
+      }
+
+      if (
+        PRIVACY_RETRY.retryOnStatuses.includes(response.status) &&
+        attempt < maxAttempts - 1
+      ) {
+        continue;
+      }
+
       const error = await response.json().catch(() => ({}));
       throw new Error(
         error.error ||
@@ -227,8 +294,7 @@ export class GeneticVerificationAPI {
       );
     }
 
-    const data = await response.json();
-    return data.data;
+    throw new Error("Updating privacy settings failed after retries");
   }
 
   /** TODO(backend): `/api/genetic/:planId/family/invite` does not exist yet. */
