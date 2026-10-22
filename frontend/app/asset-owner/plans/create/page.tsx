@@ -455,6 +455,7 @@ export default function CreateInheritancePlanPage() {
             </div>
 
             <CrossChainDepositSection
+              planId={createdPlanId}
               amount={draft.amount}
               onAmountChange={(amount) => updateDraft("amount", amount)}
               onBridgeComplete={handleBridgeComplete}
@@ -706,6 +707,14 @@ export default function CreateInheritancePlanPage() {
                   ) : null}
                 </span>
               </div>
+            )}
+            {createdPlanId && (
+              <CrossChainDepositSection
+                planId={createdPlanId}
+                amount={draft.amount}
+                onAmountChange={(amount) => updateDraft("amount", amount)}
+                onBridgeComplete={handleBridgeComplete}
+              />
             )}
           </div>
         )}

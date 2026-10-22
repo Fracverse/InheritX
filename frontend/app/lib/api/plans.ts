@@ -82,6 +82,12 @@ export interface ClaimPlanRequest {
   two_fa_code: string;
 }
 
+export interface PlanDepositAddress {
+  address: string;
+  memo: string;
+  memo_type: "text";
+}
+
 /** Total value locked for a single asset, as returned by the backend's
  * NUMERIC(78, 0) `plans.amount` column (string-encoded for precision). */
 export interface AssetLockedValue {
@@ -155,6 +161,17 @@ export class PlansAPI {
       return response.data!;
     }
     return response as Plan;
+  }
+
+  /** Get a plan's Stellar deposit address and unique memo */
+  async getDepositAddress(planId: string): Promise<PlanDepositAddress> {
+    const response = await apiClient.get<
+      ApiResponse<PlanDepositAddress> | PlanDepositAddress
+    >(`/api/plans/${planId}/deposit-address`);
+    if (response && typeof response === "object" && "data" in response) {
+      return response.data!;
+    }
+    return response as PlanDepositAddress;
   }
 
   /**
