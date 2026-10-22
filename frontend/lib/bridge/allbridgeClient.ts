@@ -27,6 +27,42 @@ function parseAmount(amount: string): number {
   return Number.isFinite(parsed) && parsed > 0 ? parsed : 0;
 }
 
+export function buildSourceExplorerUrl(
+  chainId: OriginChainId,
+  txHash: string
+): string | null {
+  if (!txHash) return null;
+
+  const normalizedHash = txHash.trim();
+  const explorerMap: Record<OriginChainId, string> = {
+    ETH: "https://sepolia.etherscan.io/tx/",
+    BSC: "https://testnet.bscscan.com/tx/",
+    POL: "https://amoy.polygonscan.com/tx/",
+    ARB: "https://sepolia.arbiscan.io/tx/",
+    OPT: "https://sepolia-optimism.etherscan.io/tx/",
+    AVA: "https://testnet.snowtrace.io/tx/",
+    SOL: "https://explorer.solana.com/tx/",
+  };
+
+  const baseUrl = explorerMap[chainId];
+  if (!baseUrl) return null;
+
+  if (chainId === "SOL") {
+    return `${baseUrl}${encodeURIComponent(normalizedHash)}?cluster=testnet`;
+  }
+
+  return `${baseUrl}${normalizedHash}`;
+}
+
+export function buildStellarExplorerUrl(txHash: string): string | null {
+  if (!txHash) return null;
+  const network =
+    process.env.NEXT_PUBLIC_STELLAR_NETWORK_PASSPHRASE === "Public Global Stellar Network ; September 2015"
+      ? "public"
+      : "testnet";
+  return `https://stellar.expert/explorer/${network}/tx/${txHash}`;
+}
+
 function buildRouteId(request: BridgeQuoteRequest): string {
   return `${request.sourceChain}:${request.sourceToken.symbol}->${DESTINATION_CHAIN}:${request.amount}`;
 }
@@ -250,6 +286,7 @@ export async function executeBridgeTransfer(
       status: "completed",
       detail: `Source transaction submitted (${sourceTxId.slice(0, 10)}…).`,
       sourceTxId,
+      sourceExplorerUrl: buildSourceExplorerUrl(quote.sourceChain, sourceTxId),
       transferId,
     });
   } catch (error) {
@@ -269,6 +306,7 @@ export async function executeBridgeTransfer(
     status: "active",
     detail: "Allbridge relayer is processing your cross-chain transfer…",
     sourceTxId,
+    sourceExplorerUrl: buildSourceExplorerUrl(quote.sourceChain, sourceTxId),
     transferId,
   });
 
@@ -279,6 +317,7 @@ export async function executeBridgeTransfer(
     status: "completed",
     detail: "Relayer confirmed delivery to Stellar.",
     sourceTxId,
+    sourceExplorerUrl: buildSourceExplorerUrl(quote.sourceChain, sourceTxId),
     transferId,
   });
 
@@ -287,7 +326,10 @@ export async function executeBridgeTransfer(
     status: "active",
     detail: "Awaiting Freighter signature to lock tokens in your inheritance plan…",
     sourceTxId,
+    sourceExplorerUrl: buildSourceExplorerUrl(quote.sourceChain, sourceTxId),
     transferId,
+    stellarTxHash: transferId,
+    stellarExplorerUrl: buildStellarExplorerUrl(transferId),
   });
 
   return { sourceTxId, transferId };
@@ -295,13 +337,17 @@ export async function executeBridgeTransfer(
 
 export async function confirmStellarLock(
   onStatusUpdate: (update: BridgeStatusUpdate) => void,
-  transferId: string
+  transferId: string,
+  stellarTxHash?: string
 ): Promise<void> {
+  const finalHash = stellarTxHash ?? transferId;
   onStatusUpdate({
     step: "stellar_lock",
     status: "completed",
     detail: "Tokens locked successfully on Stellar/Soroban.",
     transferId,
+    stellarTxHash: finalHash,
+    stellarExplorerUrl: buildStellarExplorerUrl(finalHash),
   });
 }
 

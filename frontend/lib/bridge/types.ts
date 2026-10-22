@@ -15,6 +15,11 @@ export interface BridgeStep {
   label: string;
   status: BridgeStepStatus;
   detail?: string;
+  sourceTxId?: string;
+  sourceExplorerUrl?: string;
+  transferId?: string;
+  stellarTxHash?: string;
+  stellarExplorerUrl?: string;
 }
 
 export interface OriginChain {
@@ -65,7 +70,10 @@ export interface BridgeStatusUpdate {
   status: BridgeStepStatus;
   detail?: string;
   sourceTxId?: string;
+  sourceExplorerUrl?: string;
   transferId?: string;
+  stellarTxHash?: string;
+  stellarExplorerUrl?: string;
 }
 
 export interface EvmProvider {
