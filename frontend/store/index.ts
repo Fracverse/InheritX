@@ -5,6 +5,8 @@
 
 import { create } from "zustand";
 import { persist } from "zustand/middleware";
+import type { PrivacySettings } from "@/app/lib/api/geneticVerification";
+
 // ─── Realtime (WebSocket) helpers ─────────────────────────────────────────────
 // Backend streams KycUpdateEvent / PlanStatusEvent over one broadcast socket
 // (registered at /ws/kyc). Override with NEXT_PUBLIC_WS_URL or NEXT_PUBLIC_WS_PATH.
@@ -160,6 +162,7 @@ type AppStore = WalletSlice &
   KYCSlice &
   PlansSlice &
   LendingSlice &
+  GeneticPrivacySlice &
   UISlice &
   RealtimeSlice;
 
@@ -204,6 +207,13 @@ export const useAppStore = create<AppStore>()(
       setLending: (data) => set({ lending: data }),
       setIsLoadingLending: (v) => set({ isLoadingLending: v }),
       setLendingError: (err) => set({ lendingError: err }),
+
+      // Genetic privacy
+      geneticPrivacy: {},
+      setGeneticPrivacySettings: (planId, settings) =>
+        set((s) => ({
+          geneticPrivacy: { ...s.geneticPrivacy, [planId]: settings },
+        })),
 
       // Realtime (WebSocket)
       wsConnected: false,
