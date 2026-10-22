@@ -5,6 +5,7 @@
 
 import { create } from "zustand";
 import { persist } from "zustand/middleware";
+import type { PrivacySettings } from "@/app/lib/api/geneticVerification";
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
@@ -79,6 +80,17 @@ interface LendingSlice {
   setLendingError: (err: string | null) => void;
 }
 
+// ─── Genetic Privacy Slice ────────────────────────────────────────────────────
+
+interface GeneticPrivacySlice {
+  /** Last-saved genetic privacy settings, keyed by plan id. */
+  geneticPrivacy: Record<string, PrivacySettings>;
+  setGeneticPrivacySettings: (
+    planId: string,
+    settings: PrivacySettings,
+  ) => void;
+}
+
 // ─── UI Slice ─────────────────────────────────────────────────────────────────
 
 interface UISlice {
@@ -88,7 +100,12 @@ interface UISlice {
 
 // ─── Combined Store ───────────────────────────────────────────────────────────
 
-type AppStore = WalletSlice & KYCSlice & PlansSlice & LendingSlice & UISlice;
+type AppStore = WalletSlice &
+  KYCSlice &
+  PlansSlice &
+  LendingSlice &
+  GeneticPrivacySlice &
+  UISlice;
 
 export const useAppStore = create<AppStore>()(
   persist(
@@ -131,6 +148,13 @@ export const useAppStore = create<AppStore>()(
       setIsLoadingLending: (v) => set({ isLoadingLending: v }),
       setLendingError: (err) => set({ lendingError: err }),
 
+      // Genetic privacy
+      geneticPrivacy: {},
+      setGeneticPrivacySettings: (planId, settings) =>
+        set((s) => ({
+          geneticPrivacy: { ...s.geneticPrivacy, [planId]: settings },
+        })),
+
       // UI
       locale: "en",
       setLocale: (locale) => set({ locale }),
@@ -143,6 +167,7 @@ export const useAppStore = create<AppStore>()(
         selectedWalletId: state.selectedWalletId,
         kycStatus: state.kycStatus,
         locale: state.locale,
+        geneticPrivacy: state.geneticPrivacy,
       }),
     },
   ),
