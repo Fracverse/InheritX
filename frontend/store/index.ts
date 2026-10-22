@@ -5,7 +5,26 @@
 
 import { create } from "zustand";
 import { persist } from "zustand/middleware";
-import type { PrivacySettings } from "@/app/lib/api/geneticVerification";
+// ─── Realtime (WebSocket) helpers ─────────────────────────────────────────────
+// Backend streams KycUpdateEvent / PlanStatusEvent over one broadcast socket
+// (registered at /ws/kyc). Override with NEXT_PUBLIC_WS_URL or NEXT_PUBLIC_WS_PATH.
+
+const WS_API_BASE = process.env.NEXT_PUBLIC_API_URL || "http://localhost:8080";
+const WS_PATH = process.env.NEXT_PUBLIC_WS_PATH || "/ws/kyc";
+
+function buildWsUrl(): string {
+  const explicit = process.env.NEXT_PUBLIC_WS_URL;
+  if (explicit) return explicit;
+  return WS_API_BASE.replace(/^http/i, "ws").replace(/\/$/, "") + WS_PATH;
+}
+
+let socket: WebSocket | null = null;
+let reconnectTimer: ReturnType<typeof setTimeout> | null = null;
+let reconnectAttempts = 0;
+let shouldReconnect = false;
+let watchedAddress: string | null = null;
+let toastSeq = 0;
+
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
@@ -100,16 +119,54 @@ interface UISlice {
 
 // ─── Combined Store ───────────────────────────────────────────────────────────
 
+// ─── Realtime (WebSocket) Slice ───────────────────────────────────────────────
+
+export interface PlanStatusEvent {
+  event_type: string;
+  plan_id: string;
+  status: string;
+  message: string;
+  tx_hash?: string;
+  freeze_status?: string;
+  recall_progress?: number;
+  settlement_status?: string;
+  remaining_loaned?: number;
+}
+
+export interface KycUpdateEvent {
+  wallet_address: string;
+  kyc_status: string;
+  event_type: string;
+}
+
+export interface ToastItem {
+  id: number;
+  kind: "success" | "info" | "warning" | "error";
+  title: string;
+  message?: string;
+}
+
+interface RealtimeSlice {
+  wsConnected: boolean;
+  toasts: ToastItem[];
+  lastPlanEvent: PlanStatusEvent | null;
+  pushToast: (t: Omit<ToastItem, "id">) => void;
+  dismissToast: (id: number) => void;
+  connectWs: (walletAddress?: string | null) => void;
+  disconnectWs: () => void;
+}
+
 type AppStore = WalletSlice &
   KYCSlice &
   PlansSlice &
   LendingSlice &
-  GeneticPrivacySlice &
-  UISlice;
+  UISlice &
+  RealtimeSlice;
+
 
 export const useAppStore = create<AppStore>()(
   persist(
-    (set) => ({
+    (set, get) => ({
       // Wallet
       address: null,
       selectedWalletId: null,
@@ -148,12 +205,108 @@ export const useAppStore = create<AppStore>()(
       setIsLoadingLending: (v) => set({ isLoadingLending: v }),
       setLendingError: (err) => set({ lendingError: err }),
 
-      // Genetic privacy
-      geneticPrivacy: {},
-      setGeneticPrivacySettings: (planId, settings) =>
-        set((s) => ({
-          geneticPrivacy: { ...s.geneticPrivacy, [planId]: settings },
-        })),
+      // Realtime (WebSocket)
+      wsConnected: false,
+      toasts: [],
+      lastPlanEvent: null,
+      pushToast: (t) => {
+        const id = ++toastSeq;
+        set((s) => ({ toasts: [...s.toasts.slice(-4), { ...t, id }] }));
+        setTimeout(() => get().dismissToast(id), 6000);
+      },
+      dismissToast: (id) =>
+        set((s) => ({ toasts: s.toasts.filter((x) => x.id !== id) })),
+      connectWs: (walletAddress) => {
+        if (typeof window === "undefined" || typeof WebSocket === "undefined") return;
+        watchedAddress = walletAddress ?? null;
+        if (
+          socket &&
+          (socket.readyState === WebSocket.OPEN ||
+            socket.readyState === WebSocket.CONNECTING)
+        ) {
+          return;
+        }
+        shouldReconnect = true;
+        const ws = new WebSocket(buildWsUrl());
+        socket = ws;
+
+        ws.onopen = () => {
+          reconnectAttempts = 0;
+          set({ wsConnected: true });
+        };
+
+        ws.onmessage = (msg) => {
+          let data: unknown;
+          try {
+            data = JSON.parse(String(msg.data));
+          } catch {
+            return;
+          }
+          if (!data || typeof data !== "object") return;
+          const ev = data as Record<string, unknown>;
+
+          // KycUpdateEvent: { wallet_address, kyc_status, event_type }
+          if (typeof ev.kyc_status === "string" && typeof ev.wallet_address === "string") {
+            const mine = watchedAddress ?? get().address;
+            if (!mine || mine.toLowerCase() !== ev.wallet_address.toLowerCase()) return;
+            const next = ev.kyc_status.toLowerCase();
+            if (next === "pending" || next === "submitted" || next === "approved" || next === "rejected") {
+              set({ kycStatus: next as KYCStatus });
+            }
+            get().pushToast({
+              kind: next === "approved" ? "success" : next === "rejected" ? "error" : "info",
+              title: "KYC update",
+              message: `Your KYC status is now ${next}.`,
+            });
+            return;
+          }
+
+          // PlanStatusEvent: { event_type, plan_id, status, message, ... }
+          if (typeof ev.plan_id === "string" && typeof ev.status === "string") {
+            const e = ev as unknown as PlanStatusEvent;
+            const type = String(e.event_type ?? "").toLowerCase();
+            set((s) => ({
+              lastPlanEvent: e,
+              plans: s.plans.map((p) =>
+                p.id === e.plan_id ? { ...p, status: e.status as Plan["status"] } : p,
+              ),
+            }));
+            get().pushToast({
+              kind: /fail|error/.test(type)
+                ? "error"
+                : /complete|paid|payout|success/.test(type)
+                  ? "success"
+                  : "info",
+              title: String(e.event_type ?? "Plan update").replace(/[._]/g, " "),
+              message: e.message,
+            });
+          }
+        };
+
+        ws.onclose = () => {
+          set({ wsConnected: false });
+          socket = null;
+          if (!shouldReconnect) return;
+          const delay = Math.min(30000, 1000 * 2 ** reconnectAttempts++);
+          reconnectTimer = setTimeout(() => get().connectWs(watchedAddress), delay);
+        };
+
+        ws.onerror = () => {
+          ws.close();
+        };
+      },
+      disconnectWs: () => {
+        shouldReconnect = false;
+        if (reconnectTimer) {
+          clearTimeout(reconnectTimer);
+          reconnectTimer = null;
+        }
+        if (socket) {
+          socket.close();
+          socket = null;
+        }
+        set({ wsConnected: false });
+      },
 
       // UI
       locale: "en",
