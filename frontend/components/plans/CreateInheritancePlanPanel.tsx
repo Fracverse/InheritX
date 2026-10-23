@@ -64,6 +64,7 @@ export function CreateInheritancePlanPanel() {
     { ...DEFAULT_BENEFICIARY_DRAFT, allocationBps: 10000, claimCode: generateClaimCode() },
   ]);
   const [bridgeTransferId, setBridgeTransferId] = useState<string | null>(null);
+  const [createdPlanId, setCreatedPlanId] = useState<string | null>(null);
   const [status, setStatus] = useState<SubmitStatus>("idle");
   const [stage, setStage] = useState<CreatePlanStage | null>(null);
   const [errorMessage, setErrorMessage] = useState("");
@@ -207,7 +208,8 @@ export function CreateInheritancePlanPanel() {
           yield_rate_bps: 0,
           is_active: true,
         };
-        await plansAPI.createPlan(request);
+        const savedPlan = await plansAPI.createPlan(request);
+        setCreatedPlanId(savedPlan.id);
       } catch (syncError) {
         console.warn("On-chain plan created, but off-chain sync failed:", syncError);
       }
@@ -408,6 +410,7 @@ export function CreateInheritancePlanPanel() {
           </section>
 
           <CrossChainDepositSection
+            planId={createdPlanId}
             amount={depositAmount}
             onAmountChange={setDepositAmount}
             onBridgeComplete={handleBridgeComplete}

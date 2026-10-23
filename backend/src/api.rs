@@ -553,6 +553,7 @@ pub fn create_router(state: Arc<AppState>) -> Router {
         .route("/api/plans", get(get_plans))
         .route("/api/plans/due-for-claim", get(get_plans_due_for_claim))
         .route("/api/plans/due-for-claim/{id}", get(get_plan_due_for_claim))
+        .route("/api/plans/{id}/deposit-address", get(get_plan_deposit_address))
         .route("/api/plans/{id}", get(get_plan_by_id))
         .route("/api/plans/{id}/revisions", get(get_plan_revisions))
         .route("/api/plans/{id}/guardian-sign", post(guardian_sign))
@@ -608,6 +609,51 @@ pub fn create_router(state: Arc<AppState>) -> Router {
         .route("/metrics", get(metrics_handler));
 
     router.layer(cors).with_state(state)
+}
+
+/// Return the Stellar owner address and a unique memo for deposits to a plan.
+async fn get_plan_deposit_address(
+    State(state): State<Arc<AppState>>,
+    Path(plan_id): Path<uuid::Uuid>,
+) -> impl IntoResponse {
+    let owner_address = match sqlx::query_scalar::<_, String>(
+        "SELECT owner_address FROM plans WHERE id = $1",
+    )
+    .bind(plan_id)
+    .fetch_optional(&state.db_pool)
+    .await
+    {
+        Ok(Some(address)) => address,
+        Ok(None) => {
+            return (
+                StatusCode::NOT_FOUND,
+                Json(serde_json::json!({ "error": "Plan not found" })),
+            )
+                .into_response();
+        }
+        Err(error) => {
+            tracing::error!(%error, %plan_id, "Failed to fetch plan deposit address");
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(serde_json::json!({ "error": "Failed to fetch plan deposit address" })),
+            )
+                .into_response();
+        }
+    };
+
+    let memo = plan_id.simple().to_string()[..28].to_owned();
+    (
+        StatusCode::OK,
+        Json(serde_json::json!({
+            "status": "ok",
+            "data": {
+                "address": owner_address,
+                "memo": memo,
+                "memo_type": "text"
+            }
+        })),
+    )
+        .into_response()
 }
 
 #[derive(Debug, Clone, Serialize, sqlx::FromRow)]
