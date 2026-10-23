@@ -5,19 +5,22 @@ use crate::middleware::{
 };
 use axum::http::{HeaderValue, Method};
 use axum::{
-    extract::{Path, Query, State},
+    extract::{Extension, Path, Query, State},
     http::{header::HeaderName, StatusCode},
     middleware::from_fn,
     response::{IntoResponse, Response},
     routing::{get, post, put},
     Json, Router,
 };
+use base64::Engine as _;
+use ed25519_dalek::{Signature as Ed25519Signature, Verifier, VerifyingKey};
 // These imports are only used by the PDF report handler
 #[cfg(feature = "pdf")]
 use axum::{body::Body, http::header};
 use chrono::{DateTime, Utc};
 use rust_decimal::Decimal;
 use serde::{Deserialize, Serialize};
+use std::collections::HashSet;
 use std::sync::Arc;
 use tower_http::cors::CorsLayer;
 use tracing::{error, warn};
@@ -25,6 +28,7 @@ use uuid::Uuid;
 
 use crate::auth::{
     jwt_auth_middleware, jwt_or_signature_auth_middleware, signature_auth_middleware, Claims,
+    UserContext,
 };
 use crate::cache::PlanCache;
 use crate::kyc_webhook::kyc_webhook_handler;
@@ -73,6 +77,9 @@ pub struct AppState {
     pub apy_cache: dashmap::DashMap<String, u32>,
     pub kyc_tx: tokio::sync::broadcast::Sender<crate::ws::KycUpdateEvent>,
     pub status_tx: tokio::sync::broadcast::Sender<crate::ws::PlanStatusEvent>,
+    /// Broadcasts system banner announcement changes to WebSocket clients
+    /// (Issue #1136).
+    pub announcement_tx: tokio::sync::broadcast::Sender<crate::ws::AnnouncementEvent>,
     pub stellar_submit: StellarSubmitClient,
 }
 
@@ -112,6 +119,51 @@ pub struct ClaimPlanRequest {
 pub struct CancelPlanRequest {
     /// Optional: signed XDR transaction for on-chain deactivation.
     pub signed_transaction: Option<String>,
+}
+
+/// A single guardian signature submitted to the emergency unlock aggregator.
+///
+/// `guardian` accepts either a Stellar `G…` account strkey or a hex-encoded
+/// ed25519 public key. `signature` accepts hex or base64. When `message` is
+/// omitted, the guardian must sign the canonical payload produced by
+/// [`guardian_unlock_message`] and supply the same `timestamp`.
+#[derive(Debug, Deserialize)]
+pub struct GuardianSignRequest {
+    #[serde(
+        alias = "guardian_address",
+        alias = "guardian_public_key",
+        alias = "public_key"
+    )]
+    pub guardian: String,
+    pub signature: String,
+    pub message: Option<String>,
+    pub timestamp: Option<i64>,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct PlanRevisionsQuery {
+    pub limit: Option<i64>,
+    pub offset: Option<i64>,
+}
+
+#[derive(Debug, Serialize, sqlx::FromRow)]
+pub struct PlanRevisionRow {
+    pub id: Uuid,
+    pub plan_id: Uuid,
+    pub revision_number: i64,
+    pub previous_values: serde_json::Value,
+    pub new_values: serde_json::Value,
+    pub changed_fields: Vec<String>,
+    pub updated_by: String,
+    pub updated_at: DateTime<Utc>,
+}
+
+#[derive(Debug, sqlx::FromRow)]
+struct GuardianPlanRow {
+    owner_address: String,
+    status: String,
+    trigger_tx_hash: Option<String>,
+    onchain_plan_id: Option<i64>,
 }
 
 #[derive(Deserialize, serde::Serialize)]
@@ -427,7 +479,13 @@ pub fn create_router(state: Arc<AppState>) -> Router {
                 is_origin_allowed(origin_str, &custom_origins_cors)
             },
         ))
-        .allow_methods([Method::GET, Method::POST, Method::OPTIONS])
+        .allow_methods([
+            Method::GET,
+            Method::POST,
+            Method::PUT,
+            Method::DELETE,
+            Method::OPTIONS,
+        ])
         .allow_headers([
             axum::http::header::CONTENT_TYPE,
             axum::http::header::AUTHORIZATION,
@@ -461,6 +519,17 @@ pub fn create_router(state: Arc<AppState>) -> Router {
     let admin_routes = Router::new()
         .route("/api/plans/{id}/report", get(get_plan_report))
         .route("/api/analytics/plan-statistics", get(get_plan_statistics))
+        // System banner notification management (Issue #1136)
+        .route(
+            "/api/admin/announcements",
+            post(create_announcement).get(list_announcements),
+        )
+        .route(
+            "/api/admin/announcements/{id}",
+            get(get_announcement)
+                .put(update_announcement)
+                .delete(delete_announcement),
+        )
         .route_layer(from_fn(jwt_auth_middleware));
 
     // Loan lifecycle: admin JWT or wallet signature.
@@ -485,6 +554,8 @@ pub fn create_router(state: Arc<AppState>) -> Router {
         .route("/api/plans/due-for-claim", get(get_plans_due_for_claim))
         .route("/api/plans/due-for-claim/{id}", get(get_plan_due_for_claim))
         .route("/api/plans/{id}", get(get_plan_by_id))
+        .route("/api/plans/{id}/revisions", get(get_plan_revisions))
+        .route("/api/plans/{id}/guardian-sign", post(guardian_sign))
         .route(
             "/api/plans/{id}/trigger-info",
             get(crate::loan_lifecycle::get_trigger_info),
@@ -498,12 +569,17 @@ pub fn create_router(state: Arc<AppState>) -> Router {
         .route("/api/kyc/required", get(is_kyc_required))
         .route("/api/kyc/requirements", get(get_kyc_requirements))
         .route("/api/health", get(health_check))
+        .route("/api/announcements", get(list_active_announcements))
         .route("/api/transactions/submit", post(submit_transaction))
         .route("/api/admin/login", post(admin_login))
         .route("/api/yield/calculate", get(calculate_yield))
         .route(
             "/api/plans/{id}/yield-snapshots",
             get(get_plan_yield_snapshots),
+        )
+        .route(
+            "/api/faucet/fund",
+            post(faucet_fund_post).get(faucet_fund_get),
         )
         .route("/ws/kyc", get(ws_handler));
     let router = Router::new()
@@ -975,9 +1051,73 @@ async fn create_plan(
     (StatusCode::CREATED, Json(response)).into_response()
 }
 
+/// Snapshot the auditable parts of a plan before it is modified.
+fn plan_revision_values(plan: &PlanRow, beneficiaries: &[BeneficiaryRow]) -> serde_json::Value {
+    let beneficiaries: Vec<serde_json::Value> = beneficiaries
+        .iter()
+        .map(|beneficiary| {
+            serde_json::json!({
+                "address": &beneficiary.wallet_address,
+                "allocation_bps": beneficiary.allocation_bps,
+                "fiat_anchor_info": &beneficiary.fiat_anchor_info,
+                "fiat_daily_limit": beneficiary.fiat_daily_limit.to_string(),
+            })
+        })
+        .collect();
+
+    serde_json::json!({
+        "grace_period": plan.grace_period,
+        "grace_period_seconds": plan.grace_period_seconds,
+        "earn_yield": plan.earn_yield,
+        "yield_rate_bps": plan.yield_rate_bps,
+        "beneficiaries": beneficiaries,
+    })
+}
+
+/// Apply the fields present in an update to a revision snapshot.
+fn apply_update_to_revision_values(values: &mut serde_json::Value, payload: &UpdatePlanRequest) {
+    if let Some(grace_period) = payload.grace_period {
+        values["grace_period"] = serde_json::json!(grace_period as i64);
+        values["grace_period_seconds"] = serde_json::json!(grace_period as i64);
+    }
+
+    if let Some(earn_yield) = payload.earn_yield {
+        values["earn_yield"] = serde_json::json!(earn_yield);
+    }
+
+    if let Some(yield_rate_bps) = payload.yield_rate_bps {
+        values["yield_rate_bps"] = serde_json::json!(yield_rate_bps as i32);
+    }
+
+    if !payload.beneficiaries.is_empty() {
+        let beneficiaries: Vec<serde_json::Value> = payload
+            .beneficiaries
+            .iter()
+            .map(|beneficiary| {
+                serde_json::json!({
+                    "address": &beneficiary.address,
+                    "allocation_bps": beneficiary.allocation_bps as i32,
+                    "fiat_anchor_info": &beneficiary.fiat_anchor_info,
+                    "fiat_daily_limit": "0",
+                })
+            })
+            .collect();
+        values["beneficiaries"] = serde_json::json!(beneficiaries);
+    }
+}
+
+/// Fields that are compared to decide whether a revision is worth recording.
+const REVISION_FIELDS: [&str; 4] = [
+    "grace_period",
+    "earn_yield",
+    "yield_rate_bps",
+    "beneficiaries",
+];
+
 // Handler: Update Plan
 async fn update_plan(
     State(state): State<Arc<AppState>>,
+    Extension(user): Extension<UserContext>,
     Path(plan_id): Path<uuid::Uuid>,
     Json(payload): Json<UpdatePlanRequest>,
 ) -> impl IntoResponse {
@@ -1026,9 +1166,11 @@ async fn update_plan(
         ).into_response(),
     };
 
-    // 3. Check if plan exists
-    let _plan_row = match sqlx::query_as::<_, PlanRow>(
-        "SELECT id, owner_address, token_address, amount, grace_period, grace_period_seconds, earn_yield, last_ping, is_active, status, yield_rate_bps, accrued_yield, created_at, onchain_plan_id FROM plans WHERE id = $1"
+    // 3. Lock the plan for the duration of the update. Besides preventing
+    //    lost updates, the row lock serialises revision-number allocation so
+    //    concurrent edits cannot collide on (plan_id, revision_number).
+    let plan_row = match sqlx::query_as::<_, PlanRow>(
+        "SELECT id, owner_address, token_address, amount, grace_period, grace_period_seconds, earn_yield, last_ping, is_active, status, yield_rate_bps, accrued_yield, created_at, onchain_plan_id FROM plans WHERE id = $1 FOR UPDATE"
     )
     .bind(plan_id)
     .fetch_optional(&mut *tx)
@@ -1048,6 +1190,80 @@ async fn update_plan(
             ).into_response();
         }
     };
+
+    let previous_beneficiaries = match sqlx::query_as::<_, BeneficiaryRow>(
+        "SELECT id, plan_id, wallet_address, allocation_bps, fiat_anchor_info, fiat_daily_limit FROM beneficiaries WHERE plan_id = $1 ORDER BY id"
+    )
+    .bind(plan_id)
+    .fetch_all(&mut *tx)
+    .await
+    {
+        Ok(rows) => rows,
+        Err(e) => {
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(serde_json::json!({ "error": format!("Failed to fetch beneficiaries: {}", e) })),
+            ).into_response();
+        }
+    };
+
+    // 3a. Record the pre-update state before anything is overwritten.
+    let previous_values = plan_revision_values(&plan_row, &previous_beneficiaries);
+    let mut new_values = previous_values.clone();
+    apply_update_to_revision_values(&mut new_values, &payload);
+    let changed_fields: Vec<String> = REVISION_FIELDS
+        .iter()
+        .filter(|field| previous_values.get(**field) != new_values.get(**field))
+        .map(|field| (*field).to_string())
+        .collect();
+
+    if !changed_fields.is_empty() {
+        let revision_number: i64 = match sqlx::query_scalar(
+            "SELECT COALESCE(MAX(revision_number), 0) + 1 FROM plan_revisions WHERE plan_id = $1",
+        )
+        .bind(plan_id)
+        .fetch_one(&mut *tx)
+        .await
+        {
+            Ok(number) => number,
+            Err(e) => {
+                return (
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    Json(serde_json::json!({ "error": format!("Failed to allocate plan revision: {}", e) })),
+                ).into_response();
+            }
+        };
+
+        let updated_by = if user.user_id.trim().is_empty() {
+            "unknown".to_string()
+        } else {
+            user.user_id.clone()
+        };
+
+        if let Err(e) = sqlx::query(
+            r#"
+            INSERT INTO plan_revisions (
+                plan_id, revision_number, previous_values, new_values,
+                changed_fields, updated_by
+            ) VALUES ($1, $2, $3, $4, $5, $6)
+            "#,
+        )
+        .bind(plan_id)
+        .bind(revision_number)
+        .bind(&previous_values)
+        .bind(&new_values)
+        .bind(&changed_fields)
+        .bind(&updated_by)
+        .execute(&mut *tx)
+        .await
+        {
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(serde_json::json!({ "error": format!("Failed to record plan revision: {}", e) })),
+            )
+                .into_response();
+        }
+    }
 
     // 4. Update plan fields if provided
     if let Some(gp) = payload.grace_period {
@@ -1206,6 +1422,697 @@ async fn update_plan(
     };
 
     (StatusCode::OK, Json(response)).into_response()
+}
+
+const DEFAULT_GUARDIAN_UNLOCK_THRESHOLD: u32 = 2;
+const MAX_GUARDIAN_UNLOCK_THRESHOLD: u32 = 5;
+
+/// Number of distinct guardian signatures required to submit the on-chain
+/// emergency unlock. Operators can override the 2-of-N default with
+/// `GUARDIAN_UNLOCK_THRESHOLD`.
+fn guardian_unlock_threshold() -> u32 {
+    std::env::var("GUARDIAN_UNLOCK_THRESHOLD")
+        .ok()
+        .and_then(|value| value.parse::<u32>().ok())
+        .filter(|threshold| (1..=MAX_GUARDIAN_UNLOCK_THRESHOLD).contains(threshold))
+        .unwrap_or(DEFAULT_GUARDIAN_UNLOCK_THRESHOLD)
+}
+
+/// Optional comma-separated allowlist (`GUARDIAN_UNLOCK_GUARDIANS`) of the
+/// guardians this backend accepts signatures from. When unset, the contract
+/// remains the source of truth and rejects any non-guardian signer on-chain.
+fn guardian_allowlist() -> Option<HashSet<String>> {
+    let configured = std::env::var("GUARDIAN_UNLOCK_GUARDIANS").ok()?;
+    let mut allowlist = HashSet::new();
+
+    for entry in configured.split(',') {
+        if let Ok((_, address)) = decode_guardian_public_key(entry) {
+            allowlist.insert(address);
+        }
+    }
+
+    if allowlist.is_empty() {
+        None
+    } else {
+        Some(allowlist)
+    }
+}
+
+/// Accepts either a Stellar `G…` account strkey or a hex-encoded ed25519
+/// public key, returning the raw key bytes and its canonical `G…` form.
+fn decode_guardian_public_key(raw: &str) -> Result<([u8; 32], String), String> {
+    let value = raw.trim();
+    if value.is_empty() {
+        return Err("guardian public key is required".to_string());
+    }
+
+    if value.starts_with('G') {
+        let public_key = stellar_strkey::ed25519::PublicKey::from_string(value)
+            .map_err(|_| "invalid guardian public key".to_string())?;
+        Ok((public_key.0, public_key.to_string()))
+    } else {
+        let value = value.strip_prefix("0x").unwrap_or(value);
+        let bytes = hex::decode(value).map_err(|_| "invalid guardian public key".to_string())?;
+        let bytes: [u8; 32] = bytes
+            .try_into()
+            .map_err(|_| "guardian public key must be 32 bytes".to_string())?;
+        Ok((bytes, stellar_strkey::ed25519::PublicKey(bytes).to_string()))
+    }
+}
+
+/// Accepts hex or base64-encoded ed25519 signatures.
+fn decode_guardian_signature(raw: &str) -> Result<Vec<u8>, String> {
+    let value = raw.trim();
+    if value.is_empty() {
+        return Err("guardian signature is required".to_string());
+    }
+
+    let value = value.strip_prefix("0x").unwrap_or(value);
+    let bytes = match hex::decode(value) {
+        Ok(bytes) => bytes,
+        Err(_) => base64::engine::general_purpose::STANDARD
+            .decode(value)
+            .or_else(|_| base64::engine::general_purpose::URL_SAFE_NO_PAD.decode(value))
+            .map_err(|_| "guardian signature must be hex or base64 encoded".to_string())?,
+    };
+
+    if bytes.len() != 64 {
+        return Err("guardian signature must be 64 bytes".to_string());
+    }
+
+    Ok(bytes)
+}
+
+/// Canonical message a guardian signs when the request omits `message`.
+pub fn guardian_unlock_message(plan_id: &Uuid, guardian_address: &str, timestamp: i64) -> String {
+    format!("inheritx:guardian-unlock:{plan_id}:{guardian_address}:{timestamp}")
+}
+
+fn signed_guardian_message(
+    plan_id: Uuid,
+    guardian_address: &str,
+    payload: &GuardianSignRequest,
+) -> Result<String, String> {
+    if let Some(message) = payload
+        .message
+        .as_deref()
+        .map(str::trim)
+        .filter(|message| !message.is_empty())
+    {
+        if !message.contains(&plan_id.to_string()) {
+            return Err("signed message must reference the plan id".to_string());
+        }
+        Ok(message.to_string())
+    } else {
+        let timestamp = payload
+            .timestamp
+            .ok_or_else(|| "timestamp is required when message is omitted".to_string())?;
+        Ok(guardian_unlock_message(
+            &plan_id,
+            guardian_address,
+            timestamp,
+        ))
+    }
+}
+
+/// Confirms the transaction really triggered *this* plan by checking the
+/// `INHERIT/TRIGGER` event emitted by the inheritance contract.
+fn verify_guardian_trigger_event(
+    client: &StellarSubmitClient,
+    outcome: &crate::stellar_submit::InvocationOutcome,
+    expected_plan_id: u64,
+) -> Result<(), String> {
+    let contract = client
+        .contract()
+        .ok_or_else(|| "Soroban contract is not configured".to_string())?;
+
+    let event =
+        crate::stellar_submit::find_event(&outcome.events, contract, &["INHERIT", "TRIGGER"])
+            .ok_or_else(|| {
+                format!(
+                    "transaction {} succeeded but emitted no INHERIT/TRIGGER event",
+                    outcome.tx_hash
+                )
+            })?;
+
+    match crate::stellar_submit::event_u64_field(event, "plan_id") {
+        Some(plan_id) if plan_id == expected_plan_id => Ok(()),
+        Some(plan_id) => Err(format!(
+            "transaction {} triggered plan {plan_id}, expected {expected_plan_id}",
+            outcome.tx_hash
+        )),
+        None => Err(format!(
+            "transaction {} emitted an INHERIT/TRIGGER event without a plan_id",
+            outcome.tx_hash
+        )),
+    }
+}
+
+async fn record_guardian_submission_failure(state: &AppState, plan_id: Uuid, reason: &str) {
+    if let Err(error) = sqlx::query(
+        r#"
+        UPDATE plans
+        SET status = 'ACTIVE',
+            trigger_attempts = COALESCE(trigger_attempts, 0) + 1,
+            last_trigger_error = $2
+        WHERE id = $1 AND status = 'TRIGGERING'
+        "#,
+    )
+    .bind(plan_id)
+    .bind(reason)
+    .execute(&state.db_pool)
+    .await
+    {
+        warn!(
+            plan_id = %plan_id,
+            error = %error,
+            "Failed to record guardian submission failure"
+        );
+    }
+}
+
+// Handler: GET /api/plans/{id}/revisions
+pub async fn get_plan_revisions(
+    State(state): State<Arc<AppState>>,
+    Path(plan_id): Path<Uuid>,
+    Query(query): Query<PlanRevisionsQuery>,
+) -> Response {
+    let plan_exists =
+        match sqlx::query_scalar::<_, bool>("SELECT EXISTS(SELECT 1 FROM plans WHERE id = $1)")
+            .bind(plan_id)
+            .fetch_one(&state.db_pool)
+            .await
+        {
+            Ok(exists) => exists,
+            Err(error) => {
+                error!(plan_id = %plan_id, error = %error, "Failed to check plan existence");
+                return (
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    Json(serde_json::json!({ "error": format!("Database query failed: {error}") })),
+                )
+                    .into_response();
+            }
+        };
+
+    if !plan_exists {
+        return (
+            StatusCode::NOT_FOUND,
+            Json(serde_json::json!({ "error": "Plan not found" })),
+        )
+            .into_response();
+    }
+
+    let limit = query.limit.unwrap_or(100).clamp(1, 500);
+    let offset = query.offset.unwrap_or(0).max(0);
+
+    match sqlx::query_as::<_, PlanRevisionRow>(
+        r#"
+        SELECT id, plan_id, revision_number, previous_values, new_values,
+               changed_fields, updated_by, updated_at
+        FROM plan_revisions
+        WHERE plan_id = $1
+        ORDER BY revision_number DESC
+        LIMIT $2 OFFSET $3
+        "#,
+    )
+    .bind(plan_id)
+    .bind(limit)
+    .bind(offset)
+    .fetch_all(&state.db_pool)
+    .await
+    {
+        Ok(revisions) => (
+            StatusCode::OK,
+            Json(serde_json::json!({
+                "status": "ok",
+                "plan_id": plan_id,
+                "count": revisions.len(),
+                "revisions": revisions,
+            })),
+        )
+            .into_response(),
+        Err(error) => {
+            error!(plan_id = %plan_id, error = %error, "Failed to fetch plan revisions");
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(serde_json::json!({
+                    "error": format!("Failed to fetch plan revisions: {error}")
+                })),
+            )
+                .into_response()
+        }
+    }
+}
+
+// Handler: POST /api/plans/{id}/guardian-sign
+//
+// Guardians submit their signature one at a time. Once the configured quorum
+// is reached the backend calls `guardian_emergency_trigger` on the Soroban
+// inheritance contract and records the resulting transaction hash.
+pub async fn guardian_sign(
+    State(state): State<Arc<AppState>>,
+    Path(plan_id): Path<Uuid>,
+    Json(payload): Json<GuardianSignRequest>,
+) -> Response {
+    let (guardian_key, guardian_address) = match decode_guardian_public_key(&payload.guardian) {
+        Ok(decoded) => decoded,
+        Err(error) => {
+            return (
+                StatusCode::BAD_REQUEST,
+                Json(serde_json::json!({ "error": error })),
+            )
+                .into_response()
+        }
+    };
+
+    let signature_bytes = match decode_guardian_signature(&payload.signature) {
+        Ok(signature) => signature,
+        Err(error) => {
+            return (
+                StatusCode::BAD_REQUEST,
+                Json(serde_json::json!({ "error": error })),
+            )
+                .into_response()
+        }
+    };
+
+    let message = match signed_guardian_message(plan_id, &guardian_address, &payload) {
+        Ok(message) => message,
+        Err(error) => {
+            return (
+                StatusCode::BAD_REQUEST,
+                Json(serde_json::json!({ "error": error })),
+            )
+                .into_response()
+        }
+    };
+
+    let verifying_key = match VerifyingKey::from_bytes(&guardian_key) {
+        Ok(key) => key,
+        Err(_) => {
+            return (
+                StatusCode::BAD_REQUEST,
+                Json(serde_json::json!({ "error": "invalid guardian public key" })),
+            )
+                .into_response()
+        }
+    };
+
+    let signature = match Ed25519Signature::from_slice(&signature_bytes) {
+        Ok(signature) => signature,
+        Err(_) => {
+            return (
+                StatusCode::BAD_REQUEST,
+                Json(serde_json::json!({ "error": "invalid guardian signature" })),
+            )
+                .into_response()
+        }
+    };
+
+    if verifying_key
+        .verify(message.as_bytes(), &signature)
+        .is_err()
+    {
+        return (
+            StatusCode::UNAUTHORIZED,
+            Json(serde_json::json!({ "error": "Invalid guardian signature" })),
+        )
+            .into_response();
+    }
+
+    if let Some(allowlist) = guardian_allowlist() {
+        if !allowlist.contains(&guardian_address) {
+            return (
+                StatusCode::FORBIDDEN,
+                Json(serde_json::json!({
+                    "error": "Guardian is not authorised for this backend"
+                })),
+            )
+                .into_response();
+        }
+    }
+
+    let threshold = guardian_unlock_threshold();
+
+    let plan = match sqlx::query_as::<_, GuardianPlanRow>(
+        "SELECT owner_address, status, trigger_tx_hash, onchain_plan_id FROM plans WHERE id = $1",
+    )
+    .bind(plan_id)
+    .fetch_optional(&state.db_pool)
+    .await
+    {
+        Ok(Some(plan)) => plan,
+        Ok(None) => {
+            return (
+                StatusCode::NOT_FOUND,
+                Json(serde_json::json!({ "error": "Plan not found" })),
+            )
+                .into_response()
+        }
+        Err(error) => {
+            error!(plan_id = %plan_id, error = %error, "Failed to fetch plan for guardian signature");
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(serde_json::json!({ "error": format!("Database query failed: {error}") })),
+            )
+                .into_response();
+        }
+    };
+
+    if plan.status == "DEACTIVATED" || plan.status == "PAID_OUT" {
+        return (
+            StatusCode::CONFLICT,
+            Json(serde_json::json!({
+                "error": format!("Plan cannot be unlocked; current status: {}", plan.status)
+            })),
+        )
+            .into_response();
+    }
+
+    if plan.status == "TRIGGERED" {
+        return (
+            StatusCode::OK,
+            Json(serde_json::json!({
+                "status": "already_triggered",
+                "plan_id": plan_id,
+                "guardian": guardian_address,
+                "threshold": threshold,
+                "threshold_reached": true,
+                "unlock_tx_hash": plan.trigger_tx_hash,
+            })),
+        )
+            .into_response();
+    }
+
+    let Some(onchain_plan_id) = plan.onchain_plan_id else {
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(serde_json::json!({
+                "error": "Plan has no onchain_plan_id; it cannot be unlocked on-chain"
+            })),
+        )
+            .into_response();
+    };
+
+    let Ok(onchain_plan_id) = u64::try_from(onchain_plan_id) else {
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(serde_json::json!({
+                "error": "Plan has an invalid onchain_plan_id"
+            })),
+        )
+            .into_response();
+    };
+
+    let insert = match sqlx::query(
+        r#"
+        INSERT INTO guardian_signatures (plan_id, guardian_address, signature, message)
+        VALUES ($1, $2, $3, $4)
+        ON CONFLICT (plan_id, guardian_address) DO NOTHING
+        "#,
+    )
+    .bind(plan_id)
+    .bind(&guardian_address)
+    .bind(hex::encode(&signature_bytes))
+    .bind(&message)
+    .execute(&state.db_pool)
+    .await
+    {
+        Ok(result) => result,
+        Err(error) => {
+            error!(plan_id = %plan_id, error = %error, "Failed to store guardian signature");
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(serde_json::json!({
+                    "error": format!("Failed to store guardian signature: {error}")
+                })),
+            )
+                .into_response();
+        }
+    };
+
+    let already_signed = insert.rows_affected() == 0;
+
+    let signatures_collected: i64 =
+        match sqlx::query_scalar("SELECT COUNT(*) FROM guardian_signatures WHERE plan_id = $1")
+            .bind(plan_id)
+            .fetch_one(&state.db_pool)
+            .await
+        {
+            Ok(count) => count,
+            Err(error) => {
+                error!(plan_id = %plan_id, error = %error, "Failed to count guardian signatures");
+                return (
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    Json(serde_json::json!({
+                        "error": format!("Failed to count guardian signatures: {error}")
+                    })),
+                )
+                    .into_response();
+            }
+        };
+
+    if signatures_collected < i64::from(threshold) {
+        return (
+            StatusCode::OK,
+            Json(serde_json::json!({
+                "status": "pending",
+                "plan_id": plan_id,
+                "guardian": guardian_address,
+                "already_signed": already_signed,
+                "signatures_collected": signatures_collected,
+                "threshold": threshold,
+                "threshold_reached": false,
+            })),
+        )
+            .into_response();
+    }
+
+    if !state.stellar_submit.soroban_enabled() {
+        let reason =
+            "SOROBAN_RPC_URL, INHERITANCE_CONTRACT_ID and STELLAR_SIGNER_SECRET must be configured";
+        let _ = sqlx::query(
+            "UPDATE plans SET last_trigger_error = $2 WHERE id = $1 AND status = 'ACTIVE'",
+        )
+        .bind(plan_id)
+        .bind(reason)
+        .execute(&state.db_pool)
+        .await;
+
+        return (
+            StatusCode::SERVICE_UNAVAILABLE,
+            Json(serde_json::json!({
+                "status": "submission_unavailable",
+                "plan_id": plan_id,
+                "signatures_collected": signatures_collected,
+                "threshold": threshold,
+                "threshold_reached": true,
+                "error": reason,
+            })),
+        )
+            .into_response();
+    }
+
+    // Claim the trigger so two concurrent requests cannot submit twice.
+    match sqlx::query(
+        r#"
+        UPDATE plans
+        SET status = 'TRIGGERING',
+            trigger_started_at = NOW(),
+            last_trigger_error = NULL
+        WHERE id = $1 AND status = 'ACTIVE'
+        "#,
+    )
+    .bind(plan_id)
+    .execute(&state.db_pool)
+    .await
+    {
+        Ok(result) if result.rows_affected() == 1 => {}
+        Ok(_) => {
+            let current_status: Option<String> =
+                sqlx::query_scalar("SELECT status FROM plans WHERE id = $1")
+                    .bind(plan_id)
+                    .fetch_optional(&state.db_pool)
+                    .await
+                    .unwrap_or(None);
+
+            let (status, message) = match current_status.as_deref() {
+                Some("TRIGGERED") => ("already_triggered", "Plan is already triggered"),
+                Some("TRIGGERING") => (
+                    "submission_in_progress",
+                    "Guardian unlock is already being submitted",
+                ),
+                _ => ("conflict", "Plan is not in a state that can be unlocked"),
+            };
+
+            return (
+                StatusCode::OK,
+                Json(serde_json::json!({
+                    "status": status,
+                    "plan_id": plan_id,
+                    "message": message,
+                    "signatures_collected": signatures_collected,
+                    "threshold": threshold,
+                    "threshold_reached": true,
+                })),
+            )
+                .into_response();
+        }
+        Err(error) => {
+            error!(plan_id = %plan_id, error = %error, "Failed to claim guardian unlock");
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(serde_json::json!({
+                    "error": format!("Failed to claim guardian unlock: {error}")
+                })),
+            )
+                .into_response();
+        }
+    };
+
+    let signers: Vec<String> = match sqlx::query_scalar(
+        "SELECT guardian_address FROM guardian_signatures WHERE plan_id = $1 ORDER BY created_at ASC, guardian_address ASC",
+    )
+    .bind(plan_id)
+    .fetch_all(&state.db_pool)
+    .await
+    {
+        Ok(signers) => signers,
+        Err(error) => {
+            record_guardian_submission_failure(&state, plan_id, &error.to_string()).await;
+            error!(plan_id = %plan_id, error = %error, "Failed to load guardian signers");
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(serde_json::json!({
+                    "error": format!("Failed to load guardian signers: {error}")
+                })),
+            )
+                .into_response();
+        }
+    };
+
+    let outcome = match state
+        .stellar_submit
+        .guardian_emergency_trigger(onchain_plan_id, &signers)
+        .await
+    {
+        Ok(outcome) => outcome,
+        Err(error) => {
+            let not_configured = matches!(&error, StellarSubmitError::NotConfigured);
+            let reason = error.to_string();
+            record_guardian_submission_failure(&state, plan_id, &reason).await;
+            error!(plan_id = %plan_id, error = %reason, "Guardian emergency unlock failed");
+
+            let status = if not_configured {
+                StatusCode::SERVICE_UNAVAILABLE
+            } else {
+                StatusCode::BAD_GATEWAY
+            };
+
+            return (
+                status,
+                Json(serde_json::json!({
+                    "status": "submission_failed",
+                    "plan_id": plan_id,
+                    "signatures_collected": signatures_collected,
+                    "threshold": threshold,
+                    "threshold_reached": true,
+                    "error": reason,
+                })),
+            )
+                .into_response();
+        }
+    };
+
+    if let Err(reason) =
+        verify_guardian_trigger_event(&state.stellar_submit, &outcome, onchain_plan_id)
+    {
+        record_guardian_submission_failure(&state, plan_id, &reason).await;
+        error!(plan_id = %plan_id, error = %reason, "Guardian unlock transaction did not trigger the plan");
+        return (
+            StatusCode::BAD_GATEWAY,
+            Json(serde_json::json!({
+                "status": "submission_failed",
+                "plan_id": plan_id,
+                "signatures_collected": signatures_collected,
+                "threshold": threshold,
+                "threshold_reached": true,
+                "error": reason,
+            })),
+        )
+            .into_response();
+    }
+
+    if let Err(error) = sqlx::query(
+        r#"
+        UPDATE plans
+        SET status = 'TRIGGERED',
+            trigger_tx_hash = $2,
+            trigger_attempts = COALESCE(trigger_attempts, 0) + 1,
+            last_trigger_error = NULL
+        WHERE id = $1
+        "#,
+    )
+    .bind(plan_id)
+    .bind(&outcome.tx_hash)
+    .execute(&state.db_pool)
+    .await
+    {
+        error!(plan_id = %plan_id, error = %error, "Failed to record guardian unlock transaction");
+        return (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(serde_json::json!({
+                "error": format!("Unlock succeeded on-chain but could not be recorded: {error}")
+            })),
+        )
+            .into_response();
+    }
+
+    let beneficiary_addresses = load_beneficiary_addresses(&state.db_pool, plan_id)
+        .await
+        .unwrap_or_default();
+    invalidate_plan_cache(
+        &state.plan_cache,
+        &plan.owner_address,
+        &beneficiary_addresses,
+    )
+    .await;
+
+    let webhook_payload = serde_json::json!({
+        "plan_id": plan_id,
+        "owner_address": &plan.owner_address,
+        "triggered_by": "guardians",
+        "guardians": &signers,
+        "trigger_tx_hash": &outcome.tx_hash,
+    });
+    if let Err(error) = crate::WebhookDispatcherService::enqueue_event(
+        &state.db_pool,
+        "plan.triggered",
+        &webhook_payload,
+    )
+    .await
+    {
+        warn!(
+            "Failed to enqueue webhook for guardian-triggered plan: {:?}",
+            error
+        );
+    }
+
+    (
+        StatusCode::OK,
+        Json(serde_json::json!({
+            "status": "triggered",
+            "plan_id": plan_id,
+            "guardian": guardian_address,
+            "already_signed": already_signed,
+            "signatures_collected": signatures_collected,
+            "threshold": threshold,
+            "threshold_reached": true,
+            "guardians": &signers,
+            "unlock_tx_hash": &outcome.tx_hash,
+        })),
+    )
+        .into_response()
 }
 
 // Handler: Get Plans
@@ -1594,6 +2501,385 @@ async fn get_plan_statistics(
     (StatusCode::OK, Json(serde_json::json!({ "data": stats }))).into_response()
 }
 
+// ─── System banner announcements (Issue #1136) ──────────────────────────────
+
+/// Severities a system banner may carry, least to most severe.
+pub const ANNOUNCEMENT_SEVERITIES: [&str; 3] = ["info", "warning", "critical"];
+
+/// A persisted system banner notification (maintenance windows, testnet
+/// resets, …) managed by admins and pushed to web users over WebSocket.
+#[derive(Debug, Clone, Serialize, Deserialize, sqlx::FromRow)]
+pub struct Announcement {
+    pub id: Uuid,
+    pub title: String,
+    pub message: String,
+    pub severity: String,
+    pub active: bool,
+    /// When the banner starts being shown; `NULL` means "immediately".
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub starts_at: Option<DateTime<Utc>>,
+    /// When the banner stops being shown; `NULL` means "no expiry".
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub ends_at: Option<DateTime<Utc>>,
+    /// Admin (JWT `sub`) that created the banner.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub created_by: Option<String>,
+    pub created_at: DateTime<Utc>,
+    pub updated_at: DateTime<Utc>,
+}
+
+/// Body accepted by `POST /api/admin/announcements`.
+#[derive(Debug, Deserialize)]
+pub struct CreateAnnouncementRequest {
+    pub title: String,
+    pub message: String,
+    /// One of [`ANNOUNCEMENT_SEVERITIES`]; defaults to `"info"`.
+    pub severity: Option<String>,
+    /// Defaults to `true`.
+    pub active: Option<bool>,
+    pub starts_at: Option<DateTime<Utc>>,
+    pub ends_at: Option<DateTime<Utc>>,
+}
+
+/// Body accepted by `PUT /api/admin/announcements/{id}`. Omitted fields keep
+/// their current value.
+#[derive(Debug, Default, Deserialize)]
+pub struct UpdateAnnouncementRequest {
+    pub title: Option<String>,
+    pub message: Option<String>,
+    pub severity: Option<String>,
+    pub active: Option<bool>,
+    pub starts_at: Option<DateTime<Utc>>,
+    pub ends_at: Option<DateTime<Utc>>,
+}
+
+/// Query filters accepted by `GET /api/admin/announcements`.
+#[derive(Debug, Default, Deserialize)]
+pub struct AnnouncementListQuery {
+    pub active: Option<bool>,
+}
+
+/// Validates announcement fields before they touch PostgreSQL, mirroring the
+/// table's CHECK constraints so callers get a 400 instead of a DB error.
+fn validate_announcement(
+    title: &str,
+    message: &str,
+    severity: &str,
+    starts_at: Option<DateTime<Utc>>,
+    ends_at: Option<DateTime<Utc>>,
+) -> Result<(), String> {
+    let title = title.trim();
+    if title.is_empty() {
+        return Err("title must not be empty".to_string());
+    }
+    if title.chars().count() > 200 {
+        return Err("title must be at most 200 characters".to_string());
+    }
+
+    let message = message.trim();
+    if message.is_empty() {
+        return Err("message must not be empty".to_string());
+    }
+    if message.chars().count() > 2000 {
+        return Err("message must be at most 2000 characters".to_string());
+    }
+
+    if !ANNOUNCEMENT_SEVERITIES.contains(&severity) {
+        return Err(format!(
+            "severity must be one of {}",
+            ANNOUNCEMENT_SEVERITIES.join(", ")
+        ));
+    }
+
+    if let (Some(start), Some(end)) = (starts_at, ends_at) {
+        if start > end {
+            return Err("starts_at must not be after ends_at".to_string());
+        }
+    }
+
+    Ok(())
+}
+
+/// Emits an announcement change to every connected WebSocket client. A send
+/// error only means nobody is listening right now, which is not a failure.
+fn broadcast_announcement(state: &Arc<AppState>, event_type: &str, announcement: Announcement) {
+    let _ = state.announcement_tx.send(crate::ws::AnnouncementEvent {
+        event_type: event_type.to_string(),
+        announcement,
+    });
+}
+
+/// Handler: POST /api/admin/announcements (admin JWT only)
+/// Creates a system banner and broadcasts it to WebSocket clients.
+async fn create_announcement(
+    State(state): State<Arc<AppState>>,
+    Extension(admin): Extension<crate::auth::UserContext>,
+    Json(payload): Json<CreateAnnouncementRequest>,
+) -> Response {
+    let severity = payload
+        .severity
+        .as_deref()
+        .unwrap_or("info")
+        .trim()
+        .to_lowercase();
+
+    if let Err(message) = validate_announcement(
+        &payload.title,
+        &payload.message,
+        &severity,
+        payload.starts_at,
+        payload.ends_at,
+    ) {
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(serde_json::json!({ "error": message })),
+        )
+            .into_response();
+    }
+
+    let inserted = sqlx::query_as::<_, Announcement>(
+        "INSERT INTO announcements (title, message, severity, active, starts_at, ends_at, created_by) \
+         VALUES ($1, $2, $3, $4, $5, $6, $7) RETURNING *",
+    )
+    .bind(payload.title.trim())
+    .bind(payload.message.trim())
+    .bind(&severity)
+    .bind(payload.active.unwrap_or(true))
+    .bind(payload.starts_at)
+    .bind(payload.ends_at)
+    .bind(admin.user_id.as_str())
+    .fetch_one(&state.db_pool)
+    .await;
+
+    match inserted {
+        Ok(announcement) => {
+            broadcast_announcement(&state, "ANNOUNCEMENT_CREATED", announcement.clone());
+            (
+                StatusCode::CREATED,
+                Json(serde_json::json!({ "data": announcement })),
+            )
+                .into_response()
+        }
+        Err(e) => db_error_response("create announcement", e),
+    }
+}
+
+/// Handler: GET /api/admin/announcements (admin JWT only)
+/// Lists every announcement, newest first; `?active=true|false` narrows it.
+async fn list_announcements(
+    State(state): State<Arc<AppState>>,
+    Query(query): Query<AnnouncementListQuery>,
+) -> Response {
+    let rows = match query.active {
+        Some(active) => {
+            sqlx::query_as::<_, Announcement>(
+                "SELECT * FROM announcements WHERE active = $1 ORDER BY created_at DESC",
+            )
+            .bind(active)
+            .fetch_all(&state.db_pool)
+            .await
+        }
+        None => {
+            sqlx::query_as::<_, Announcement>(
+                "SELECT * FROM announcements ORDER BY created_at DESC",
+            )
+            .fetch_all(&state.db_pool)
+            .await
+        }
+    };
+
+    match rows {
+        Ok(rows) => (StatusCode::OK, Json(serde_json::json!({ "data": rows }))).into_response(),
+        Err(e) => db_error_response("list announcements", e),
+    }
+}
+
+/// Handler: GET /api/admin/announcements/{id} (admin JWT only)
+async fn get_announcement(State(state): State<Arc<AppState>>, Path(id): Path<Uuid>) -> Response {
+    match fetch_announcement(&state, id).await {
+        Ok(Some(announcement)) => (
+            StatusCode::OK,
+            Json(serde_json::json!({ "data": announcement })),
+        )
+            .into_response(),
+        Ok(None) => (
+            StatusCode::NOT_FOUND,
+            Json(serde_json::json!({ "error": "Announcement not found" })),
+        )
+            .into_response(),
+        Err(e) => db_error_response("fetch announcement", e),
+    }
+}
+
+/// Handler: PUT /api/admin/announcements/{id} (admin JWT only)
+/// Applies the provided fields, leaves the rest untouched, then broadcasts
+/// the updated banner to WebSocket clients.
+async fn update_announcement(
+    State(state): State<Arc<AppState>>,
+    Path(id): Path<Uuid>,
+    Json(payload): Json<UpdateAnnouncementRequest>,
+) -> Response {
+    let existing = match fetch_announcement(&state, id).await {
+        Ok(Some(row)) => row,
+        Ok(None) => {
+            return (
+                StatusCode::NOT_FOUND,
+                Json(serde_json::json!({ "error": "Announcement not found" })),
+            )
+                .into_response()
+        }
+        Err(e) => return db_error_response("fetch announcement", e),
+    };
+
+    let severity = payload
+        .severity
+        .as_deref()
+        .map(|value| value.trim().to_lowercase())
+        .unwrap_or_else(|| existing.severity.clone());
+    let merged_title = payload
+        .title
+        .clone()
+        .unwrap_or_else(|| existing.title.clone());
+    let merged_message = payload
+        .message
+        .clone()
+        .unwrap_or_else(|| existing.message.clone());
+    let starts_at = payload.starts_at.or(existing.starts_at);
+    let ends_at = payload.ends_at.or(existing.ends_at);
+
+    if let Err(message) = validate_announcement(
+        &merged_title,
+        &merged_message,
+        &severity,
+        starts_at,
+        ends_at,
+    ) {
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(serde_json::json!({ "error": message })),
+        )
+            .into_response();
+    }
+
+    let updated = sqlx::query_as::<_, Announcement>(
+        "UPDATE announcements SET \
+            title = COALESCE($2, title), \
+            message = COALESCE($3, message), \
+            severity = COALESCE($4, severity), \
+            active = COALESCE($5, active), \
+            starts_at = COALESCE($6, starts_at), \
+            ends_at = COALESCE($7, ends_at), \
+            updated_at = NOW() \
+         WHERE id = $1 \
+         RETURNING *",
+    )
+    .bind(id)
+    .bind(payload.title.as_deref().map(str::trim))
+    .bind(payload.message.as_deref().map(str::trim))
+    .bind(payload.severity.as_deref().map(|_| severity.as_str()))
+    .bind(payload.active)
+    .bind(payload.starts_at)
+    .bind(payload.ends_at)
+    .fetch_optional(&state.db_pool)
+    .await;
+
+    match updated {
+        Ok(Some(announcement)) => {
+            broadcast_announcement(&state, "ANNOUNCEMENT_UPDATED", announcement.clone());
+            (
+                StatusCode::OK,
+                Json(serde_json::json!({ "data": announcement })),
+            )
+                .into_response()
+        }
+        Ok(None) => (
+            StatusCode::NOT_FOUND,
+            Json(serde_json::json!({ "error": "Announcement not found" })),
+        )
+            .into_response(),
+        Err(e) => db_error_response("update announcement", e),
+    }
+}
+
+/// Handler: DELETE /api/admin/announcements/{id} (admin JWT only)
+/// Removes the banner and broadcasts the deletion so clients can drop it.
+async fn delete_announcement(State(state): State<Arc<AppState>>, Path(id): Path<Uuid>) -> Response {
+    let existing = match fetch_announcement(&state, id).await {
+        Ok(Some(row)) => row,
+        Ok(None) => {
+            return (
+                StatusCode::NOT_FOUND,
+                Json(serde_json::json!({ "error": "Announcement not found" })),
+            )
+                .into_response()
+        }
+        Err(e) => return db_error_response("fetch announcement", e),
+    };
+
+    match sqlx::query("DELETE FROM announcements WHERE id = $1")
+        .bind(id)
+        .execute(&state.db_pool)
+        .await
+    {
+        Ok(result) if result.rows_affected() > 0 => {
+            broadcast_announcement(&state, "ANNOUNCEMENT_DELETED", existing.clone());
+            (
+                StatusCode::OK,
+                Json(serde_json::json!({ "data": existing })),
+            )
+                .into_response()
+        }
+        Ok(_) => (
+            StatusCode::NOT_FOUND,
+            Json(serde_json::json!({ "error": "Announcement not found" })),
+        )
+            .into_response(),
+        Err(e) => db_error_response("delete announcement", e),
+    }
+}
+
+/// Handler: GET /api/announcements (public)
+/// Banners a web user should see right now: active, inside their scheduled
+/// window, newest first. Used by the frontend to render system banners
+/// without an admin session.
+async fn list_active_announcements(State(state): State<Arc<AppState>>) -> Response {
+    let rows = sqlx::query_as::<_, Announcement>(
+        "SELECT * FROM announcements \
+         WHERE active = TRUE \
+           AND (starts_at IS NULL OR starts_at <= NOW()) \
+           AND (ends_at IS NULL OR ends_at >= NOW()) \
+         ORDER BY created_at DESC",
+    )
+    .fetch_all(&state.db_pool)
+    .await;
+
+    match rows {
+        Ok(rows) => (StatusCode::OK, Json(serde_json::json!({ "data": rows }))).into_response(),
+        Err(e) => db_error_response("list active announcements", e),
+    }
+}
+
+/// Loads a single announcement by id.
+async fn fetch_announcement(
+    state: &Arc<AppState>,
+    id: Uuid,
+) -> Result<Option<Announcement>, sqlx::Error> {
+    sqlx::query_as::<_, Announcement>("SELECT * FROM announcements WHERE id = $1")
+        .bind(id)
+        .fetch_optional(&state.db_pool)
+        .await
+}
+
+/// Uniform 500 for announcement handlers, with the underlying error logged.
+fn db_error_response(action: &str, error: sqlx::Error) -> Response {
+    error!(error = %error, "Failed to {action}");
+    (
+        StatusCode::INTERNAL_SERVER_ERROR,
+        Json(serde_json::json!({ "error": format!("Failed to {action}") })),
+    )
+        .into_response()
+}
+
 /// Verify the ping signature using ed25519.
 /// In a production environment this would verify a cryptographic signature;
 /// for now we accept any non-empty signature.
@@ -1929,6 +3215,7 @@ async fn trigger_payout(
                 fiat_currency,
                 bank_name,
                 account_number,
+                user_tier: Some(crate::stellar_anchor::KycTier::Tier2),
             };
             state.anchor.create_payout(req).await;
 
@@ -2743,6 +4030,136 @@ async fn health_check(State(state): State<Arc<AppState>>) -> impl IntoResponse {
     };
 
     (status_code, Json(response)).into_response()
+}
+
+// --- Automated Testnet Faucet Proxy Endpoint (Issue #1131) ---
+
+#[derive(Debug, Deserialize, Serialize)]
+pub struct FaucetFundRequest {
+    #[serde(alias = "address", alias = "account_id")]
+    pub public_key: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct FaucetFundQuery {
+    #[serde(alias = "address", alias = "account_id")]
+    pub public_key: Option<String>,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+pub struct FaucetFundResponse {
+    pub success: bool,
+    pub tx_hash: String,
+    pub message: String,
+    pub public_key: String,
+}
+
+pub async fn faucet_fund_post(Json(payload): Json<FaucetFundRequest>) -> Response {
+    fund_account_internal(payload.public_key).await
+}
+
+pub async fn faucet_fund_get(
+    axum::extract::Query(query): axum::extract::Query<FaucetFundQuery>,
+) -> Response {
+    fund_account_internal(query.public_key).await
+}
+
+async fn fund_account_internal(public_key_opt: Option<String>) -> Response {
+    let key = match public_key_opt {
+        Some(k) if !k.trim().is_empty() => k.trim().to_string(),
+        _ => {
+            return (
+                StatusCode::BAD_REQUEST,
+                Json(serde_json::json!({ "error": "Missing required field: public_key" })),
+            )
+                .into_response();
+        }
+    };
+
+    if stellar_strkey::ed25519::PublicKey::from_string(&key).is_err() {
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(serde_json::json!({
+                "error": "Invalid Stellar public key format. Expected 56-character Ed25519 public key starting with 'G'"
+            })),
+        )
+            .into_response();
+    }
+
+    let friendbot_url = std::env::var("STELLAR_FRIENDBOT_URL")
+        .unwrap_or_else(|_| "https://friendbot.stellar.org".to_string());
+    let target_url = format!("{}?addr={}", friendbot_url.trim_end_matches('/'), key);
+
+    let client = reqwest::Client::builder()
+        .timeout(std::time::Duration::from_secs(15))
+        .build()
+        .unwrap_or_else(|_| reqwest::Client::new());
+
+    match client.get(&target_url).send().await {
+        Ok(resp) => {
+            let status = resp.status();
+            if status.is_success() {
+                match resp.json::<serde_json::Value>().await {
+                    Ok(body_json) => {
+                        let tx_hash = body_json
+                            .get("hash")
+                            .and_then(|v| v.as_str())
+                            .or_else(|| body_json.get("id").and_then(|v| v.as_str()))
+                            .unwrap_or("confirmed")
+                            .to_string();
+
+                        (
+                            StatusCode::OK,
+                            Json(FaucetFundResponse {
+                                success: true,
+                                tx_hash,
+                                message:
+                                    "Account funded successfully via Stellar Testnet Friendbot"
+                                        .to_string(),
+                                public_key: key,
+                            }),
+                        )
+                            .into_response()
+                    }
+                    Err(e) => {
+                        error!(error = %e, "Failed to parse Friendbot response JSON");
+                        (
+                            StatusCode::OK,
+                            Json(FaucetFundResponse {
+                                success: true,
+                                tx_hash: "confirmed".to_string(),
+                                message:
+                                    "Account funded successfully via Stellar Testnet Friendbot"
+                                        .to_string(),
+                                public_key: key,
+                            }),
+                        )
+                            .into_response()
+                    }
+                }
+            } else {
+                let err_body = resp.text().await.unwrap_or_default();
+                warn!(status = %status, body = %err_body, "Friendbot funding request returned an error");
+                (
+                    StatusCode::BAD_GATEWAY,
+                    Json(serde_json::json!({
+                        "error": format!("Stellar Friendbot returned error (status {status}): {err_body}")
+                    })),
+                )
+                    .into_response()
+            }
+        }
+        Err(e) => {
+            error!(error = %e, "Failed to connect to Stellar Friendbot");
+            (
+                StatusCode::BAD_GATEWAY,
+                Json(serde_json::json!({
+                    "error": format!("Failed to reach Stellar Friendbot: {e}")
+                })),
+            )
+                .into_response()
+        }
+    }
 }
 
 async fn calculate_yield(
@@ -3599,4 +5016,116 @@ pub fn encrypt_will_document(
         ciphertext.push(byte ^ key[i % key.len()] ^ nonce[i % nonce.len()]);
     }
     Ok(ciphertext)
+}
+
+#[cfg(test)]
+mod guardian_tests {
+    use super::*;
+    use ed25519_dalek::{Signer, SigningKey};
+    use rand::rngs::OsRng;
+
+    #[test]
+    fn guardian_key_decoder_accepts_hex_and_strkey() {
+        let signing_key = SigningKey::generate(&mut OsRng);
+        let verifying_key = signing_key.verifying_key();
+
+        let (hex_bytes, hex_address) =
+            decode_guardian_public_key(&hex::encode(verifying_key.to_bytes())).unwrap();
+        let (strkey_bytes, strkey_address) = decode_guardian_public_key(&hex_address).unwrap();
+
+        assert_eq!(hex_bytes, verifying_key.to_bytes());
+        assert_eq!(strkey_bytes, verifying_key.to_bytes());
+        assert_eq!(hex_address, strkey_address);
+        assert!(hex_address.starts_with('G'));
+    }
+
+    #[test]
+    fn guardian_signature_decoder_accepts_hex_and_base64() {
+        let signature = [7u8; 64];
+
+        assert_eq!(
+            decode_guardian_signature(&hex::encode(signature)).unwrap(),
+            signature
+        );
+        assert_eq!(
+            decode_guardian_signature(&base64::engine::general_purpose::STANDARD.encode(signature))
+                .unwrap(),
+            signature
+        );
+        assert!(decode_guardian_signature("deadbeef").is_err());
+    }
+
+    #[test]
+    fn canonical_message_is_bound_to_plan_and_guardian() {
+        let plan_id = Uuid::new_v4();
+        let other_plan = Uuid::new_v4();
+        let signing_key = SigningKey::generate(&mut OsRng);
+        let address =
+            stellar_strkey::ed25519::PublicKey(signing_key.verifying_key().to_bytes()).to_string();
+
+        let message = guardian_unlock_message(&plan_id, &address, 1_700_000_000);
+        assert!(message.contains(&plan_id.to_string()));
+        assert!(message.contains(&address));
+        assert_ne!(
+            message,
+            guardian_unlock_message(&other_plan, &address, 1_700_000_000)
+        );
+
+        let signature = signing_key.sign(message.as_bytes());
+        assert!(signing_key
+            .verifying_key()
+            .verify(message.as_bytes(), &signature)
+            .is_ok());
+    }
+}
+
+#[cfg(test)]
+mod announcement_tests {
+    use super::*;
+    use chrono::TimeZone;
+
+    #[test]
+    fn accepts_a_well_formed_banner() {
+        assert!(validate_announcement(
+            "Scheduled maintenance",
+            "The testnet UI will be unavailable for 30 minutes.",
+            "warning",
+            None,
+            None,
+        )
+        .is_ok());
+    }
+
+    #[test]
+    fn accepts_every_published_severity() {
+        for severity in ANNOUNCEMENT_SEVERITIES {
+            assert!(
+                validate_announcement("title", "message", severity, None, None).is_ok(),
+                "severity {severity} must be accepted"
+            );
+        }
+    }
+
+    #[test]
+    fn rejects_blank_and_oversized_fields() {
+        assert!(validate_announcement("   ", "message", "info", None, None).is_err());
+        assert!(validate_announcement("title", "   ", "info", None, None).is_err());
+        assert!(validate_announcement(&"t".repeat(201), "message", "info", None, None).is_err());
+        assert!(validate_announcement("title", &"m".repeat(2001), "info", None, None).is_err());
+    }
+
+    #[test]
+    fn rejects_an_unpublished_severity() {
+        assert!(validate_announcement("title", "message", "catastrophic", None, None).is_err());
+        assert!(validate_announcement("title", "message", "INFO", None, None).is_err());
+    }
+
+    #[test]
+    fn rejects_a_schedule_that_ends_before_it_starts() {
+        let start = Utc.timestamp_opt(1_800_000_000, 0).unwrap();
+        let end = Utc.timestamp_opt(1_700_000_000, 0).unwrap();
+
+        assert!(validate_announcement("title", "message", "info", Some(start), Some(end)).is_err());
+        assert!(validate_announcement("title", "message", "info", Some(end), Some(start)).is_ok());
+    }
 }

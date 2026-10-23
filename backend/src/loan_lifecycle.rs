@@ -725,6 +725,15 @@ fn stellar_error_response(error: &StellarSubmitError, action: &str) -> Response 
             StatusCode::INTERNAL_SERVER_ERROR,
             format!("On-chain {action} failed: {error}"),
         ),
+        // Artifact verification only runs at startup, so reaching one of
+        // these here means the deployed contract stopped matching the
+        // official release mid-flight — surface it as a server fault.
+        StellarSubmitError::ArtifactMismatch { .. }
+        | StellarSubmitError::ArtifactCorrupted { .. }
+        | StellarSubmitError::ArtifactUnavailable(_) => (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            format!("Contract artifact verification failed: {error}"),
+        ),
     };
     (status, Json(serde_json::json!({ "error": message }))).into_response()
 }

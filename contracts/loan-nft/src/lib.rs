@@ -1,7 +1,16 @@
 #![no_std]
-use soroban_sdk::{contract, contractimpl, contracttype, Address, Env, String, Symbol};
+use soroban_sdk::{
+    contract, contracterror, contractimpl, contracttype, Address, Env, String, Symbol,
+};
 
 const DEFAULT_APPROVAL_EXPIRATION_SECONDS: u64 = 60 * 60 * 24 * 7; // 7 days
+
+#[contracterror]
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[repr(u32)]
+pub enum Error {
+    TokenNonTransferable = 1,
+}
 
 #[contracttype]
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -24,6 +33,7 @@ pub struct LoanMetadata {
 #[derive(Clone)]
 pub enum DataKey {
     Admin,
+    LendingVault,
     Metadata(u64),              // Loan ID -> LoanMetadata
     Owner(u64),                 // Loan ID -> Address
     Approved(u64),              // Loan ID -> Address
@@ -160,29 +170,54 @@ impl LoanNFT {
 
     // --- NFT Standard Functions ---
 
-    pub fn transfer(env: Env, from: Address, to: Address, loan_id: u64) {
+    pub fn transfer(env: Env, from: Address, to: Address, loan_id: u64) -> Result<(), Error> {
         from.require_auth();
         Self::enter_reentrancy_guard(&env);
-        Self::check_transfer_restriction(&env, loan_id);
+        if let Err(e) = Self::check_transfer_restriction(&env, loan_id, &to) {
+            Self::exit_reentrancy_guard(&env);
+            return Err(e);
+        }
 
-        let owner = Self::owner_of(env.clone(), loan_id)
-            .unwrap_or_else(|| panic!("NFT does not exist for this loan"));
+        let owner = match Self::owner_of(env.clone(), loan_id) {
+            Some(o) => o,
+            None => {
+                Self::exit_reentrancy_guard(&env);
+                panic!("NFT does not exist for this loan");
+            }
+        };
         if owner != from {
+            Self::exit_reentrancy_guard(&env);
             panic!("Not owner");
         }
 
         Self::do_transfer(&env, from.clone(), to.clone(), loan_id);
         Self::exit_reentrancy_guard(&env);
+        Ok(())
     }
 
-    pub fn transfer_from(env: Env, spender: Address, from: Address, to: Address, loan_id: u64) {
+    pub fn transfer_from(
+        env: Env,
+        spender: Address,
+        from: Address,
+        to: Address,
+        loan_id: u64,
+    ) -> Result<(), Error> {
         spender.require_auth();
         Self::enter_reentrancy_guard(&env);
-        Self::check_transfer_restriction(&env, loan_id);
+        if let Err(e) = Self::check_transfer_restriction(&env, loan_id, &to) {
+            Self::exit_reentrancy_guard(&env);
+            return Err(e);
+        }
 
-        let owner =
-            Self::owner_of(env.clone(), loan_id).unwrap_or_else(|| panic!("NFT does not exist"));
+        let owner = match Self::owner_of(env.clone(), loan_id) {
+            Some(o) => o,
+            None => {
+                Self::exit_reentrancy_guard(&env);
+                panic!("NFT does not exist");
+            }
+        };
         if owner != from {
+            Self::exit_reentrancy_guard(&env);
             panic!("Not owner");
         }
 
@@ -200,16 +235,21 @@ impl LoanNFT {
                     Some(r) => {
                         let now = env.ledger().timestamp();
                         if r.operator != spender || now >= r.expires_at {
+                            Self::exit_reentrancy_guard(&env);
                             panic!("Not approved");
                         }
                     }
-                    None => panic!("Not approved"),
+                    None => {
+                        Self::exit_reentrancy_guard(&env);
+                        panic!("Not approved");
+                    }
                 }
             }
         }
 
         Self::do_transfer(&env, from.clone(), to.clone(), loan_id);
         Self::exit_reentrancy_guard(&env);
+        Ok(())
     }
 
     pub fn approve(env: Env, caller: Address, operator: Address, loan_id: u64) {
@@ -336,6 +376,18 @@ impl LoanNFT {
     }
 
     // --- Transfer Restrictions ---
+    pub fn set_lending_vault(env: Env, vault: Address) {
+        Self::check_admin(&env);
+        env.storage().instance().set(&DataKey::LendingVault, &vault);
+    }
+
+    pub fn get_lending_vault(env: Env) -> Option<Address> {
+        env.storage()
+            .instance()
+            .get::<_, Address>(&DataKey::LendingVault)
+            .or_else(|| env.storage().instance().get(&DataKey::Admin))
+    }
+
     pub fn set_transferable(env: Env, loan_id: u64, is_transferable: bool) {
         Self::check_admin(&env);
         if !env.storage().persistent().has(&DataKey::Metadata(loan_id)) {
@@ -346,15 +398,29 @@ impl LoanNFT {
             .set(&DataKey::Transferable(loan_id), &is_transferable);
     }
 
-    fn check_transfer_restriction(env: &Env, loan_id: u64) {
+    fn check_transfer_restriction(env: &Env, loan_id: u64, to: &Address) -> Result<(), Error> {
+        let lending_vault = env
+            .storage()
+            .instance()
+            .get::<_, Address>(&DataKey::LendingVault)
+            .or_else(|| env.storage().instance().get(&DataKey::Admin));
+
+        // SBT Mode: Only allow transfer to lending contract vault during liquidation or repayment.
+        let is_to_vault = lending_vault.as_ref() == Some(to);
+        if !is_to_vault {
+            return Err(Error::TokenNonTransferable);
+        }
+
         let is_transferable = env
             .storage()
             .persistent()
             .get(&DataKey::Transferable(loan_id))
             .unwrap_or(true);
-        if !is_transferable {
-            panic!("NFT transfer is restricted for an active loan");
+        if !is_transferable && !is_to_vault {
+            return Err(Error::TokenNonTransferable);
         }
+
+        Ok(())
     }
 
     // --- Helpers ---

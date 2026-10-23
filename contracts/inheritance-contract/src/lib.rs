@@ -531,6 +531,31 @@ pub struct YieldHarvestedEvent {
 
 #[contracttype]
 #[derive(Clone, Debug, Eq, PartialEq)]
+pub struct YieldCompoundedEvent {
+    pub plan_id: u64,
+    pub net_compounded: u64,
+    pub caller_fee: u64,
+    pub new_principal: u64,
+}
+
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct NativeXlmWrappedEvent {
+    pub plan_id: u64,
+    pub amount: u64,
+    pub token: Address,
+}
+
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct NativeXlmUnwrappedEvent {
+    pub plan_id: u64,
+    pub recipient: Address,
+    pub amount: u64,
+}
+
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
 pub struct YieldFeeCollectedEvent {
     pub plan_id: u64,
     pub gross_amount: u64,
@@ -2102,6 +2127,16 @@ impl InheritanceContract {
             if res.is_err() {
                 return Err(InheritanceError::FeeTransferFailed);
             }
+            if Self::check_is_native_token(env, token) {
+                env.events().publish(
+                    (symbol_short!("XLM"), symbol_short!("UNWRAP")),
+                    NativeXlmUnwrappedEvent {
+                        plan_id,
+                        recipient: recipient.clone(),
+                        amount,
+                    },
+                );
+            }
             Ok(())
         }
 
@@ -2117,6 +2152,16 @@ impl InheritanceContract {
                 env.try_invoke_contract::<(), InvokeError>(&vault, &symbol_short!("release"), args);
             if res.is_err() {
                 return Err(InheritanceError::FeeTransferFailed);
+            }
+            if Self::check_is_native_token(env, token) {
+                env.events().publish(
+                    (symbol_short!("XLM"), symbol_short!("UNWRAP")),
+                    NativeXlmUnwrappedEvent {
+                        plan_id,
+                        recipient: recipient.clone(),
+                        amount,
+                    },
+                );
             }
             Ok(())
         }
@@ -2619,6 +2664,17 @@ impl InheritanceContract {
             return Err(InheritanceError::FeeTransferFailed);
         }
 
+        if Self::check_is_native_token(&env, &token) {
+            env.events().publish(
+                (symbol_short!("XLM"), symbol_short!("WRAP")),
+                NativeXlmWrappedEvent {
+                    plan_id,
+                    amount: net_amount,
+                    token: token.clone(),
+                },
+            );
+        }
+
         // Validate beneficiaries
         Self::validate_beneficiaries(&env, beneficiaries_data.clone())?;
 
@@ -2917,6 +2973,17 @@ impl InheritanceContract {
             (symbol_short!("VAULT"), symbol_short!("DEPOSIT")),
             VaultDepositEvent { plan_id, amount },
         );
+
+        if Self::check_is_native_token(&env, &token) {
+            env.events().publish(
+                (symbol_short!("XLM"), symbol_short!("WRAP")),
+                NativeXlmWrappedEvent {
+                    plan_id,
+                    amount,
+                    token: token.clone(),
+                },
+            );
+        }
         log!(&env, "Deposited {} into plan {}", amount, plan_id);
         Self::exit_guard(&env);
         Ok(())
@@ -7925,6 +7992,245 @@ impl InheritanceContract {
         );
 
         Ok(amount)
+    }
+
+    /// Automatically compound accrued yield for a plan back into active yield-earning principal.
+    /// Callable by any user (incentivized with 1% caller fee).
+    pub fn compound_yield(env: Env, plan_id: u64) -> Result<u64, InheritanceError> {
+        Self::check_not_paused(&env)?;
+        Self::enter_guard(&env)?;
+
+        let mut plan = match Self::get_plan(&env, plan_id) {
+            Some(p) => p,
+            None => {
+                Self::exit_guard(&env);
+                return Err(InheritanceError::PlanNotFound);
+            }
+        };
+
+        if !plan.is_active || !plan.earn_yield {
+            Self::exit_guard(&env);
+            return Err(InheritanceError::PlanNotActive);
+        }
+
+        let mut state = match Self::get_yield_state(&env, plan_id) {
+            Some(st) => st,
+            None => {
+                Self::exit_guard(&env);
+                return Err(InheritanceError::PlanNotFound);
+            }
+        };
+
+        if state.paused {
+            Self::exit_guard(&env);
+            return Err(InheritanceError::PlanNotActive);
+        }
+
+        let pending_args: Vec<Val> = vec![&env, plan_id.into_val(&env)];
+        let pending: u64 = Self::invoke_lending_contract(
+            &env,
+            Symbol::new(&env, "get_accrued_plan_yield"),
+            pending_args,
+        )
+        .unwrap_or(0);
+
+        let claimed = if pending > 0 {
+            let claim_args: Vec<Val> = vec![
+                &env,
+                env.current_contract_address().into_val(&env),
+                plan_id.into_val(&env),
+            ];
+            Self::invoke_lending_contract::<u64>(
+                &env,
+                Symbol::new(&env, "claim_plan_yield"),
+                claim_args,
+            )
+            .unwrap_or(0)
+        } else {
+            0
+        };
+
+        let total_accrued = match yield_math::safe_add(claimed, state.pending_credit) {
+            Ok(amt) => amt,
+            Err(e) => {
+                Self::exit_guard(&env);
+                return Err(e);
+            }
+        };
+
+        if total_accrued == 0 {
+            Self::exit_guard(&env);
+            return Err(InheritanceError::NothingToClaim);
+        }
+
+        let (net_to_principal, caller_fee) =
+            match yield_math::split_compound_caller_fee(total_accrued) {
+                Ok(res) => res,
+                Err(e) => {
+                    Self::exit_guard(&env);
+                    return Err(e);
+                }
+            };
+
+        let new_principal = match yield_math::safe_add(state.registered_principal, net_to_principal)
+        {
+            Ok(p) => p,
+            Err(e) => {
+                Self::exit_guard(&env);
+                return Err(e);
+            }
+        };
+
+        let reg_args: Vec<Val> = vec![
+            &env,
+            env.current_contract_address().into_val(&env),
+            plan_id.into_val(&env),
+            state.asset.clone().into_val(&env),
+            new_principal.into_val(&env),
+        ];
+        if let Err(e) = Self::invoke_lending_contract::<()>(
+            &env,
+            Symbol::new(&env, "register_plan_yield"),
+            reg_args,
+        ) {
+            Self::exit_guard(&env);
+            return Err(e);
+        }
+
+        plan.total_amount = match yield_math::safe_add(plan.total_amount, net_to_principal) {
+            Ok(amt) => amt,
+            Err(e) => {
+                Self::exit_guard(&env);
+                return Err(e);
+            }
+        };
+        Self::store_plan(&env, plan_id, &plan);
+
+        let now = env.ledger().timestamp();
+        state.registered_principal = new_principal;
+        state.pending_credit = 0;
+        state.last_harvest_at = now;
+        state.last_harvest_amount = total_accrued;
+        state.total_harvested = state.total_harvested.saturating_add(total_accrued);
+        state.total_fees_paid = state.total_fees_paid.saturating_add(caller_fee);
+        state.harvest_count = state.harvest_count.saturating_add(1);
+        Self::set_yield_state(&env, plan_id, &state);
+
+        env.events().publish(
+            (symbol_short!("YIELD"), symbol_short!("CMPND")),
+            YieldCompoundedEvent {
+                plan_id,
+                net_compounded: net_to_principal,
+                caller_fee,
+                new_principal,
+            },
+        );
+
+        Self::exit_guard(&env);
+        Ok(net_to_principal)
+    }
+
+    /// On-chain proof-of-reserve verification comparing sum of user plan balances
+    /// against actual SAC token vault balances held by the contract and sub-vaults.
+    /// Returns (total_recorded_liabilities, actual_vault_balance, is_fully_backed).
+    pub fn verify_proof_of_reserves(env: Env, token: Address) -> (i128, i128, bool) {
+        let token_client = token::Client::new(&env, &token);
+        let mut actual_vault_balance: i128 = token_client.balance(&env.current_contract_address());
+        let mut total_recorded_liabilities: i128 = 0;
+
+        let next_plan_id = Self::get_next_plan_id(&env);
+        for plan_id in 1..next_plan_id {
+            if let Some(plan) = Self::get_plan(&env, plan_id) {
+                if plan.is_active {
+                    if plan.token == token {
+                        total_recorded_liabilities =
+                            total_recorded_liabilities.saturating_add(plan.total_amount as i128);
+                    }
+                    if let Some(basket_bal) = env
+                        .storage()
+                        .persistent()
+                        .get::<_, u64>(&AuxKey::Bbl(plan_id, token.clone()))
+                    {
+                        total_recorded_liabilities =
+                            total_recorded_liabilities.saturating_add(basket_bal as i128);
+                    }
+                }
+            }
+            if let Some(vault) = Self::get_plan_vault(&env, plan_id) {
+                let vault_bal = token_client.balance(&vault);
+                actual_vault_balance = actual_vault_balance.saturating_add(vault_bal);
+            }
+        }
+
+        let is_fully_backed = actual_vault_balance >= total_recorded_liabilities;
+        (
+            total_recorded_liabilities,
+            actual_vault_balance,
+            is_fully_backed,
+        )
+    }
+
+    /// Configure the native XLM Stellar Asset Contract (SAC) address. Admin only.
+    pub fn set_native_token(
+        env: Env,
+        caller: Address,
+        native_token: Address,
+    ) -> Result<(), InheritanceError> {
+        Self::check_not_paused(&env)?;
+        Self::require_admin(&env, &caller)?;
+        env.storage()
+            .instance()
+            .set(&symbol_short!("nat_xlm"), &native_token);
+        Ok(())
+    }
+
+    /// Read the configured native XLM Stellar Asset Contract (SAC) address.
+    pub fn get_native_token(env: Env) -> Option<Address> {
+        env.storage().instance().get(&symbol_short!("nat_xlm"))
+    }
+
+    /// Helper to deposit native XLM into an inheritance plan, automatically wrapping
+    /// into Soroban Stellar Asset Contract format.
+    pub fn deposit_native_xlm(
+        env: Env,
+        caller: Address,
+        plan_id: u64,
+        amount: u64,
+    ) -> Result<(), InheritanceError> {
+        let native_token =
+            Self::get_native_token(env.clone()).ok_or(InheritanceError::AdminNotSet)?;
+        Self::deposit(env, caller, native_token, plan_id, amount)
+    }
+
+    /// Claim payout for a plan denominated in native XLM, handling automatic unwrapping.
+    pub fn claim_native_payout(
+        env: Env,
+        plan_id: u64,
+        claimer: Address,
+        email: String,
+        claim_code: u32,
+    ) -> Result<(), InheritanceError> {
+        let plan = Self::get_plan(&env, plan_id).ok_or(InheritanceError::PlanNotFound)?;
+        if !Self::check_is_native_token(&env, &plan.token) {
+            return Err(InheritanceError::InvalidAssetType);
+        }
+        Self::claim_inheritance_plan(env, plan_id, claimer, email, claim_code)
+    }
+
+    pub fn is_native_token(env: Env, token: Address) -> bool {
+        Self::check_is_native_token(&env, &token)
+    }
+
+    fn check_is_native_token(env: &Env, token: &Address) -> bool {
+        if let Some(nat) = env
+            .storage()
+            .instance()
+            .get::<_, Address>(&symbol_short!("nat_xlm"))
+        {
+            &nat == token
+        } else {
+            false
+        }
     }
 
     /// Harvest several plans in one transaction, skipping the ones that are

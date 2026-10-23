@@ -38,6 +38,18 @@ pub struct PlanStatusEvent {
     pub remaining_loaned: Option<u64>,
 }
 
+/// System banner announcement changes pushed to WebSocket clients so the web
+/// UI can show maintenance or testnet-reset notices without a page reload
+/// (Issue #1136).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AnnouncementEvent {
+    /// `ANNOUNCEMENT_CREATED`, `ANNOUNCEMENT_UPDATED` or `ANNOUNCEMENT_DELETED`.
+    pub event_type: String,
+    /// Snapshot of the announcement after the change (for deletions, the row
+    /// as it existed just before removal).
+    pub announcement: crate::api::Announcement,
+}
+
 pub async fn ws_handler(
     ws: WebSocketUpgrade,
     State(state): State<Arc<AppState>>,
@@ -49,6 +61,7 @@ async fn handle_socket(mut socket: WebSocket, state: Arc<AppState>) {
     info!("WebSocket client connected");
     let mut kyc_rx = state.kyc_tx.subscribe();
     let mut status_rx = state.status_tx.subscribe();
+    let mut announcement_rx = state.announcement_tx.subscribe();
     let mut heartbeat_interval = tokio::time::interval(std::time::Duration::from_secs(30));
 
     loop {
@@ -81,6 +94,20 @@ async fn handle_socket(mut socket: WebSocket, state: Arc<AppState>) {
                     }
                     Err(tokio::sync::broadcast::error::RecvError::Lagged(n)) => {
                         warn!("WebSocket plan-status receiver lagged by {} messages", n);
+                        continue;
+                    }
+                    Err(_) => break,
+                }
+            }
+            result = announcement_rx.recv() => {
+                match result {
+                    Ok(event) => {
+                        if send_json(&mut socket, &event).await.is_err() {
+                            break;
+                        }
+                    }
+                    Err(tokio::sync::broadcast::error::RecvError::Lagged(n)) => {
+                        warn!("WebSocket announcement receiver lagged by {} messages", n);
                         continue;
                     }
                     Err(_) => break,

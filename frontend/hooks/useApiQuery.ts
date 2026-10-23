@@ -1,8 +1,9 @@
 /**
  * React hook for API queries with filtering, sorting, and pagination
  */
-import { useState, useEffect, useCallback } from "react";
+import { useState, useEffect, useCallback, useRef } from "react";
 import { QueryParams, buildQueryString } from "@/lib/api/filtering";
+import { queueRpcRequest } from "@/lib/offline/offlineQueue";
 
 interface UseApiQueryOptions<T> {
   endpoint: string;
@@ -38,6 +39,7 @@ export function useApiQuery<T = any>(options: UseApiQueryOptions<T>) {
     limit: 10,
     totalPages: 0,
   });
+  const queuedOfflineRef = useRef(false);
 
   const [queryParams, setQueryParams] = useState<QueryParams>({
     filters: initialParams?.filters || {},
@@ -48,6 +50,7 @@ export function useApiQuery<T = any>(options: UseApiQueryOptions<T>) {
 
   const fetchData = useCallback(async () => {
     if (!enabled) return;
+    if (queuedOfflineRef.current) return;
 
     setLoading(true);
     setError(null);
@@ -55,7 +58,13 @@ export function useApiQuery<T = any>(options: UseApiQueryOptions<T>) {
     try {
       const queryString = buildQueryString(queryParams);
       const url = `${endpoint}?${queryString}`;
-      const response = await fetch(url);
+      const isOffline = typeof navigator !== "undefined" && !navigator.onLine;
+      queuedOfflineRef.current = isOffline;
+      const response = await queueRpcRequest({
+        type: "rpc",
+        title: `Load ${endpoint}`,
+        request: () => fetch(url),
+      });
 
       if (!response.ok) {
         throw new Error(`HTTP error! status: ${response.status}`);
@@ -80,6 +89,7 @@ export function useApiQuery<T = any>(options: UseApiQueryOptions<T>) {
         onError(error);
       }
     } finally {
+      queuedOfflineRef.current = false;
       setLoading(false);
     }
   }, [endpoint, queryParams, enabled, onSuccess, onError]);
