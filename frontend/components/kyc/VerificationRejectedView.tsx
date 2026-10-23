@@ -54,8 +54,8 @@ export function VerificationRejectedView({ response }: VerificationRejectedViewP
         <ul className="text-xs text-[#92A5A8] space-y-1 list-inside list-disc">
           <li>Documents are unclear or partially visible</li>
           <li>Document has expired</li>
-          <li>Personal information doesn't match documents</li>
-          <li>Selfie doesn't match ID document</li>
+          <li>Personal information doesn&apos;t match documents</li>
+          <li>Selfie doesn&apos;t match ID document</li>
         </ul>
       </div>
 

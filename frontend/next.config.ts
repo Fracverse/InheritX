@@ -72,6 +72,7 @@ const nextConfig: NextConfig = {
 let withPWA = (config: any) => config;
 if (process.env.NODE_ENV !== "development") {
   try {
+    // eslint-disable-next-line @typescript-eslint/no-require-imports
     const withPWAInit = require("@ducanh2912/next-pwa");
     const pwaWrapper = withPWAInit.default || withPWAInit;
     withPWA = pwaWrapper({

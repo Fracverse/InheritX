@@ -2116,6 +2116,33 @@ impl LendingContract {
         Ok(pool.total_deposits.saturating_sub(pool.total_borrowed))
     }
 
+    /// On-chain proof-of-reserve verification comparing sum of recorded liabilities
+    /// (liquid deposits and locked collateral) against actual SAC token balance in the contract.
+    /// Returns (total_recorded_liabilities, actual_vault_balance, is_fully_backed).
+    pub fn verify_proof_of_reserves(env: Env, token: Address) -> (i128, i128, bool) {
+        let token_client = token::Client::new(&env, &token);
+        let actual_vault_balance: i128 = token_client.balance(&env.current_contract_address());
+        let mut total_recorded_liabilities: i128 = 0;
+
+        if let Ok(pool) = Self::get_pool(&env, &token) {
+            let liquid_deposits = pool.total_deposits.saturating_sub(pool.total_borrowed);
+            total_recorded_liabilities =
+                total_recorded_liabilities.saturating_add(liquid_deposits as i128);
+        }
+
+        if let Ok(reserve) = Self::get_reserve(&env, &token) {
+            total_recorded_liabilities =
+                total_recorded_liabilities.saturating_add(reserve.total_collateral as i128);
+        }
+
+        let is_fully_backed = actual_vault_balance >= total_recorded_liabilities;
+        (
+            total_recorded_liabilities,
+            actual_vault_balance,
+            is_fully_backed,
+        )
+    }
+
     /// Returns the current dynamic interest rate that would be given to a new loan for a specific asset
     pub fn get_current_interest_rate(env: Env, asset: Address) -> Result<u32, LendingError> {
         Self::require_initialized(&env)?;

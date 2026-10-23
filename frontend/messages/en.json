@@ -104,7 +104,9 @@
     "activePlans": "Active Plans",
     "guardians": "Guardians",
     "createdPlans": "Created Plans",
-    "recentActivity": "Recent Activity"
+    "recentActivity": "Recent Activity",
+    "searchPlans": "Search plans",
+    "filterStatus": "Filter by status"
   },
   "errors": {
     "networkError": "Network error. Please check your connection.",
@@ -112,5 +114,27 @@
     "notFound": "Resource not found.",
     "serverError": "Server error. Please try again later.",
     "unauthorized": "You are not authorized to perform this action."
+  },
+  "admin": {
+    "title": "Admin Dashboard",
+    "users": "Users",
+    "plans": "Plans",
+    "payouts": "Payouts",
+    "settings": "Settings",
+    "totalValueLocked": "Total Value Locked",
+    "totalUsers": "Total Users",
+    "activePlans": "Active Plans",
+    "pendingKyc": "Pending KYC",
+    "recentTransactions": "Recent Transactions",
+    "manageUsers": "Manage Users",
+    "viewAll": "View All",
+    "approve": "Approve",
+    "reject": "Reject",
+    "suspend": "Suspend",
+    "activate": "Activate",
+    "searchUsers": "Search Users",
+    "filterByStatus": "Filter by Status",
+    "exportData": "Export Data",
+    "refresh": "Refresh"
   }
 }
