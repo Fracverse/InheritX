@@ -49,6 +49,19 @@ function statusLabel(status: BridgeStepStatus): string {
   }
 }
 
+function explorerLinkLabel(url?: string): string {
+  if (!url) return "View on explorer";
+  if (url.includes("sepolia.etherscan")) return "View on Sepolia Etherscan";
+  if (url.includes("testnet.bscscan")) return "View on BNB Testnet BscScan";
+  if (url.includes("amoy.polygonscan")) return "View on Amoy PolygonScan";
+  if (url.includes("sepolia.arbiscan")) return "View on Sepolia Arbiscan";
+  if (url.includes("sepolia-optimism.etherscan")) return "View on Optimism Sepolia Etherscan";
+  if (url.includes("testnet.snowtrace")) return "View on Avalanche Testnet Snowtrace";
+  if (url.includes("stellar.expert")) return "View on Stellar Expert";
+  if (url.includes("explorer.solana.com")) return "View on Solana Explorer";
+  return "View on explorer";
+}
+
 export function BridgeProgressStepper({ steps }: BridgeProgressStepperProps) {
   return (
     <ol className="space-y-0" aria-label="Cross-chain bridge progress">
@@ -86,6 +99,32 @@ export function BridgeProgressStepper({ steps }: BridgeProgressStepperProps) {
             </div>
             {step.detail && (
               <p className="mt-1 text-xs text-[#92A5A8] break-words">{step.detail}</p>
+            )}
+            {(step.sourceExplorerUrl || step.stellarExplorerUrl) && (
+              <div className="mt-2 flex flex-wrap items-center gap-3 text-[11px]">
+                {step.sourceExplorerUrl && (
+                  <a
+                    href={step.sourceExplorerUrl}
+                    target="_blank"
+                    rel="noreferrer"
+                    className="inline-flex items-center gap-1 text-[#33C5E0] hover:text-cyan-300 underline-offset-2 hover:underline"
+                    aria-label={`View source transaction on ${explorerLinkLabel(step.sourceExplorerUrl)}`}
+                  >
+                    {explorerLinkLabel(step.sourceExplorerUrl)}
+                  </a>
+                )}
+                {step.stellarExplorerUrl && (
+                  <a
+                    href={step.stellarExplorerUrl}
+                    target="_blank"
+                    rel="noreferrer"
+                    className="inline-flex items-center gap-1 text-[#33C5E0] hover:text-cyan-300 underline-offset-2 hover:underline"
+                    aria-label={`View on Stellar Expert`}
+                  >
+                    View on Stellar Expert
+                  </a>
+                )}
+              </div>
             )}
           </div>
         </li>

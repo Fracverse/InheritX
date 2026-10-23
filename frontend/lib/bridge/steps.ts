@@ -16,7 +16,16 @@ export function createInitialBridgeSteps(): BridgeStep[] {
 
 export function applyBridgeStatusUpdate(
   steps: BridgeStep[],
-  update: { step: BridgeStepId; status: BridgeStepStatus; detail?: string }
+  update: {
+    step: BridgeStepId;
+    status: BridgeStepStatus;
+    detail?: string;
+    sourceTxId?: string;
+    sourceExplorerUrl?: string;
+    transferId?: string;
+    stellarTxHash?: string;
+    stellarExplorerUrl?: string;
+  }
 ): BridgeStep[] {
   const stepIndex = steps.findIndex((s) => s.id === update.step);
   if (stepIndex === -1) return steps;
@@ -30,6 +39,11 @@ export function applyBridgeStatusUpdate(
         ...step,
         status: update.status,
         detail: update.detail ?? step.detail,
+        sourceTxId: update.sourceTxId ?? step.sourceTxId,
+        sourceExplorerUrl: update.sourceExplorerUrl ?? step.sourceExplorerUrl,
+        transferId: update.transferId ?? step.transferId,
+        stellarTxHash: update.stellarTxHash ?? step.stellarTxHash,
+        stellarExplorerUrl: update.stellarExplorerUrl ?? step.stellarExplorerUrl,
       };
     }
     if (index === stepIndex + 1 && update.status === "completed") {
