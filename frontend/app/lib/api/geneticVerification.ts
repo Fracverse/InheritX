@@ -137,11 +137,21 @@ export interface GeneticUploadResult {
  * `PendingRelative` above: an invite can be sent to someone who hasn't
  * submitted DNA at all yet, so it can't carry a `dnaHash` or `personId`.
  */
-export type InvitationStatus = "pending" | "accepted" | "expired" | "declined";
+export type InvitationStatus =
+  | "pending"
+  | "accepted"
+  | "expired"
+  | "declined"
+  | "verified"
+  | "dispute_flagged";
+
+export type FamilyInvitationRecipientType = "email" | "wallet";
 
 export interface FamilyInvitation {
   invitationId: string;
-  toEmail: string;
+  toEmail?: string;
+  walletAddress?: string;
+  recipientType?: FamilyInvitationRecipientType;
   proposedRelationship: RelationshipType;
   status: InvitationStatus;
   /** ISO timestamp */
@@ -297,11 +307,16 @@ export class GeneticVerificationAPI {
     throw new Error("Updating privacy settings failed after retries");
   }
 
-  /** TODO(backend): `/api/genetic/:planId/family/invite` does not exist yet. */
+  /**
+   * TODO(backend): `/api/genetic/:planId/family/invite` does not exist yet.
+   * Email and wallet invitations share the endpoint; wallets are addressed by
+   * their Stellar account or Soroban contract address.
+   */
   async sendFamilyInvitation(
     planId: string,
-    email: string,
+    recipient: string,
     proposedRelationship: RelationshipType,
+    recipientType: FamilyInvitationRecipientType = "email",
   ): Promise<FamilyInvitation> {
     const response = await fetch(
       `${this.baseUrl}/api/genetic/${planId}/family/invite`,
@@ -309,7 +324,10 @@ export class GeneticVerificationAPI {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
-          email,
+          ...(recipientType === "email"
+            ? { email: recipient }
+            : { wallet_address: recipient }),
+          recipient_type: recipientType,
           proposed_relationship: proposedRelationship,
         }),
       },
@@ -319,6 +337,24 @@ export class GeneticVerificationAPI {
       const error = await response.json().catch(() => ({}));
       throw new Error(
         error.error || `Sending invite failed with status ${response.status}`,
+      );
+    }
+
+    const data = await response.json();
+    return data.data;
+  }
+
+  /** TODO(backend): `/api/genetic/:planId/family/invitations` does not exist yet. */
+  async getFamilyInvitations(planId: string): Promise<FamilyInvitation[]> {
+    const response = await fetch(
+      `${this.baseUrl}/api/genetic/${planId}/family/invitations`,
+    );
+
+    if (!response.ok) {
+      const error = await response.json().catch(() => ({}));
+      throw new Error(
+        error.error ||
+          `Fetching family invitations failed with status ${response.status}`,
       );
     }
 
