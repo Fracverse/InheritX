@@ -18,6 +18,29 @@
 
 import type { RetryConfig } from "./client";
 
+export const MAX_GENETIC_FILE_SIZE = 25 * 1024 * 1024;
+export const GENETIC_FILE_ACCEPT = ".vcf,.23andme,.fasta";
+export type GeneticUploadStage = "hashing" | "signing" | "uploading";
+
+export function validateGeneticFile(file: File): void {
+  if (!/\.(vcf|23andme|fasta)$/i.test(file.name)) {
+    throw new Error("Choose a .vcf, .23andme, or .fasta file.");
+  }
+  if (file.size === 0) throw new Error("The selected file is empty.");
+  if (file.size > MAX_GENETIC_FILE_SIZE) {
+    throw new Error("The file must be 25 MB or smaller.");
+  }
+}
+
+export interface GeneticUploadOptions {
+  address: string;
+  networkPassphrase: string;
+  /** Wallet message signing; never a transaction or a private key. */
+  signPayload: (payload: string) => Promise<string>;
+  onStage?: (stage: GeneticUploadStage) => void;
+  signal?: AbortSignal;
+}
+
 // ─── Enums (mirrors contract enums) ────────────────────────────────────────
 
 export type DNAVerificationStatus =
@@ -167,6 +190,70 @@ export class GeneticVerificationAPI {
 
   constructor(baseUrl: string = "") {
     this.baseUrl = baseUrl;
+  }
+
+  /**
+   * Prepare a signed hash proof without transmitting file contents or its name.
+   * The backend route and signed-proof schema are pending; see
+   * docs/genetic-upload.md. Do not automatically retry this write.
+   */
+  async uploadGeneticData(
+    planId: string,
+    file: File,
+    options: GeneticUploadOptions,
+  ): Promise<GeneticUploadResult> {
+    validateGeneticFile(file);
+    if (!planId.trim()) throw new Error("Select an inheritance plan first.");
+    if (!options.address) throw new Error("Connect your wallet first.");
+    if (options.networkPassphrase !== "Test SDF Network ; September 2015") {
+      throw new Error("Genetic proof submission is available on Testnet only.");
+    }
+    const checkCancelled = () => options.signal?.throwIfAborted();
+    checkCancelled();
+    options.onStage?.("hashing");
+    const dnaHash = await this.computeFileHash(file);
+    checkCancelled();
+    const payload = JSON.stringify({
+      purpose: "inheritx:genetic-upload:v1",
+      plan_id: planId,
+      dna_hash: dnaHash,
+      wallet_address: options.address,
+      network_passphrase: options.networkPassphrase,
+      nonce: crypto.randomUUID(),
+      issued_at: Math.floor(Date.now() / 1000),
+    });
+    options.onStage?.("signing");
+    const signature = await options.signPayload(payload);
+    checkCancelled();
+    if (!signature) throw new Error("Your wallet did not sign the proof.");
+    options.onStage?.("uploading");
+    const signal = options.signal
+      ? AbortSignal.any([options.signal, AbortSignal.timeout(30_000)])
+      : AbortSignal.timeout(30_000);
+    const response = await fetch(
+      `${this.baseUrl}/api/genetic/${encodeURIComponent(planId)}/upload`,
+      {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ dna_hash: dnaHash, payload, signature }),
+        signal,
+      },
+    );
+    if (response.status === 404 || response.status === 501) {
+      throw new Error("Genetic verification is not available yet. Please try again later.");
+    }
+    if (!response.ok) {
+      throw new Error(`Genetic proof submission failed (${response.status}). Please try again.`);
+    }
+    const body = await response.json();
+    checkCancelled();
+    const result = body?.data;
+    if (result?.dnaHash !== dnaHash || ![
+      "pending", "verified", "rejected", "partial_match", "requires_retest",
+    ].includes(result?.status)) {
+      throw new Error("The server returned an invalid genetic verification response.");
+    }
+    return result;
   }
 
   /** Exponential backoff with full jitter for a given retry attempt. */

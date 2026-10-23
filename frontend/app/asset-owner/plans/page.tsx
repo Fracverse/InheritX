@@ -26,6 +26,7 @@ import {
 } from "lucide-react";
 import { Skeleton } from "@/components/ui/Skeleton";
 import { BeneficiaryMFAModal } from "@/components/plans/BeneficiaryMFAModal";
+import { GeneticUploadModal } from "@/components/plans/GeneticUploadModal";
 
 // ─── Types ───────────────────────────────────────────────────────────────────
 
@@ -70,9 +71,10 @@ function StatusBadge({ status }: { status: string }) {
 interface PlanCardProps {
   plan: Plan;
   onClaim: (plan: Plan) => void;
+  onUpload?: (plan: Plan) => void;
 }
 
-function PlanCard({ plan, onClaim }: PlanCardProps) {
+function PlanCard({ plan, onClaim, onUpload }: PlanCardProps) {
   const isClaimable =
     (plan.status ?? "").toLowerCase() === "claimable" ||
     (plan.status ?? "").toLowerCase() === "triggered";
@@ -127,6 +129,15 @@ function PlanCard({ plan, onClaim }: PlanCardProps) {
         </div>
       </div>
 
+      {onUpload && (
+        <div className="px-5 pb-4">
+          <button type="button" onClick={() => onUpload(plan)}
+            className="rounded-lg border border-[#33C5E0] px-3 py-2 text-xs text-[#33C5E0] hover:bg-[#33C5E014]">
+            Upload genetic proof
+          </button>
+        </div>
+      )}
+
       {/* Footer */}
       <div className="px-5 py-3 bg-[#0A0F11] border-t border-[#2A3338] flex items-center justify-between gap-3">
         <Link
@@ -172,6 +183,7 @@ export default function PlansPage() {
   const [searchQuery, setSearchQuery] = useState("");
   const [refreshing, setRefreshing] = useState(false);
   const [mfaPlan, setMfaPlan] = useState<Plan | null>(null);
+  const [uploadPlan, setUploadPlan] = useState<Plan | null>(null);
 
   // ─── Fetch plans ──────────────────────────────────────────────────────────
 
@@ -377,13 +389,18 @@ export default function PlansPage() {
         >
           <AnimatePresence>
             {filteredPlans.map((plan) => (
-              <PlanCard key={plan.id} plan={plan} onClaim={handleClaim} />
+              <PlanCard key={plan.id} plan={plan} onClaim={handleClaim}
+                onUpload={address && plan.owner_address === address ? setUploadPlan : undefined} />
             ))}
           </AnimatePresence>
         </motion.div>
       )}
 
       {/* MFA Modal */}
+      {uploadPlan && address && uploadPlan.owner_address === address && (
+        <GeneticUploadModal key={`${uploadPlan.id}:${address}`} planId={uploadPlan.id}
+          planTitle={uploadPlan.title} onClose={() => setUploadPlan(null)} />
+      )}
       {mfaPlan && (
         <BeneficiaryMFAModal
           plan={mfaPlan}
