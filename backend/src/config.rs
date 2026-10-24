@@ -211,7 +211,7 @@ impl Config {
         let plan_statistics_cache_ttl_secs = std::env::var("PLAN_STATISTICS_CACHE_TTL_SECS")
             .ok()
             .and_then(|value| value.parse::<u64>().ok())
-            .unwrap_or_else(|| 60)
+            .unwrap_or(60)
             .max(1);
 
         let fiat_daily_limit_default = std::env::var("FIAT_DAILY_LIMIT_DEFAULT")
