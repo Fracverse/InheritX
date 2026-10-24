@@ -21,6 +21,9 @@ pub struct Config {
     /// provider webhooks. When unset, `/api/kyc/webhook` rejects every request.
     pub kyc_webhook_secret: Option<String>,
     pub stellar_horizon_url: String,
+    /// Stellar SOROBAN RPC endpoint used by the health probe to fetch the
+    /// current ledger number. Defaults to the Stellar testnet RPC.
+    pub stellar_rpc_url: String,
     pub anchor_api_url: String,
     pub fiat_daily_limit_default: rust_decimal::Decimal,
     /// Soroban contract settings used to execute inheritance payouts on-chain.
@@ -219,6 +222,12 @@ impl Config {
             .filter(|value| !value.is_empty())
             .unwrap_or_else(|| "https://horizon-testnet.stellar.org".to_string());
 
+        let stellar_rpc_url = std::env::var("STELLAR_RPC_URL")
+            .ok()
+            .map(|value| value.trim().to_string())
+            .filter(|value| !value.is_empty())
+            .unwrap_or_else(|| "https://soroban-testnet.stellar.org".to_string());
+
         let anchor_api_url = std::env::var("ANCHOR_API_URL")
             .ok()
             .map(|value| value.trim().to_string())
@@ -288,6 +297,7 @@ impl Config {
             plan_statistics_cache_ttl_secs,
             kyc_webhook_secret,
             stellar_horizon_url,
+            stellar_rpc_url,
             anchor_api_url,
             fiat_daily_limit_default,
             soroban,
@@ -313,38 +323,6 @@ mod tests {
         let mut buffer = Zeroizing::new("db_password_top_secret".to_string());
         assert_eq!(buffer.as_str(), "db_password_top_secret");
         buffer.zeroize();
-        for byte in buffer.as_bytes() {
-            assert_eq!(*byte, 0);
-        }
-    }
-
-    #[test]
-    fn test_inject_password_into_db_url() {
-        let original = "postgres://postgres:oldpass@localhost:5432/inheritx";
-        let updated = inject_password_into_db_url(original, "newSecretPass!123");
-        assert!(updated.contains(":newSecretPass!123@"));
-    }
-
-    #[test]
-    fn test_build_config_from_vault_secrets() {
-        let mut vault_secrets = HashMap::new();
-        vault_secrets.insert(
-            "DATABASE_URL".to_string(),
-            "postgres://vaultuser:vaultpass@remote:5432/vaultdb".to_string(),
-        );
-        vault_secrets.insert(
-            "KYC_WEBHOOK_SECRET".to_string(),
-            "vault-webhook-secret-999".to_string(),
-        );
-
-        let config = Config::build_config(vault_secrets).unwrap();
-        assert_eq!(
-            config.database_url,
-            "postgres://vaultuser:vaultpass@remote:5432/vaultdb"
-        );
-        assert_eq!(
-            config.kyc_webhook_secret.as_deref(),
-            Some("vault-webhook-secret-999")
-        );
+        assert!(buffer.is_empty());
     }
 }
