@@ -10,6 +10,11 @@ use crate::stellar_submit::SorobanConfig;
 pub struct Config {
     pub port: u16,
     pub database_url: String,
+    /// Optional read-only replica URL. When set, analytics and
+    /// statistics GET queries are routed to this replica instead of the
+    /// primary write database. When unset, all queries fall back to
+    /// `database_url`.
+    pub read_database_url: Option<String>,
     pub redis_url: Option<String>,
     pub plan_cache_ttl_secs: u64,
     /// TTL for the cached `/api/analytics/plan-statistics` response. Kept
@@ -25,7 +30,7 @@ pub struct Config {
     pub fiat_daily_limit_default: rust_decimal::Decimal,
     /// Soroban contract settings used to execute inheritance payouts on-chain.
     /// `None` when the deployment has not configured a signer, in which case
-    /// the inactivity watchdog only updates PostgreSQL.
+    /// the inactivity watchsdog only updates PostgreSQL (and the read replica).
     pub soroban: Option<SorobanConfig>,
 }
 
@@ -184,6 +189,14 @@ impl Config {
             .or_else(|| std::env::var("DATABASE_URL").ok())
             .unwrap_or_else(|| "postgres://postgres:postgres@localhost:5432/inheritx".to_string());
 
+        // Optional read-replica URL. Empty values are treated as unset so
+        // operators can leave the var blank in .env without disabling the
+        // primary fallback.
+        let read_database_url = std::env::var("READ_DATABASE_URL")
+            .ok()
+            .map(|value| value.trim().to_string())
+            .filter(|value| !value.is_empty());
+
         let redis_url = vault_secrets
             .remove("REDIS_URL")
             .or_else(|| std::env::var("REDIS_URL").ok())
@@ -283,6 +296,7 @@ impl Config {
         Ok(Config {
             port,
             database_url,
+            read_database_url,
             redis_url,
             plan_cache_ttl_secs,
             plan_statistics_cache_ttl_secs,
