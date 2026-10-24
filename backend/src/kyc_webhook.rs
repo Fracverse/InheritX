@@ -1,3 +1,4 @@
+use chrono::{Duration, Utc};
 use axum::{
     body::Bytes,
     extract::State,
@@ -13,6 +14,9 @@ use tracing::{error, info, warn};
 
 use crate::api::AppState;
 use crate::ws::KycUpdateEvent;
+
+/// Number of days a KYC verification remains valid before re-verification is required.
+pub const KYC_VALIDITY_DAYS: i64 = 365;
 
 type HmacSha256 = Hmac<Sha256>;
 
@@ -185,16 +189,24 @@ pub async fn kyc_webhook_handler(
     let raw_payload =
         serde_json::from_slice::<serde_json::Value>(&body).unwrap_or(serde_json::Value::Null);
 
+    // Approved verifications expire after the validity window; other statuses
+    // carry no expiry until they are approved.
+    let expires_at = match payload.status {
+        KycStatusPayload::Approved => Some(Utc::now() + Duration::days(KYC_VALIDITY_DAYS)),
+        _ => None,
+    };
+
     let update_result = sqlx::query(
         r#"
-        INSERT INTO users (wallet_address, kyc_status)
-        VALUES ($1, $2::kyc_status)
+        INSERT INTO users (wallet_address, kyc_status, kyc_expires_at)
+        VALUES ($1, $2::kyc_status, $3)
         ON CONFLICT (wallet_address)
-        DO UPDATE SET kyc_status = $2::kyc_status
+        DO UPDATE SET kyc_status = $2::kyc_status, kyc_expires_at = $3
         "#,
     )
     .bind(&payload.wallet_address)
     .bind(kyc_status_str)
+    .bind(expires_at)
     .execute(&state.db_pool)
     .await;
 
@@ -269,6 +281,79 @@ pub async fn kyc_webhook_handler(
         )
             .into_response()
     }
+}
+
+/// Result of a single expiry-poller sweep.
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+pub struct ExpirySweepResult {
+    /// Number of KYC records transitioned to `needs_review`.
+    pub expired: u64,
+}
+
+/// Mark every KYC record whose `kyc_expires_at` has passed as `needs_review`
+/// and notify the affected users.
+///
+/// This is the body of the daily worker. It is idempotent: once a record is
+/// flipped to `needs_review` its expiry is cleared, so a second sweep in the
+/// same window is a no-op.
+pub async fn run_kyc_expiry_sweep(
+    db_pool: &sqlx::PgPool,
+    kyc_tx: &tokio::sync::broadcast::Sender<KycUpdateEvent>,
+) -> Result<ExpirySweepResult, sqlx::Error> {
+    let expired = sqlx::query_as::<_, (String,)>(
+        r#"
+        UPDATE users
+        SET kyc_status = 'needs_review'::kyc_status,
+            kyc_expires_at = NULL
+        WHERE kyc_status = 'approved'::kyc_status
+          AND kyc_expires_at IS NOT NULL
+          AND kyc_expires_at <= NOW()
+        RETURNING wallet_address
+        "#,
+    )
+    .fetch_all(db_pool)
+    .await?;
+
+    for (wallet_address,) in &expired {
+        info!(
+            wallet_address = %wallet_address,
+            "KYC verification expired; marked needs_review"
+        );
+        let event = KycUpdateEvent {
+            wallet_address: wallet_address.clone(),
+            kyc_status: "needs_review".to_string(),
+            event_type: "kyc.expired".to_string(),
+        };
+        if let Err(e) = kyc_tx.send(event) {
+            tracing::debug!("No WebSocket subscribers for KYC expiry event: {}", e);
+        }
+    }
+
+    Ok(ExpirySweepResult {
+        expired: expired.len() as u64,
+    })
+}
+
+/// Spawn the daily KYC re-verification expiry worker.
+///
+/// Runs an initial sweep on startup, then repeats every 24 hours. Errors are
+/// logged and swallowed so a transient database failure does not kill the
+/// worker for the rest of the day.
+pub fn spawn_kyc_expiry_worker(state: Arc<AppState>) {
+    tokio::spawn(async move {
+        let mut ticker = tokio::time::interval(std::time::Duration::from_secs(24 * 60 * 60));
+        loop {
+            ticker.tick().await;
+            match run_kyc_expiry_sweep(&state.db_pool, &state.kyc_tx).await {
+                Ok(result) => {
+                    info!(expired = result.expired, "KYC expiry sweep complete");
+                }
+                Err(e) => {
+                    error!(error = %e, "KYC expiry sweep failed");
+                }
+            }
+        }
+    });
 }
 
 #[cfg(test)]
@@ -379,6 +464,31 @@ mod tests {
             assert_eq!(err.status(), StatusCode::UNAUTHORIZED);
             // Callers must not learn *why* the signature was rejected.
             assert_eq!(err.client_message(), "Invalid webhook signature");
+        }
+    }
+
+    #[test]
+    fn approved_status_sets_expiry_within_validity_window() {
+        let before = Utc::now() + Duration::days(KYC_VALIDITY_DAYS) - Duration::seconds(5);
+        let expires_at = Utc::now() + Duration::days(KYC_VALIDITY_DAYS);
+        let after = Utc::now() + Duration::days(KYC_VALIDITY_DAYS) + Duration::seconds(5);
+        assert!(expires_at > before && expires_at < after);
+    }
+
+    #[test]
+    fn non_approved_statuses_have_no_expiry() {
+        for status in [
+            KycStatusPayload::Pending,
+            KycStatusPayload::Submitted,
+            KycStatusPayload::Rejected,
+        ] {
+            let expires_at = match status {
+                KycStatusPayload::Approved => {
+                    Some(Utc::now() + Duration::days(KYC_VALIDITY_DAYS))
+                }
+                _ => None,
+            };
+            assert!(expires_at.is_none());
         }
     }
 }
