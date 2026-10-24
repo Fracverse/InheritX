@@ -1,0 +1,18 @@
+{
+  "default_branch": "master",
+  "branches": [
+    "feat/issue-1129-backend-implement-beneficiary-email",
+    "master",
+    "origin"
+  ],
+  "parent": {
+    "feat/issue-1129-backend-implement-beneficiary-email": "master",
+    "master": null,
+    "origin": "master"
+  },
+  "order": [
+    "master",
+    "feat/issue-1129-backend-implement-beneficiary-email",
+    "origin"
+  ]
+}
