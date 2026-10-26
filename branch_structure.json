@@ -1,0 +1,18 @@
+{
+  "default_branch": "master",
+  "branches": [
+    "feat/issue-1120-backend-implement-kyc-document-re-verification",
+    "master",
+    "origin"
+  ],
+  "parent": {
+    "feat/issue-1120-backend-implement-kyc-document-re-verification": "master",
+    "master": null,
+    "origin": "master"
+  },
+  "order": [
+    "master",
+    "feat/issue-1120-backend-implement-kyc-document-re-verification",
+    "origin"
+  ]
+}
