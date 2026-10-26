@@ -1,4 +1,3 @@
-use chrono::{Duration, Utc};
 use axum::{
     body::Bytes,
     extract::State,
@@ -6,6 +5,7 @@ use axum::{
     response::IntoResponse,
     Json,
 };
+use chrono::{Duration, Utc};
 use hmac::{Hmac, Mac};
 use serde::{Deserialize, Serialize};
 use sha2::Sha256;
@@ -25,6 +25,21 @@ pub const KYC_SIGNATURE_HEADER: &str = "x-kyc-signature";
 
 /// Length of an HMAC-SHA256 digest in bytes.
 const SIGNATURE_LEN: usize = 32;
+
+/// Configuration for the KYC re-verification expiry poller.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct KycExpiryPollerConfig {
+    /// How often the expiry sweep runs.
+    pub interval: std::time::Duration,
+}
+
+impl Default for KycExpiryPollerConfig {
+    fn default() -> Self {
+        Self {
+            interval: std::time::Duration::from_secs(24 * 60 * 60),
+        }
+    }
+}
 
 /// Why a webhook request failed signature verification.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -483,9 +498,7 @@ mod tests {
             KycStatusPayload::Rejected,
         ] {
             let expires_at = match status {
-                KycStatusPayload::Approved => {
-                    Some(Utc::now() + Duration::days(KYC_VALIDITY_DAYS))
-                }
+                KycStatusPayload::Approved => Some(Utc::now() + Duration::days(KYC_VALIDITY_DAYS)),
                 _ => None,
             };
             assert!(expires_at.is_none());
