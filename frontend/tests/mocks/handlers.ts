@@ -177,6 +177,17 @@ export const plansHandlers = [
     })
   ),
 
+  http.get("/api/plans/:id/deposit-address", ({ params }) =>
+    HttpResponse.json({
+      status: "ok",
+      data: {
+        address: "GDEPOSITADDRESS",
+        memo: String(params.id).replaceAll("-", "").slice(0, 28),
+        memo_type: "text",
+      },
+    })
+  ),
+
   http.get("/api/plans/:planId/inactivity-status", ({ params }) => {
     const planId = params.planId as string;
     const plan = mockPlans.find((p) => p.id === planId);

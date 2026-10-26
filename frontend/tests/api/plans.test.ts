@@ -59,6 +59,17 @@ describe("PlansAPI - Update Plan", () => {
   });
 });
 
+describe("PlansAPI - Deposit Address", () => {
+  it("gets the plan deposit address and unique memo", async () => {
+    const result = await api.getDepositAddress("plan_deposit_test");
+    expect(result).toEqual({
+      address: "GDEPOSITADDRESS",
+      memo: "plan_deposit_test",
+      memo_type: "text",
+    });
+  });
+});
+
 describe("PlansAPI - Trigger and Settlement Endpoints", () => {
   describe("triggerPlan", () => {
     it("successfully triggers plan inheritance execution", async () => {

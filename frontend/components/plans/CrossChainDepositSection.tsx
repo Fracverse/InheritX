@@ -1,7 +1,10 @@
 "use client";
 
 import { useEffect, useState } from "react";
-import { Loader2, Wallet } from "lucide-react";
+import Image from "next/image";
+import QRCode from "qrcode";
+import { AlertCircle, Check, Copy, Loader2, Wallet } from "lucide-react";
+import { plansAPI, type PlanDepositAddress } from "@/app/lib/api/plans";
 import {
   getOriginChain,
   getTokensForChain,
@@ -15,17 +18,31 @@ import { BridgeFeeBreakdown } from "./BridgeFeeBreakdown";
 import { BridgeProgressStepper } from "./BridgeProgressStepper";
 
 interface CrossChainDepositSectionProps {
+  planId?: string | null;
   amount: string;
   onAmountChange: (amount: string) => void;
   onBridgeComplete?: (transferId: string) => void;
 }
 
+type DepositAddressState =
+  | {
+      planId: string;
+      status: "loaded";
+      details: PlanDepositAddress;
+      qrCode: string;
+    }
+  | { planId: string; status: "error"; error: string };
+
 export function CrossChainDepositSection({
+  planId,
   amount,
   onAmountChange,
   onBridgeComplete,
 }: CrossChainDepositSectionProps) {
   const { address: stellarAddress, isConnected, openModal } = useWallet();
+  const [depositState, setDepositState] = useState<DepositAddressState | null>(null);
+  const [copyError, setCopyError] = useState("");
+  const [copiedField, setCopiedField] = useState<"address" | "memo" | null>(null);
   const [sourceChain, setSourceChain] = useState<OriginChainId>("ETH");
   const [sourceToken, setSourceToken] = useState<SourceToken>(
     getTokensForChain("ETH")[0]
@@ -55,6 +72,59 @@ export function CrossChainDepositSection({
     }
   }, [transferId, onBridgeComplete]);
 
+  useEffect(() => {
+    let cancelled = false;
+
+    if (!planId) return;
+
+    plansAPI
+      .getDepositAddress(planId)
+      .then(async (details) => {
+        const paymentUri = `web+stellar:pay?${new URLSearchParams({
+          destination: details.address,
+          memo: details.memo,
+          memo_type: "text",
+        }).toString()}`;
+        const qrCode = await QRCode.toDataURL(paymentUri, {
+          width: 192,
+          margin: 2,
+        });
+        if (!cancelled) {
+          setDepositState({ planId, status: "loaded", details, qrCode });
+        }
+      })
+      .catch((error: unknown) => {
+        if (!cancelled) {
+          setDepositState({
+            planId,
+            status: "error",
+            error:
+              error instanceof Error
+                ? error.message
+                : "Could not load the Stellar deposit details.",
+          });
+        }
+      });
+
+    return () => {
+      cancelled = true;
+    };
+  }, [planId]);
+
+  const copyDepositField = async (field: "address" | "memo", value: string) => {
+    try {
+      await navigator.clipboard.writeText(value);
+      setCopyError("");
+      setCopiedField(field);
+      window.setTimeout(() => setCopiedField(null), 2000);
+    } catch {
+      setCopyError("Clipboard access is unavailable in this browser.");
+    }
+  };
+
+  const currentDepositState =
+    depositState?.planId === planId ? depositState : null;
+
   const handleChainChange = (chainId: OriginChainId) => {
     setSourceChain(chainId);
     const tokens = getTokensForChain(chainId);
@@ -75,6 +145,71 @@ export function CrossChainDepositSection({
           Bridge assets from EVM or Solana into your Stellar inheritance plan via
           Allbridge.
         </p>
+      </div>
+
+      <div className="rounded-lg border border-[#2A3338] bg-[#0A0F11] p-4">
+        <h4 className="text-xs font-semibold uppercase tracking-wider text-[#92A5A8]">
+          Stellar plan deposit
+        </h4>
+        {planId && !currentDepositState ? (
+          <p className="mt-3 flex items-center gap-2 text-sm text-[#92A5A8]">
+            <Loader2 size={14} className="animate-spin" />
+            Loading deposit address…
+          </p>
+        ) : currentDepositState?.status === "error" ? (
+          <p role="alert" className="mt-3 flex items-center gap-2 text-sm text-[#F56565]">
+            <AlertCircle size={15} />
+            {currentDepositState.error}
+          </p>
+        ) : currentDepositState?.status === "loaded" ? (
+          <div className="mt-3 flex flex-col gap-4 sm:flex-row sm:items-start">
+            <Image
+              src={currentDepositState.qrCode}
+              alt="QR code for the Stellar plan deposit address and memo"
+              width={192}
+              height={192}
+              unoptimized
+              className="rounded bg-white p-2"
+            />
+            <div className="min-w-0 space-y-3 text-sm">
+              <div>
+                <p className="text-xs text-[#92A5A8]">Deposit address</p>
+                <div className="mt-1 flex items-center gap-2">
+                  <p className="min-w-0 break-all font-mono text-slate-200">
+                    {currentDepositState.details.address}
+                  </p>
+                  <button
+                    type="button"
+                    onClick={() => copyDepositField("address", currentDepositState.details.address)}
+                    aria-label="Copy deposit address"
+                    title="Copy deposit address"
+                    className="shrink-0 text-[#33C5E0] hover:text-cyan-300"
+                  >
+                    {copiedField === "address" ? <Check size={16} /> : <Copy size={16} />}
+                  </button>
+                </div>
+              </div>
+              <div role="alert" className="rounded border border-amber-500/40 bg-amber-500/10 p-3 text-amber-200">
+                <p className="text-xs font-semibold uppercase tracking-wide">Memo required</p>
+                <p className="mt-1 break-all font-mono">{currentDepositState.details.memo}</p>
+                <button
+                  type="button"
+                  onClick={() => copyDepositField("memo", currentDepositState.details.memo)}
+                  className="mt-2 inline-flex items-center gap-1.5 text-xs font-medium text-amber-100 hover:text-white"
+                >
+                  {copiedField === "memo" ? <Check size={14} /> : <Copy size={14} />}
+                  {copiedField === "memo" ? "Copied memo" : "Copy memo"}
+                </button>
+                <p className="mt-2 text-xs">Include this memo with every deposit or funds may not be credited to this plan.</p>
+              </div>
+              {copyError && <p role="alert" className="text-xs text-[#F56565]">{copyError}</p>}
+            </div>
+          </div>
+        ) : (
+          <p className="mt-2 text-xs text-[#92A5A8]">
+            Create the plan to generate its unique Stellar deposit address and memo.
+          </p>
+        )}
       </div>
 
       <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
