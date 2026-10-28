@@ -7,12 +7,12 @@ pub mod inactivity_watchdog;
 
 pub mod kyc_webhook;
 pub mod loan_lifecycle;
-#[if(feature = "metrics")]
+#[cfg(feature = "metrics")]
 pub mod metrics;
 pub mod middleware;
 pub mod password;
 
-#[if(feature = "pdf")]
+#[cfg(feature = "pdf")]
 pub mod pdf;
 
 pub mod stellar_anchor;
@@ -20,7 +20,6 @@ pub mod stellar_submit;
 pub mod telemetry;
 pub mod webhooks;
 pub mod ws;
-pub mod xdr_to;
 pub mod yield_calculator;
 
 pub use api::{create_router, AppState, PlanResponse};
