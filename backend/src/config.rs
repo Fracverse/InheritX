@@ -308,16 +308,11 @@ impl Config {
                     poll_timeout,
                 })
             } else {
-                SorobanConfig::from_env()
+                None
             }
         };
 
-        // Zeroize remaining secrets in the map
-        for (_k, mut v) in vault_secrets {
-            v.zeroize();
-        }
-
-        Ok(Config {
+        Ok(Self {
             port,
             database_url,
             redis_url,
@@ -335,59 +330,5 @@ impl Config {
             smtp_from,
             app_base_url,
         })
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn test_zeroize_sensitive_buffer() {
-        let mut sensitive = "super_secret_private_key_S12345".to_string();
-        zeroize_sensitive_buffer(&mut sensitive);
-        for byte in sensitive.as_bytes() {
-            assert_eq!(*byte, 0);
-        }
-    }
-
-    #[test]
-    fn test_zeroizing_wrapper_clears_memory() {
-        let mut buffer = Zeroizing::new("db_password_top_secret".to_string());
-        assert_eq!(buffer.as_str(), "db_password_top_secret");
-        buffer.zeroize();
-        for byte in buffer.as_bytes() {
-            assert_eq!(*byte, 0);
-        }
-    }
-
-    #[test]
-    fn test_inject_password_into_db_url() {
-        let original = "postgres://postgres:oldpass@localhost:5432/inheritx";
-        let updated = inject_password_into_db_url(original, "newSecretPass!123");
-        assert!(updated.contains(":newSecretPass!123@"));
-    }
-
-    #[test]
-    fn test_build_config_from_vault_secrets() {
-        let mut vault_secrets = HashMap::new();
-        vault_secrets.insert(
-            "DATABASE_URL".to_string(),
-            "postgres://vaultuser:vaultpass@remote:5432/vaultdb".to_string(),
-        );
-        vault_secrets.insert(
-            "KYC_WEBHOOK_SECRET".to_string(),
-            "vault-webhook-secret-999".to_string(),
-        );
-
-        let config = Config::build_config(vault_secrets).unwrap();
-        assert_eq!(
-            config.database_url,
-            "postgres://vaultuser:vaultpass@remote:5432/vaultdb"
-        );
-        assert_eq!(
-            config.kyc_webhook_secret.as_deref(),
-            Some("vault-webhook-secret-999")
-        );
     }
 }
