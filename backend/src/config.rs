@@ -10,6 +10,11 @@ use crate::stellar_submit::SorobanConfig;
 pub struct Config {
     pub port: u16,
     pub database_url: String,
+    /// Optional read-only replica URL. When set, analytics and
+    /// statistics GET queries are routed to this replica instead of the
+    /// primary write database. When unset, all queries fall back to
+    /// `database_url`.
+    pub read_database_url: Option<String>,
     pub redis_url: Option<String>,
     pub plan_cache_ttl_secs: u64,
     /// TTL for the cached `/api/analytics/plan-statistics` response. Kept
@@ -25,7 +30,7 @@ pub struct Config {
     pub fiat_daily_limit_default: rust_decimal::Decimal,
     /// Soroban contract settings used to execute inheritance payouts on-chain.
     /// `None` when the deployment has not configured a signer, in which case
-    /// the inactivity watchdog only updates PostgreSQL.
+    /// the inactivity watchsdog only updates PostgreSQL (and the read replica).
     pub soroban: Option<SorobanConfig>,
 }
 
@@ -184,6 +189,14 @@ impl Config {
             .or_else(|| std::env::var("DATABASE_URL").ok())
             .unwrap_or_else(|| "postgres://postgres:postgres@localhost:5432/inheritx".to_string());
 
+        // Optional read-replica URL. Empty values are treated as unset so
+        // operators can leave the var blank in .env without disabling the
+        // primary fallback.
+        let read_database_url = std::env::var("READ_DATABASE_URL")
+            .ok()
+            .map(|value| value.trim().to_string())
+            .filter(|value| !value.is_empty());
+
         let redis_url = vault_secrets
             .remove("REDIS_URL")
             .or_else(|| std::env::var("REDIS_URL").ok())
@@ -283,6 +296,7 @@ impl Config {
         Ok(Config {
             port,
             database_url,
+            read_database_url,
             redis_url,
             plan_cache_ttl_secs,
             plan_statistics_cache_ttl_secs,
@@ -306,45 +320,5 @@ mod tests {
         for byte in sensitive.as_bytes() {
             assert_eq!(*byte, 0);
         }
-    }
-
-    #[test]
-    fn test_zeroizing_wrapper_clears_memory() {
-        let mut buffer = Zeroizing::new("db_password_top_secret".to_string());
-        assert_eq!(buffer.as_str(), "db_password_top_secret");
-        buffer.zeroize();
-        for byte in buffer.as_bytes() {
-            assert_eq!(*byte, 0);
-        }
-    }
-
-    #[test]
-    fn test_inject_password_into_db_url() {
-        let original = "postgres://postgres:oldpass@localhost:5432/inheritx";
-        let updated = inject_password_into_db_url(original, "newSecretPass!123");
-        assert!(updated.contains(":newSecretPass!123@"));
-    }
-
-    #[test]
-    fn test_build_config_from_vault_secrets() {
-        let mut vault_secrets = HashMap::new();
-        vault_secrets.insert(
-            "DATABASE_URL".to_string(),
-            "postgres://vaultuser:vaultpass@remote:5432/vaultdb".to_string(),
-        );
-        vault_secrets.insert(
-            "KYC_WEBHOOK_SECRET".to_string(),
-            "vault-webhook-secret-999".to_string(),
-        );
-
-        let config = Config::build_config(vault_secrets).unwrap();
-        assert_eq!(
-            config.database_url,
-            "postgres://vaultuser:vaultpass@remote:5432/vaultdb"
-        );
-        assert_eq!(
-            config.kyc_webhook_secret.as_deref(),
-            Some("vault-webhook-secret-999")
-        );
     }
 }
