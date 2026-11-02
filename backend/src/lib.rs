@@ -28,4 +28,5 @@ pub use cache::PlanCache;
 pub use config::Config;
 pub use db::DbManager;
 pub use inactivity_watchdog::{InactivityWatchdogConfig, InactivityWatchdogService};
+pub use kyc_webhook::KycExpiryPollerConfig;
 pub use webhooks::WebhookDispatcherService;
