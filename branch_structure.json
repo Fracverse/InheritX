@@ -1,0 +1,18 @@
+{
+  "default_branch": "master",
+  "branches": [
+    "fix/issue-1122-backend-build-health-check-probe-for-postgresql",
+    "master",
+    "origin"
+  ],
+  "parent": {
+    "fix/issue-1122-backend-build-health-check-probe-for-postgresql": "master",
+    "master": null,
+    "origin": "master"
+  },
+  "order": [
+    "master",
+    "fix/issue-1122-backend-build-health-check-probe-for-postgresql",
+    "origin"
+  ]
+}
