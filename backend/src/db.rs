@@ -14,6 +14,9 @@ const DEFAULT_STATEMENT_TIMEOUT_MS: u64 = 10_000;
 /// Default threshold (ms) above which a query execution is logged as slow.
 const DEFAULT_SLOW_QUERY_WARN_MS: u64 = 500;
 
+/// Default number of read replicas to round-robin analytics queries across.
+const DEFAULT_READ_POOL_SIZE: u32 = 5;
+
 pub struct DbManager;
 
 impl DbManager {
@@ -46,6 +49,39 @@ impl DbManager {
             // (e.g. the inactivity watchdog) that share this pool.
             .options([("statement_timeout", statement_timeout_ms.to_string())])
             .log_slow_statements(LevelFilter::Warn, Duration::from_millis(slow_query_warn_ms))
+    }
+
+    /// Reads the optional `READ_DATABASE_URL` (or comma-separated list of
+    /// replica URLs) from the environment. Returns an empty vector when unset
+    /// so callers can fall back to the primary pool.
+    pub fn read_replica_urls() -> Vec<String> {
+        env::var("READ_DATABASE_URL")
+            .ok()
+            .map(|raw| {
+                raw.split(',')
+                    .map(|url| url.trim().to_string())
+                    .filter(|url| !url.is_empty())
+                    .collect()
+            })
+            .unwrap_or_default()
+    }
+
+    /// Builds a pool for each configured read replica. Returns an empty vector
+    /// when `READ_DATABASE_URL` is not set, in which case callers should route
+    /// analytics queries to the primary pool instead.
+    pub async fn create_read_pools() -> Result<Vec<PgPool>, sqlx::Error> {
+        let urls = Self::read_replica_urls();
+        if urls.is_empty() {
+            return Ok(Vec::new());
+        }
+
+        let mut pools = Vec::with_capacity(urls.len());
+        for url in urls {
+            let pool = Self::create_pool(&url).await?;
+            pools.push(pool);
+        }
+
+        Ok(pools)
     }
 
     /// Creates a PostgreSQL connection pool
@@ -165,6 +201,55 @@ impl DbManager {
     }
 }
 
+/// Round-robin load balancer that distributes read-only analytics and
+/// statistics queries across the configured read replicas. Falls back to the
+/// primary pool when no replicas are configured, so callers can always obtain
+/// a usable pool.
+pub struct ReadPoolBalancer {
+    replicas: Vec<PgPool>,
+    primary: PgPool,
+    next: std::sync::atomic::AtomicUsize,
+}
+
+impl ReadPoolBalancer {
+    /// Builds a balancer from an already-established primary pool. Reads
+    /// `READ_DATABASE_URL` to discover replicas; if unset, all reads go to the
+    /// primary.
+    pub async fn new(primary: PgPool) -> Result<Self, sqlx::Error> {
+        let replicas = DbManager::create_read_pools().await?;
+        if replicas.is_empty() {
+            warn!("READ_DATABASE_URL not set, routing analytics queries to primary pool");
+        }
+        Ok(Self {
+            replicas,
+            primary,
+            next: std::sync::atomic::AtomicUsize::new(0),
+        })
+    }
+
+    /// Returns the next read replica in round-robin order, or the primary pool
+    /// when no replicas are configured.
+    pub fn read_pool(&self) -> &PgPool {
+        if self.replicas.is_empty() {
+            return &self.primary;
+        }
+        let idx =
+            self.next.fetch_add(1, std::sync::atomic::Ordering::Relaxed) % self.replicas.len();
+        &self.replicas[idx]
+    }
+
+    /// Returns the primary pool. Use for write transactions and any query that
+    /// must observe the latest committed state.
+    pub fn write_pool(&self) -> &PgPool {
+        &self.primary
+    }
+
+    /// Number of configured read replicas.
+    pub fn replica_count(&self) -> usize {
+        self.replicas.len()
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::{DbManager, DEFAULT_SLOW_QUERY_WARN_MS, DEFAULT_STATEMENT_TIMEOUT_MS};
@@ -220,5 +305,26 @@ mod tests {
         assert!(!DbManager::should_retry_connection_error(
             "invalid password"
         ));
+    }
+
+    #[test]
+    fn read_replica_urls_parses_comma_separated_list() {
+        // SAFETY: test-only mutation of process env; tests run single-threaded
+        // for this crate's env-sensitive cases.
+        std::env::set_var(
+            "READ_DATABASE_URL",
+            "postgres://u:p@replica-a/db, postgres://u:p@replica-b/db",
+        );
+        let urls = DbManager::read_replica_urls();
+        assert_eq!(urls.len(), 2);
+        assert_eq!(urls[0], "postgres://u:p@replica-a/db");
+        assert_eq!(urls[1], "postgres://u:p@replica-b/db");
+        std::env::remove_var("READ_DATABASE_URL");
+    }
+
+    #[test]
+    fn read_replica_urls_empty_when_unset() {
+        std::env::remove_var("READ_DATABASE_URL");
+        assert!(DbManager::read_replica_urls().is_empty());
     }
 }

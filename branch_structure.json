@@ -1,0 +1,18 @@
+{
+  "default_branch": "master",
+  "branches": [
+    "fix/issue-1124-backend-build-multi-node-database-connection",
+    "master",
+    "origin"
+  ],
+  "parent": {
+    "fix/issue-1124-backend-build-multi-node-database-connection": "master",
+    "master": null,
+    "origin": "master"
+  },
+  "order": [
+    "master",
+    "fix/issue-1124-backend-build-multi-node-database-connection",
+    "origin"
+  ]
+}
