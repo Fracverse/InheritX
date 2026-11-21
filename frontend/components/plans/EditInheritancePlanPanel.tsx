@@ -5,6 +5,12 @@ import { motion, AnimatePresence } from "framer-motion";
 import { Plus, X, Save, AlertCircle, CheckCircle, Loader2 } from "lucide-react";
 import { plansAPI } from "@/app/lib/api/plans";
 import type { Plan, UpdatePlanRequest } from "@/app/lib/api/plans";
+import {
+  createGeneticVerificationAPI,
+  DEFAULT_PRIVACY_SETTINGS,
+  type PrivacySettings,
+} from "@/app/lib/api/geneticVerification";
+import { useAppStore } from "@/store";
 import { useWallet } from "@/context/WalletContext";
 import { AllocationFlowChart } from "@/components/plans/AllocationFlowChart";
 import type { BeneficiaryFlow } from "@/components/plans/AllocationFlowChart";
@@ -27,6 +33,9 @@ interface EditInheritancePlanPanelProps {
 }
 
 type TxStatus = "idle" | "signing" | "saving" | "success" | "error";
+type PrivacyStatus = "idle" | "saving" | "success" | "error";
+
+type PrivacyToggleKey = "allowFamilyMatching" | "zeroKnowledgeHashing";
 
 const SECONDS_PER_DAY = 86_400;
 const DEFAULT_YIELD_RATE_BPS = 500;
@@ -71,6 +80,47 @@ function seedBeneficiaries(plan: Plan): BeneficiaryDraft[] {
   return [{ ...DEFAULT_BENEFICIARY_DRAFT }];
 }
 
+// ─── Privacy Toggle Row ───────────────────────────────────────────────────────
+
+interface PrivacyToggleRowProps {
+  label: string;
+  description: string;
+  checked: boolean;
+  onToggle: () => void;
+}
+
+function PrivacyToggleRow({
+  label,
+  description,
+  checked,
+  onToggle,
+}: PrivacyToggleRowProps) {
+  return (
+    <div className="flex items-start justify-between gap-4">
+      <div className="min-w-0">
+        <p className="text-sm text-slate-200">{label}</p>
+        <p className="text-xs text-[#92A5A8] mt-0.5">{description}</p>
+      </div>
+      <button
+        type="button"
+        role="switch"
+        aria-checked={checked}
+        aria-label={label}
+        onClick={onToggle}
+        className={`relative inline-flex h-6 w-11 flex-shrink-0 items-center rounded-full transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#33C5E0] ${
+          checked ? "bg-[#33C5E0]" : "bg-[#2A3338]"
+        }`}
+      >
+        <span
+          className={`inline-block h-4 w-4 rounded-full bg-white shadow-md transform transition-transform ${
+            checked ? "translate-x-6" : "translate-x-1"
+          }`}
+        />
+      </button>
+    </div>
+  );
+}
+
 // ─── Main Panel ───────────────────────────────────────────────────────────────
 
 export function EditInheritancePlanPanel({
@@ -98,6 +148,18 @@ export function EditInheritancePlanPanel({
   const [txStatus, setTxStatus] = useState<TxStatus>("idle");
   const [errorMessage, setErrorMessage] = useState<string>("");
   const [touched, setTouched] = useState(false);
+
+  // Genetic privacy preferences — seeded from the persisted store, falling back
+  // to the defaults, and written back on save.
+  const storedPrivacy = useAppStore((s) => s.geneticPrivacy[plan.id]);
+  const setGeneticPrivacySettings = useAppStore(
+    (s) => s.setGeneticPrivacySettings
+  );
+  const [privacy, setPrivacy] = useState<PrivacySettings>(
+    () => storedPrivacy ?? DEFAULT_PRIVACY_SETTINGS
+  );
+  const [privacyStatus, setPrivacyStatus] = useState<PrivacyStatus>("idle");
+  const [privacyError, setPrivacyError] = useState<string>("");
 
   const flowBeneficiaries: BeneficiaryFlow[] = beneficiaries.map((b) => ({
     name: b.name || "Unnamed",
@@ -136,6 +198,30 @@ export function EditInheritancePlanPanel({
   const removeBeneficiary = useCallback((index: number) => {
     setBeneficiaries((prev) => prev.filter((_, i) => i !== index));
   }, []);
+
+  const togglePrivacy = useCallback((key: PrivacyToggleKey) => {
+    setPrivacy((prev) => ({ ...prev, [key]: !prev[key] }));
+  }, []);
+
+  const handleSavePrivacy = useCallback(async () => {
+    setPrivacyStatus("saving");
+    setPrivacyError("");
+    try {
+      const saved = await createGeneticVerificationAPI().updateGeneticPrivacySettings(
+        plan.id,
+        privacy
+      );
+      setPrivacy(saved);
+      setGeneticPrivacySettings(plan.id, saved);
+      setPrivacyStatus("success");
+      setTimeout(() => setPrivacyStatus("idle"), 3000);
+    } catch (err) {
+      setPrivacyStatus("error");
+      setPrivacyError(
+        err instanceof Error ? err.message : "Failed to save privacy settings."
+      );
+    }
+  }, [plan.id, privacy, setGeneticPrivacySettings]);
 
   const buildXdr = (): string => {
     // Constructs a placeholder unsigned XDR envelope representing the update call.
@@ -435,6 +521,95 @@ export function EditInheritancePlanPanel({
                 ? "Yield harvesting is enabled — idle assets earn interest via Stellar lending pools."
                 : "Yield harvesting is disabled — assets are held without earning interest."}
             </p>
+          </section>
+
+          {/* Genetic Privacy */}
+          <section>
+            <h3 className="text-xs font-semibold text-[#33C5E0] uppercase tracking-wider mb-3">
+              Genetic Privacy
+            </h3>
+
+            <div className="space-y-4">
+              <PrivacyToggleRow
+                label="Allow Family Matching"
+                description="Match this plan's DNA hash against relatives who have opted in."
+                checked={privacy.allowFamilyMatching}
+                onToggle={() => togglePrivacy("allowFamilyMatching")}
+              />
+
+              <PrivacyToggleRow
+                label="Zero-Knowledge Hashing"
+                description="Compare genetic data using zero-knowledge hashes instead of raw data."
+                checked={privacy.zeroKnowledgeHashing}
+                onToggle={() => togglePrivacy("zeroKnowledgeHashing")}
+              />
+
+              <div className="flex flex-col gap-1">
+                <label
+                  htmlFor="edit-data-expiry"
+                  className="text-xs text-[#92A5A8]"
+                >
+                  Data Expiry Duration (days)
+                </label>
+                <input
+                  id="edit-data-expiry"
+                  type="number"
+                  min={-1}
+                  value={privacy.dataExpiryDays}
+                  onChange={(e) =>
+                    setPrivacy((p) => ({
+                      ...p,
+                      dataExpiryDays: Number(e.target.value),
+                    }))
+                  }
+                  className="w-40 bg-[#0A0F11] border border-[#2A3338] rounded-lg px-4 py-2.5 text-sm text-slate-200 focus:outline-none focus:border-[#33C5E0] transition-colors"
+                />
+                <p className="text-[11px] text-[#92A5A8]">
+                  Stored genetic data is deleted after this many days. Use -1 for
+                  indefinite retention.
+                </p>
+              </div>
+            </div>
+
+            <button
+              type="button"
+              onClick={handleSavePrivacy}
+              disabled={privacyStatus === "saving"}
+              className="mt-4 flex items-center gap-2 px-4 py-2 text-sm font-medium text-black bg-[#33C5E0] hover:bg-cyan-300 rounded-lg transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
+            >
+              {privacyStatus === "saving" && (
+                <Loader2 size={15} className="animate-spin" />
+              )}
+              {privacyStatus === "saving" ? "Saving…" : "Save Privacy Settings"}
+            </button>
+
+            <AnimatePresence>
+              {privacyStatus === "success" && (
+                <motion.div
+                  initial={{ opacity: 0, y: -6 }}
+                  animate={{ opacity: 1, y: 0 }}
+                  exit={{ opacity: 0 }}
+                  className="mt-3 flex items-center gap-3 p-3 rounded-lg bg-[#48BB7814] border border-[#48BB7840] text-[#48BB78] text-sm"
+                >
+                  <CheckCircle size={16} className="flex-shrink-0" />
+                  <span>Privacy settings saved.</span>
+                </motion.div>
+              )}
+            </AnimatePresence>
+
+            <AnimatePresence>
+              {privacyStatus === "error" && privacyError && (
+                <motion.div
+                  initial={{ opacity: 0, y: -6 }}
+                  animate={{ opacity: 1, y: 0 }}
+                  exit={{ opacity: 0 }}
+                  className="mt-3 flex items-start gap-3 p-3 rounded-lg bg-[#F5656514] border border-[#F5656540] text-[#F56565] text-sm"
+                >
+                  <AlertCircle size={16} className="mt-0.5 flex-shrink-0" />
+                  <span>{privacyError}</span>
+                </motion.div>
+              )}
+            </AnimatePresence>
           </section>
 
           {/* Error message */}

@@ -414,6 +414,25 @@ pub fn next_harvest_at(last_harvest_at: u64, interval_secs: u64) -> u64 {
     last_harvest_at.saturating_add(interval_secs)
 }
 
+/// Caller incentive fee for automated yield compounding: 100 bps == 1.00%.
+pub const COMPOUND_CALLER_FEE_BPS: u32 = 100;
+
+/// Split accrued yield into (net_to_principal, caller_incentive_fee) using
+/// the 1% caller fee (100 bps).
+pub fn split_compound_caller_fee(yield_amount: u64) -> Result<(u64, u64), InheritanceError> {
+    split_caller_fee(yield_amount, COMPOUND_CALLER_FEE_BPS)
+}
+
+/// Split accrued yield into (net_to_principal, caller_incentive_fee) given a fee in basis points.
+pub fn split_caller_fee(amount: u64, fee_bps: u32) -> Result<(u64, u64), InheritanceError> {
+    if fee_bps > MAX_PERFORMANCE_FEE_BPS {
+        return Err(InheritanceError::InvalidAllocation);
+    }
+    let fee = apply_bps(amount, fee_bps)?;
+    let net = safe_sub(amount, fee)?;
+    Ok((net, fee))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -818,5 +837,12 @@ mod tests {
     fn next_harvest_saturates_rather_than_wrapping() {
         assert_eq!(next_harvest_at(1_000, 500), 1_500);
         assert_eq!(next_harvest_at(u64::MAX, 500), u64::MAX);
+    }
+
+    #[test]
+    fn split_compound_caller_fee_splits_one_percent() {
+        let (net, fee) = split_compound_caller_fee(10_000).unwrap();
+        assert_eq!(fee, 100); // 1% of 10_000
+        assert_eq!(net, 9_900);
     }
 }

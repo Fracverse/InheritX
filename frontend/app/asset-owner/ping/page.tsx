@@ -5,6 +5,8 @@ import { useWallet } from "@/context/WalletContext";
 import { plansAPI, type Plan } from "@/app/lib/api/plans";
 import inheritanceAPI from "@/app/lib/api/inheritance";
 import { formatAddress } from "@/util/address";
+import { getPlans, useMockData } from "@/lib/api/dataSource";
+import { mockStore } from "@/lib/mockStore";
 import {
   Zap,
   CheckCircle2,
@@ -54,11 +56,30 @@ export default function PingPage() {
   const [pingHistory, setPingHistory] = useState<{ pinged_at: string | number; accrued_yield_snapshot?: number }[]>([]);
 
   useEffect(() => {
-    const mockStore = require("@/lib/mockStore").mockStore;
-    const mockPlans = mockStore.getPlans().filter((p: any) => p.status?.toUpperCase() === "ACTIVE");
-    setPlans(mockPlans);
-    if (mockPlans.length > 0) setSelectedPlan(mockPlans[0]);
-    setLoading(false);
+    let cancelled = false;
+    setLoading(true);
+
+    const loadPlans = async () => {
+      let source: Plan[] = [];
+      try {
+        source = useMockData
+          ? mockStore.getPlans()
+          : await getPlans(address ?? undefined);
+      } catch (err) {
+        if (!cancelled) {
+          setPingError(err instanceof Error ? err.message : "Failed to load plans.");
+        }
+      }
+      if (cancelled) return;
+
+      const activePlans = source.filter((p) => p.status?.toUpperCase() === "ACTIVE");
+      setPlans(activePlans);
+      if (activePlans.length > 0) setSelectedPlan(activePlans[0]);
+      setLoading(false);
+    };
+
+    loadPlans();
+    return () => { cancelled = true; };
   }, [isConnected, address]);
 
   const handlePing = async () => {
@@ -67,7 +88,6 @@ export default function PingPage() {
     setPingError("");
     try {
       setPingStatus("submitting");
-      const mockStore = require("@/lib/mockStore").mockStore;
       mockStore.pingPlan(selectedPlan.id);
       
       setPingStatus("success");
@@ -92,7 +112,7 @@ export default function PingPage() {
       <div>
         <h1 className="text-2xl font-semibold text-white">Proof of Life</h1>
         <p className="text-sm text-slate-500 mt-1">
-          Send a cryptographic ping to prove you're still active and reset the inactivity timer.
+          Send a cryptographic ping to prove you&apos;re still active and reset the inactivity timer.
         </p>
       </div>
 

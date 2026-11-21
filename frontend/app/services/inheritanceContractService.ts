@@ -1,8 +1,11 @@
 import { apiClient, ApiError } from "@/app/lib/api/client";
 import {
+  buildContractPauseTransaction,
   buildCreateInheritancePlanTransaction,
   describeContractError,
   ContractSimulationError,
+  readContractPaused,
+  type ContractPauseAction,
 } from "@/app/lib/stellar/sorobanClient";
 
 export { ContractSimulationError };
@@ -89,12 +92,18 @@ export async function submitSignedTransaction(
     );
 
     const hash = typeof response.hash === "string" ? response.hash : "";
-    const successful = response.successful !== false;
+    const successful = response.successful === true;
 
     if (!hash) {
       throw new TransactionSubmissionError(
         "The network accepted the request but returned no transaction hash.",
         response
+      );
+    }
+
+    if (successful && typeof window !== "undefined") {
+      window.dispatchEvent(
+        new CustomEvent("stellar:transaction-confirmed", { detail: { hash } })
       );
     }
 
@@ -163,8 +172,65 @@ export async function invokeCreateInheritancePlan(options: {
   };
 }
 
+export type { ContractPauseAction };
+
+export interface InvokeContractPauseResult {
+  submission: SubmitTransactionResult;
+  explorerUrl: string;
+}
+
+/**
+ * Emergency pause / unpause of the inheritance contract by an admin: build +
+ * simulate `pause(admin)` / `unpause(admin)`, have the admin's wallet sign it,
+ * and relay it through `/api/transactions/submit`. Same stages as plan creation.
+ */
+export async function invokeContractPause(options: {
+  admin: string;
+  action: ContractPauseAction;
+  signTransaction: TransactionSigner;
+  onProgress?: (progress: CreatePlanProgress) => void;
+}): Promise<InvokeContractPauseResult> {
+  const { admin, action, signTransaction, onProgress } = options;
+
+  onProgress?.({ stage: "building" });
+  const { unsignedTransactionXdr, networkPassphrase } = await buildContractPauseTransaction(
+    admin,
+    action
+  );
+
+  onProgress?.({ stage: "awaiting-signature" });
+  let signed;
+  try {
+    signed = await signTransaction(unsignedTransactionXdr, { networkPassphrase, address: admin });
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    throw new ContractSimulationError(
+      message.toLowerCase().includes("declin") || message.toLowerCase().includes("reject")
+        ? "Signature request was declined in the wallet."
+        : message,
+      error
+    );
+  }
+
+  onProgress?.({ stage: "submitting" });
+  const submission = await submitSignedTransaction(signed.signedTxXdr);
+  if (!submission.successful) {
+    throw new TransactionSubmissionError(
+      `The ${action} transaction was submitted but did not succeed.`,
+      submission.raw
+    );
+  }
+
+  onProgress?.({ stage: "confirmed" });
+  return { submission, explorerUrl: stellarExpertTxUrl(submission.hash) };
+}
+
+export { readContractPaused };
+
 export const inheritanceContractService = {
   buildCreateInheritancePlanXdr,
   submitSignedTransaction,
   invokeCreateInheritancePlan,
+  invokeContractPause,
+  readContractPaused,
 };

@@ -4082,3 +4082,28 @@ fn test_liquidate_loan_auto_starts_auction() {
     // Loan is settled, remaining 2000 collateral refunded to borrower
     assert!(client.get_loan_by_id(&loan_id).is_none());
 }
+
+#[test]
+fn test_verify_proof_of_reserves() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let (client, token_addr, collateral_addr, _admin) = setup(&env);
+
+    let depositor = Address::generate(&env);
+    let borrower = Address::generate(&env);
+    mint_to(&env, &token_addr, &depositor, 10_000);
+    mint_to(&env, &collateral_addr, &borrower, 10_000);
+
+    // Initial reserves check: 0 liabilities, 0 actual balance, fully backed = true
+    let (liabilities, actual, backed) = client.verify_proof_of_reserves(&token_addr);
+    assert_eq!(liabilities, 0);
+    assert_eq!(actual, 0);
+    assert!(backed);
+
+    // After deposit of 5000:
+    client.deposit(&depositor, &token_addr, &5_000u64);
+    let (liabilities, actual, backed) = client.verify_proof_of_reserves(&token_addr);
+    assert_eq!(liabilities, 5_000);
+    assert_eq!(actual, 5_000);
+    assert!(backed);
+}

@@ -6,7 +6,7 @@ import { AdminAuthProvider } from "@/context/AdminAuthContext";
 import { KYCProvider } from "@/context/KYCContext";
 import { ThemeProvider } from "@/context/ThemeContext";
 import { WalletModal } from "@/components/WalletModal";
-import { OfflineSyncHandler } from "@/components/OfflineSyncHandler";
+import OfflineSyncHandler from "@/components/ui/OfflineSyncHandler";
 
 import {
   OrganizationStructuredData,

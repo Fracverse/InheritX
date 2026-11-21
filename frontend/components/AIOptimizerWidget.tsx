@@ -68,7 +68,7 @@ export function AIOptimizerWidget({ planId }: AIOptimizerWidgetProps) {
           <AlertCircle className="w-5 h-5 text-red-400 flex-shrink-0 mt-1" />
           <div>
             <h3 className="text-sm font-semibold text-red-300">Unable to Load Recommendations</h3>
-            <p className="text-xs text-red-400 mt-1">{error || 'Please try again later'}</p>
+            <p className="text-xs text-red-400 mt-1">{error || "Please try again later"}</p>
           </div>
         </div>
       </div>

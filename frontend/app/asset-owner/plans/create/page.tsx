@@ -14,6 +14,7 @@ import {
 } from "lucide-react";
 import inheritanceAPI from "@/app/lib/api/inheritance";
 import { useMockData } from "@/lib/api/dataSource";
+import { mockStore } from "@/lib/mockStore";
 import type { PlanBeneficiaryRequest } from "@/app/lib/api/inheritance";
 import {
   getSelectedTokenIdentifier,
@@ -176,7 +177,7 @@ export default function CreateInheritancePlanPage() {
 
     try {
       const newPlan = useMockData
-        ? require("@/lib/mockStore").mockStore.createPlan({
+        ? mockStore.createPlan({
             owner_address: hydratedDraft.owner,
             token_address: selectedToken,
             amount: Number(hydratedDraft.amount),

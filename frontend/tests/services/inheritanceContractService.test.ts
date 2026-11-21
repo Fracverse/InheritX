@@ -109,4 +109,38 @@ describe("inheritanceContractService", () => {
       TransactionSubmissionError
     );
   });
+
+  it("dispatches transaction-confirmed only when Horizon marks the submission successful", async () => {
+    const dispatchSpy = vi.spyOn(window, "dispatchEvent");
+    vi.mocked(apiClient.post).mockResolvedValue({ hash: "pending-hash", successful: false });
+
+    const result = await submitSignedTransaction("signed-xdr");
+
+    expect(result.successful).toBe(false);
+    expect(dispatchSpy).not.toHaveBeenCalledWith(
+      expect.objectContaining({ type: "stellar:transaction-confirmed" })
+    );
+
+    dispatchSpy.mockClear();
+    vi.mocked(apiClient.post).mockResolvedValue({ hash: "confirmed-hash", successful: true });
+    await submitSignedTransaction("signed-xdr");
+
+    expect(dispatchSpy).toHaveBeenCalledWith(
+      expect.objectContaining({ type: "stellar:transaction-confirmed" })
+    );
+    dispatchSpy.mockRestore();
+  });
+
+  it("does not treat a response without an explicit success flag as confirmed", async () => {
+    const dispatchSpy = vi.spyOn(window, "dispatchEvent");
+    vi.mocked(apiClient.post).mockResolvedValue({ hash: "unknown-status" });
+
+    const result = await submitSignedTransaction("signed-xdr");
+
+    expect(result.successful).toBe(false);
+    expect(dispatchSpy).not.toHaveBeenCalledWith(
+      expect.objectContaining({ type: "stellar:transaction-confirmed" })
+    );
+    dispatchSpy.mockRestore();
+  });
 });

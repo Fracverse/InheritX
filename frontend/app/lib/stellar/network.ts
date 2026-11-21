@@ -7,6 +7,20 @@ import { Networks } from "@stellar/stellar-sdk";
 export const SOROBAN_RPC_URL =
   process.env.NEXT_PUBLIC_SOROBAN_RPC_URL ?? "https://soroban-testnet.stellar.org";
 
+/**
+ * Stellar Horizon endpoint used to query account balances and ledger data.
+ * Defaults to the public Testnet Horizon node.
+ */
+export const STELLAR_HORIZON_URL =
+  process.env.NEXT_PUBLIC_STELLAR_HORIZON_URL ?? "https://horizon-testnet.stellar.org";
+
+/**
+ * Stellar Testnet Faucet URL used to fund accounts with testnet XLM for gas.
+ */
+export const STELLAR_FAUCET_URL =
+  process.env.NEXT_PUBLIC_STELLAR_FAUCET_URL ??
+  "https://laboratory.stellar.org/#account-creator?network=testnet";
+
 /** Network passphrase the built transaction is signed against. */
 export const STELLAR_NETWORK_PASSPHRASE =
   process.env.NEXT_PUBLIC_STELLAR_NETWORK_PASSPHRASE ?? Networks.TESTNET;

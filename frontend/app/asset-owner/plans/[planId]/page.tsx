@@ -22,7 +22,9 @@ import {
   Activity,
   Calendar,
   Hash,
+  UserPlus,
 } from "lucide-react";
+import { FamilyInviteModal } from "@/components/plans/FamilyInviteModal";
 
 function StatusBadge({ status }: { status: string }) {
   const map: Record<string, string> = {
@@ -71,6 +73,7 @@ export default function PlanDetailPage() {
   const [plan, setPlan] = useState<Plan | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
+  const [familyInviteOpen, setFamilyInviteOpen] = useState(false);
 
   useEffect(() => {
     if (!planId) return;
@@ -136,6 +139,13 @@ export default function PlanDetailPage() {
 
       {/* Action Buttons */}
       <div className="flex flex-wrap gap-2">
+        <button
+          type="button"
+          onClick={() => setFamilyInviteOpen(true)}
+          className="flex items-center gap-1.5 rounded-xl border border-violet-500/20 bg-violet-500/10 px-3 py-2 text-xs font-medium text-violet-300 transition-colors hover:bg-violet-500/20"
+        >
+          <UserPlus size={12} /> Invite Family
+        </button>
         <Link
           href={`/asset-owner/plans/${plan.id}/edit`}
           className="flex items-center gap-1.5 px-3 py-2 rounded-xl text-xs font-medium bg-[#33C5E0]/10 text-[#33C5E0] border border-[#33C5E0]/20 hover:bg-[#33C5E0]/20 transition-colors"
@@ -251,6 +261,11 @@ export default function PlanDetailPage() {
           </div>
         </div>
       )}
+      <FamilyInviteModal
+        planId={plan.id}
+        open={familyInviteOpen}
+        onClose={() => setFamilyInviteOpen(false)}
+      />
     </div>
   );
 }

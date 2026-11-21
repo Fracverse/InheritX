@@ -1,4 +1,4 @@
-import { BASE_FEE, Contract, TransactionBuilder, rpc } from "@stellar/stellar-sdk";
+import { Address, BASE_FEE, Contract, TransactionBuilder, rpc, scValToNative } from "@stellar/stellar-sdk";
 import {
   encodeCreateInheritancePlanParams,
   type CreateInheritancePlanParamsInput,
@@ -119,4 +119,96 @@ export async function buildCreateInheritancePlanTransaction(
     unsignedTransactionXdr: prepared.toXDR(),
     networkPassphrase: STELLAR_NETWORK_PASSPHRASE,
   };
+}
+
+// ─── Emergency pause (admin) ────────────────────────────────────────────────
+
+export type ContractPauseAction = "pause" | "unpause";
+
+/** Errors `pause` / `unpause` can return (contracts/inheritance-contract/src/errors.rs). */
+const PAUSE_ERROR_MESSAGES: Record<number, string> = {
+  22: "This wallet is not an admin of the inheritance contract.",
+  51: "The contract is mid-operation and can't be paused right now. Try again in a moment.",
+  52: "This admin wallet is blacklisted on the contract.",
+};
+
+function describePauseError(raw: string): string {
+  const match = raw.match(/Error\(Contract,\s*#(\d+)\)/);
+  const known = match ? PAUSE_ERROR_MESSAGES[Number(match[1])] : undefined;
+  return known ?? describeContractError(raw);
+}
+
+function requireInheritanceContractId(): string {
+  const contractId = getInheritanceContractId();
+  if (!contractId) {
+    throw new ContractSimulationError(
+      "NEXT_PUBLIC_INHERITANCE_CONTRACT_ID is not configured for this environment."
+    );
+  }
+  return contractId;
+}
+
+async function loadAccount(server: rpc.Server, address: string) {
+  try {
+    return await server.getAccount(address);
+  } catch (error) {
+    throw new ContractSimulationError(
+      "Couldn't load your account from the Stellar network. Make sure the wallet is funded on this network.",
+      error
+    );
+  }
+}
+
+/**
+ * Builds, simulates and assembles `pause(admin)` or `unpause(admin)` on the
+ * inheritance contract. The contract checks `admin.require_auth()` and the
+ * Admin role, so a non-admin wallet is rejected here, at simulation, before
+ * the wallet is ever asked to sign.
+ */
+export async function buildContractPauseTransaction(
+  admin: string,
+  action: ContractPauseAction
+): Promise<BuildCreateInheritancePlanTxResult> {
+  const contract = new Contract(requireInheritanceContractId());
+  const server = getServer();
+  const sourceAccount = await loadAccount(server, admin);
+
+  const transaction = new TransactionBuilder(sourceAccount, {
+    fee: BASE_FEE,
+    networkPassphrase: STELLAR_NETWORK_PASSPHRASE,
+  })
+    .addOperation(contract.call(action, new Address(admin).toScVal()))
+    .setTimeout(TRANSACTION_TIMEOUT_SECONDS)
+    .build();
+
+  try {
+    const prepared = await server.prepareTransaction(transaction);
+    return {
+      unsignedTransactionXdr: prepared.toXDR(),
+      networkPassphrase: STELLAR_NETWORK_PASSPHRASE,
+    };
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    throw new ContractSimulationError(describePauseError(message), error);
+  }
+}
+
+/** Reads `is_paused()` by simulation, using `viewer` as the source account. */
+export async function readContractPaused(viewer: string): Promise<boolean> {
+  const contract = new Contract(requireInheritanceContractId());
+  const server = getServer();
+  const sourceAccount = await loadAccount(server, viewer);
+  const transaction = new TransactionBuilder(sourceAccount, {
+    fee: BASE_FEE,
+    networkPassphrase: STELLAR_NETWORK_PASSPHRASE,
+  })
+    .addOperation(contract.call("is_paused"))
+    .setTimeout(TRANSACTION_TIMEOUT_SECONDS)
+    .build();
+
+  const simulation = await server.simulateTransaction(transaction);
+  if (!rpc.Api.isSimulationSuccess(simulation) || !simulation.result) {
+    throw new ContractSimulationError("Couldn't read the contract's pause state.", simulation);
+  }
+  return scValToNative(simulation.result.retval) === true;
 }

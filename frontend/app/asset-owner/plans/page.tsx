@@ -5,276 +5,409 @@ import Link from "next/link";
 import { useWallet } from "@/context/WalletContext";
 import { plansAPI, type Plan } from "@/app/lib/api/plans";
 import { getPlans } from "@/lib/api/dataSource";
+import { motion, AnimatePresence } from "framer-motion";
 import {
+  Plus,
   PlusCircle,
   Search,
-  FileText,
+  Filter,
+  Loader2,
+  AlertCircle,
+  ShieldCheck,
+  Clock,
+  CheckCircle2,
+  XCircle,
   ChevronRight,
+  FileText,
   Edit3,
   Zap,
-  Filter,
   TrendingUp,
-  Users,
-  Clock,
-  MoreHorizontal,
   RefreshCw,
-  Wallet,
 } from "lucide-react";
+import { Skeleton } from "@/components/ui/Skeleton";
+import { BeneficiaryMFAModal } from "@/components/plans/BeneficiaryMFAModal";
+import { GeneticUploadModal } from "@/components/plans/GeneticUploadModal";
+
+// ─── Types ───────────────────────────────────────────────────────────────────
+
+type ViewMode = "all" | "due-for-claim" | "claimed";
+type LoadingState = "idle" | "loading" | "error";
+
+// ─── Status badge helper ────────────────────────────────────────────────────
 
 function StatusBadge({ status }: { status: string }) {
-  const map: Record<string, string> = {
-    ACTIVE: "bg-emerald-500/10 text-emerald-400 border-emerald-500/20",
-    PENDING: "bg-yellow-500/10 text-yellow-400 border-yellow-500/20",
-    TRIGGERED: "bg-orange-500/10 text-orange-400 border-orange-500/20",
-    COMPLETED: "bg-blue-500/10 text-blue-400 border-blue-500/20",
-    INACTIVE: "bg-slate-500/10 text-slate-400 border-slate-500/20",
+  const normalized = (status ?? "").toLowerCase();
+  const styles: Record<string, { bg: string; text: string; icon: typeof Clock }> = {
+    active: { bg: "bg-[#33C5E014]", text: "text-[#33C5E0]", icon: Clock },
+    claimable: { bg: "bg-[#F59E0B14]", text: "text-[#F59E0B]", icon: ShieldCheck },
+    claimed: { bg: "bg-[#48BB7814]", text: "text-[#48BB78]", icon: CheckCircle2 },
+    completed: { bg: "bg-[#48BB7814]", text: "text-[#48BB78]", icon: CheckCircle2 },
+    expired: { bg: "bg-[#F5656514]", text: "text-[#F56565]", icon: XCircle },
+    triggered: { bg: "bg-[#F59E0B14]", text: "text-[#F59E0B]", icon: AlertCircle },
+    pending: { bg: "bg-[#F59E0B14]", text: "text-[#F59E0B]", icon: Clock },
+    paused: { bg: "bg-[#92A5A814]", text: "text-[#92A5A8]", icon: Clock },
+    inactive: { bg: "bg-[#92A5A814]", text: "text-[#92A5A8]", icon: Clock },
   };
-  const cls = map[status?.toUpperCase()] ?? map.INACTIVE;
+
+  const config = styles[normalized] ?? {
+    bg: "bg-[#92A5A814]",
+    text: "text-[#92A5A8]",
+    icon: Clock,
+  };
+  const Icon = config.icon;
+
   return (
-    <span className={`inline-flex items-center px-2 py-0.5 rounded-md text-[11px] font-medium border ${cls}`}>
-      {status ?? "Unknown"}
+    <span
+      className={`inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full text-[10px] font-medium ${config.bg} ${config.text}`}
+    >
+      <Icon size={11} />
+      {(status ?? "Unknown").charAt(0).toUpperCase() + (status ?? "").slice(1)}
     </span>
   );
 }
 
-function PlanCard({ plan }: { plan: Plan }) {
-  const benefCount = plan.beneficiaries?.length ?? 0;
-  const amount = Number(plan.amount ?? 0);
-  const yield$ = plan.accrued_yield ?? 0;
+// ─── Plan Card ───────────────────────────────────────────────────────────────
+
+interface PlanCardProps {
+  plan: Plan;
+  onClaim: (plan: Plan) => void;
+  onUpload?: (plan: Plan) => void;
+}
+
+function PlanCard({ plan, onClaim, onUpload }: PlanCardProps) {
+  const isClaimable =
+    (plan.status ?? "").toLowerCase() === "claimable" ||
+    (plan.status ?? "").toLowerCase() === "triggered";
 
   return (
-    <div className="rounded-2xl bg-white/[0.03] border border-white/[0.08] p-5 hover:bg-white/[0.05] hover:border-white/[0.12] transition-all group">
-      {/* Top Row */}
-      <div className="flex items-start justify-between mb-4">
-        <div className="flex items-center gap-3">
-          <div className="w-10 h-10 rounded-xl bg-[#33C5E0]/10 border border-[#33C5E0]/20 flex items-center justify-center flex-shrink-0">
-            <FileText size={16} className="text-[#33C5E0]" />
+    <motion.div
+      layout
+      initial={{ opacity: 0, y: 10 }}
+      animate={{ opacity: 1, y: 0 }}
+      exit={{ opacity: 0, y: -10 }}
+      transition={{ duration: 0.2 }}
+      className="bg-[#161E22] border border-[#2A3338] rounded-2xl overflow-hidden hover:border-[#33C5E040] transition-colors"
+    >
+      {/* Header */}
+      <div className="px-5 py-4 border-b border-[#2A3338]">
+        <div className="flex items-start justify-between gap-3">
+          <div className="flex-1 min-w-0">
+            <h3 className="text-sm font-semibold text-white truncate">
+              {plan.title}
+            </h3>
+            {plan.description && (
+              <p className="text-xs text-[#92A5A8] mt-1 line-clamp-2">
+                {plan.description}
+              </p>
+            )}
           </div>
-          <div>
-            <p className="text-sm font-semibold text-white">
-              {plan.token_address ?? "USDC"} Plan
-            </p>
-            <p className="text-[11px] text-slate-500 font-mono mt-0.5">
-              #{plan.id?.slice(0, 8)}
-            </p>
-          </div>
-        </div>
-        <StatusBadge status={plan.status ?? "ACTIVE"} />
-      </div>
-
-      {/* Stats Row */}
-      <div className="grid grid-cols-3 gap-3 mb-4">
-        <div className="text-center p-2.5 rounded-xl bg-white/[0.03] border border-white/[0.05]">
-          <p className="text-xs text-slate-500">Amount</p>
-          <p className="text-sm font-semibold text-white mt-0.5">${amount.toLocaleString()}</p>
-        </div>
-        <div className="text-center p-2.5 rounded-xl bg-white/[0.03] border border-white/[0.05]">
-          <p className="text-xs text-slate-500">Yield</p>
-          <p className="text-sm font-semibold text-emerald-400 mt-0.5">+${yield$.toFixed(2)}</p>
-        </div>
-        <div className="text-center p-2.5 rounded-xl bg-white/[0.03] border border-white/[0.05]">
-          <p className="text-xs text-slate-500">Heirs</p>
-          <p className="text-sm font-semibold text-white mt-0.5">{benefCount}</p>
+          <StatusBadge status={plan.status} />
         </div>
       </div>
 
-      {/* Beneficiary Allocation Bar */}
-      {benefCount > 0 && (
-        <div className="mb-4">
-          <div className="flex gap-0.5 h-1.5 rounded-full overflow-hidden">
-            {plan.beneficiaries!.map((b, i) => {
-              const pct = (b.allocation_bps ?? 10000 / benefCount) / 100;
-              const colors = ["bg-[#33C5E0]", "bg-violet-400", "bg-emerald-400", "bg-orange-400", "bg-pink-400"];
-              return (
-                <div
-                  key={i}
-                  className={`${colors[i % colors.length]} h-full`}
-                  style={{ width: `${pct}%` }}
-                />
-              );
-            })}
+      {/* Body */}
+      <div className="px-5 py-4 space-y-3">
+        {plan.beneficiary_name && (
+          <div className="flex items-center justify-between text-xs">
+            <span className="text-[#92A5A8]">Beneficiary</span>
+            <span className="text-slate-200 font-medium">
+              {plan.beneficiary_name}
+            </span>
           </div>
-          <div className="flex gap-3 mt-1.5">
-            {plan.beneficiaries!.slice(0, 3).map((b, i) => {
-              const pct = (b.allocation_bps ?? 10000 / benefCount) / 100;
-              const colors = ["text-[#33C5E0]", "text-violet-400", "text-emerald-400"];
-              return (
-                <span key={i} className={`text-[10px] ${colors[i % colors.length]}`}>
-                  {b.wallet_address?.slice(0, 6)}… {pct.toFixed(0)}%
-                </span>
-              );
-            })}
-            {benefCount > 3 && <span className="text-[10px] text-slate-500">+{benefCount - 3} more</span>}
-          </div>
+        )}
+        <div className="flex items-center justify-between text-xs">
+          <span className="text-[#92A5A8]">Net Amount</span>
+          <span className="text-slate-200 font-mono">
+            {plan.net_amount?.toFixed(2) ?? "0.00"} {plan.currency_preference ?? "USD"}
+          </span>
+        </div>
+        <div className="flex items-center justify-between text-xs">
+          <span className="text-[#92A5A8]">Created</span>
+          <span className="text-slate-200">
+            {plan.created_at ? new Date(plan.created_at).toLocaleDateString() : "—"}
+          </span>
+        </div>
+      </div>
+
+      {onUpload && (
+        <div className="px-5 pb-4">
+          <button type="button" onClick={() => onUpload(plan)}
+            className="rounded-lg border border-[#33C5E0] px-3 py-2 text-xs text-[#33C5E0] hover:bg-[#33C5E014]">
+            Upload genetic proof
+          </button>
         </div>
       )}
 
-      {/* Grace Period */}
-      {plan.grace_period_seconds != null && (
-        <div className="flex items-center gap-2 mb-4 text-xs text-slate-500">
-          <Clock size={11} />
-          <span>Grace period: {Math.round(plan.grace_period_seconds / 86400)}d</span>
-          {plan.earn_yield && (
-            <>
-              <span className="mx-1">·</span>
-              <TrendingUp size={11} className="text-emerald-400" />
-              <span className="text-emerald-400">{(plan.yield_rate_bps ?? 0) / 100}% APY</span>
-            </>
-          )}
-        </div>
-      )}
-
-      {/* Actions */}
-      <div className="flex gap-2 pt-3 border-t border-white/5">
-        <Link
-          href={`/asset-owner/plans/${plan.id}`}
-          className="flex-1 flex items-center justify-center gap-1.5 py-2 rounded-xl text-xs font-medium bg-[#33C5E0]/10 text-[#33C5E0] border border-[#33C5E0]/20 hover:bg-[#33C5E0]/20 transition-colors"
-        >
-          View <ChevronRight size={11} />
-        </Link>
+      {/* Footer */}
+      <div className="px-5 py-3 bg-[#0A0F11] border-t border-[#2A3338] flex items-center justify-between gap-3">
         <Link
           href={`/asset-owner/plans/${plan.id}/edit`}
-          className="flex-1 flex items-center justify-center gap-1.5 py-2 rounded-xl text-xs font-medium bg-white/5 text-slate-300 border border-white/10 hover:bg-white/10 transition-colors"
+          className="text-xs text-[#92A5A8] hover:text-white transition-colors flex items-center gap-1"
         >
           <Edit3 size={11} /> Edit
+          <ChevronRight size={12} />
         </Link>
-        <Link
-          href="/asset-owner/ping"
-          className="px-3 py-2 rounded-xl text-xs font-medium bg-white/5 text-slate-300 border border-white/10 hover:bg-yellow-500/10 hover:text-yellow-400 hover:border-yellow-500/20 transition-colors"
-          title="Send Ping"
-        >
-          <Zap size={11} />
-        </Link>
+        {isClaimable ? (
+          <button
+            type="button"
+            onClick={() => onClaim(plan)}
+            className="inline-flex items-center gap-1.5 px-4 py-2 text-xs font-medium text-black bg-[#33C5E0] hover:bg-cyan-300 rounded-lg transition-colors"
+          >
+            <ShieldCheck size={13} />
+            Claim with MFA
+          </button>
+        ) : (plan.status ?? "").toLowerCase() === "claimed" ||
+          (plan.status ?? "").toLowerCase() === "completed" ? (
+          <span className="inline-flex items-center gap-1.5 px-3 py-1.5 text-[10px] text-[#48BB78] bg-[#48BB7814] rounded-lg">
+            <CheckCircle2 size={12} />
+            Claimed
+          </span>
+        ) : (
+          <span className="text-[10px] text-[#92A5A8]">
+            Not claimable yet
+          </span>
+        )}
       </div>
-    </div>
+    </motion.div>
   );
 }
 
-const STATUS_FILTERS = ["All", "Active", "Pending", "Triggered", "Completed"];
+// ─── Main Page ───────────────────────────────────────────────────────────────
 
 export default function PlansPage() {
   const { isConnected, address, openModal } = useWallet();
   const [plans, setPlans] = useState<Plan[]>([]);
-  const [loading, setLoading] = useState(true);
-  const [search, setSearch] = useState("");
-  const [statusFilter, setStatusFilter] = useState("All");
+  const [loadingState, setLoadingState] = useState<LoadingState>("loading");
+  const [errorMessage, setErrorMessage] = useState("");
+  const [viewMode, setViewMode] = useState<ViewMode>("all");
+  const [searchQuery, setSearchQuery] = useState("");
   const [refreshing, setRefreshing] = useState(false);
-  const [error, setError] = useState<string | null>(null);
+  const [mfaPlan, setMfaPlan] = useState<Plan | null>(null);
+  const [uploadPlan, setUploadPlan] = useState<Plan | null>(null);
+
+  // ─── Fetch plans ──────────────────────────────────────────────────────────
 
   const fetchPlans = useCallback(async () => {
+    setLoadingState("loading");
+    setErrorMessage("");
     try {
-      setPlans(await getPlans(address ?? undefined));
-      setError(null);
+      let fetchedPlans: Plan[] = [];
+
+      if (viewMode === "due-for-claim") {
+        const response = await plansAPI.getDueForClaimPlans(1, 50);
+        fetchedPlans = response.data ?? [];
+      } else {
+        // Try dataSource first, fall back to plansAPI
+        try {
+          fetchedPlans = await getPlans(address ?? undefined);
+        } catch {
+          const response = await plansAPI.getDueForClaimPlans(1, 100);
+          fetchedPlans = response.data ?? [];
+        }
+      }
+
+      // Filter for claimed view
+      if (viewMode === "claimed") {
+        fetchedPlans = fetchedPlans.filter(
+          (p) =>
+            (p.status ?? "").toLowerCase() === "claimed" ||
+            (p.status ?? "").toLowerCase() === "completed"
+        );
+      }
+
+      setPlans(fetchedPlans);
+      setLoadingState("idle");
     } catch (err) {
-      setPlans([]);
-      setError(err instanceof Error ? err.message : "Failed to load plans.");
+      setLoadingState("error");
+      setErrorMessage(
+        err instanceof Error ? err.message : "Failed to load plans."
+      );
     } finally {
-      setLoading(false);
       setRefreshing(false);
     }
-  }, [address]);
+  }, [viewMode, address]);
 
-  useEffect(() => { fetchPlans(); }, [fetchPlans]);
+  useEffect(() => {
+    fetchPlans();
+  }, [fetchPlans]);
 
-  const handleRefresh = () => { setRefreshing(true); fetchPlans(); };
+  const handleRefresh = () => {
+    setRefreshing(true);
+    fetchPlans();
+  };
 
-  const filtered = plans.filter((p) => {
-    const matchStatus = statusFilter === "All" || p.status?.toUpperCase() === statusFilter.toUpperCase();
-    const matchSearch = !search || p.id?.toLowerCase().includes(search.toLowerCase()) || p.token_address?.toLowerCase().includes(search.toLowerCase());
-    return matchStatus && matchSearch;
+  // ─── Filter plans by search ──────────────────────────────────────────────
+
+  const filteredPlans = plans.filter((plan) => {
+    if (!searchQuery.trim()) return true;
+    const q = searchQuery.toLowerCase();
+    return (
+      (plan.title ?? "").toLowerCase().includes(q) ||
+      (plan.beneficiary_name ?? "").toLowerCase().includes(q) ||
+      (plan.id ?? "").toLowerCase().includes(q)
+    );
   });
 
+  // ─── Claim handler ──────────────────────────────────────────────────────
+
+  const handleClaim = (plan: Plan) => {
+    setMfaPlan(plan);
+  };
+
+  const handleClaimSuccess = (claimedPlan: Plan) => {
+    setPlans((prev) =>
+      prev.map((p) => (p.id === claimedPlan.id ? claimedPlan : p))
+    );
+    setMfaPlan(null);
+  };
+
+  // ─── Render ──────────────────────────────────────────────────────────────
+
   return (
-    <div className="animate-fade-in space-y-6 max-w-5xl">
-      {/* Header */}
-      <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4">
+    <div className="animate-fade-in space-y-6">
+      {/* Page heading */}
+      <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-4">
         <div>
-          <h1 className="text-2xl font-semibold text-white">My Plans</h1>
-          <p className="text-sm text-slate-500 mt-1">
-            {loading ? "Loading..." : `${plans.length} plan${plans.length !== 1 ? "s" : ""} found`}
+          <h1 className="text-2xl font-semibold text-foreground">
+            Inheritance Plans
+          </h1>
+          <p className="text-sm text-gray-500 mt-1">
+            View and claim your inheritance plans with multi-factor authentication.
           </p>
         </div>
         <div className="flex items-center gap-2">
           <button
             onClick={handleRefresh}
-            disabled={refreshing || loading}
-            className="p-2 rounded-xl border border-white/10 text-slate-400 hover:text-white hover:bg-white/5 transition-colors disabled:opacity-40"
+            disabled={refreshing || loadingState === "loading"}
+            className="p-2 rounded-xl border border-[#2A3338] text-[#92A5A8] hover:text-white hover:bg-[#1C252A] transition-colors disabled:opacity-40"
             aria-label="Refresh"
           >
             <RefreshCw size={15} className={refreshing ? "animate-spin" : ""} />
           </button>
           <Link
             href="/asset-owner/plans/create"
-            className="flex items-center gap-2 px-4 py-2 rounded-xl bg-[#33C5E0] text-black text-sm font-semibold hover:bg-[#33C5E0]/90 transition-colors"
+            className="inline-flex items-center gap-2 px-4 py-2.5 text-sm font-medium text-black bg-[#33C5E0] hover:bg-cyan-300 rounded-lg transition-colors w-fit"
           >
             <PlusCircle size={14} />
-            New Plan
+            Create Plan
           </Link>
         </div>
       </div>
 
-      {/* Filters */}
-      {error && <div role="alert" className="rounded-xl border border-red-500/20 bg-red-500/5 p-4 text-xs text-red-300">{error}</div>}
+      {/* Filters bar */}
       <div className="flex flex-col sm:flex-row gap-3">
+        {/* Search */}
         <div className="relative flex-1">
-            <Search size={14} className="absolute left-3 top-1/2 -translate-y-1/2 text-slate-500" />
-            <input
-              value={search}
-              onChange={(e) => setSearch(e.target.value)}
-              placeholder="Search by plan ID or token…"
-              className="w-full pl-9 pr-4 py-2.5 rounded-xl bg-white/5 border border-white/10 text-sm text-slate-200 placeholder-slate-600 focus:outline-none focus:border-[#33C5E0]/40 transition-colors"
-            />
-          </div>
-          <div className="flex items-center gap-1 p-1 rounded-xl bg-white/5 border border-white/10 flex-shrink-0 flex-wrap">
-            {STATUS_FILTERS.map((f) => (
-              <button
-                key={f}
-                onClick={() => setStatusFilter(f)}
-                className={`px-3 py-1.5 rounded-lg text-xs font-medium transition-colors ${
-                  statusFilter === f
-                    ? "bg-[#33C5E0] text-black"
-                    : "text-slate-400 hover:text-white"
-                }`}
-              >
-                {f}
-              </button>
-            ))}
-          </div>
+          <Search
+            size={15}
+            className="absolute left-3 top-1/2 -translate-y-1/2 text-[#4A5568]"
+          />
+          <input
+            type="text"
+            value={searchQuery}
+            onChange={(e) => setSearchQuery(e.target.value)}
+            placeholder="Search by title, beneficiary, or ID…"
+            className="w-full bg-[#0A0F11] border border-[#2A3338] rounded-lg pl-9 pr-4 py-2.5 text-sm text-slate-200 placeholder-[#4A5568] focus:outline-none focus:border-[#33C5E0] transition-colors"
+          />
         </div>
 
-      {/* Plans Grid */}
-      {loading ? (
-        <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4">
-          {[1, 2, 3].map((i) => (
-            <div key={i} className="rounded-2xl bg-white/[0.03] border border-white/[0.08] p-5 h-64 animate-pulse" />
+        {/* View mode toggle */}
+        <div className="flex items-center gap-1 p-1 bg-[#0A0F11] border border-[#2A3338] rounded-lg">
+          {(["all", "due-for-claim", "claimed"] as ViewMode[]).map((mode) => (
+            <button
+              key={mode}
+              type="button"
+              onClick={() => setViewMode(mode)}
+              className={`px-3 py-1.5 text-xs font-medium rounded-md transition-colors ${
+                viewMode === mode
+                  ? "bg-[#33C5E0] text-black"
+                  : "text-[#92A5A8] hover:text-white"
+              }`}
+            >
+              {mode === "all"
+                ? "All Plans"
+                : mode === "due-for-claim"
+                  ? "Due for Claim"
+                  : "Claimed"}
+            </button>
           ))}
         </div>
-      ) : filtered.length === 0 ? (
-        <div className="py-20 flex flex-col items-center gap-4 text-center">
-          <div className="w-16 h-16 rounded-2xl bg-white/5 flex items-center justify-center">
-            <FileText size={24} className="text-slate-600" />
+      </div>
+
+      {/* Content */}
+      {loadingState === "loading" && (
+        <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
+          {Array.from({ length: 6 }).map((_, i) => (
+            <Skeleton key={i} className="h-64 rounded-2xl" />
+          ))}
+        </div>
+      )}
+
+      {loadingState === "error" && (
+        <div className="flex flex-col items-center justify-center py-16 text-center">
+          <AlertCircle size={32} className="text-[#F56565]" />
+          <p className="text-sm text-[#F56565] mt-3">{errorMessage}</p>
+          <button
+            onClick={fetchPlans}
+            className="mt-4 text-xs text-[#33C5E0] hover:text-cyan-300 transition-colors"
+          >
+            Try again
+          </button>
+        </div>
+      )}
+
+      {loadingState === "idle" && filteredPlans.length === 0 && (
+        <div className="flex flex-col items-center justify-center py-16 text-center">
+          <div className="flex items-center justify-center w-16 h-16 rounded-full bg-[#2A3338]">
+            <FileText size={24} className="text-[#4A5568]" />
           </div>
-          <div>
-            <p className="text-sm font-medium text-slate-300">No plans found</p>
-            <p className="text-xs text-slate-500 mt-1">
-              {search || statusFilter !== "All" ? "Try adjusting your filters." : "Get started by creating your first inheritance plan."}
-            </p>
-          </div>
-          {!search && statusFilter === "All" && (
+          <p className="text-sm text-[#92A5A8] mt-4">
+            {searchQuery
+              ? "No plans match your search."
+              : viewMode === "due-for-claim"
+                ? "No plans are due for claim right now."
+                : viewMode === "claimed"
+                  ? "No claimed plans yet."
+                  : "No plans found. Create one to get started."}
+          </p>
+          {!searchQuery && viewMode === "all" && (
             <Link
               href="/asset-owner/plans/create"
-              className="flex items-center gap-2 px-4 py-2 rounded-xl bg-[#33C5E0] text-black text-sm font-semibold"
+              className="mt-4 inline-flex items-center gap-2 px-4 py-2 text-xs font-medium text-black bg-[#33C5E0] hover:bg-cyan-300 rounded-lg transition-colors"
             >
-              <PlusCircle size={14} /> Create Plan
+              <Plus size={14} />
+              Create your first plan
             </Link>
           )}
         </div>
-      ) : (
-        <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4">
-          {filtered.map((plan) => (
-            <PlanCard key={plan.id} plan={plan} />
-          ))}
-        </div>
+      )}
+
+      {loadingState === "idle" && filteredPlans.length > 0 && (
+        <motion.div
+          layout
+          className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6"
+        >
+          <AnimatePresence>
+            {filteredPlans.map((plan) => (
+              <PlanCard key={plan.id} plan={plan} onClaim={handleClaim}
+                onUpload={address && plan.owner_address === address ? setUploadPlan : undefined} />
+            ))}
+          </AnimatePresence>
+        </motion.div>
+      )}
+
+      {/* MFA Modal */}
+      {uploadPlan && address && uploadPlan.owner_address === address && (
+        <GeneticUploadModal key={`${uploadPlan.id}:${address}`} planId={uploadPlan.id}
+          planTitle={uploadPlan.title} onClose={() => setUploadPlan(null)} />
+      )}
+      {mfaPlan && (
+        <BeneficiaryMFAModal
+          plan={mfaPlan}
+          open={!!mfaPlan}
+          onClose={() => setMfaPlan(null)}
+          onClaimSuccess={handleClaimSuccess}
+        />
       )}
     </div>
   );

@@ -70,6 +70,7 @@ stellar-strkey = "0.0.13"
 ed25519-dalek = { version = "2.1", features = ["pkcs8", "rand_core"] }
 stellar-xdr = { version = "27", features = ["base64"] }
 argon2 = "0.5"
+zeroize = { version = "1.7", features = ["derive", "zeroize_derive"] }
 
 # Utilities
 dashmap = "6"

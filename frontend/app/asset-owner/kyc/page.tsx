@@ -154,7 +154,7 @@ export default function KYCPage() {
       {kycStatus === "approved" && (
         <div className="rounded-xl border border-emerald-500/20 bg-emerald-500/5 p-4 text-center">
           <CheckCircle2 size={24} className="text-emerald-400 mx-auto mb-2" />
-          <p className="text-sm font-medium text-emerald-300">You're fully verified</p>
+          <p className="text-sm font-medium text-emerald-300">You&apos;re fully verified</p>
           <p className="text-xs text-slate-400 mt-1">All features are unlocked for your account.</p>
         </div>
       )}

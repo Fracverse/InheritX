@@ -104,7 +104,9 @@
     "activePlans": "Plans actifs",
     "guardians": "Gardiens",
     "createdPlans": "Plans créés",
-    "recentActivity": "Activité récente"
+    "recentActivity": "Activité récente",
+    "searchPlans": "Rechercher des plans",
+    "filterStatus": "Filtrer par statut"
   },
   "errors": {
     "networkError": "Erreur réseau. Vérifiez votre connexion.",
@@ -112,5 +114,27 @@
     "notFound": "Ressource introuvable.",
     "serverError": "Erreur serveur. Veuillez réessayer.",
     "unauthorized": "Vous n'êtes pas autorisé à effectuer cette action."
+  },
+  "admin": {
+    "title": "Tableau de bord admin",
+    "users": "Utilisateurs",
+    "plans": "Plans",
+    "payouts": "Paiements",
+    "settings": "Paramètres",
+    "totalValueLocked": "Valeur totale verrouillée",
+    "totalUsers": "Utilisateurs totaux",
+    "activePlans": "Plans actifs",
+    "pendingKyc": "KYC en attente",
+    "recentTransactions": "Transactions récentes",
+    "manageUsers": "Gérer les utilisateurs",
+    "viewAll": "Voir tout",
+    "approve": "Approuver",
+    "reject": "Rejeter",
+    "suspend": "Suspendre",
+    "activate": "Activer",
+    "searchUsers": "Rechercher des utilisateurs",
+    "filterByStatus": "Filtrer par statut",
+    "exportData": "Exporter les données",
+    "refresh": "Actualiser"
   }
 }

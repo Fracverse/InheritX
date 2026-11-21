@@ -3,6 +3,7 @@ import { useEffect, useState } from "react";
 import { MetricsCards } from "@/components/admin/metrics/MetricsCards";
 import { TVLChart } from "@/components/admin/metrics/TVLChart";
 import { AssetDistributionChart } from "@/components/admin/metrics/AssetDistributionChart";
+import { EmergencyPausePanel } from "@/components/admin/EmergencyPausePanel";
 import { adminAPI, AdminMetrics } from "@/app/lib/api/admin";
 import { mockAdminMetrics } from "@/lib/mockAdminUsers";
 import { AlertCircle } from "lucide-react";
@@ -39,6 +40,8 @@ export default function AdminDashboardPage() {
           </p>
         </div>
       )}
+
+      <EmergencyPausePanel />
 
       <MetricsCards metrics={metrics} loading={loading} />
 

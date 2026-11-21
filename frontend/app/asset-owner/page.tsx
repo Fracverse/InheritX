@@ -2,6 +2,8 @@
 
 import { useState, useEffect } from "react";
 import Link from "next/link";
+import ToastStack from "@/components/ToastStack";
+import { useAppStore } from "@/store";
 import { useWallet } from "@/context/WalletContext";
 import { type Plan } from "@/app/lib/api/plans";
 import { getPlans } from "@/lib/api/dataSource";
@@ -71,11 +73,33 @@ function PlanStatusBadge({ status }: { status: string }) {
   );
 }
 
-export default function AssetOwnerPage() {
+function AssetOwnerPageInner() {
   const { isConnected, address } = useWallet();
   const [plans, setPlans] = useState<Plan[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
+
+  const connectWs = useAppStore((s) => s.connectWs);
+  const disconnectWs = useAppStore((s) => s.disconnectWs);
+  const lastPlanEvent = useAppStore((s) => s.lastPlanEvent);
+
+  // Live plan/KYC updates over WebSocket (issue #1062).
+  useEffect(() => {
+    connectWs(address);
+    return () => disconnectWs();
+  }, [address, connectWs, disconnectWs]);
+
+  // Reflect real-time status changes in this page's local plan list.
+  useEffect(() => {
+    if (!lastPlanEvent) return;
+    setPlans((prev) =>
+      prev.map((p) =>
+        String(p.id) === lastPlanEvent.plan_id
+          ? ({ ...p, status: lastPlanEvent.status } as Plan)
+          : p,
+      ),
+    );
+  }, [lastPlanEvent]);
 
   useEffect(() => {
     let cancelled = false;
@@ -308,5 +332,14 @@ export default function AssetOwnerPage() {
         </div>
       )}
     </div>
+  );
+}
+
+export default function AssetOwnerPage() {
+  return (
+    <>
+      <AssetOwnerPageInner />
+      <ToastStack />
+    </>
   );
 }
