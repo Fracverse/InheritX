@@ -3,11 +3,12 @@
 import React, { useState, useEffect } from 'react';
 import { X, Loader, AlertCircle, CheckCircle, Zap } from 'lucide-react';
 import clsx from 'clsx';
+import { useWallet } from '@/context/WalletContext';
 
 interface WalletModalProps {
-  isOpen: boolean;
-  onClose: () => void;
-  onConnect: (wallet: string) => Promise<void>;
+  isOpen?: boolean;
+  onClose?: () => void;
+  onConnect?: (wallet: string) => Promise<void>;
   currentWallet?: string;
   currentBalance?: number;
   currentNetwork?: string;
@@ -48,16 +49,21 @@ const NETWORKS: Record<NetworkType, NetworkInfo> = {
 };
 
 export function WalletModal({
-  isOpen,
-  onClose,
-  onConnect,
+  isOpen: externalIsOpen,
+  onClose: externalOnClose,
+  onConnect: externalOnConnect,
   currentWallet,
   currentBalance = 0,
   currentNetwork = 'unknown',
 }: WalletModalProps) {
+  const { isModalOpen, closeModal, connect, address, isConnecting } = useWallet();
+  
+  // Use context state if available, otherwise fall back to props
+  const isOpen = externalIsOpen ?? isModalOpen;
+  const onClose = externalOnClose ?? closeModal;
+  const onConnect = externalOnConnect ?? connect;
   const [selectedWallet, setSelectedWallet] = useState<string>('');
   const [detectedNetwork, setDetectedNetwork] = useState<NetworkType>('unknown');
-  const [isConnecting, setIsConnecting] = useState(false);
   const [isFundingAccount, setIsFundingAccount] = useState(false);
   const [fundingStatus, setFundingStatus] = useState<'idle' | 'loading' | 'success' | 'error'>('idle');
   const [fundingMessage, setFundingMessage] = useState('');
@@ -90,14 +96,11 @@ export function WalletModal({
 
   const handleConnect = async (walletId: string) => {
     setSelectedWallet(walletId);
-    setIsConnecting(true);
 
     try {
       await onConnect(walletId);
     } catch (error) {
       console.error('Connection failed:', error);
-    } finally {
-      setIsConnecting(false);
     }
   };
 
