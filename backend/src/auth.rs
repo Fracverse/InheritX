@@ -198,6 +198,89 @@ pub async fn jwt_or_signature_auth_middleware(
     }
 }
 
+/// Extracts a bearer token from the `Authorization` header, if present and
+/// well formed.
+fn bearer_token(req: &Request<Body>) -> Result<Option<String>, AuthError> {
+    let Some(auth_header) = req.headers().get("Authorization") else {
+        return Ok(None);
+    };
+
+    let auth_str = auth_header
+        .to_str()
+        .map_err(|_| AuthError::InvalidHeaderFormat)?;
+
+    if !auth_str.starts_with("Bearer ") {
+        return Err(AuthError::InvalidHeaderFormat);
+    }
+
+    let token = auth_str.trim_start_matches("Bearer ").trim();
+    if token.is_empty() {
+        return Err(AuthError::MissingToken);
+    }
+
+    Ok(Some(token.to_string()))
+}
+
+/// Verifies a JWT and returns the caller context. Unlike
+/// [`jwt_auth_middleware`], this accepts any role so plan owners ("user") as
+/// well as admins can reach the authenticated document endpoints.
+fn decode_any_role_jwt(token: &str) -> Result<UserContext, AuthError> {
+    let secret = std::env::var("JWT_SECRET").map_err(|_| AuthError::InvalidToken)?;
+
+    let validation = Validation::new(Algorithm::HS256);
+    let token_data = decode::<Claims>(
+        token,
+        &DecodingKey::from_secret(secret.as_ref()),
+        &validation,
+    )
+    .map_err(|_| AuthError::InvalidToken)?;
+
+    Ok(UserContext {
+        user_id: token_data.claims.sub,
+        role: token_data.claims.role,
+    })
+}
+
+/// Accepts an authenticated caller via either a JWT of any role or an ed25519
+/// request signature. Used by endpoints that must know *who* is calling and
+/// then apply per-resource access control (issue #1273).
+pub async fn jwt_any_or_signature_auth_middleware(
+    mut req: Request<Body>,
+    next: Next,
+) -> Result<Response, AuthError> {
+    if let Some(token) = bearer_token(&req)? {
+        let user_context = decode_any_role_jwt(&token)?;
+        req.extensions_mut().insert(user_context);
+        return Ok(next.run(req).await);
+    }
+
+    signature_auth_middleware(req, next).await
+}
+
+/// Best-effort authentication for endpoints that remain usable without a
+/// caller (legacy public behaviour), but record the owner when credentials are
+/// supplied. Invalid bearer tokens are rejected; requests with no credentials
+/// continue without a [`UserContext`].
+pub async fn optional_auth_middleware(
+    mut req: Request<Body>,
+    next: Next,
+) -> Result<Response, AuthError> {
+    let has_signature_headers =
+        req.headers().contains_key("X-Public-Key") || req.headers().contains_key("X-Signature");
+
+    if has_signature_headers {
+        return signature_auth_middleware(req, next).await;
+    }
+
+    if req.headers().contains_key("Authorization") {
+        let token = bearer_token(&req)?.ok_or(AuthError::MissingToken)?;
+        let user_context = decode_any_role_jwt(&token)?;
+        req.extensions_mut().insert(user_context);
+    }
+
+    Ok(next.run(req).await)
+}
+
 pub async fn signature_auth_middleware(
     req: Request<Body>,
     next: Next,
