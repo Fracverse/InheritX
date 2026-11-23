@@ -519,6 +519,10 @@ pub fn create_router(state: Arc<AppState>) -> Router {
     let admin_routes = Router::new()
         .route("/api/plans/{id}/report", get(get_plan_report))
         .route("/api/analytics/plan-statistics", get(get_plan_statistics))
+        .route(
+            "/api/compliance/risk-override",
+            post(crate::compliance::override_risk),
+        )
         // System banner notification management (Issue #1136)
         .route(
             "/api/admin/announcements",
@@ -571,6 +575,22 @@ pub fn create_router(state: Arc<AppState>) -> Router {
         .route("/api/health", get(health_check))
         .route("/api/announcements", get(list_active_announcements))
         .route("/api/transactions/submit", post(submit_transaction))
+        .route(
+            "/api/compliance/velocity-alerts",
+            get(crate::compliance::get_velocity_alerts),
+        )
+        .route(
+            "/api/compliance/volume-alerts",
+            get(crate::compliance::get_volume_alerts),
+        )
+        .route(
+            "/api/compliance/risk-score/{address}",
+            get(crate::compliance::get_risk_score),
+        )
+        .route(
+            "/api/compliance/sanctions-check/{address}",
+            get(crate::compliance::check_sanctions),
+        )
         .route("/api/admin/login", post(admin_login))
         .route("/api/yield/calculate", get(calculate_yield))
         .route(
