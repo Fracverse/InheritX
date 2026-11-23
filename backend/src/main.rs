@@ -115,6 +115,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         )),
         db_pool: db_pool.clone(),
         kyc_webhook_secret: config.kyc_webhook_secret.clone(),
+        kyc_max_resubmit_attempts: config.kyc_max_resubmit_attempts,
         apy_config: inheritx_backend::yield_calculator::ApyConfig::from_env(),
         plan_cache: plan_cache.clone(),
         plan_statistics_cache_ttl_secs: config.plan_statistics_cache_ttl_secs,

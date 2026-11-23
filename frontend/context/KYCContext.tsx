@@ -44,6 +44,7 @@ interface KYCContextType {
   updateFormData: (data: Partial<KYCFormData>) => void;
   submitKYC: () => Promise<void>;
   uploadDocument: (file: File, type: "id" | "address_proof" | "selfie") => Promise<void>;
+  resetForResubmission: () => void;
   isSubmitting: boolean;
   isLoading: boolean;
   error: string | null;
@@ -262,6 +263,27 @@ export const KYCProvider = ({ children }: { children: React.ReactNode }) => {
     }
   }, [address]);
 
+  const resetForResubmission = useCallback(() => {
+    // Reset form data to initial state
+    setFormData(initialFormData);
+    
+    // Clear uploaded documents
+    setUploadedDocuments([]);
+    
+    // Set status to pending to allow new submission
+    setKycStatus("pending");
+    setKycResponse((prev) => prev ? { ...prev, kyc_status: "pending" } : null);
+    
+    // Clear any errors
+    setError(null);
+    
+    // Open the KYC modal to restart the flow
+    setIsKYCModalOpen(true);
+    
+    // Refresh status from backend
+    refreshKYCStatus();
+  }, [refreshKYCStatus]);
+
   const canCreatePlan = kycStatus === "approved";
 
   return (
@@ -277,6 +299,7 @@ export const KYCProvider = ({ children }: { children: React.ReactNode }) => {
         updateFormData,
         submitKYC,
         uploadDocument,
+        resetForResubmission,
         isSubmitting,
         isLoading,
         error,

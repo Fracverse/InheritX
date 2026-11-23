@@ -29,6 +29,7 @@ export interface KYCResponse {
   rejected_at?: string;
   rejection_reason?: string;
   provider_reference?: string;
+  can_resubmit?: boolean;
 }
 
 export interface KYCSubmissionRequest {
