@@ -5,7 +5,7 @@ use crate::middleware::{
 };
 use axum::http::{HeaderValue, Method};
 use axum::{
-    extract::{Extension, Path, Query, State},
+    extract::{Extension, Multipart, Path, Query, State},
     http::{header::HeaderName, StatusCode},
     middleware::from_fn,
     response::{IntoResponse, Response},
@@ -22,6 +22,8 @@ use rust_decimal::Decimal;
 use serde::{Deserialize, Serialize};
 use std::collections::HashSet;
 use std::sync::Arc;
+use tokio::fs;
+use tokio::io::AsyncWriteExt;
 use tower_http::cors::CorsLayer;
 use tracing::{error, warn};
 use uuid::Uuid;
@@ -3730,20 +3732,165 @@ async fn submit_kyc(
 }
 
 // Upload KYC document
-async fn upload_kyc_document() -> impl IntoResponse {
-    // In a real implementation, this would:
-    // 1. Receive multipart form data with file and document_type
-    // 2. Validate file (size, type)
-    // 3. Upload to cloud storage (S3, etc.)
-    // 4. Store metadata in database
-    // 5. Return document_id and URL
+async fn upload_kyc_document(
+    State(_state): State<Arc<AppState>>,
+    mut multipart: Multipart,
+) -> impl IntoResponse {
+    const MAX_FILE_SIZE: usize = 5 * 1024 * 1024; // 5MB
+    const ALLOWED_TYPES: [&str; 3] = ["image/jpeg", "image/png", "application/pdf"];
+    const VALID_DOCUMENT_TYPES: [&str; 3] = ["id", "address_proof", "selfie"];
 
-    let response = KYCDocumentResponse {
-        document_id: Uuid::new_v4().to_string(),
-        url: "https://example.com/documents/doc-001".to_string(),
+    let mut file_data: Option<Vec<u8>> = None;
+    let mut content_type: Option<String> = None;
+    let mut document_type: Option<String> = None;
+
+    // Parse multipart fields
+    while let Ok(Some(field)) = multipart.next_field().await {
+        let field_name = field.name().unwrap_or("").to_string();
+
+        match field_name.as_str() {
+            "file" => {
+                content_type = field.content_type().map(|s| s.to_string());
+                
+                match field.bytes().await {
+                    Ok(bytes) => {
+                        if bytes.len() > MAX_FILE_SIZE {
+                            return (
+                                StatusCode::PAYLOAD_TOO_LARGE,
+                                Json(serde_json::json!({
+                                    "error": "File size exceeds 5MB limit"
+                                }))
+                            ).into_response();
+                        }
+                        file_data = Some(bytes.to_vec());
+                    }
+                    Err(e) => {
+                        error!("Failed to read file bytes: {}", e);
+                        return (
+                            StatusCode::BAD_REQUEST,
+                            Json(serde_json::json!({
+                                "error": "Failed to read file data"
+                            }))
+                        ).into_response();
+                    }
+                }
+            }
+            "document_type" => {
+                match field.text().await {
+                    Ok(text) => document_type = Some(text),
+                    Err(e) => {
+                        error!("Failed to read document_type: {}", e);
+                        return (
+                            StatusCode::BAD_REQUEST,
+                            Json(serde_json::json!({
+                                "error": "Failed to read document_type"
+                            }))
+                        ).into_response();
+                    }
+                }
+            }
+            _ => {}
+        }
+    }
+
+    // Validate required fields
+    let file_data = match file_data {
+        Some(data) => data,
+        None => {
+            return (
+                StatusCode::BAD_REQUEST,
+                Json(serde_json::json!({
+                    "error": "Missing required field: file"
+                }))
+            ).into_response();
+        }
     };
 
-    (StatusCode::OK, Json(response))
+    let _document_type = match document_type {
+        Some(dt) => {
+            if !VALID_DOCUMENT_TYPES.contains(&dt.as_str()) {
+                return (
+                    StatusCode::BAD_REQUEST,
+                    Json(serde_json::json!({
+                        "error": "Invalid document_type. Must be one of: id, address_proof, selfie"
+                    }))
+                ).into_response();
+            }
+            dt
+        }
+        None => {
+            return (
+                StatusCode::BAD_REQUEST,
+                Json(serde_json::json!({
+                    "error": "Missing required field: document_type"
+                }))
+            ).into_response();
+        }
+    };
+
+    // Validate content type
+    let content_type = content_type.unwrap_or_else(|| "application/octet-stream".to_string());
+    if !ALLOWED_TYPES.contains(&content_type.as_str()) {
+        return (
+            StatusCode::UNSUPPORTED_MEDIA_TYPE,
+            Json(serde_json::json!({
+                "error": format!("Unsupported file type: {}. Allowed types: image/jpeg, image/png, application/pdf", content_type)
+            }))
+        ).into_response();
+    }
+
+    // Generate document ID and determine file extension
+    let document_id = Uuid::new_v4();
+    let extension = match content_type.as_str() {
+        "image/jpeg" => "jpg",
+        "image/png" => "png",
+        "application/pdf" => "pdf",
+        _ => "bin",
+    };
+
+    // Create uploads directory if it doesn't exist
+    let uploads_dir = "backend/uploads";
+    if let Err(e) = fs::create_dir_all(uploads_dir).await {
+        error!("Failed to create uploads directory: {}", e);
+        return (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(serde_json::json!({
+                "error": "Failed to create uploads directory"
+            }))
+        ).into_response();
+    }
+
+    // Save file to disk
+    let file_path = format!("{}/{}.{}", uploads_dir, document_id, extension);
+    match fs::File::create(&file_path).await {
+        Ok(mut file) => {
+            if let Err(e) = file.write_all(&file_data).await {
+                error!("Failed to write file: {}", e);
+                return (
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    Json(serde_json::json!({
+                        "error": "Failed to save file"
+                    }))
+                ).into_response();
+            }
+        }
+        Err(e) => {
+            error!("Failed to create file: {}", e);
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(serde_json::json!({
+                    "error": "Failed to create file"
+                }))
+            ).into_response();
+        }
+    }
+
+    let response = KYCDocumentResponse {
+        document_id: document_id.to_string(),
+        url: format!("/api/kyc/documents/{}", document_id),
+    };
+
+    (StatusCode::OK, Json(response)).into_response()
 }
 
 // Check if KYC is required
