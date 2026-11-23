@@ -1,10 +1,10 @@
 "use client";
 
-import React, { createContext, useContext, useState, useEffect, useCallback } from "react";
+import React, { createContext, useContext, useState, useEffect, useCallback, useRef } from "react";
 import { kycAPI, type KYCStatus, type KYCResponse } from "@/app/lib/api/kyc";
 import { useWallet } from "./WalletContext";
-import { getKYCStatus, useMockData } from "@/lib/api/dataSource";
-import { mockStore } from "@/lib/mockStore";
+import { getKYCStatus } from "@/lib/api/dataSource";
+import { useKYCWebSocket } from "@/hooks/useKYCWebSocket";
 
 export type { KYCStatus };
 
@@ -86,18 +86,49 @@ export const KYCProvider = ({ children }: { children: React.ReactNode }) => {
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [isLoading, setIsLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
+  const requestCounterRef = useRef(0);
+  const pollIntervalRef = useRef<NodeJS.Timeout | null>(null);
+
+  // Handle WebSocket status updates
+  const handleWebSocketUpdate = useCallback((status: KYCStatus) => {
+    setKycStatus(status);
+    setKycResponse((prev) => prev ? { ...prev, kyc_status: status } : null);
+    
+    // Stop polling for terminal states
+    if ((status === "approved" || status === "rejected") && pollIntervalRef.current) {
+      clearInterval(pollIntervalRef.current);
+      pollIntervalRef.current = null;
+    }
+  }, []);
+
+  // Connect to WebSocket
+  const { isHealthy: wsHealthy } = useKYCWebSocket({
+    walletAddress: address,
+    onStatusUpdate: handleWebSocketUpdate,
+    enabled: !!address,
+  });
 
   // Load status for the connected wallet and revalidate it while the app is open.
   useEffect(() => {
     const loadKYCStatus = async () => {
       try {
         setIsLoading(true);
-        if (!address && !useMockData) {
+        if (!address) {
           setKycResponse(null);
           setKycStatus("pending");
           return;
         }
-        const response = await getKYCStatus(address ?? undefined);
+        
+        // Track request order to prevent stale responses
+        const requestId = ++requestCounterRef.current;
+        
+        const response = await getKYCStatus(address);
+        
+        // Discard stale responses
+        if (requestId !== requestCounterRef.current) {
+          return;
+        }
+        
         setKycResponse(response);
         setKycStatus(response.kyc_status);
         setError(null);
@@ -108,12 +139,42 @@ export const KYCProvider = ({ children }: { children: React.ReactNode }) => {
       }
     };
 
+    // Initial load
     loadKYCStatus();
 
-    const pollInterval = setInterval(loadKYCStatus, 5000);
+    // Stop polling for terminal states
+    if (kycStatus === "approved" || kycStatus === "rejected") {
+      if (pollIntervalRef.current) {
+        clearInterval(pollIntervalRef.current);
+        pollIntervalRef.current = null;
+      }
+      return;
+    }
 
-    return () => clearInterval(pollInterval);
-  }, [address]);
+    // Start polling (fallback when WebSocket is disconnected)
+    const startPolling = () => {
+      if (pollIntervalRef.current) {
+        clearInterval(pollIntervalRef.current);
+      }
+      
+      pollIntervalRef.current = setInterval(() => {
+        // Skip polling when WebSocket is healthy
+        if (wsHealthy) {
+          return;
+        }
+        loadKYCStatus();
+      }, 5000);
+    };
+
+    startPolling();
+
+    return () => {
+      if (pollIntervalRef.current) {
+        clearInterval(pollIntervalRef.current);
+        pollIntervalRef.current = null;
+      }
+    };
+  }, [address, kycStatus, wsHealthy]);
 
   const openKYCModal = () => setIsKYCModalOpen(true);
   const closeKYCModal = () => setIsKYCModalOpen(false);
@@ -146,30 +207,21 @@ export const KYCProvider = ({ children }: { children: React.ReactNode }) => {
     setIsSubmitting(true);
     setError(null);
     try {
-      if (useMockData) {
-        mockStore.setKYCStatus("pending");
-        setKycStatus("pending");
-        setTimeout(() => {
-          mockStore.setKYCStatus("approved");
-          setKycStatus("approved");
-        }, 8000);
-      } else {
-        await kycAPI.submitKYC({
-          wallet_address: address ?? "",
-          full_name: formData.fullName,
-          email: formData.email,
-          date_of_birth: formData.dateOfBirth,
-          nationality: formData.nationality,
-          id_type: formData.idType,
-          id_number: formData.idNumber,
-          expiry_date: formData.expiryDate,
-          street_address: formData.streetAddress,
-          city: formData.city,
-          country: formData.country,
-          postal_code: formData.postalCode,
-        });
-        await refreshKYCStatus();
-      }
+      await kycAPI.submitKYC({
+        wallet_address: address ?? "",
+        full_name: formData.fullName,
+        email: formData.email,
+        date_of_birth: formData.dateOfBirth,
+        nationality: formData.nationality,
+        id_type: formData.idType,
+        id_number: formData.idNumber,
+        expiry_date: formData.expiryDate,
+        street_address: formData.streetAddress,
+        city: formData.city,
+        country: formData.country,
+        postal_code: formData.postalCode,
+      });
+      await refreshKYCStatus();
 
       setTimeout(() => {
         closeKYCModal();
@@ -187,7 +239,17 @@ export const KYCProvider = ({ children }: { children: React.ReactNode }) => {
   const refreshKYCStatus = useCallback(async () => {
     try {
       setIsLoading(true);
+      
+      // Track request order to prevent stale responses
+      const requestId = ++requestCounterRef.current;
+      
       const response = await getKYCStatus(address ?? undefined);
+      
+      // Discard stale responses
+      if (requestId !== requestCounterRef.current) {
+        return;
+      }
+      
       setKycResponse(response);
       setKycStatus(response.kyc_status);
       setError(null);

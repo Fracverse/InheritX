@@ -3606,13 +3606,52 @@ async fn get_kyc_status(
     .flatten()
     .map(|r| r.created_at);
 
+    // Query rejection reason from kyc_webhook_logs if status is rejected
+    let rejection_reason = if kyc_status == "rejected" {
+        #[derive(Debug, sqlx::FromRow)]
+        struct WebhookLogRow {
+            raw_payload: serde_json::Value,
+        }
+
+        let log_row = sqlx::query_as::<_, WebhookLogRow>(
+            r#"
+            SELECT raw_payload
+            FROM kyc_webhook_logs
+            WHERE wallet_address = $1
+              AND status = 'rejected'
+            ORDER BY received_at DESC
+            LIMIT 1
+            "#,
+        )
+        .bind(&wallet_address)
+        .fetch_optional(&state.db_pool)
+        .await
+        .ok()
+        .flatten();
+
+        log_row.and_then(|row| {
+            // Try to extract rejection reason from provider-specific payload structure
+            // Common paths: rejection_reason, reason, reject_labels, reviewResult.reviewAnswer
+            row.raw_payload.get("rejection_reason")
+                .or_else(|| row.raw_payload.get("reason"))
+                .or_else(|| row.raw_payload.get("reviewResult")
+                    .and_then(|r| r.get("reviewAnswer")))
+                .or_else(|| row.raw_payload.get("reject_labels")
+                    .and_then(|labels| labels.as_array()?.first()))
+                .and_then(|v| v.as_str())
+                .map(|s| s.to_string())
+        })
+    } else {
+        None
+    };
+
     let response = KYCStatusResponse {
         wallet_address,
         kyc_status,
         submitted_at,
         approved_at: None,
         rejected_at: None,
-        rejection_reason: None,
+        rejection_reason,
         provider_reference: None,
     };
 
