@@ -1,59 +1,77 @@
 'use client';
 
-import { useEffect, useState } from 'react';
-import { Zap, TrendingUp, Leaf, AlertCircle, Loader2, CheckCircle } from 'lucide-react';
+import { useCallback, useEffect, useState } from 'react';
+import { Zap, TrendingUp, AlertCircle, Loader2, CheckCircle } from 'lucide-react';
 import { getPlanOptimization, applyOptimization } from '@/lib/api/aiOptimization';
-import type { PlanOptimizationResponse } from '@/lib/api/aiOptimization';
+import type {
+  OptimizationRecommendation,
+  RecommendationResponse,
+} from '@/lib/api/aiOptimization';
 
 interface AIOptimizerWidgetProps {
   planId: string;
 }
 
+function errorMessage(err: unknown, fallback: string): string {
+  return err instanceof Error && err.message ? err.message : fallback;
+}
+
 export function AIOptimizerWidget({ planId }: AIOptimizerWidgetProps) {
-  const [optimization, setOptimization] = useState<PlanOptimizationResponse | null>(null);
+  const [optimization, setOptimization] = useState<OptimizationRecommendation | null>(null);
   const [loading, setLoading] = useState(true);
   const [applying, setApplying] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const [applied, setApplied] = useState(false);
+  const [applyError, setApplyError] = useState<string | null>(null);
+  const [confirmation, setConfirmation] = useState<RecommendationResponse | null>(null);
 
   useEffect(() => {
+    let cancelled = false;
     const loadOptimization = async () => {
       try {
         setLoading(true);
+        setConfirmation(null);
+        setApplyError(null);
         const data = await getPlanOptimization(planId);
+        if (cancelled) return;
         setOptimization(data);
         setError(null);
       } catch (err) {
-        setError('Failed to load optimization data');
-        console.error(err);
+        if (cancelled) return;
+        setOptimization(null);
+        setError(errorMessage(err, 'Failed to load optimization data'));
       } finally {
-        setLoading(false);
+        if (!cancelled) setLoading(false);
       }
     };
 
     loadOptimization();
+    return () => {
+      cancelled = true;
+    };
   }, [planId]);
 
-  const handleApplyOptimization = async () => {
+  const handleApplyOptimization = useCallback(async () => {
     if (!optimization) return;
 
     try {
       setApplying(true);
-      await applyOptimization(planId, optimization.recommendedParameters);
-      setApplied(true);
-      // Reset applied state after 3 seconds
-      setTimeout(() => setApplied(false), 3000);
+      setApplyError(null);
+      const result = await applyOptimization(optimization.id);
+      setConfirmation(result);
+      // Reflect server-confirmed plan state: reload from the server rather
+      // than assuming the recommended values were applied.
+      const refreshed = await getPlanOptimization(planId);
+      setOptimization(refreshed);
     } catch (err) {
-      setError('Failed to apply optimization');
-      console.error(err);
+      setApplyError(errorMessage(err, 'Failed to apply optimization'));
     } finally {
       setApplying(false);
     }
-  };
+  }, [optimization, planId]);
 
   if (loading) {
     return (
-      <div className="bg-gradient-to-br from-violet-900/20 to-blue-900/20 border border-violet-500/20 rounded-2xl p-6 space-y-4">
+      <div role="status" aria-label="Loading recommendations" className="bg-gradient-to-br from-violet-900/20 to-blue-900/20 border border-violet-500/20 rounded-2xl p-6 space-y-4">
         <div className="flex items-center justify-center h-40">
           <Loader2 className="w-8 h-8 text-violet-400 animate-spin" />
         </div>
@@ -63,75 +81,69 @@ export function AIOptimizerWidget({ planId }: AIOptimizerWidgetProps) {
 
   if (error || !optimization) {
     return (
-      <div className="bg-gradient-to-br from-red-900/20 to-red-800/20 border border-red-500/20 rounded-2xl p-6">
+      <div role="alert" className="bg-gradient-to-br from-red-900/20 to-red-800/20 border border-red-500/20 rounded-2xl p-6">
         <div className="flex items-start gap-3">
           <AlertCircle className="w-5 h-5 text-red-400 flex-shrink-0 mt-1" />
           <div>
             <h3 className="text-sm font-semibold text-red-300">Unable to Load Recommendations</h3>
-            <p className="text-xs text-red-400 mt-1">{error || "Please try again later"}</p>
+            <p className="text-xs text-red-400 mt-1">{error || 'Please try again later'}</p>
           </div>
         </div>
       </div>
     );
   }
 
-  const healthScoreColor =
-    optimization.healthScore >= 80
-      ? 'text-emerald-400'
-      : optimization.healthScore >= 60
-      ? 'text-yellow-400'
-      : 'text-red-400';
+  if (optimization.recommendedAllocations.length === 0) {
+    return (
+      <div className="border border-white/5 rounded-2xl p-6 bg-white/[0.02]">
+        <h3 className="text-sm font-semibold text-white mb-1">No Recommendations Available</h3>
+        <p className="text-xs text-slate-400">
+          There are no optimization recommendations for this plan right now.
+        </p>
+      </div>
+    );
+  }
 
-  const healthScoreBg =
-    optimization.healthScore >= 80
-      ? 'bg-emerald-500/10 border-emerald-500/20'
-      : optimization.healthScore >= 60
-      ? 'bg-yellow-500/10 border-yellow-500/20'
-      : 'bg-red-500/10 border-red-500/20';
+  const applied = confirmation?.status === 'accepted';
 
   return (
     <div className="space-y-4">
-      {/* Main Health Score Card */}
-      <div className={`border rounded-2xl p-6 bg-gradient-to-br from-violet-900/20 to-blue-900/20 border-violet-500/20`}>
-        <div className="flex items-start justify-between mb-6">
-          <div>
-            <h2 className="text-lg font-semibold text-white mb-2 flex items-center gap-2">
-              <Zap className="w-5 h-5 text-violet-400" />
-              Plan Health Score
-            </h2>
-            <p className="text-xs text-slate-400">AI-powered optimization analysis</p>
-          </div>
-          <div className={`px-4 py-2 rounded-xl border flex items-center gap-2 ${healthScoreBg}`}>
-            <span className={`text-2xl font-bold ${healthScoreColor}`}>
-              {optimization.healthScore}
-            </span>
-            <span className={`text-xs font-semibold ${healthScoreColor}`}>/100</span>
-          </div>
+      <div className="border rounded-2xl p-6 bg-gradient-to-br from-violet-900/20 to-blue-900/20 border-violet-500/20">
+        <div className="mb-6">
+          <h2 className="text-lg font-semibold text-white mb-2 flex items-center gap-2">
+            <Zap className="w-5 h-5 text-violet-400" />
+            AI Optimization
+          </h2>
+          <p className="text-xs text-slate-400">{optimization.reasoning}</p>
         </div>
 
-        {/* Savings Summary */}
         <div className="grid grid-cols-3 gap-3 mb-6">
           <div className="bg-white/5 rounded-lg p-3 border border-white/10">
-            <div className="text-xs text-slate-400 mb-1">Gas Savings</div>
-            <div className="text-lg font-semibold text-emerald-400">
-              {optimization.estimatedSavings.gasSavingsPercentage}%
-            </div>
+            <div className="text-xs text-slate-400 mb-1">Confidence</div>
+            <div className="text-lg font-semibold text-emerald-400">{optimization.confidenceScore}</div>
           </div>
           <div className="bg-white/5 rounded-lg p-3 border border-white/10">
-            <div className="text-xs text-slate-400 mb-1">Tax Savings</div>
-            <div className="text-lg font-semibold text-blue-400">
-              ${optimization.estimatedSavings.taxSavingsUSD}
-            </div>
+            <div className="text-xs text-slate-400 mb-1">Expected Return</div>
+            <div className="text-lg font-semibold text-blue-400">{optimization.expectedReturn}%</div>
           </div>
           <div className="bg-white/5 rounded-lg p-3 border border-white/10">
-            <div className="text-xs text-slate-400 mb-1">Yield Increase</div>
-            <div className="text-lg font-semibold text-yellow-400">
-              {optimization.estimatedSavings.yieldIncreasePercentage}%
-            </div>
+            <div className="text-xs text-slate-400 mb-1">Risk Score</div>
+            <div className="text-lg font-semibold text-yellow-400">{optimization.riskScore}</div>
           </div>
         </div>
 
-        {/* Apply Button */}
+        {applyError && (
+          <p role="alert" className="text-xs text-red-400 mb-3">
+            {applyError}
+          </p>
+        )}
+
+        {applied && confirmation && (
+          <p role="status" className="text-xs text-emerald-400 mb-3">
+            Accepted by the server at {new Date(confirmation.appliedAt).toLocaleString()}. Allocations below are the plan&apos;s current values from the server.
+          </p>
+        )}
+
         <button
           onClick={handleApplyOptimization}
           disabled={applying || applied}
@@ -144,7 +156,7 @@ export function AIOptimizerWidget({ planId }: AIOptimizerWidgetProps) {
           {applied ? (
             <>
               <CheckCircle className="w-4 h-4" />
-              Applied Successfully
+              Applied
             </>
           ) : applying ? (
             <>
@@ -160,91 +172,27 @@ export function AIOptimizerWidget({ planId }: AIOptimizerWidgetProps) {
         </button>
       </div>
 
-      {/* Gas Efficiency Suggestions */}
       <div className="border border-white/5 rounded-2xl p-4 bg-white/[0.02]">
         <h3 className="text-sm font-semibold text-white mb-3 flex items-center gap-2">
           <TrendingUp className="w-4 h-4 text-emerald-400" />
-          Gas Efficiency
+          Allocations
         </h3>
-        <ul className="space-y-2">
-          {optimization.gasEfficiencySuggestions.map((suggestion, idx) => (
-            <li key={idx} className="text-xs text-slate-300 flex gap-2">
-              <span className="text-emerald-400 font-bold flex-shrink-0">✓</span>
-              <span>{suggestion}</span>
+        <ul className="space-y-3">
+          {optimization.recommendedAllocations.map((a) => (
+            <li key={`${a.chain}-${a.assetSymbol}`} className="text-xs text-slate-300">
+              <div className="flex justify-between">
+                <span className="font-semibold text-white">
+                  {a.assetSymbol} <span className="text-slate-400">({a.chain})</span>
+                </span>
+                <span>
+                  {a.currentPercentage}% → {a.recommendedPercentage}%
+                </span>
+              </div>
+              <div className="text-slate-400 mt-1">{a.adjustmentReason}</div>
+              <div className="text-slate-400">{a.expectedImpact}</div>
             </li>
           ))}
         </ul>
-      </div>
-
-      {/* Tax Loss Harvesting Tips */}
-      <div className="border border-white/5 rounded-2xl p-4 bg-white/[0.02]">
-        <h3 className="text-sm font-semibold text-white mb-3 flex items-center gap-2">
-          <Leaf className="w-4 h-4 text-yellow-400" />
-          Tax Optimization
-        </h3>
-        <ul className="space-y-2">
-          {optimization.taxLossHarvestingTips.map((tip, idx) => (
-            <li key={idx} className="text-xs text-slate-300 flex gap-2">
-              <span className="text-yellow-400 font-bold flex-shrink-0">→</span>
-              <span>{tip}</span>
-            </li>
-          ))}
-        </ul>
-      </div>
-
-      {/* Yield Enhancement */}
-      <div className="border border-white/5 rounded-2xl p-4 bg-white/[0.02]">
-        <h3 className="text-sm font-semibold text-white mb-3 flex items-center gap-2">
-          <TrendingUp className="w-4 h-4 text-blue-400" />
-          Yield Enhancement
-        </h3>
-        <ul className="space-y-2">
-          {optimization.yieldEnhancementRecommendations.map((recommendation, idx) => (
-            <li key={idx} className="text-xs text-slate-300 flex gap-2">
-              <span className="text-blue-400 font-bold flex-shrink-0">+</span>
-              <span>{recommendation}</span>
-            </li>
-          ))}
-        </ul>
-      </div>
-
-      {/* Recommended Parameters */}
-      <div className="bg-gradient-to-br from-slate-900/50 to-slate-800/50 border border-slate-700/50 rounded-2xl p-4">
-        <h3 className="text-sm font-semibold text-white mb-3">Recommended Parameters</h3>
-        <div className="grid grid-cols-2 gap-3 text-xs">
-          {optimization.recommendedParameters.beneficiaryCount && (
-            <div className="bg-white/5 rounded-lg p-2 border border-white/10">
-              <div className="text-slate-400">Beneficiary Count</div>
-              <div className="font-semibold text-white mt-1">
-                {optimization.recommendedParameters.beneficiaryCount}
-              </div>
-            </div>
-          )}
-          {optimization.recommendedParameters.distributionFrequency && (
-            <div className="bg-white/5 rounded-lg p-2 border border-white/10">
-              <div className="text-slate-400">Distribution</div>
-              <div className="font-semibold text-white mt-1 capitalize">
-                {optimization.recommendedParameters.distributionFrequency}
-              </div>
-            </div>
-          )}
-          {optimization.recommendedParameters.anchorType && (
-            <div className="bg-white/5 rounded-lg p-2 border border-white/10">
-              <div className="text-slate-400">Anchor Type</div>
-              <div className="font-semibold text-white mt-1 capitalize">
-                {optimization.recommendedParameters.anchorType}
-              </div>
-            </div>
-          )}
-          {optimization.recommendedParameters.riskProfile && (
-            <div className="bg-white/5 rounded-lg p-2 border border-white/10">
-              <div className="text-slate-400">Risk Profile</div>
-              <div className="font-semibold text-white mt-1 capitalize">
-                {optimization.recommendedParameters.riskProfile}
-              </div>
-            </div>
-          )}
-        </div>
       </div>
     </div>
   );
