@@ -29,8 +29,8 @@ use tracing::{error, warn};
 use uuid::Uuid;
 
 use crate::auth::{
-    jwt_auth_middleware, jwt_or_signature_auth_middleware, signature_auth_middleware, Claims,
-    UserContext,
+    jwt_any_or_signature_auth_middleware, jwt_auth_middleware, jwt_or_signature_auth_middleware,
+    optional_auth_middleware, signature_auth_middleware, Claims, UserContext,
 };
 use crate::cache::PlanCache;
 use crate::kyc_webhook::kyc_webhook_handler;
@@ -42,6 +42,7 @@ use crate::stellar_submit::{StellarSubmitClient, StellarSubmitError};
 use crate::ws::ws_handler;
 use crate::xdr::validate_transaction_xdr;
 use crate::yield_calculator;
+use crate::{admin_ops, kyc_documents, plan_ops, will_documents};
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct PlanBeneficiary {
@@ -533,7 +534,105 @@ pub fn create_router(state: Arc<AppState>) -> Router {
                 .put(update_announcement)
                 .delete(delete_announcement),
         )
+        // Admin dashboard and management operations (Issue #1268)
+        .route("/api/admin/metrics", get(admin_ops::get_metrics))
+        .route("/api/admin/logs", get(admin_ops::get_audit_logs))
+        .route("/api/admin/kyc/{user_id}", get(admin_ops::get_kyc_status))
+        .route("/api/admin/kyc/approve", post(admin_ops::approve_kyc))
+        .route("/api/admin/kyc/reject", post(admin_ops::reject_kyc))
+        .route(
+            "/api/admin/insurance-fund",
+            get(admin_ops::get_insurance_fund_dashboard),
+        )
+        .route(
+            "/api/admin/insurance-funds",
+            get(admin_ops::get_all_insurance_funds),
+        )
+        .route("/api/admin/emergency/pause", post(admin_ops::pause_plan))
+        .route(
+            "/api/admin/emergency/unpause",
+            post(admin_ops::unpause_plan),
+        )
+        .route(
+            "/api/admin/emergency/risk-override",
+            post(admin_ops::set_risk_override),
+        )
         .route_layer(from_fn(jwt_auth_middleware));
+
+    // Plan operations targeted by the frontend PlansAPI (Issue #1275).
+    let plan_ops_routes = Router::new()
+        .route("/api/plans/{id}/trigger", post(plan_ops::trigger_plan))
+        .route("/api/plans/{id}/keep-alive", post(plan_ops::keep_alive))
+        .route(
+            "/api/plans/{id}/inactivity-status",
+            get(plan_ops::get_inactivity_status),
+        )
+        .route_layer(from_fn(jwt_any_or_signature_auth_middleware));
+
+    // Will-document read/verification/event routes (Issue #1273). Private
+    // operations require an authenticated caller; public verification does not.
+    let will_private_routes = Router::new()
+        .route(
+            "/api/plans/{id}/will/documents",
+            get(will_documents::list_documents),
+        )
+        .route(
+            "/api/plans/{id}/will/documents/{version}/download",
+            get(will_documents::download_version),
+        )
+        .route(
+            "/api/plans/{id}/will/events",
+            get(will_documents::get_plan_events),
+        )
+        .route(
+            "/api/plans/{id}/will/events/stats",
+            get(will_documents::get_plan_event_stats),
+        )
+        .route(
+            "/api/plans/{id}/will/verify-all",
+            get(will_documents::verify_all_versions),
+        )
+        .route(
+            "/api/will/documents/{document_id}",
+            get(will_documents::get_document),
+        )
+        .route(
+            "/api/will/documents/{document_id}/download",
+            get(will_documents::download_document),
+        )
+        .route(
+            "/api/will/documents/{document_id}/events",
+            get(will_documents::get_document_events),
+        )
+        .route_layer(from_fn(jwt_any_or_signature_auth_middleware));
+
+    let will_public_routes = Router::new()
+        .route(
+            "/api/will/documents/{document_id}/verify",
+            get(will_documents::verify_document),
+        )
+        .route(
+            "/api/will/documents/{document_id}/verify/hash",
+            post(will_documents::verify_document_by_hash),
+        )
+        .route(
+            "/api/will/documents/{document_id}/verify/content",
+            post(will_documents::verify_document_by_content),
+        );
+
+    // KYC evidence upload persists a real file and metadata (Issue #1274).
+    // Authentication is optional so legacy anonymous uploads still resolve, but
+    // the caller identity is persisted as ownership when credentials are sent.
+    let kyc_upload_routes = Router::new()
+        .route("/api/kyc/upload", post(kyc_documents::upload_kyc_document))
+        .route(
+            "/api/kyc/documents/{document_id}",
+            get(kyc_documents::get_kyc_document),
+        )
+        .layer(axum::extract::DefaultBodyLimit::max(
+            kyc_documents::MAX_KYC_UPLOAD_BYTES + 1024 * 1024,
+        ))
+        .layer(from_fn(optional_auth_middleware));
 
     // Loan lifecycle: admin JWT or wallet signature.
     let loan_lifecycle_routes = Router::new()
@@ -568,7 +667,6 @@ pub fn create_router(state: Arc<AppState>) -> Router {
         .route("/api/kyc/webhook", post(kyc_webhook_handler))
         .route("/api/kyc/status", get(get_kyc_status))
         .route("/api/kyc/submit", post(submit_kyc))
-        .route("/api/kyc/upload", post(upload_kyc_document))
         .route("/api/kyc/required", get(is_kyc_required))
         .route("/api/kyc/requirements", get(get_kyc_requirements))
         .route("/api/health", get(health_check))
@@ -589,6 +687,10 @@ pub fn create_router(state: Arc<AppState>) -> Router {
         .merge(user_routes)
         .merge(admin_routes)
         .merge(loan_lifecycle_routes)
+        .merge(plan_ops_routes)
+        .merge(will_private_routes)
+        .merge(will_public_routes)
+        .merge(kyc_upload_routes)
         .merge(public_routes)
         .layer(axum::middleware::from_fn(
             strict_origin_and_user_agent_middleware,
@@ -704,7 +806,7 @@ fn compute_projected_accrued_yield(row: &PlanRow) -> f64 {
 }
 
 /// Load beneficiaries for a given plan.
-async fn load_beneficiaries(
+pub(crate) async fn load_beneficiaries(
     pool: &sqlx::PgPool,
     plan_id: uuid::Uuid,
 ) -> Result<Vec<BeneficiaryResponse>, sqlx::Error> {
@@ -733,7 +835,10 @@ async fn load_beneficiaries(
 }
 
 // Helper: convert PlanRow + beneficiaries into PlanResponse with yield
-fn plan_row_to_response(row: PlanRow, beneficiaries: Vec<BeneficiaryResponse>) -> PlanResponse {
+pub(crate) fn plan_row_to_response(
+    row: PlanRow,
+    beneficiaries: Vec<BeneficiaryResponse>,
+) -> PlanResponse {
     let accrued_yield = compute_projected_accrued_yield(&row);
 
     PlanResponse {
@@ -3529,12 +3634,6 @@ pub struct KYCSubmitRequest {
     pub country: String,
     pub postal_code: String,
     pub document_id: Option<String>,
-}
-
-#[derive(Debug, Serialize)]
-pub struct KYCDocumentResponse {
-    pub document_id: String,
-    pub url: String,
 }
 
 #[derive(Debug, Serialize)]

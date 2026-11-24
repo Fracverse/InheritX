@@ -206,6 +206,14 @@ export const plansHandlers = [
     });
   }),
 
+  http.post("/api/plans/:planId/keep-alive", ({ params }) => {
+    const plan = mockPlans.find((p) => p.id === params.planId);
+    if (!plan) {
+      return HttpResponse.json({ error: "Plan not found" }, { status: 404 });
+    }
+    return HttpResponse.json({ status: "ok", data: plan });
+  }),
+
   http.post("/api/plans/:planId/claim", async ({ params }) => {
     const planId = params.planId as string;
     const plan = mockPlans.find((p) => p.id === planId);

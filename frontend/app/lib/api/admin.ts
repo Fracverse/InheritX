@@ -139,7 +139,7 @@ export class AdminAPI {
     limit: number = 20
   ): Promise<PaginatedResponse<Plan>> {
     return apiClient.get<PaginatedResponse<Plan>>(
-      `/api/admin/plans/due-for-claim?page=${page}&limit=${limit}`
+      `/api/plans/due-for-claim?page=${page}&limit=${limit}`
     );
   }
 
