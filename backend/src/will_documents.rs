@@ -112,6 +112,19 @@ pub struct VerifyContentRequest {
     pub version: Option<i32>,
 }
 
+#[derive(Debug, Serialize, Deserialize)]
+pub struct EncryptedUploadRequest {
+    pub version: u8,
+    pub algorithm: String,
+    pub key_derivation: String,
+    pub nonce: String,
+    pub salt: String,
+    pub ciphertext: String,
+    pub filename: String,
+    pub content_type: String,
+    pub plaintext_sha256: String,
+}
+
 fn sha256_hex(bytes: &[u8]) -> String {
     let mut hasher = Sha256::new();
     hasher.update(bytes);
@@ -223,6 +236,20 @@ fn build_verification(
     }
 }
 
+fn document_response(document: &WillDocumentRow) -> Value {
+    json!({
+        "document_id": document.document_id,
+        "plan_id": document.plan_id,
+        "template_used": document.template_used,
+        "will_hash": document.will_hash,
+        "generated_at": document.generated_at,
+        "version": document.version,
+        "filename": document.filename,
+        "is_encrypted": document.is_encrypted,
+        "status": document.status,
+    })
+}
+
 /// GET /api/plans/{plan_id}/will/documents
 pub async fn list_documents(
     State(state): State<Arc<AppState>>,
@@ -260,6 +287,112 @@ pub async fn list_documents(
             .into_response(),
         Err(e) => internal_error("load will documents", e),
     }
+}
+
+/// POST /api/plans/{plan_id}/will/documents/upload
+pub async fn upload_encrypted_document(
+    State(state): State<Arc<AppState>>,
+    Extension(ctx): Extension<UserContext>,
+    Path(plan_id): Path<Uuid>,
+    Json(payload): Json<EncryptedUploadRequest>,
+) -> Response {
+    if payload.version != 1 || payload.algorithm != "AES-256-GCM" || payload.key_derivation != "HKDF-SHA-256" {
+        return bad_request("Unsupported encryption envelope");
+    }
+    if payload.filename.trim().is_empty() || payload.ciphertext.trim().is_empty() {
+        return bad_request("filename and ciphertext are required");
+    }
+    let _ciphertext = match base64::engine::general_purpose::STANDARD.decode(&payload.ciphertext) {
+        Ok(value) if !value.is_empty() => value,
+        _ => return bad_request("ciphertext must be valid base64"),
+    };
+    let _nonce = match base64::engine::general_purpose::STANDARD.decode(&payload.nonce) {
+        Ok(value) if value.len() == 12 => value,
+        _ => return bad_request("nonce must be 12 bytes of base64 data"),
+    };
+    let _salt = match base64::engine::general_purpose::STANDARD.decode(&payload.salt) {
+        Ok(value) if value.len() >= 16 => value,
+        _ => return bad_request("salt must contain at least 16 bytes of base64 data"),
+    };
+    if payload.plaintext_sha256.len() != 64 || !payload.plaintext_sha256.chars().all(|c| c.is_ascii_hexdigit()) {
+        return bad_request("plaintext_sha256 must be a SHA-256 hex digest");
+    }
+    let Some(owner) = fetch_owner(&state, plan_id).await.ok().flatten() else {
+        return not_found("Plan not found");
+    };
+    if !caller_can_access(&ctx, &owner) {
+        return (StatusCode::FORBIDDEN, Json(json!({ "error": "Forbidden" }))).into_response();
+    }
+    let stored_envelope = match serde_json::to_vec(&payload) {
+        Ok(value) => value,
+        Err(_) => return bad_request("Invalid encryption envelope"),
+    };
+    let will_hash = sha256_hex(&stored_envelope);
+    let storage_cid = match std::env::var("WEB3_STORAGE_TOKEN") {
+        Ok(token) if !token.trim().is_empty() => {
+            match upload_to_web3_storage(&token, &payload.filename, &stored_envelope).await {
+                Ok(cid) => Some(cid),
+                Err(error) => return internal_storage_error(&error),
+            }
+        }
+        _ => None,
+    };
+    let version: i32 = match sqlx::query_scalar("SELECT COALESCE(MAX(version), 0) + 1 FROM will_documents WHERE plan_id = $1")
+        .bind(plan_id)
+        .fetch_one(&state.db_pool)
+        .await
+    {
+        Ok(value) => value,
+        Err(error) => return internal_error("determine document version", error),
+    };
+    let document = match sqlx::query_as::<_, WillDocumentRow>(
+        "INSERT INTO will_documents (plan_id, template_used, will_hash, version, filename, content, is_encrypted) VALUES ($1, $2, $3, $4, $5, $6, true) RETURNING document_id, plan_id, template_used, will_hash, generated_at, version, filename, is_encrypted, status, content",
+    )
+    .bind(plan_id)
+    .bind(&payload.content_type)
+    .bind(will_hash)
+    .bind(version)
+    .bind(&payload.filename)
+    .bind(stored_envelope)
+    .fetch_one(&state.db_pool)
+    .await
+    {
+        Ok(document) => document,
+        Err(error) => return internal_error("store encrypted will document", error),
+    };
+    let mut response = document_response(&document);
+    response["is_encrypted"] = json!(true);
+    response["encryption_nonce"] = json!(payload.nonce);
+    response["encryption_salt"] = json!(payload.salt);
+    if let Some(cid) = storage_cid {
+        response["storage_cid"] = json!(cid);
+    }
+    (StatusCode::CREATED, Json(json!({ "status": "ok", "data": response }))).into_response()
+}
+
+async fn upload_to_web3_storage(token: &str, filename: &str, content: &[u8]) -> Result<String, String> {
+    let response = reqwest::Client::new()
+        .post("https://api.web3.storage/upload")
+        .bearer_auth(token)
+        .header("Content-Type", "application/octet-stream")
+        .header("X-File-Name", filename)
+        .body(content.to_vec())
+        .send()
+        .await
+        .map_err(|error| format!("Web3.Storage upload failed: {error}"))?;
+    if !response.status().is_success() {
+        return Err(format!("Web3.Storage returned {}", response.status()));
+    }
+    let body: Value = response.json().await.map_err(|error| format!("Invalid Web3.Storage response: {error}"))?;
+    body.get("cid")
+        .and_then(Value::as_str)
+        .map(str::to_owned)
+        .ok_or_else(|| "Web3.Storage response did not contain a CID".to_string())
+}
+
+fn internal_storage_error(message: &str) -> Response {
+    tracing::error!(error = %message, "Failed to upload encrypted will document to storage");
+    (StatusCode::BAD_GATEWAY, Json(json!({ "error": message }))).into_response()
 }
 
 /// GET /api/will/documents/{document_id}

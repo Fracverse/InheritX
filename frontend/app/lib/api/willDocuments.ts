@@ -45,6 +45,83 @@ export interface VerificationResult {
   message: string;
 }
 
+export type WalletMessageSigner = (message: string) => Promise<string>;
+
+export interface EncryptedWillEnvelope {
+  version: 1;
+  algorithm: "AES-256-GCM";
+  key_derivation: "HKDF-SHA-256";
+  nonce: string;
+  salt: string;
+  ciphertext: string;
+  filename: string;
+  content_type: string;
+  plaintext_sha256: string;
+}
+
+export interface WillUploadResult extends WillDocument {
+  storage_cid?: string;
+  is_encrypted: true;
+}
+
+const textEncoder = new TextEncoder();
+
+function bytesToBase64(bytes: Uint8Array): string {
+  let binary = "";
+  bytes.forEach((byte) => { binary += String.fromCharCode(byte); });
+  return btoa(binary);
+}
+
+function base64ToBytes(value: string): Uint8Array {
+  return Uint8Array.from(atob(value), (character) => character.charCodeAt(0));
+}
+
+function signatureToBytes(signature: string): Uint8Array {
+  if (/^[0-9a-f]{128}$/i.test(signature)) {
+    return Uint8Array.from(signature.match(/.{2}/g)!, (pair) => parseInt(pair, 16));
+  }
+  return base64ToBytes(signature);
+}
+
+async function sha256Hex(bytes: Uint8Array): Promise<string> {
+  const digest = await crypto.subtle.digest("SHA-256", bytes);
+  return Array.from(new Uint8Array(digest), (byte) => byte.toString(16).padStart(2, "0")).join("");
+}
+
+async function encryptWillDocument(
+  file: Blob,
+  planId: string,
+  filename: string,
+  sign: WalletMessageSigner,
+): Promise<EncryptedWillEnvelope> {
+  const plaintext = new Uint8Array(await file.arrayBuffer());
+  if (plaintext.length === 0) throw new Error("Will document cannot be empty");
+  const challenge = `inheritx:will-document-upload:${planId}:${filename}`;
+  const signature = await sign(challenge);
+  const baseKey = await crypto.subtle.importKey("raw", signatureToBytes(signature), "HKDF", false, ["deriveKey"]);
+  const salt = crypto.getRandomValues(new Uint8Array(16));
+  const key = await crypto.subtle.deriveKey(
+    { name: "HKDF", hash: "SHA-256", salt, info: textEncoder.encode(challenge) },
+    baseKey,
+    { name: "AES-GCM", length: 256 },
+    false,
+    ["encrypt"],
+  );
+  const nonce = crypto.getRandomValues(new Uint8Array(12));
+  const ciphertext = new Uint8Array(await crypto.subtle.encrypt({ name: "AES-GCM", iv: nonce }, key, plaintext));
+  return {
+    version: 1,
+    algorithm: "AES-256-GCM",
+    key_derivation: "HKDF-SHA-256",
+    nonce: bytesToBase64(nonce),
+    salt: bytesToBase64(salt),
+    ciphertext: bytesToBase64(ciphertext),
+    filename,
+    content_type: file.type || "application/octet-stream",
+    plaintext_sha256: await sha256Hex(plaintext),
+  };
+}
+
 export class WillDocumentsAPI {
   private baseUrl: string;
   private getAuthToken: () => string | null;
@@ -267,6 +344,20 @@ export class WillDocumentsAPI {
         method: "POST",
         body: JSON.stringify(data),
       },
+    );
+    return response.data;
+  }
+
+  async uploadDocument(
+    planId: string,
+    file: Blob,
+    signer: WalletMessageSigner,
+    filename = "will_document.pdf",
+  ): Promise<WillUploadResult> {
+    const envelope = await encryptWillDocument(file, planId, filename, signer);
+    const response = await this.request<{ status: string; data: WillUploadResult }>(
+      `/api/plans/${planId}/will/documents/upload`,
+      { method: "POST", body: JSON.stringify(envelope) },
     );
     return response.data;
   }

@@ -619,6 +619,22 @@ export const messagesHandlers = [
 // ─── Will Documents ───────────────────────────────────────────────────────────
 
 export const willDocumentsHandlers = [
+  http.post("/api/plans/:planId/will/documents/upload", async ({ params, request }) => {
+    const body = (await request.json()) as Record<string, unknown>;
+    return HttpResponse.json({
+      status: "ok",
+      data: {
+        document_id: "doc_uploaded",
+        plan_id: params.planId,
+        template_used: body.content_type,
+        will_hash: "encrypted-hash",
+        generated_at: new Date().toISOString(),
+        version: 3,
+        filename: body.filename,
+        is_encrypted: true,
+      },
+    }, { status: 201 });
+  }),
   http.get("/api/plans/:planId/will/documents", ({ params, request }) => {
     const url = new URL(request.url);
     const queryParams = parseQueryParams(url.searchParams);

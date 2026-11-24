@@ -590,6 +590,10 @@ pub fn create_router(state: Arc<AppState>) -> Router {
             get(will_documents::list_documents),
         )
         .route(
+            "/api/plans/{id}/will/documents/upload",
+            post(will_documents::upload_encrypted_document),
+        )
+        .route(
             "/api/plans/{id}/will/documents/{version}/download",
             get(will_documents::download_version),
         )
