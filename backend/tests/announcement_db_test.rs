@@ -16,19 +16,26 @@ use serde_json::{json, Value};
 use std::sync::Arc;
 use tower::ServiceExt; // for oneshot
 
-/// Connects (and migrates) the throwaway database, or `None` when the test
-/// environment did not provide one.
+/// Connects to and migrates the throwaway database once for this test process.
 async fn pool() -> Option<sqlx::PgPool> {
-    let url = std::env::var("WATCHDOG_TEST_DATABASE_URL").ok()?;
-    let pool = sqlx::postgres::PgPoolOptions::new()
-        .max_connections(2)
-        .connect(&url)
+    static TEST_DATABASE: tokio::sync::OnceCell<Option<sqlx::PgPool>> =
+        tokio::sync::OnceCell::const_new();
+
+    TEST_DATABASE
+        .get_or_init(|| async {
+            let url = std::env::var("WATCHDOG_TEST_DATABASE_URL").ok()?;
+            let pool = sqlx::postgres::PgPoolOptions::new()
+                .max_connections(2)
+                .connect(&url)
+                .await
+                .expect("WATCHDOG_TEST_DATABASE_URL is set but unreachable");
+            inheritx_backend::DbManager::run_migrations(&pool)
+                .await
+                .expect("migrations must apply to the test database");
+            Some(pool)
+        })
         .await
-        .expect("WATCHDOG_TEST_DATABASE_URL is set but unreachable");
-    inheritx_backend::DbManager::run_migrations(&pool)
-        .await
-        .expect("migrations must apply to the test database");
-    Some(pool)
+        .clone()
 }
 
 fn admin_token() -> String {
