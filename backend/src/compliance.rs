@@ -560,7 +560,7 @@ pub async fn get_risk_score(
             label: "Compliance alerts".into(),
             impact: "negative".into(),
             score: alert_score,
-            description: format!("{} open compliance alert(s).", open_alerts),
+            description: format!("{open_alerts} open compliance alert(s)."),
         });
     }
 
@@ -905,12 +905,6 @@ pub async fn check_sanctions(
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn velocity_boundaries_are_strictly_greater() {
-        assert!(!(10 > 10));
-        assert!(11 > 10);
-    }
 
     #[test]
     fn volume_boundaries_are_strictly_greater() {
