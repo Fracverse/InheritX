@@ -22,7 +22,7 @@ export const DISTRIBUTION_METHODS: DistributionMethod[] = [
   "Yearly",
 ];
 
-/** Mirrors the contract's `(full_name, email, claim_code, bank_account, allocation_bp, priority)` tuple. */
+/** Mirrors the contract's `(full_name, email, claim_code, bank_account, allocation_bp, priority, wallet_address)` tuple. */
 export interface ContractBeneficiaryInput {
   fullName: string;
   email: string;
@@ -34,6 +34,8 @@ export interface ContractBeneficiaryInput {
   allocationBp: number;
   /** 1-indexed claim priority; must be unique across beneficiaries. */
   priority: number;
+  /** Optional Stellar wallet address for direct on-chain distribution. */
+  walletAddress?: string;
 }
 
 /** Mirrors `CreateInheritancePlanParams` in contracts/inheritance-contract/src/lib.rs. */
@@ -86,6 +88,13 @@ export function encodeDistributionMethod(method: DistributionMethod): xdr.ScVal 
   return scvUnitEnum(method);
 }
 
+function scvOption<T>(value: T | undefined | null, encoder: (v: T) => xdr.ScVal): xdr.ScVal {
+  if (value === undefined || value === null) {
+    return xdr.ScVal.scvVec([]); // None
+  }
+  return xdr.ScVal.scvVec([encoder(value)]); // Some(value)
+}
+
 export function encodeBeneficiaryTuple(beneficiary: ContractBeneficiaryInput): xdr.ScVal {
   return xdr.ScVal.scvVec([
     scvString(beneficiary.fullName),
@@ -94,6 +103,7 @@ export function encodeBeneficiaryTuple(beneficiary: ContractBeneficiaryInput): x
     scvBytesFromUtf8(beneficiary.bankAccount),
     scvU32(beneficiary.allocationBp),
     scvU32(beneficiary.priority),
+    scvOption(beneficiary.walletAddress, scvAddress),
   ]);
 }
 
@@ -126,6 +136,35 @@ export function encodeCreateInheritancePlanParams(
   ];
 
   return xdr.ScVal.scvMap(entries);
+}
+
+/** Mirrors params for `update_plan` in contracts/inheritance-contract/src/lib.rs. */
+export interface UpdateInheritancePlanParamsInput {
+  owner: string;
+  planId: bigint;
+  beneficiaries: ContractBeneficiaryInput[];
+  gracePeriod: bigint;
+  earnYield: boolean;
+}
+
+/**
+ * Encodes parameters for `update_plan` which takes positional parameters:
+ * (owner, plan_id, beneficiaries, grace_period, earn_yield)
+ */
+export function encodeUpdateInheritancePlanParams(
+  input: UpdateInheritancePlanParamsInput
+): xdr.ScVal[] {
+  const beneficiariesVec = xdr.ScVal.scvVec(
+    input.beneficiaries.map((b) => encodeBeneficiaryTuple(b))
+  );
+
+  return [
+    scvAddress(input.owner),
+    scvU64(input.planId),
+    beneficiariesVec,
+    scvU64(input.gracePeriod),
+    xdr.ScVal.scvBool(input.earnYield),
+  ];
 }
 
 /** Converts a user-entered decimal amount string into atomic units (default 7 decimals, SEP-41). */

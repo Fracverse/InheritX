@@ -1,7 +1,10 @@
 import { Address, BASE_FEE, Contract, TransactionBuilder, rpc, scValToNative } from "@stellar/stellar-sdk";
 import {
   encodeCreateInheritancePlanParams,
+  encodeUpdateInheritancePlanParams,
   type CreateInheritancePlanParamsInput,
+  type UpdateInheritancePlanParamsInput,
+  type ContractBeneficiaryInput,
 } from "./contractParams";
 import {
   getInheritanceContractId,
@@ -98,6 +101,69 @@ export async function buildCreateInheritancePlanTransaction(
   const contract = new Contract(contractId);
   const paramsScVal = encodeCreateInheritancePlanParams(params);
   const operation = contract.call("create_inheritance_plan", paramsScVal);
+
+  const transaction = new TransactionBuilder(sourceAccount, {
+    fee: BASE_FEE,
+    networkPassphrase: STELLAR_NETWORK_PASSPHRASE,
+  })
+    .addOperation(operation)
+    .setTimeout(TRANSACTION_TIMEOUT_SECONDS)
+    .build();
+
+  let prepared;
+  try {
+    prepared = await server.prepareTransaction(transaction);
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    throw new ContractSimulationError(describeContractError(message), error);
+  }
+
+  return {
+    unsignedTransactionXdr: prepared.toXDR(),
+    networkPassphrase: STELLAR_NETWORK_PASSPHRASE,
+  };
+}
+
+/**
+ * Builds, simulates and assembles the `update_plan` invocation into a
+ * ready-to-sign transaction XDR. This invokes the contract method with:
+ * (owner, plan_id, beneficiaries, grace_period, earn_yield).
+ */
+export async function buildUpdateInheritancePlanTransaction(params: {
+  owner: string;
+  planId: string;
+  beneficiaries: ContractBeneficiaryInput[];
+  gracePeriodSeconds: number;
+  earnYield: boolean;
+}): Promise<BuildCreateInheritancePlanTxResult> {
+  const contractId = getInheritanceContractId();
+  if (!contractId) {
+    throw new ContractSimulationError(
+      "NEXT_PUBLIC_INHERITANCE_CONTRACT_ID is not configured for this environment."
+    );
+  }
+
+  const server = getServer();
+
+  let sourceAccount;
+  try {
+    sourceAccount = await server.getAccount(params.owner);
+  } catch (error) {
+    throw new ContractSimulationError(
+      "Couldn't load your account from the Stellar network. Make sure the wallet is funded on this network.",
+      error
+    );
+  }
+
+  const contract = new Contract(contractId);
+  const paramsScVal = encodeUpdateInheritancePlanParams({
+    owner: params.owner,
+    planId: BigInt(params.planId),
+    beneficiaries: params.beneficiaries,
+    gracePeriod: BigInt(params.gracePeriodSeconds),
+    earnYield: params.earnYield,
+  });
+  const operation = contract.call("update_plan", ...paramsScVal);
 
   const transaction = new TransactionBuilder(sourceAccount, {
     fee: BASE_FEE,
