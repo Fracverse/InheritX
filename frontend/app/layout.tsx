@@ -7,6 +7,7 @@ import { KYCProvider } from "@/context/KYCContext";
 import { ThemeProvider } from "@/context/ThemeContext";
 import { WalletModal } from "@/components/WalletModal";
 import OfflineSyncHandler from "@/components/ui/OfflineSyncHandler";
+import NetworkBanner from "@/components/ui/NetworkBanner";
 
 import {
   OrganizationStructuredData,
@@ -116,6 +117,7 @@ export default function RootLayout({
           <AdminAuthProvider>
             <WalletProvider>
               <KYCProvider>
+                <NetworkBanner />
                 <main className="">{children}</main>
                 <WalletModal />
                 <OfflineSyncHandler />

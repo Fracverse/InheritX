@@ -51,6 +51,11 @@ export function stellarExpertTxUrl(hash: string): string {
   return `https://stellar.expert/explorer/${STELLAR_EXPERT_NETWORK}/tx/${hash}`;
 }
 
+/** Builds a Stellar Expert explorer URL for a deployed contract id. */
+export function stellarExpertContractUrl(contractId: string): string {
+  return `https://stellar.expert/explorer/${STELLAR_EXPERT_NETWORK}/contract/${contractId}`;
+}
+
 /** Number of decimal places assumed for Soroban token amounts (SEP-41 default). */
 export const TOKEN_DECIMALS = 7;
 
