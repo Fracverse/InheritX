@@ -101,7 +101,14 @@ export async function submitSignedTransaction(
       );
     }
 
-    if (successful && typeof window !== "undefined") {
+    if (!successful) {
+      throw new TransactionSubmissionError(
+        "The network rejected the transaction or has not confirmed it.",
+        response
+      );
+    }
+
+    if (typeof window !== "undefined") {
       window.dispatchEvent(
         new CustomEvent("stellar:transaction-confirmed", { detail: { hash } })
       );

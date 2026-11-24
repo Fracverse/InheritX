@@ -70,6 +70,7 @@ export function CreateInheritancePlanPanel() {
   const [touched, setTouched] = useState(false);
   const [txHash, setTxHash] = useState<string | null>(null);
   const [explorerUrl, setExplorerUrl] = useState<string | null>(null);
+  const [syncWarning, setSyncWarning] = useState("");
 
   const allocationTotalBps = totalAllocationBps(beneficiaries);
   const { rowErrors, totalError } = useMemo(() => {
@@ -166,6 +167,7 @@ export function CreateInheritancePlanPanel() {
     }
 
     setErrorMessage("");
+    setSyncWarning("");
     setTxHash(null);
     setExplorerUrl(null);
     setStatus("creating");
@@ -209,6 +211,9 @@ export function CreateInheritancePlanPanel() {
         };
         await plansAPI.createPlan(request);
       } catch (syncError) {
+        setSyncWarning(
+          "The transaction is confirmed on Stellar, but the backend record could not be synchronized."
+        );
         console.warn("On-chain plan created, but off-chain sync failed:", syncError);
       }
     } catch (error) {
@@ -464,6 +469,19 @@ export function CreateInheritancePlanPanel() {
                     </a>
                   )}
                 </div>
+              </motion.div>
+            )}
+          </AnimatePresence>
+          <AnimatePresence>
+            {syncWarning && (
+              <motion.div
+                initial={{ opacity: 0, y: -6 }}
+                animate={{ opacity: 1, y: 0 }}
+                exit={{ opacity: 0 }}
+                className="flex items-start gap-3 p-3 rounded-lg bg-amber-400/10 border border-amber-400/30 text-amber-200 text-sm"
+              >
+                <AlertCircle size={16} className="mt-0.5 flex-shrink-0" />
+                <span>{syncWarning}</span>
               </motion.div>
             )}
           </AnimatePresence>
