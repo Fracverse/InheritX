@@ -911,6 +911,20 @@ export const aiOptimizationHandlers = [
 // ─── Anchor / Payout Status ──────────────────────────────────────────────
 
 export const anchorHandlers = [
+  http.get("/api/anchor/fees", ({ request }) => {
+    const currency = new URL(request.url).searchParams.get("currency") || "USD";
+    return HttpResponse.json([
+      {
+        anchor_id: `${currency.toLowerCase()}-anchor`,
+        anchor_name: `${currency} Testnet Anchor`,
+        currency,
+        fee: 1.5,
+        fee_currency: "USD",
+        sep24_supported: true,
+        sep31_supported: true,
+      },
+    ]);
+  }),
   // GET /api/anchor/payout-status — Fetch payout records
   http.get("/api/anchor/payout-status", ({ request }) => {
     const url = new URL(request.url);
