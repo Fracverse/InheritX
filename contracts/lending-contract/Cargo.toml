@@ -16,3 +16,4 @@ soroban-sdk = { workspace = true }
 [dev-dependencies]
 soroban-sdk = { workspace = true, features = ["testutils"] }
 loan-nft = { path = "../loan-nft" }
+inheritance-contract = { path = "../inheritance-contract", features = ["cross-test"] }

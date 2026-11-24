@@ -760,6 +760,7 @@ name = "lending-contract"
 version = "0.0.0"
 dependencies = [
  "access-control",
+ "inheritance-contract",
  "loan-nft",
  "soroban-sdk",
 ]
