@@ -1,8 +1,10 @@
 "use client";
-import { useState, useMemo } from "react";
+import { useState, useMemo, useEffect } from "react";
 import { Download, FileText } from "lucide-react";
-import { mockUsers } from "@/lib/mockAdminUsers";
-import { AdminUser, KYCStatus, UserStatus } from "@/lib/adminTypes";
+import { adminAPI } from "@/app/lib/api/admin";
+import { describeAdminError } from "@/lib/adminErrors";
+import { AdminErrorBanner } from "@/components/admin/AdminErrorBanner";
+import { AdminUser, KYCStatus } from "@/lib/adminTypes";
 import { SearchFilterBar } from "@/components/admin/SearchFilterBar";
 import { UserManagementTable } from "@/components/admin/UserManagementTable";
 import { Pagination } from "@/components/admin/Pagination";
@@ -11,10 +13,38 @@ import { exportUsersAsCsv, exportUsersAsPdf } from "@/lib/export";
 const PAGE_SIZE = 10;
 
 export default function AdminUsersPage() {
-  const [users, setUsers] = useState<AdminUser[]>(mockUsers);
+  const [users, setUsers] = useState<AdminUser[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [loadError, setLoadError] = useState<string | null>(null);
+  const [actionError, setActionError] = useState<string | null>(null);
+  const [reloadKey, setReloadKey] = useState(0);
   const [search, setSearch] = useState("");
   const [kycFilter, setKycFilter] = useState<KYCStatus | "all">("all");
   const [page, setPage] = useState(1);
+
+  useEffect(() => {
+    let cancelled = false;
+    adminAPI
+      .listUsers()
+      .then((data) => {
+        if (!cancelled) setUsers(data);
+      })
+      .catch((err) => {
+        if (!cancelled) setLoadError(describeAdminError(err, "Loading users"));
+      })
+      .finally(() => {
+        if (!cancelled) setLoading(false);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [reloadKey]);
+
+  const retryLoad = () => {
+    setLoadError(null);
+    setLoading(true);
+    setReloadKey((k) => k + 1);
+  };
 
   const filtered = useMemo(() => {
     return users.filter((u) => {
@@ -39,29 +69,43 @@ export default function AdminUsersPage() {
     setPage(1);
   };
 
-  const handleApproveKYC = async (userId: string) => {
-    setUsers((prev) =>
-      prev.map((u) =>
-        u.id === userId ? { ...u, kycStatus: "approved" as KYCStatus } : u
-      )
-    );
+  /**
+   * Sends a moderation request, then applies the server's response to the row.
+   * On failure the row is left untouched and the error is shown.
+   */
+  const runAction = async (
+    userId: string,
+    verb: string,
+    request: () => Promise<Partial<AdminUser>>
+  ) => {
+    const address = users.find((u) => u.id === userId)?.walletAddress ?? userId;
+    const wallet =
+      address.length > 12 ? `${address.slice(0, 6)}...${address.slice(-4)}` : address;
+    setActionError(null);
+    try {
+      const fromServer = await request();
+      setUsers((prev) =>
+        prev.map((u) => (u.id === userId ? { ...u, ...fromServer } : u))
+      );
+    } catch (err) {
+      setActionError(describeAdminError(err, `${verb} ${wallet}`));
+    }
   };
 
-  const handleTerminatePlan = async (userId: string) => {
-    setUsers((prev) =>
-      prev.map((u) =>
-        u.id === userId ? { ...u, activePlansCount: 0 } : u
-      )
-    );
-  };
+  const handleApproveKYC = (userId: string) =>
+    runAction(userId, "Approving KYC for", async () => ({
+      kycStatus: await adminAPI.approveUserKyc(userId),
+    }));
 
-  const handleSuspendUser = async (userId: string) => {
-    setUsers((prev) =>
-      prev.map((u) =>
-        u.id === userId
-          ? { ...u, status: u.status === "active" ? ("suspended" as UserStatus) : ("active" as UserStatus) }
-          : u
-      )
+  const handleTerminatePlan = (userId: string) =>
+    runAction(userId, "Terminating plans for", () =>
+      adminAPI.terminateUserPlans(userId)
+    );
+
+  const handleSuspendUser = (userId: string) => {
+    const isActive = users.find((u) => u.id === userId)?.status === "active";
+    return runAction(userId, isActive ? "Suspending" : "Unsuspending", () =>
+      isActive ? adminAPI.suspendUser(userId) : adminAPI.unsuspendUser(userId)
     );
   };
 
@@ -70,7 +114,7 @@ export default function AdminUsersPage() {
       <div className="flex items-center justify-between">
         <div>
           <h1 className="text-2xl font-semibold text-white">Users</h1>
-          <p className="text-sm text-slate-500 mt-1">Platform user accounts and KYC oversight. Showing {filtered.length} of {users.length} users.</p>
+          <p className="text-sm text-slate-500 mt-1">Platform user accounts and KYC oversight. {loading ? "Loading users…" : `Showing ${filtered.length} of ${users.length} users.`}</p>
         </div>
         <div className="flex items-center gap-2">
           <button
@@ -92,19 +136,32 @@ export default function AdminUsersPage() {
         </div>
       </div>
 
+      {loadError && <AdminErrorBanner message={loadError} onRetry={retryLoad} />}
+      {actionError && (
+        <AdminErrorBanner message={actionError} onDismiss={() => setActionError(null)} />
+      )}
+
       <SearchFilterBar
         onSearchChange={handleSearchChange}
         onFilterChange={handleFilterChange}
       />
 
-      <div className="bg-white/[0.02] border border-white/5 rounded-2xl overflow-hidden">
-        <UserManagementTable
-          users={paginated}
-          onApproveKYC={handleApproveKYC}
-          onTerminatePlan={handleTerminatePlan}
-          onSuspendUser={handleSuspendUser}
-        />
-      </div>
+      {loading ? (
+        <div role="status" className="py-16 text-center text-sm text-slate-500">
+          Loading users…
+        </div>
+      ) : (
+        !loadError && (
+          <div className="bg-white/[0.02] border border-white/5 rounded-2xl overflow-hidden">
+            <UserManagementTable
+              users={paginated}
+              onApproveKYC={handleApproveKYC}
+              onTerminatePlan={handleTerminatePlan}
+              onSuspendUser={handleSuspendUser}
+            />
+          </div>
+        )
+      )}
 
       {totalPages > 1 && (
         <Pagination
