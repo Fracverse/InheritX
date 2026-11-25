@@ -3645,7 +3645,11 @@ async fn get_anchor_fees(Query(query): Query<AnchorFeesQuery>) -> impl IntoRespo
 
     let quotes = SUPPORTED
         .iter()
-        .filter(|entry| requested.as_deref().is_none_or(|currency| currency == entry.2))
+        .filter(|entry| {
+            requested
+                .as_deref()
+                .is_none_or(|currency| currency == entry.2)
+        })
         .map(|(id, name, currency, fee)| AnchorFeeQuote {
             anchor_id: (*id).to_string(),
             anchor_name: (*name).to_string(),

@@ -114,8 +114,9 @@ function PlanClaimCard({ initialPlan, onSuccess }: PlanClaimCardProps) {
           signMessage?: (payload: string, options?: { address?: string; networkPassphrase?: string }) => Promise<string | { signedMessage: string }>;
         };
         if (!wallet.signMessage) throw new Error("This wallet does not support claim signing.");
+        const signMessage = wallet.signMessage;
         const sign = async (payload: Uint8Array) => {
-          const result = await wallet.signMessage(new TextDecoder().decode(payload), { address: connectedAddress });
+          const result = await signMessage(new TextDecoder().decode(payload), { address: connectedAddress });
           const encoded = typeof result === "string" ? result : result.signedMessage;
           if (/^[0-9a-f]{128}$/i.test(encoded)) return encoded;
           const bytes = Uint8Array.from(atob(encoded), (character) => character.charCodeAt(0));

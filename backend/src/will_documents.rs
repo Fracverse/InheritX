@@ -296,7 +296,10 @@ pub async fn upload_encrypted_document(
     Path(plan_id): Path<Uuid>,
     Json(payload): Json<EncryptedUploadRequest>,
 ) -> Response {
-    if payload.version != 1 || payload.algorithm != "AES-256-GCM" || payload.key_derivation != "HKDF-SHA-256" {
+    if payload.version != 1
+        || payload.algorithm != "AES-256-GCM"
+        || payload.key_derivation != "HKDF-SHA-256"
+    {
         return bad_request("Unsupported encryption envelope");
     }
     if payload.filename.trim().is_empty() || payload.ciphertext.trim().is_empty() {
@@ -314,7 +317,12 @@ pub async fn upload_encrypted_document(
         Ok(value) if value.len() >= 16 => value,
         _ => return bad_request("salt must contain at least 16 bytes of base64 data"),
     };
-    if payload.plaintext_sha256.len() != 64 || !payload.plaintext_sha256.chars().all(|c| c.is_ascii_hexdigit()) {
+    if payload.plaintext_sha256.len() != 64
+        || !payload
+            .plaintext_sha256
+            .chars()
+            .all(|c| c.is_ascii_hexdigit())
+    {
         return bad_request("plaintext_sha256 must be a SHA-256 hex digest");
     }
     let Some(owner) = fetch_owner(&state, plan_id).await.ok().flatten() else {
@@ -337,10 +345,12 @@ pub async fn upload_encrypted_document(
         }
         _ => None,
     };
-    let version: i32 = match sqlx::query_scalar("SELECT COALESCE(MAX(version), 0) + 1 FROM will_documents WHERE plan_id = $1")
-        .bind(plan_id)
-        .fetch_one(&state.db_pool)
-        .await
+    let version: i32 = match sqlx::query_scalar(
+        "SELECT COALESCE(MAX(version), 0) + 1 FROM will_documents WHERE plan_id = $1",
+    )
+    .bind(plan_id)
+    .fetch_one(&state.db_pool)
+    .await
     {
         Ok(value) => value,
         Err(error) => return internal_error("determine document version", error),
@@ -367,10 +377,18 @@ pub async fn upload_encrypted_document(
     if let Some(cid) = storage_cid {
         response["storage_cid"] = json!(cid);
     }
-    (StatusCode::CREATED, Json(json!({ "status": "ok", "data": response }))).into_response()
+    (
+        StatusCode::CREATED,
+        Json(json!({ "status": "ok", "data": response })),
+    )
+        .into_response()
 }
 
-async fn upload_to_web3_storage(token: &str, filename: &str, content: &[u8]) -> Result<String, String> {
+async fn upload_to_web3_storage(
+    token: &str,
+    filename: &str,
+    content: &[u8],
+) -> Result<String, String> {
     let response = reqwest::Client::new()
         .post("https://api.web3.storage/upload")
         .bearer_auth(token)
@@ -383,7 +401,10 @@ async fn upload_to_web3_storage(token: &str, filename: &str, content: &[u8]) -> 
     if !response.status().is_success() {
         return Err(format!("Web3.Storage returned {}", response.status()));
     }
-    let body: Value = response.json().await.map_err(|error| format!("Invalid Web3.Storage response: {error}"))?;
+    let body: Value = response
+        .json()
+        .await
+        .map_err(|error| format!("Invalid Web3.Storage response: {error}"))?;
     body.get("cid")
         .and_then(Value::as_str)
         .map(str::to_owned)
