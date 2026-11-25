@@ -20,6 +20,9 @@ pub struct Config {
     /// Shared secret used to verify HMAC-SHA256 signatures on inbound KYC
     /// provider webhooks. When unset, `/api/kyc/webhook` rejects every request.
     pub kyc_webhook_secret: Option<String>,
+    /// Maximum number of KYC resubmission attempts allowed after rejection.
+    /// Default is 3 attempts. After this limit, users must contact support.
+    pub kyc_max_resubmit_attempts: u32,
     pub stellar_horizon_url: String,
     pub anchor_api_url: String,
     pub fiat_daily_limit_default: rust_decimal::Decimal,
@@ -213,6 +216,11 @@ impl Config {
             .map(|value| value.trim().to_string())
             .filter(|value| !value.is_empty());
 
+        let kyc_max_resubmit_attempts = std::env::var("KYC_MAX_RESUBMIT_ATTEMPTS")
+            .ok()
+            .and_then(|v| v.parse::<u32>().ok())
+            .unwrap_or(3);
+
         let stellar_horizon_url = std::env::var("STELLAR_HORIZON_URL")
             .ok()
             .map(|value| value.trim().to_string())
@@ -287,6 +295,7 @@ impl Config {
             plan_cache_ttl_secs,
             plan_statistics_cache_ttl_secs,
             kyc_webhook_secret,
+            kyc_max_resubmit_attempts,
             stellar_horizon_url,
             anchor_api_url,
             fiat_daily_limit_default,

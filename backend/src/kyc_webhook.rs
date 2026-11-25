@@ -181,6 +181,19 @@ pub async fn kyc_webhook_handler(
         "KYC webhook received"
     );
 
+    // Handle resubmission-related event types
+    let is_resubmission = payload.event_type.contains("resubmit")
+        || payload.event_type.contains("reopened")
+        || payload.event_type.contains("re-review");
+
+    if is_resubmission {
+        info!(
+            wallet_address = %payload.wallet_address,
+            event_type = %payload.event_type,
+            "KYC resubmission or re-review event detected"
+        );
+    }
+
     let kyc_status_str = payload.status.as_db_str();
     let raw_payload =
         serde_json::from_slice::<serde_json::Value>(&body).unwrap_or(serde_json::Value::Null);

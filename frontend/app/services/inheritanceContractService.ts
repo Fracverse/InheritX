@@ -2,6 +2,7 @@ import { apiClient, ApiError } from "@/app/lib/api/client";
 import {
   buildContractPauseTransaction,
   buildCreateInheritancePlanTransaction,
+  buildUpdateInheritancePlanTransaction,
   describeContractError,
   ContractSimulationError,
   readContractPaused,
@@ -179,6 +180,76 @@ export async function invokeCreateInheritancePlan(options: {
   };
 }
 
+export interface UpdateInheritancePlanContractInput {
+  owner: string;
+  planId: string;
+  beneficiaries: ContractBeneficiaryInput[];
+  gracePeriodSeconds: number;
+  earnYield: boolean;
+}
+
+export interface InvokeUpdateInheritancePlanResult {
+  unsignedTransactionXdr: string;
+  signedTransactionXdr: string;
+  submission: SubmitTransactionResult;
+  explorerUrl: string;
+}
+
+/**
+ * Full on-chain plan update flow: build + simulate the update_plan transaction,
+ * ask the connected wallet to sign it, then relay the signed envelope through
+ * the backend's `/api/transactions/submit` endpoint. Reports progress via
+ * `onProgress` so the UI can show a step-by-step status.
+ */
+export async function invokeUpdateInheritancePlan(options: {
+  contractInput: UpdateInheritancePlanContractInput;
+  walletAddress: string;
+  signTransaction: TransactionSigner;
+  onProgress?: (progress: CreatePlanProgress) => void;
+}): Promise<InvokeUpdateInheritancePlanResult> {
+  const { contractInput, walletAddress, signTransaction, onProgress } = options;
+
+  onProgress?.({ stage: "building" });
+  const { unsignedTransactionXdr, networkPassphrase } =
+    await buildUpdateInheritancePlanTransaction(contractInput);
+
+  onProgress?.({ stage: "awaiting-signature" });
+  let signed;
+  try {
+    signed = await signTransaction(unsignedTransactionXdr, {
+      networkPassphrase,
+      address: walletAddress,
+    });
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    throw new ContractSimulationError(
+      message.toLowerCase().includes("declin") || message.toLowerCase().includes("reject")
+        ? "Signature request was declined in the wallet."
+        : describeContractError(message),
+      error
+    );
+  }
+
+  onProgress?.({ stage: "submitting" });
+  const submission = await submitSignedTransaction(signed.signedTxXdr);
+
+  // Verify the transaction was successful before reporting confirmation
+  if (!submission.successful) {
+    throw new TransactionSubmissionError(
+      "The update transaction was submitted but did not succeed on the blockchain.",
+      submission.raw
+    );
+  }
+
+  onProgress?.({ stage: "confirmed" });
+  return {
+    unsignedTransactionXdr,
+    signedTransactionXdr: signed.signedTxXdr,
+    submission,
+    explorerUrl: stellarExpertTxUrl(submission.hash),
+  };
+}
+
 export type { ContractPauseAction };
 
 export interface InvokeContractPauseResult {
@@ -238,6 +309,7 @@ export const inheritanceContractService = {
   buildCreateInheritancePlanXdr,
   submitSignedTransaction,
   invokeCreateInheritancePlan,
+  invokeUpdateInheritancePlan,
   invokeContractPause,
   readContractPaused,
 };
