@@ -27,8 +27,8 @@ use tracing::{error, warn};
 use uuid::Uuid;
 
 use crate::auth::{
-    jwt_auth_middleware, jwt_or_signature_auth_middleware, signature_auth_middleware, Claims,
-    UserContext,
+    jwt_any_or_signature_auth_middleware, jwt_auth_middleware, jwt_or_signature_auth_middleware,
+    optional_auth_middleware, signature_auth_middleware, Claims, UserContext,
 };
 use crate::cache::PlanCache;
 use crate::kyc_webhook::kyc_webhook_handler;
@@ -40,6 +40,7 @@ use crate::stellar_submit::{StellarSubmitClient, StellarSubmitError};
 use crate::ws::ws_handler;
 use crate::xdr::validate_transaction_xdr;
 use crate::yield_calculator;
+use crate::{admin_ops, kyc_documents, plan_ops, will_documents};
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct PlanBeneficiary {
@@ -515,10 +516,6 @@ pub fn create_router(state: Arc<AppState>) -> Router {
     // Rate limiter: 100 requests per IP per 60 seconds
     let store = RateLimitStore::new();
     let config = Arc::new(RateLimitConfig::default());
-    // Authorized integration runners presenting a valid X-API-Key bypass it.
-    let api_key_verifier: Arc<dyn crate::middleware::ApiKeyVerifier> = Arc::new(
-        crate::middleware::PgApiKeyVerifier::new(state.db_pool.clone()),
-    );
 
     // Sanctions-region guard: blocks OFAC-sanctioned countries, resolved via
     // Cloudflare's CF-IPCountry header or an optional MaxMind DB (GEOIP_DB_PATH).
@@ -550,6 +547,29 @@ pub fn create_router(state: Arc<AppState>) -> Router {
                 .put(update_announcement)
                 .delete(delete_announcement),
         )
+        // Admin dashboard and management operations (Issue #1268)
+        .route("/api/admin/metrics", get(admin_ops::get_metrics))
+        .route("/api/admin/logs", get(admin_ops::get_audit_logs))
+        .route("/api/admin/kyc/{user_id}", get(admin_ops::get_kyc_status))
+        .route("/api/admin/kyc/approve", post(admin_ops::approve_kyc))
+        .route("/api/admin/kyc/reject", post(admin_ops::reject_kyc))
+        .route(
+            "/api/admin/insurance-fund",
+            get(admin_ops::get_insurance_fund_dashboard),
+        )
+        .route(
+            "/api/admin/insurance-funds",
+            get(admin_ops::get_all_insurance_funds),
+        )
+        .route("/api/admin/emergency/pause", post(admin_ops::pause_plan))
+        .route(
+            "/api/admin/emergency/unpause",
+            post(admin_ops::unpause_plan),
+        )
+        .route(
+            "/api/admin/emergency/risk-override",
+            post(admin_ops::set_risk_override),
+        )
         .route_layer(from_fn(jwt_auth_middleware));
 
     // Plan operations targeted by the frontend PlansAPI (Issue #1275).
@@ -568,10 +588,6 @@ pub fn create_router(state: Arc<AppState>) -> Router {
         .route(
             "/api/plans/{id}/will/documents",
             get(will_documents::list_documents),
-        )
-        .route(
-            "/api/plans/{id}/will/documents/upload",
-            post(will_documents::upload_encrypted_document),
         )
         .route(
             "/api/plans/{id}/will/documents/{version}/download",
@@ -665,7 +681,6 @@ pub fn create_router(state: Arc<AppState>) -> Router {
         .route("/api/kyc/webhook", post(kyc_webhook_handler))
         .route("/api/kyc/status", get(get_kyc_status))
         .route("/api/kyc/submit", post(submit_kyc))
-        .route("/api/kyc/upload", post(upload_kyc_document))
         .route("/api/kyc/required", get(is_kyc_required))
         .route("/api/kyc/requirements", get(get_kyc_requirements))
         .route("/api/health", get(health_check))
@@ -686,18 +701,16 @@ pub fn create_router(state: Arc<AppState>) -> Router {
         .merge(user_routes)
         .merge(admin_routes)
         .merge(loan_lifecycle_routes)
+        .merge(plan_ops_routes)
+        .merge(will_private_routes)
+        .merge(will_public_routes)
+        .merge(kyc_upload_routes)
         .merge(public_routes)
         .layer(axum::middleware::from_fn(
             strict_origin_and_user_agent_middleware,
         ))
         .layer(axum::middleware::from_fn(move |req, next| {
-            rate_limit_middleware(
-                req,
-                next,
-                store.clone(),
-                config.clone(),
-                Some(api_key_verifier.clone()),
-            )
+            rate_limit_middleware(req, next, store.clone(), config.clone())
         }))
         .layer(referrer_policy_layer())
         .layer(x_content_type_options_layer())
@@ -807,7 +820,7 @@ fn compute_projected_accrued_yield(row: &PlanRow) -> f64 {
 }
 
 /// Load beneficiaries for a given plan.
-async fn load_beneficiaries(
+pub(crate) async fn load_beneficiaries(
     pool: &sqlx::PgPool,
     plan_id: uuid::Uuid,
 ) -> Result<Vec<BeneficiaryResponse>, sqlx::Error> {
@@ -836,7 +849,10 @@ async fn load_beneficiaries(
 }
 
 // Helper: convert PlanRow + beneficiaries into PlanResponse with yield
-fn plan_row_to_response(row: PlanRow, beneficiaries: Vec<BeneficiaryResponse>) -> PlanResponse {
+pub(crate) fn plan_row_to_response(
+    row: PlanRow,
+    beneficiaries: Vec<BeneficiaryResponse>,
+) -> PlanResponse {
     let accrued_yield = compute_projected_accrued_yield(&row);
 
     PlanResponse {
@@ -3675,12 +3691,6 @@ pub struct KYCSubmitRequest {
 }
 
 #[derive(Debug, Serialize)]
-pub struct KYCDocumentResponse {
-    pub document_id: String,
-    pub url: String,
-}
-
-#[derive(Debug, Serialize)]
 pub struct KYCRequirementsResponse {
     pub requires_id: bool,
     pub requires_address_proof: bool,
@@ -3874,23 +3884,6 @@ async fn submit_kyc(
     };
 
     (StatusCode::OK, Json(response)).into_response()
-}
-
-// Upload KYC document
-async fn upload_kyc_document() -> impl IntoResponse {
-    // In a real implementation, this would:
-    // 1. Receive multipart form data with file and document_type
-    // 2. Validate file (size, type)
-    // 3. Upload to cloud storage (S3, etc.)
-    // 4. Store metadata in database
-    // 5. Return document_id and URL
-
-    let response = KYCDocumentResponse {
-        document_id: Uuid::new_v4().to_string(),
-        url: "https://example.com/documents/doc-001".to_string(),
-    };
-
-    (StatusCode::OK, Json(response))
 }
 
 // Check if KYC is required
