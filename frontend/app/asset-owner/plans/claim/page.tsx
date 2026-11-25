@@ -6,6 +6,8 @@ import { plansAPI, type Plan } from "@/app/lib/api/plans";
 import { getPlans, useMockData } from "@/lib/api/dataSource";
 import { mockStore } from "@/lib/mockStore";
 import inheritanceAPI, { type PlanResponse } from "@/app/lib/api/inheritance";
+import { apiClient } from "@/app/lib/api/client";
+import { StrKey } from "@stellar/stellar-sdk";
 import { useInactivityTimer } from "@/app/hooks/useInactivityTimer";
 import { formatAddress } from "@/util/address";
 import { motion, AnimatePresence } from "framer-motion";
@@ -64,23 +66,77 @@ function PlanClaimCard({ initialPlan, onSuccess }: PlanClaimCardProps) {
     pollIntervalMs: 15000, // Poll every 15 seconds
   });
 
-  const [claimStatus, setClaimStatus] = useState<"idle" | "signing" | "submitting" | "success" | "error">("idle");
+  const [claimStatus, setClaimStatus] = useState<"idle" | "signing" | "submitting" | "confirming" | "success" | "error">("idle");
   const [claimError, setClaimError] = useState("");
+  const [beneficiaryEmail, setBeneficiaryEmail] = useState("");
+  const [verificationCode, setVerificationCode] = useState("");
+
+  const confirmPayout = async (beneficiaryAddress: string) => {
+    for (let attempt = 0; attempt < 10; attempt += 1) {
+      const result = await inheritanceAPI.getPayoutStatus({
+        beneficiary_address: beneficiaryAddress,
+        page: 1,
+        page_size: 100,
+      });
+      const payouts = result.data.filter((payout) => payout.plan_id === currentPlan.id);
+      if (payouts.length > 0) {
+        if (payouts.some((payout) => ["FAILED", "REJECTED"].includes(payout.status.toUpperCase()))) {
+          throw new Error("The payout was rejected by the payout processor.");
+        }
+        if (payouts.every((payout) => ["COMPLETED", "PAID", "SETTLED"].includes(payout.status.toUpperCase()))) {
+          return;
+        }
+      }
+      await new Promise((resolve) => setTimeout(resolve, 2000));
+    }
+    throw new Error("Payout confirmation timed out. Check payout status before retrying.");
+  };
 
   const handleClaim = async () => {
     setClaimStatus("signing");
     setClaimError("");
 
     try {
-      setClaimStatus("submitting");
-      
-      const updatedPlan = mockStore.updatePlan(currentPlan.id, { status: "COMPLETED" });
-      if (!updatedPlan) throw new Error("Plan not found");
-
-      setCurrentPlan(updatedPlan);
+      if (useMockData) {
+        const updatedPlan = mockStore.updatePlan(currentPlan.id, { status: "COMPLETED" });
+        if (!updatedPlan) throw new Error("Plan not found");
+        setCurrentPlan(updatedPlan);
+      } else {
+        if (!isConnected || !connectedAddress) throw new Error("Connect your beneficiary wallet first.");
+        const beneficiary = currentPlan.beneficiaries?.find(
+          (candidate) => candidate.wallet_address?.toLowerCase() === connectedAddress.toLowerCase()
+        );
+        if (!beneficiary) throw new Error("Connected wallet is not a beneficiary of this plan.");
+        if (!beneficiaryEmail.trim()) throw new Error("Enter the beneficiary email to continue.");
+        if (!verificationCode.trim()) throw new Error("Enter the beneficiary verification code to continue.");
+        if (!kit) throw new Error("Wallet is still initializing. Please try again.");
+        const wallet = kit as unknown as {
+          signMessage?: (payload: string, options?: { address?: string; networkPassphrase?: string }) => Promise<string | { signedMessage: string }>;
+        };
+        if (!wallet.signMessage) throw new Error("This wallet does not support claim signing.");
+        const signMessage = wallet.signMessage;
+        const sign = async (payload: Uint8Array) => {
+          const result = await signMessage(new TextDecoder().decode(payload), { address: connectedAddress });
+          const encoded = typeof result === "string" ? result : result.signedMessage;
+          if (/^[0-9a-f]{128}$/i.test(encoded)) return encoded;
+          const bytes = Uint8Array.from(atob(encoded), (character) => character.charCodeAt(0));
+          return Array.from(bytes, (byte) => byte.toString(16).padStart(2, "0")).join("");
+        };
+        const publicKey = Array.from(StrKey.decodeEd25519PublicKey(connectedAddress), (byte) => byte.toString(16).padStart(2, "0")).join("");
+        apiClient.setSignatureAuth({ publicKey, sign });
+        setClaimStatus("submitting");
+        await plansAPI.claimPlan(currentPlan.id, {
+          beneficiary_email: beneficiaryEmail.trim(),
+          two_fa_code: verificationCode.trim(),
+        });
+        setClaimStatus("confirming");
+        await confirmPayout(connectedAddress);
+        apiClient.setSignatureAuth(null);
+      }
       setClaimStatus("success");
       onSuccess();
     } catch (err) {
+      apiClient.setSignatureAuth(null);
       setClaimStatus("error");
       setClaimError(err instanceof Error ? err.message : "Failed to initiate payout.");
     }
@@ -177,7 +233,7 @@ function PlanClaimCard({ initialPlan, onSuccess }: PlanClaimCardProps) {
 
       {/* Error Displays */}
       <AnimatePresence>
-        {(claimStatus === "error" || timerError) && (
+          {(claimStatus === "error" || timerError) && (
           <motion.div
             initial={{ opacity: 0, height: 0 }}
             animate={{ opacity: 1, height: "auto" }}
@@ -213,6 +269,12 @@ function PlanClaimCard({ initialPlan, onSuccess }: PlanClaimCardProps) {
       </AnimatePresence>
 
       {/* Action Footer */}
+      {!isCompleted && isClaimable && (
+        <div className="grid gap-3 sm:grid-cols-2">
+          <input value={beneficiaryEmail} onChange={(event) => setBeneficiaryEmail(event.target.value)} placeholder="Beneficiary email" type="email" className="rounded-xl bg-black/30 border border-white/10 px-3 py-2 text-sm focus:outline-none focus:border-primary/50" />
+          <input value={verificationCode} onChange={(event) => setVerificationCode(event.target.value)} placeholder="Verification code" inputMode="numeric" className="rounded-xl bg-black/30 border border-white/10 px-3 py-2 text-sm focus:outline-none focus:border-primary/50" />
+        </div>
+      )}
       <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4 pt-2">
         <div className="text-xs text-gray-500 space-y-1">
           <p>Distribution: {currentPlan.distribution_method || "Automatic splitting via smart contract"}</p>
@@ -222,7 +284,7 @@ function PlanClaimCard({ initialPlan, onSuccess }: PlanClaimCardProps) {
         <button
           type="button"
           onClick={handleClaim}
-          disabled={!isClaimable || claimStatus === "signing" || claimStatus === "submitting" || claimStatus === "success"}
+          disabled={!isClaimable || claimStatus === "signing" || claimStatus === "submitting" || claimStatus === "confirming" || claimStatus === "success"}
           className={`flex items-center justify-center gap-2 px-6 py-2.5 text-sm font-semibold rounded-xl transition-all duration-300 ${
             isCompleted
               ? "bg-white/5 text-gray-400 border border-white/10 cursor-default"
@@ -242,6 +304,9 @@ function PlanClaimCard({ initialPlan, onSuccess }: PlanClaimCardProps) {
               <Loader2 size={14} className="animate-spin" />
               Submitting Payout...
             </>
+          )}
+          {claimStatus === "confirming" && (
+            <><Loader2 size={14} className="animate-spin" /> Confirming Payout...</>
           )}
           {claimStatus === "success" && (
             <>

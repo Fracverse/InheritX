@@ -110,13 +110,21 @@ describe("inheritanceContractService", () => {
     );
   });
 
+  it("throws when the network does not confirm the transaction", async () => {
+    vi.mocked(apiClient.post).mockResolvedValue({ hash: "rejected-hash", successful: false });
+
+    await expect(submitSignedTransaction("signed-xdr")).rejects.toThrow(
+      "network rejected the transaction"
+    );
+  });
+
   it("dispatches transaction-confirmed only when Horizon marks the submission successful", async () => {
     const dispatchSpy = vi.spyOn(window, "dispatchEvent");
     vi.mocked(apiClient.post).mockResolvedValue({ hash: "pending-hash", successful: false });
 
-    const result = await submitSignedTransaction("signed-xdr");
-
-    expect(result.successful).toBe(false);
+    await expect(submitSignedTransaction("signed-xdr")).rejects.toThrow(
+      TransactionSubmissionError
+    );
     expect(dispatchSpy).not.toHaveBeenCalledWith(
       expect.objectContaining({ type: "stellar:transaction-confirmed" })
     );
@@ -135,9 +143,9 @@ describe("inheritanceContractService", () => {
     const dispatchSpy = vi.spyOn(window, "dispatchEvent");
     vi.mocked(apiClient.post).mockResolvedValue({ hash: "unknown-status" });
 
-    const result = await submitSignedTransaction("signed-xdr");
-
-    expect(result.successful).toBe(false);
+    await expect(submitSignedTransaction("signed-xdr")).rejects.toThrow(
+      TransactionSubmissionError
+    );
     expect(dispatchSpy).not.toHaveBeenCalledWith(
       expect.objectContaining({ type: "stellar:transaction-confirmed" })
     );

@@ -29,6 +29,7 @@ import { CrossChainWalletProvider } from "@/context/CrossChainWalletContext";
 import { useWallet } from "@/context/WalletContext";
 import { formatAddress } from "@/util/address";
 import { YieldCalculatorWidget } from "@/components/dashboard/YieldCalculatorWidget";
+import { CreateInheritancePlanPanel } from "@/components/plans/CreateInheritancePlanPanel";
 
 const STEP_LABELS = ["Asset", "Amount", "Beneficiaries", "Confirm"];
 const DEFAULT_BENEFICIARY: DraftBeneficiary = {
@@ -50,7 +51,7 @@ function ErrorText({ message }: { message?: string }) {
   return <p className="mt-1 text-xs text-red-300">{message}</p>;
 }
 
-export default function CreateInheritancePlanPage() {
+function MockCreateInheritancePlanPage() {
   const { address, isConnected, openModal, kit, selectedWalletId } = useWallet();
   const [step, setStep] = useState(0);
   const [draft, setDraft] = useState<InheritancePlanDraft>({
@@ -765,4 +766,15 @@ export default function CreateInheritancePlanPage() {
       </CrossChainWalletProvider>
     </KYCRequiredGuard>
   );
+}
+
+export default function CreateInheritancePlanPage() {
+  if (!useMockData) {
+    return (
+      <CrossChainWalletProvider>
+        <CreateInheritancePlanPanel />
+      </CrossChainWalletProvider>
+    );
+  }
+  return <MockCreateInheritancePlanPage />;
 }

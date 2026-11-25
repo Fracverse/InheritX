@@ -3,6 +3,7 @@ import { http, HttpResponse } from "msw";
 import { server } from "../mocks/server";
 import { InheritanceAPI } from "@/app/lib/api/inheritance";
 import { apiClient } from "@/app/lib/api/client";
+import { anchorAPI } from "@/app/lib/api/anchor";
 
 let api: InheritanceAPI;
 
@@ -324,6 +325,17 @@ describe("InheritanceAPI", () => {
       expect(result.data).toEqual([]);
       expect(result.total).toBe(0);
       expect(result.total_pages).toBe(0);
+    });
+  });
+});
+
+describe("AnchorAPI", () => {
+  it("fetches fee quotes for a selected currency", async () => {
+    const quotes = await anchorAPI.getFees("NGN");
+    expect(quotes[0]).toMatchObject({
+      currency: "NGN",
+      sep24_supported: true,
+      sep31_supported: true,
     });
   });
 });

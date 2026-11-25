@@ -21,6 +21,7 @@ interface WalletContextType {
     xdr: string,
     opts?: SignTransactionOptions
   ) => Promise<{ signedTxXdr: string }>;
+  signMessage: (message: string) => Promise<string>;
   address: string | null;
   isConnected: boolean;
   isConnecting: boolean;
@@ -173,6 +174,23 @@ export const WalletProvider = ({ children }: { children: React.ReactNode }) => {
     [kit, address]
   );
 
+  const signMessage = useCallback(
+    async (message: string): Promise<string> => {
+      if (!kit) throw new Error("Wallet not connected. Please connect your wallet first.");
+      const wallet = kit as unknown as {
+        signMessage?: (payload: string, options?: { address?: string; networkPassphrase?: string }) =>
+          Promise<string | { signedMessage: string }>;
+      };
+      if (!wallet.signMessage) throw new Error("This wallet does not support message signing.");
+      const result = await wallet.signMessage(message, {
+        address: address ?? undefined,
+        networkPassphrase: STELLAR_NETWORK_PASSPHRASE,
+      });
+      return typeof result === "string" ? result : result.signedMessage;
+    },
+    [kit, address]
+  );
+
   const openModal = () => setIsModalOpen(true);
   const closeModal = () => setIsModalOpen(false);
 
@@ -182,6 +200,7 @@ export const WalletProvider = ({ children }: { children: React.ReactNode }) => {
         connect: connectCustom,
         disconnect,
         signTransaction,
+        signMessage,
         address,
         isConnected: !!address,
         isConnecting,

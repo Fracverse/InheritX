@@ -201,6 +201,22 @@ pub struct AnchorQuery {
     pub page_size: Option<i64>,
 }
 
+#[derive(Deserialize)]
+pub struct AnchorFeesQuery {
+    pub currency: Option<String>,
+}
+
+#[derive(Serialize)]
+struct AnchorFeeQuote {
+    anchor_id: String,
+    anchor_name: String,
+    currency: String,
+    fee: f64,
+    fee_currency: String,
+    sep24_supported: bool,
+    sep31_supported: bool,
+}
+
 #[derive(Debug, Deserialize)]
 pub struct YieldCalculateQuery {
     pub amount: f64,
@@ -574,6 +590,10 @@ pub fn create_router(state: Arc<AppState>) -> Router {
             get(will_documents::list_documents),
         )
         .route(
+            "/api/plans/{id}/will/documents/upload",
+            post(will_documents::upload_encrypted_document),
+        )
+        .route(
             "/api/plans/{id}/will/documents/{version}/download",
             get(will_documents::download_version),
         )
@@ -660,6 +680,7 @@ pub fn create_router(state: Arc<AppState>) -> Router {
             get(crate::loan_lifecycle::get_trigger_info),
         )
         .route("/api/anchor/payout-status", get(get_anchor_payouts))
+        .route("/api/anchor/fees", get(get_anchor_fees))
         .route("/api/lending/current-rate", get(get_current_lending_rate))
         .route("/api/kyc/webhook", post(kyc_webhook_handler))
         .route("/api/kyc/status", get(get_kyc_status))
@@ -3600,6 +3621,47 @@ async fn get_anchor_payouts(
         }),
     )
         .into_response()
+}
+
+async fn get_anchor_fees(Query(query): Query<AnchorFeesQuery>) -> impl IntoResponse {
+    const SUPPORTED: [(&str, &str, &str, f64); 6] = [
+        ("usd-anchor", "USD Testnet Anchor", "USD", 1.50),
+        ("eur-anchor", "EUR Testnet Anchor", "EUR", 1.50),
+        ("ngn-anchor", "NGN Testnet Anchor", "NGN", 2.00),
+        ("kes-anchor", "KES Testnet Anchor", "KES", 2.00),
+        ("brl-anchor", "BRL Testnet Anchor", "BRL", 2.00),
+        ("php-anchor", "PHP Testnet Anchor", "PHP", 2.00),
+    ];
+    let requested = query.currency.map(|currency| currency.to_uppercase());
+    if let Some(currency) = requested.as_deref() {
+        if !SUPPORTED.iter().any(|entry| entry.2 == currency) {
+            return (
+                StatusCode::BAD_REQUEST,
+                Json(serde_json::json!({ "error": "Unsupported fiat currency" })),
+            )
+                .into_response();
+        }
+    }
+
+    let quotes = SUPPORTED
+        .iter()
+        .filter(|entry| {
+            requested
+                .as_deref()
+                .is_none_or(|currency| currency == entry.2)
+        })
+        .map(|(id, name, currency, fee)| AnchorFeeQuote {
+            anchor_id: (*id).to_string(),
+            anchor_name: (*name).to_string(),
+            currency: (*currency).to_string(),
+            fee: *fee,
+            fee_currency: "USD".to_string(),
+            sep24_supported: true,
+            sep31_supported: true,
+        })
+        .collect::<Vec<_>>();
+
+    (StatusCode::OK, Json(quotes)).into_response()
 }
 
 // --- KYC Endpoints ---

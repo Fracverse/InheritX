@@ -1,10 +1,12 @@
 "use client";
 
+import { useEffect, useState } from "react";
 import { motion } from "framer-motion";
 import { ArrowLeftRight, Trash2 } from "lucide-react";
 import { isValidStellarAccount } from "@/app/lib/validation/inheritancePlan";
 import type { PlanBeneficiaryRequest } from "@/app/lib/api/inheritance";
 import type { ContractBeneficiaryInput } from "@/app/lib/stellar/contractParams";
+import { anchorAPI, type AnchorFeeQuote } from "@/app/lib/api/anchor";
 
 export interface BeneficiaryDraft {
   address: string;
@@ -15,6 +17,7 @@ export interface BeneficiaryDraft {
   fiatBank: string;
   fiatAccount: string;
   fiatCurrency: string;
+  fiatAnchor: string;
   /** Optional daily fiat payout limit, entered as a plain decimal string. */
   fiatDailyLimit: string;
   /** Beneficiary email — required on-chain (must be unique per plan). */
@@ -42,6 +45,7 @@ export const DEFAULT_BENEFICIARY_DRAFT: BeneficiaryDraft = {
   fiatBank: "",
   fiatAccount: "",
   fiatCurrency: "USD",
+  fiatAnchor: "",
   fiatDailyLimit: "",
   email: "",
   claimCode: "",
@@ -108,6 +112,10 @@ export function validateBeneficiaryDrafts(
       rowErrors[index] = "Bank name is required for fiat off-ramp payouts.";
       return;
     }
+    if (b.isFiat && !b.fiatAnchor.trim()) {
+      rowErrors[index] = "Select a fiat anchor for off-ramp payouts.";
+      return;
+    }
     if (b.isFiat && !b.fiatAccount.trim()) {
       rowErrors[index] = "Account number is required for fiat off-ramp payouts.";
       return;
@@ -169,6 +177,7 @@ export function buildFiatAnchorInfo(b: BeneficiaryDraft): string {
   return JSON.stringify({
     name: b.name.trim(),
     currency: b.fiatCurrency.trim() || "USD",
+    anchor: b.fiatAnchor.trim(),
     bank: b.fiatBank.trim(),
     account: b.fiatAccount.trim(),
     ...(b.fiatDailyLimit.trim() ? { daily_limit: b.fiatDailyLimit.trim() } : {}),
@@ -224,6 +233,33 @@ export function BeneficiaryAllocationRow({
   onRemove,
   canRemove,
 }: BeneficiaryAllocationRowProps) {
+  const [anchors, setAnchors] = useState<AnchorFeeQuote[]>([]);
+  const [anchorLoading, setAnchorLoading] = useState(false);
+  const [anchorError, setAnchorError] = useState("");
+
+  useEffect(() => {
+    if (!beneficiary.isFiat) return;
+    let active = true;
+    setAnchorLoading(true);
+    setAnchorError("");
+    anchorAPI.getFees(beneficiary.fiatCurrency)
+      .then((quotes) => {
+        if (!active) return;
+        setAnchors(quotes);
+        if (!beneficiary.fiatAnchor && quotes[0]) {
+          onChange(index, "fiatAnchor", quotes[0].anchor_id);
+        }
+      })
+      .catch(() => {
+        if (active) setAnchorError("Unable to load fiat anchors. Try again later.");
+      })
+      .finally(() => {
+        if (active) setAnchorLoading(false);
+      });
+    return () => { active = false; };
+  }, [beneficiary.isFiat, beneficiary.fiatCurrency, beneficiary.fiatAnchor, index, onChange]);
+
+  const selectedQuote = anchors.find((anchor) => anchor.anchor_id === beneficiary.fiatAnchor);
   return (
     <motion.div
       layout
@@ -376,14 +412,15 @@ export function BeneficiaryAllocationRow({
             <label className="text-[10px] text-[#92A5A8] uppercase tracking-wider">
               Currency
             </label>
-            <input
-              type="text"
+            <select
               value={beneficiary.fiatCurrency}
               onChange={(e) => onChange(index, "fiatCurrency", e.target.value.toUpperCase())}
-              placeholder="NGN"
-              maxLength={3}
               className="bg-[#0A0F11] border border-[#2A3338] rounded-lg px-3 py-2 text-sm text-slate-200 placeholder-[#4A5568] focus:outline-none focus:border-[#33C5E0] transition-colors uppercase"
-            />
+            >
+              {["USD", "EUR", "NGN", "KES", "BRL", "PHP"].map((currency) => (
+                <option key={currency} value={currency}>{currency}</option>
+              ))}
+            </select>
           </div>
           <div className="flex flex-col gap-1 pt-2">
             <label className="text-[10px] text-[#92A5A8] uppercase tracking-wider">
@@ -398,6 +435,35 @@ export function BeneficiaryAllocationRow({
               className="bg-[#0A0F11] border border-[#2A3338] rounded-lg px-3 py-2 text-sm text-slate-200 placeholder-[#4A5568] focus:outline-none focus:border-[#33C5E0] transition-colors"
             />
           </div>
+        </div>
+      )}
+
+      {beneficiary.isFiat && (
+        <div className="flex flex-col gap-1 pt-2 border-t border-[#2A3338]/60">
+          <label className="text-[10px] text-[#92A5A8] uppercase tracking-wider">
+            Fiat Anchor
+          </label>
+          <select
+            value={beneficiary.fiatAnchor}
+            disabled={anchorLoading || anchors.length === 0}
+            onChange={(e) => onChange(index, "fiatAnchor", e.target.value)}
+            className="bg-[#0A0F11] border border-[#2A3338] rounded-lg px-3 py-2 text-sm text-slate-200 focus:outline-none focus:border-[#33C5E0] transition-colors disabled:opacity-50"
+          >
+            <option value="">
+              {anchorLoading ? "Loading anchors…" : "Select an anchor"}
+            </option>
+            {anchors.map((anchor) => (
+              <option key={anchor.anchor_id} value={anchor.anchor_id}>
+                {anchor.anchor_name} ({anchor.currency})
+              </option>
+            ))}
+          </select>
+          {selectedQuote && (
+            <span className="text-[10px] text-[#92A5A8]">
+              Estimated fee: {selectedQuote.fee} {selectedQuote.fee_currency}
+            </span>
+          )}
+          {anchorError && <span className="text-[10px] text-[#F56565]">{anchorError}</span>}
         </div>
       )}
 

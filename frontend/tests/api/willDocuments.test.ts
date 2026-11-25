@@ -84,6 +84,47 @@ describe("WillDocumentsAPI", () => {
     });
   });
 
+  describe("uploadDocument", () => {
+    it("encrypts the document before uploading", async () => {
+      const requests: Record<string, unknown>[] = [];
+      server.use(
+        http.post("/api/plans/:planId/will/documents/upload", async ({ request }) => {
+          const body = (await request.json()) as Record<string, unknown>;
+          requests.push(body);
+          return HttpResponse.json({
+            status: "ok",
+            data: {
+              document_id: "doc_uploaded",
+              plan_id: "plan_1",
+              template_used: "application/pdf",
+              will_hash: "encrypted-hash",
+              generated_at: new Date().toISOString(),
+              version: 3,
+              filename: body.filename,
+              is_encrypted: true,
+            },
+          }, { status: 201 });
+        }),
+      );
+
+      const result = await api.uploadDocument(
+        "plan_1",
+        new Blob(["private will content"], { type: "application/pdf" }),
+        async () => btoa("wallet-signature"),
+        "will.pdf",
+      );
+
+      expect(result.is_encrypted).toBe(true);
+      expect(requests[0]).toMatchObject({
+        version: 1,
+        algorithm: "AES-256-GCM",
+        key_derivation: "HKDF-SHA-256",
+        filename: "will.pdf",
+      });
+      expect(requests[0].ciphertext).not.toContain("private will content");
+    });
+  });
+
   describe("getPlanEvents", () => {
     it("returns events for a plan", async () => {
       const events = await api.getPlanEvents("plan_1");

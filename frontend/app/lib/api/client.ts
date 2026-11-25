@@ -61,7 +61,7 @@ export interface RequestConfig {
 export interface SignatureAuth {
   /** Hex-encoded ed25519 public key */
   publicKey: string;
-  /** Signs the request body bytes and returns a hex-encoded ed25519 signature */
+  /** Signs the canonical timestamp/body bytes and returns a hex-encoded ed25519 signature */
   sign: (body: Uint8Array) => Promise<string>;
 }
 
@@ -202,8 +202,12 @@ export class ApiClient {
           const bodyStr =
             typeof options.body === "string" ? options.body : "";
           if (bodyStr) {
-            const bodyBytes = new TextEncoder().encode(bodyStr);
-            const signature = await this.signatureAuth.sign(bodyBytes);
+            const timestamp = Math.floor(Date.now() / 1000);
+            headers["X-Timestamp"] = String(timestamp);
+            const canonicalPayload = `${timestamp}.${bodyStr}`;
+            const signature = await this.signatureAuth.sign(
+              new TextEncoder().encode(canonicalPayload)
+            );
             headers["X-Signature"] = signature;
           }
         }
