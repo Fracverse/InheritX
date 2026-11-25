@@ -83,6 +83,10 @@ function signatureToBytes(signature: string): Uint8Array {
   return base64ToBytes(signature);
 }
 
+function toOwnedArrayBuffer(bytes: Uint8Array): ArrayBuffer {
+  return bytes.slice().buffer as ArrayBuffer;
+}
+
 async function sha256Hex(bytes: Uint8Array): Promise<string> {
   const digest = await crypto.subtle.digest("SHA-256", bytes.slice().buffer as ArrayBuffer);
   return Array.from(new Uint8Array(digest), (byte) => byte.toString(16).padStart(2, "0")).join("");
@@ -98,17 +102,17 @@ async function encryptWillDocument(
   if (plaintext.length === 0) throw new Error("Will document cannot be empty");
   const challenge = `inheritx:will-document-upload:${planId}:${filename}`;
   const signature = await sign(challenge);
-  const baseKey = await crypto.subtle.importKey("raw", signatureToBytes(signature), "HKDF", false, ["deriveKey"]);
+  const baseKey = await crypto.subtle.importKey("raw", toOwnedArrayBuffer(signatureToBytes(signature)), "HKDF", false, ["deriveKey"]);
   const salt = crypto.getRandomValues(new Uint8Array(16));
   const key = await crypto.subtle.deriveKey(
-    { name: "HKDF", hash: "SHA-256", salt, info: textEncoder.encode(challenge) },
+    { name: "HKDF", hash: "SHA-256", salt: toOwnedArrayBuffer(salt), info: toOwnedArrayBuffer(textEncoder.encode(challenge)) },
     baseKey,
     { name: "AES-GCM", length: 256 },
     false,
     ["encrypt"],
   );
   const nonce = crypto.getRandomValues(new Uint8Array(12));
-  const ciphertext = new Uint8Array(await crypto.subtle.encrypt({ name: "AES-GCM", iv: nonce }, key, plaintext));
+  const ciphertext = new Uint8Array(await crypto.subtle.encrypt({ name: "AES-GCM", iv: toOwnedArrayBuffer(nonce) }, key, toOwnedArrayBuffer(plaintext)));
   return {
     version: 1,
     algorithm: "AES-256-GCM",
