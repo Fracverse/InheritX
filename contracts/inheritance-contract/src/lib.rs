@@ -2041,7 +2041,7 @@ impl InheritanceContract {
         BytesN::from_array(env, &salt)
     }
 
-    #[cfg_attr(test, allow(dead_code))]
+    #[cfg_attr(any(test, feature = "cross-test"), allow(dead_code))]
     fn get_configured_plan_vault_wasm(env: &Env) -> Option<BytesN<32>> {
         env.storage().instance().get(&symbol_short!("vhash"))
     }
@@ -2063,7 +2063,7 @@ impl InheritanceContract {
         plan_id: u64,
         owner: &Address,
     ) -> Result<Address, InheritanceError> {
-        #[cfg(test)]
+        #[cfg(any(test, feature = "cross-test"))]
         {
             let _ = owner;
             let vault = env
@@ -2074,7 +2074,7 @@ impl InheritanceContract {
             Ok(vault)
         }
 
-        #[cfg(not(test))]
+        #[cfg(not(any(test, feature = "cross-test")))]
         {
             let wasm_hash =
                 Self::get_configured_plan_vault_wasm(env).ok_or(InheritanceError::VaultNotFound)?;
@@ -2114,7 +2114,7 @@ impl InheritanceContract {
     ) -> Result<(), InheritanceError> {
         let vault = Self::require_plan_vault(env, plan_id)?;
 
-        #[cfg(test)]
+        #[cfg(any(test, feature = "cross-test"))]
         {
             let args: Vec<Val> = vec![
                 env,
@@ -2140,7 +2140,7 @@ impl InheritanceContract {
             Ok(())
         }
 
-        #[cfg(not(test))]
+        #[cfg(not(any(test, feature = "cross-test")))]
         {
             let args: Vec<Val> = vec![
                 env,

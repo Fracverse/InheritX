@@ -21,14 +21,6 @@ export async function getPlan(planId: string): Promise<Plan | null> {
 }
 
 export async function getKYCStatus(walletAddress?: string): Promise<KYCResponse> {
-  if (useMockData) {
-    return {
-      wallet_address: walletAddress ?? "demo-wallet",
-      kyc_status: mockStore.getKYCStatus() as KYCResponse["kyc_status"],
-      submitted_at: new Date().toISOString(),
-    };
-  }
-
   if (!walletAddress) throw new Error("Connect a wallet to load KYC status.");
   return kycAPI.getKYCStatus(walletAddress);
 }

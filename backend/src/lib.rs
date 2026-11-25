@@ -2,6 +2,7 @@ pub mod admin_ops;
 pub mod api;
 pub mod auth;
 pub mod cache;
+pub mod compliance;
 pub mod config;
 pub mod db;
 pub mod inactivity_watchdog;

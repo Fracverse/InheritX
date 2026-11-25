@@ -13,22 +13,92 @@ use axum::{
 };
 use inheritx_backend::{create_router, AppState, PlanCache};
 use serde_json::{json, Value};
-use std::sync::Arc;
+use std::{future::Future, str::FromStr, sync::Arc};
 use tower::ServiceExt; // for oneshot
 
-/// Connects (and migrates) the throwaway database, or `None` when the test
-/// environment did not provide one.
-async fn pool() -> Option<sqlx::PgPool> {
-    let url = std::env::var("WATCHDOG_TEST_DATABASE_URL").ok()?;
-    let pool = sqlx::postgres::PgPoolOptions::new()
-        .max_connections(2)
-        .connect(&url)
+struct TestDatabase {
+    name: String,
+    admin_pool: sqlx::PgPool,
+    pool: sqlx::PgPool,
+}
+
+impl TestDatabase {
+    async fn create() -> Option<Self> {
+        let url = std::env::var("WATCHDOG_TEST_DATABASE_URL").ok()?;
+        let options = sqlx::postgres::PgConnectOptions::from_str(&url)
+            .expect("WATCHDOG_TEST_DATABASE_URL must be a valid PostgreSQL URL");
+        let admin_pool = sqlx::postgres::PgPoolOptions::new()
+            .max_connections(1)
+            .connect_with(options.clone())
+            .await
+            .expect("WATCHDOG_TEST_DATABASE_URL is set but unreachable");
+        let name = format!("announcement_test_{}", uuid::Uuid::new_v4().simple());
+
+        sqlx::query(&format!("CREATE DATABASE {name}"))
+            .execute(&admin_pool)
+            .await
+            .expect("failed to create isolated announcement test database");
+
+        let pool = sqlx::postgres::PgPoolOptions::new()
+            .max_connections(2)
+            .connect_with(options.database(&name))
+            .await
+            .expect("failed to connect to isolated announcement test database");
+
+        if let Err(migration_error) = inheritx_backend::DbManager::run_migrations(&pool).await {
+            pool.close().await;
+            let cleanup = sqlx::query(&format!("DROP DATABASE {name} WITH (FORCE)"))
+                .execute(&admin_pool)
+                .await;
+            admin_pool.close().await;
+            if let Err(cleanup_error) = cleanup {
+                panic!(
+                    "failed to apply test database migrations ({migration_error}) and clean up database ({cleanup_error})"
+                );
+            }
+            panic!("failed to apply test database migrations: {migration_error}");
+        }
+
+        Some(Self {
+            name,
+            admin_pool,
+            pool,
+        })
+    }
+
+    async fn cleanup(self) -> Result<(), sqlx::Error> {
+        self.pool.close().await;
+        let result = sqlx::query(&format!("DROP DATABASE {} WITH (FORCE)", self.name))
+            .execute(&self.admin_pool)
+            .await
+            .map(|_| ());
+        self.admin_pool.close().await;
+        result
+    }
+}
+
+async fn run_isolated_test<F, Fut>(test: F)
+where
+    F: FnOnce(sqlx::PgPool) -> Fut + Send + 'static,
+    Fut: Future<Output = ()> + Send + 'static,
+{
+    let Some(test_database) = TestDatabase::create().await else {
+        eprintln!("skipping: WATCHDOG_TEST_DATABASE_URL is not set");
+        return;
+    };
+
+    let result = tokio::spawn(test(test_database.pool.clone())).await;
+    test_database
+        .cleanup()
         .await
-        .expect("WATCHDOG_TEST_DATABASE_URL is set but unreachable");
-    inheritx_backend::DbManager::run_migrations(&pool)
-        .await
-        .expect("migrations must apply to the test database");
-    Some(pool)
+        .expect("isolated announcement test database should be removed");
+
+    if let Err(error) = result {
+        if error.is_panic() {
+            std::panic::resume_unwind(error.into_panic());
+        }
+        panic!("announcement test task failed: {error}");
+    }
 }
 
 fn admin_token() -> String {
@@ -66,11 +136,10 @@ fn admin_request(method: &str, uri: &str, token: &str, body: Value) -> Request<B
 
 #[tokio::test]
 async fn announcement_crud_round_trip_broadcasts_over_websocket() {
-    let Some(db_pool) = pool().await else {
-        eprintln!("skipping: WATCHDOG_TEST_DATABASE_URL is not set");
-        return;
-    };
+    run_isolated_test(announcement_crud_round_trip_with_pool).await;
+}
 
+async fn announcement_crud_round_trip_with_pool(db_pool: sqlx::PgPool) {
     let (announcement_tx, mut announcement_rx) = tokio::sync::broadcast::channel(16);
     let state = Arc::new(AppState {
         anchor: Arc::new(inheritx_backend::stellar_anchor::AnchorRegistry::new(
@@ -78,6 +147,7 @@ async fn announcement_crud_round_trip_broadcasts_over_websocket() {
         )),
         db_pool,
         kyc_webhook_secret: None,
+        kyc_max_resubmit_attempts: 3,
         apy_config: inheritx_backend::yield_calculator::ApyConfig::default(),
         plan_cache: PlanCache::disabled(),
         plan_statistics_cache_ttl_secs: 60,
@@ -263,17 +333,17 @@ async fn announcement_crud_round_trip_broadcasts_over_websocket() {
 
 #[tokio::test]
 async fn scheduled_announcements_are_hidden_from_the_public_view() {
-    let Some(db_pool) = pool().await else {
-        eprintln!("skipping: WATCHDOG_TEST_DATABASE_URL is not set");
-        return;
-    };
+    run_isolated_test(scheduled_announcements_are_hidden_from_the_public_view_with_pool).await;
+}
 
+async fn scheduled_announcements_are_hidden_from_the_public_view_with_pool(db_pool: sqlx::PgPool) {
     let state = Arc::new(AppState {
         anchor: Arc::new(inheritx_backend::stellar_anchor::AnchorRegistry::new(
             "http://localhost:8081".to_string(),
         )),
         db_pool,
         kyc_webhook_secret: None,
+        kyc_max_resubmit_attempts: 3,
         apy_config: inheritx_backend::yield_calculator::ApyConfig::default(),
         plan_cache: PlanCache::disabled(),
         plan_statistics_cache_ttl_secs: 60,

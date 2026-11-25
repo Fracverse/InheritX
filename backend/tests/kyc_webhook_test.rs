@@ -30,6 +30,7 @@ fn test_state(secret: Option<&str>) -> std::sync::Arc<inheritx_backend::AppState
         anchor: std::sync::Arc::new(AnchorRegistry::new("http://localhost:8081".to_string())),
         db_pool: pool,
         kyc_webhook_secret: secret.map(str::to_string),
+        kyc_max_resubmit_attempts: 3,
         apy_config: inheritx_backend::yield_calculator::ApyConfig::default(),
         plan_cache: inheritx_backend::PlanCache::disabled(),
         plan_statistics_cache_ttl_secs: 60,
@@ -176,4 +177,39 @@ async fn test_webhook_fails_closed_when_secret_not_configured() {
         .unwrap();
 
     assert_eq!(response.status(), StatusCode::SERVICE_UNAVAILABLE);
+}
+
+#[tokio::test]
+async fn test_kyc_resubmission_webhook_events() {
+    // Test that resubmission-related webhook events are properly signed and authenticated
+    let secret = "test-resubmit-secret";
+    let wallet = "GDRESUBMIT123";
+
+    // Test webhook rejection with can_resubmit flag
+    let reject_payload = serde_json::json!({
+        "wallet_address": wallet,
+        "status": "rejected",
+        "event_type": "kyc.rejected",
+        "provider_reference": "ref-reject-001"
+    });
+
+    let reject_body = reject_payload.to_string();
+    let reject_sig = sign_payload(secret, reject_body.as_bytes());
+
+    let app = inheritx_backend::create_router(test_state(Some(secret)));
+    let reject_response = app
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/api/kyc/webhook")
+                .header("content-type", "application/json")
+                .header("x-kyc-signature", reject_sig)
+                .body(Body::from(reject_body))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+
+    // Signature is valid, so request reaches handler (may fail on DB operations in test env)
+    assert_ne!(reject_response.status(), StatusCode::UNAUTHORIZED);
 }

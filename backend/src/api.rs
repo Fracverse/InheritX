@@ -71,6 +71,7 @@ pub struct AppState {
     pub anchor: Arc<AnchorRegistry>,
     pub db_pool: sqlx::PgPool,
     pub kyc_webhook_secret: Option<String>,
+    pub kyc_max_resubmit_attempts: u32,
     pub apy_config: yield_calculator::ApyConfig,
     pub plan_cache: PlanCache,
     /// TTL applied when caching `/api/analytics/plan-statistics` responses.
@@ -540,6 +541,10 @@ pub fn create_router(state: Arc<AppState>) -> Router {
     let admin_routes = Router::new()
         .route("/api/plans/{id}/report", get(get_plan_report))
         .route("/api/analytics/plan-statistics", get(get_plan_statistics))
+        .route(
+            "/api/compliance/risk-override",
+            post(crate::compliance::override_risk),
+        )
         // System banner notification management (Issue #1136)
         .route(
             "/api/admin/announcements",
@@ -690,6 +695,22 @@ pub fn create_router(state: Arc<AppState>) -> Router {
         .route("/api/health", get(health_check))
         .route("/api/announcements", get(list_active_announcements))
         .route("/api/transactions/submit", post(submit_transaction))
+        .route(
+            "/api/compliance/velocity-alerts",
+            get(crate::compliance::get_velocity_alerts),
+        )
+        .route(
+            "/api/compliance/volume-alerts",
+            get(crate::compliance::get_volume_alerts),
+        )
+        .route(
+            "/api/compliance/risk-score/{address}",
+            get(crate::compliance::get_risk_score),
+        )
+        .route(
+            "/api/compliance/sanctions-check/{address}",
+            get(crate::compliance::check_sanctions),
+        )
         .route("/api/admin/login", post(admin_login))
         .route("/api/yield/calculate", get(calculate_yield))
         .route(
@@ -3681,6 +3702,7 @@ pub struct KYCStatusResponse {
     pub rejected_at: Option<DateTime<Utc>>,
     pub rejection_reason: Option<String>,
     pub provider_reference: Option<String>,
+    pub can_resubmit: bool,
 }
 
 #[derive(Debug, Deserialize)]
@@ -3771,14 +3793,101 @@ async fn get_kyc_status(
     .flatten()
     .map(|r| r.created_at);
 
+    // Query rejection reason and can_resubmit from kyc_webhook_logs if status is rejected
+    let (rejection_reason, can_resubmit) = if kyc_status == "rejected" {
+        #[derive(Debug, sqlx::FromRow)]
+        struct WebhookLogRow {
+            raw_payload: serde_json::Value,
+        }
+
+        let log_row = sqlx::query_as::<_, WebhookLogRow>(
+            r#"
+            SELECT raw_payload
+            FROM kyc_webhook_logs
+            WHERE wallet_address = $1
+              AND status = 'rejected'
+            ORDER BY received_at DESC
+            LIMIT 1
+            "#,
+        )
+        .bind(&wallet_address)
+        .fetch_optional(&state.db_pool)
+        .await
+        .ok()
+        .flatten();
+
+        let rejection_reason = log_row.as_ref().and_then(|row| {
+            // Try to extract rejection reason from provider-specific payload structure
+            // Common paths: rejection_reason, reason, reject_labels, reviewResult.reviewAnswer
+            row.raw_payload
+                .get("rejection_reason")
+                .or_else(|| row.raw_payload.get("reason"))
+                .or_else(|| {
+                    row.raw_payload
+                        .get("reviewResult")
+                        .and_then(|r| r.get("reviewAnswer"))
+                })
+                .or_else(|| {
+                    row.raw_payload
+                        .get("reject_labels")
+                        .and_then(|labels| labels.as_array()?.first())
+                })
+                .and_then(|v| v.as_str())
+                .map(|s| s.to_string())
+        });
+
+        // Determine if resubmission is allowed
+        // Check for explicit can_resubmit or is_retryable flag in payload
+        // If the rejection is marked as final, fraud, or permanent, set to false
+        let can_resubmit = log_row
+            .map(|row| {
+                // Check explicit flags
+                if let Some(can_resubmit_val) = row
+                    .raw_payload
+                    .get("can_resubmit")
+                    .or_else(|| row.raw_payload.get("is_retryable"))
+                    .or_else(|| row.raw_payload.get("retryable"))
+                {
+                    return can_resubmit_val.as_bool().unwrap_or(true);
+                }
+
+                // Check rejection type/reason - some indicate final rejection
+                let rejection_type = row
+                    .raw_payload
+                    .get("rejection_type")
+                    .or_else(|| row.raw_payload.get("type"))
+                    .and_then(|v| v.as_str());
+
+                if let Some(rtype) = rejection_type {
+                    let rtype_lower = rtype.to_lowercase();
+                    if rtype_lower.contains("fraud")
+                        || rtype_lower.contains("permanent")
+                        || rtype_lower.contains("final")
+                        || rtype_lower.contains("blacklist")
+                    {
+                        return false;
+                    }
+                }
+
+                // Default: allow retry unless explicitly marked otherwise
+                true
+            })
+            .unwrap_or(true);
+
+        (rejection_reason, can_resubmit)
+    } else {
+        (None, true)
+    };
+
     let response = KYCStatusResponse {
         wallet_address,
         kyc_status,
         submitted_at,
         approved_at: None,
         rejected_at: None,
-        rejection_reason: None,
+        rejection_reason,
         provider_reference: None,
+        can_resubmit,
     };
 
     (StatusCode::OK, Json(response)).into_response()
@@ -3789,6 +3898,41 @@ async fn submit_kyc(
     State(state): State<Arc<AppState>>,
     Json(payload): Json<KYCSubmitRequest>,
 ) -> impl IntoResponse {
+    // Check for existing rejections to enforce resubmission limit
+    #[derive(Debug, sqlx::FromRow)]
+    struct RejectionCountRow {
+        rejection_count: i64,
+    }
+
+    let rejection_count_result = sqlx::query_as::<_, RejectionCountRow>(
+        r#"
+        SELECT COUNT(*) as rejection_count
+        FROM kyc_webhook_logs
+        WHERE wallet_address = $1
+          AND status = 'rejected'
+        "#,
+    )
+    .bind(&payload.wallet_address)
+    .fetch_one(&state.db_pool)
+    .await;
+
+    let rejection_count = rejection_count_result
+        .map(|row| row.rejection_count as u32)
+        .unwrap_or(0);
+
+    if rejection_count >= state.kyc_max_resubmit_attempts {
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(ApiError {
+                error: format!(
+                    "Maximum resubmission attempts ({}) reached. Please contact support.",
+                    state.kyc_max_resubmit_attempts
+                ),
+            }),
+        )
+            .into_response();
+    }
+
     let mut tx = match state.db_pool.begin().await {
         Ok(tx) => tx,
         Err(e) => {
@@ -3849,7 +3993,7 @@ async fn submit_kyc(
             .into_response();
     }
 
-    // Update users table with 'submitted' status
+    // Update users table with 'submitted' status (handles resubmissions)
     if let Err(e) = sqlx::query(
         r#"
         INSERT INTO users (wallet_address, kyc_status)
@@ -3883,6 +4027,18 @@ async fn submit_kyc(
             .into_response();
     }
 
+    // Broadcast resubmission event if this is a resubmission
+    if rejection_count > 0 {
+        let event = crate::ws::KycUpdateEvent {
+            wallet_address: payload.wallet_address.clone(),
+            kyc_status: "submitted".to_string(),
+            event_type: "kyc.resubmitted".to_string(),
+        };
+        if let Err(e) = state.kyc_tx.send(event) {
+            tracing::debug!("No WebSocket subscribers for KYC resubmission event: {}", e);
+        }
+    }
+
     let response = KYCStatusResponse {
         wallet_address: payload.wallet_address.clone(),
         kyc_status: "submitted".to_string(),
@@ -3891,6 +4047,7 @@ async fn submit_kyc(
         rejected_at: None,
         rejection_reason: None,
         provider_reference: None,
+        can_resubmit: true,
     };
 
     (StatusCode::OK, Json(response)).into_response()

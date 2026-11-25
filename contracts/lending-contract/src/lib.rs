@@ -5753,6 +5753,10 @@ impl LendingContract {
             .unwrap_or(CONTRACT_VERSION)
     }
 
+    pub fn get_version(env: Env) -> u32 {
+        Self::version(env)
+    }
+
     /// Upgrade the contract to a new WASM binary. Admin-only.
     ///
     /// Atomically replaces contract code while preserving all on-chain storage

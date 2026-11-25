@@ -49,6 +49,7 @@ fn app(pool: sqlx::PgPool) -> axum::Router {
         )),
         db_pool: pool,
         kyc_webhook_secret: None,
+        kyc_max_resubmit_attempts: 3,
         apy_config: inheritx_backend::yield_calculator::ApyConfig::default(),
         plan_cache: PlanCache::disabled(),
         plan_statistics_cache_ttl_secs: 60,

@@ -23,6 +23,12 @@ import {
   validateBeneficiaryDrafts,
   type BeneficiaryDraft,
 } from "@/components/plans/BeneficiaryAllocationRow";
+import {
+  invokeUpdateInheritancePlan,
+  ContractSimulationError,
+  type CreatePlanStage,
+  type ContractBeneficiaryInput,
+} from "@/app/services/inheritanceContractService";
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
@@ -39,6 +45,13 @@ type PrivacyToggleKey = "allowFamilyMatching" | "zeroKnowledgeHashing";
 
 const SECONDS_PER_DAY = 86_400;
 const DEFAULT_YIELD_RATE_BPS = 500;
+
+const STAGE_LABELS: Record<CreatePlanStage, string> = {
+  building: "Building transaction…",
+  "awaiting-signature": "Awaiting wallet signature…",
+  submitting: "Submitting to the Stellar network…",
+  confirmed: "Confirmed on-chain.",
+};
 
 // ─── Helpers ─────────────────────────────────────────────────────────────────
 
@@ -129,7 +142,7 @@ export function EditInheritancePlanPanel({
   onClose,
   onSaved,
 }: EditInheritancePlanPanelProps) {
-  const { kit, selectedWalletId } = useWallet();
+  const { kit, selectedWalletId, address: walletAddress } = useWallet();
 
   const [title, setTitle] = useState(plan.title);
   const [description, setDescription] = useState(plan.description ?? "");
@@ -149,6 +162,8 @@ export function EditInheritancePlanPanel({
   const [txStatus, setTxStatus] = useState<TxStatus>("idle");
   const [errorMessage, setErrorMessage] = useState<string>("");
   const [touched, setTouched] = useState(false);
+  const [stage, setStage] = useState<CreatePlanStage | null>(null);
+  const [txHash, setTxHash] = useState<string | null>(null);
 
   // Genetic privacy preferences — seeded from the persisted store, falling back
   // to the defaults, and written back on save.
@@ -224,26 +239,12 @@ export function EditInheritancePlanPanel({
     }
   }, [plan.id, privacy, setGeneticPrivacySettings]);
 
-  const buildXdr = (): string => {
-    // Constructs a placeholder unsigned XDR envelope representing the update call.
-    // In production this would call the Soroban contract SDK to build the real XDR.
-    return `unsigned-xdr::update_plan::${plan.id}::${Date.now()}`;
-  };
-
-  const signWithWallet = async (xdr: string): Promise<string> => {
-    if (!kit || !selectedWalletId) {
-      throw new Error("No wallet connected");
-    }
-    // signTransaction returns the signed XDR that can be submitted to the network.
-    const result = await kit.signTransaction(xdr);
-    return result.signedTxXdr;
-  };
-
   const handleSave = async () => {
     setTouched(true);
 
     if (!title.trim()) {
       setErrorMessage("Title is required.");
+      setTxStatus("error");
       return;
     }
 
@@ -254,54 +255,116 @@ export function EditInheritancePlanPanel({
           totalError ||
           "All beneficiaries must have a name and a valid Stellar wallet address."
       );
+      setTxStatus("error");
+      return;
+    }
+
+    if (!kit || !selectedWalletId) {
+      setErrorMessage("Please connect your wallet first.");
+      setTxStatus("error");
+      return;
+    }
+
+    if (!walletAddress) {
+      setErrorMessage("Wallet address not available.");
+      setTxStatus("error");
+      return;
+    }
+
+    // Reject mock/test addresses in production update flows
+    const mockAddresses = [
+      "MOCK_ADDRESS",
+      "GDE2KZQ4QGJZ5Z5QW2Y4B7Y6Q5D3P9V8N7M6L5K4J3H2G1FTEST", // E2E mock
+    ];
+    if (mockAddresses.includes(walletAddress) || walletAddress.startsWith("GTEST")) {
+      setErrorMessage("Cannot update plan with a test wallet. Please connect a real wallet.");
+      setTxStatus("error");
       return;
     }
 
     setErrorMessage("");
     setTxStatus("signing");
+    setStage(null);
+    setTxHash(null);
 
     try {
-      const xdr = buildXdr();
-      await signWithWallet(xdr);
-    } catch {
-      // Wallet signing rejected or unavailable — proceed without signed XDR in dev.
-    }
+      // Convert beneficiaries to contract format
+      const contractBeneficiaries: ContractBeneficiaryInput[] = beneficiaries.map((b, idx) => ({
+        fullName: b.name || "Unnamed",
+        email: b.email || "",
+        claimCode: parseInt(b.claimCode || "0", 10),
+        bankAccount: b.isFiat ? `${b.fiatBank}:${b.fiatAccount}` : b.address,
+        allocationBp: b.allocationBps || 0,
+        priority: idx + 1,
+        walletAddress: b.isFiat ? undefined : (b.address || undefined),
+      }));
 
-    setTxStatus("saving");
+      // Invoke update_plan on-chain
+      const result = await invokeUpdateInheritancePlan({
+        contractInput: {
+          owner: walletAddress,
+          planId: plan.id,
+          beneficiaries: contractBeneficiaries,
+          gracePeriodSeconds: inactivityDays * SECONDS_PER_DAY,
+          earnYield: yieldEnabled,
+        },
+        walletAddress,
+        signTransaction: kit.signTransaction,
+        onProgress: (progress) => setStage(progress.stage),
+      });
 
-    const updateRequest: UpdatePlanRequest = {
-      beneficiaries: beneficiaries.map(beneficiaryDraftToRequest),
-      grace_period: inactivityDays * SECONDS_PER_DAY,
-      earn_yield: yieldEnabled,
-      yield_rate_bps: yieldEnabled ? yieldRateBps : 0,
-    };
+      setTxHash(result.submission.hash);
+      setStage(null);
+      setTxStatus("saving");
 
-    try {
-      const updated = await plansAPI.updatePlan(plan.id, updateRequest);
-      const merged: Plan = {
-        ...plan,
-        title,
-        description: description || undefined,
-        status: updated.status,
-        is_active: updated.is_active,
-        amount: Number(updated.amount),
-        owner_address: updated.owner_address,
-        token_address: updated.token_address,
-        grace_period_seconds: updated.grace_period_seconds,
-        yield_rate_bps: updated.yield_rate_bps,
-        earn_yield: updated.earn_yield,
-        accrued_yield: updated.accrued_yield,
-        last_ping: updated.last_ping,
-        beneficiaries: updated.beneficiaries,
-        updated_at: new Date().toISOString(),
+      // Synchronize backend after successful blockchain confirmation
+      const updateRequest: UpdatePlanRequest = {
+        beneficiaries: beneficiaries.map(beneficiaryDraftToRequest),
+        grace_period: inactivityDays * SECONDS_PER_DAY,
+        earn_yield: yieldEnabled,
+        yield_rate_bps: yieldEnabled ? yieldRateBps : 0,
       };
-      setTxStatus("success");
-      setTimeout(() => onSaved(merged), 1200);
+
+      try {
+        const updated = await plansAPI.updatePlan(plan.id, updateRequest);
+        const merged: Plan = {
+          ...plan,
+          title,
+          description: description || undefined,
+          status: updated.status,
+          is_active: updated.is_active,
+          amount: Number(updated.amount),
+          owner_address: updated.owner_address,
+          token_address: updated.token_address,
+          grace_period_seconds: updated.grace_period_seconds,
+          yield_rate_bps: updated.yield_rate_bps,
+          earn_yield: updated.earn_yield,
+          accrued_yield: updated.accrued_yield,
+          last_ping: updated.last_ping,
+          beneficiaries: updated.beneficiaries,
+          updated_at: new Date().toISOString(),
+        };
+        setTxStatus("success");
+        setTimeout(() => onSaved(merged), 1200);
+      } catch (err) {
+        // Backend sync failed but blockchain succeeded
+        setTxStatus("error");
+        setErrorMessage(
+          `Plan updated on-chain (tx: ${result.submission.hash.slice(0, 8)}…) but backend sync failed: ${
+            err instanceof Error ? err.message : "Unknown error"
+          }`
+        );
+      }
     } catch (err) {
       setTxStatus("error");
-      setErrorMessage(
-        err instanceof Error ? err.message : "Failed to save changes."
-      );
+      setStage(null);
+      if (err instanceof ContractSimulationError) {
+        setErrorMessage(err.message);
+      } else {
+        setErrorMessage(
+          err instanceof Error ? err.message : "Failed to update plan."
+        );
+      }
     }
   };
 
@@ -612,6 +675,21 @@ export function EditInheritancePlanPanel({
               )}
             </AnimatePresence>
           </section>
+
+          {/* Transaction progress */}
+          <AnimatePresence>
+            {stage && txStatus === "signing" && (
+              <motion.div
+                initial={{opacity: 0, y: -6}}
+                animate={{opacity: 1, y: 0}}
+                exit={{opacity: 0}}
+                className="flex items-center gap-3 p-3 rounded-lg bg-[#33C5E014] border border-[#33C5E040] text-[#33C5E0] text-sm"
+              >
+                <Loader2 size={16} className="animate-spin flex-shrink-0" />
+                <span>{STAGE_LABELS[stage]}</span>
+              </motion.div>
+            )}
+          </AnimatePresence>
 
           {/* Error message */}
           <AnimatePresence>
