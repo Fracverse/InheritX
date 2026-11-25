@@ -4210,7 +4210,7 @@ async fn upload_kyc_document(
         }
     }
 
-    let response = KYCDocumentResponse {
+    let response = kyc_documents::KycDocumentResponse {
         document_id: document_id.to_string(),
         url: format!("/api/kyc/documents/{}", document_id),
     };
