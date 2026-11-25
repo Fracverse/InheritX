@@ -57,6 +57,8 @@ export type {
 } from "./compliance";
 
 import { InheritanceAPI } from "./inheritance";
+export { AnchorAPI, anchorAPI } from "./anchor";
+export type { AnchorFeeQuote } from "./anchor";
 export { InheritanceAPI } from "./inheritance";
 export type {
   PlanBeneficiaryRequest,

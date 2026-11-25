@@ -47,7 +47,7 @@ function seedBeneficiaries(plan: Plan): BeneficiaryDraft[] {
     return plan.beneficiaries.map((b: any) => {
       const fiatAnchorInfo: string = b.fiat_anchor_info ?? "";
       const isFiat = fiatAnchorInfo.trim().length > 0;
-      let parsed: { name?: string; currency?: string; bank?: string; account?: string; daily_limit?: string } | null =
+      let parsed: { name?: string; currency?: string; anchor?: string; bank?: string; account?: string; daily_limit?: string } | null =
         null;
       if (isFiat) {
         try {
@@ -65,6 +65,7 @@ function seedBeneficiaries(plan: Plan): BeneficiaryDraft[] {
         fiatBank: parsed?.bank ?? "",
         fiatAccount: parsed?.account ?? "",
         fiatCurrency: parsed?.currency ?? "USD",
+        fiatAnchor: parsed?.anchor ?? "",
         fiatDailyLimit:
           parsed?.daily_limit ?? (b.fiat_daily_limit ? String(b.fiat_daily_limit) : ""),
         email: b.email ?? "",
