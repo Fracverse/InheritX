@@ -769,6 +769,12 @@ function MockCreateInheritancePlanPage() {
 }
 
 export default function CreateInheritancePlanPage() {
-  if (!useMockData) return <CreateInheritancePlanPanel />;
+  if (!useMockData) {
+    return (
+      <CrossChainWalletProvider>
+        <CreateInheritancePlanPanel />
+      </CrossChainWalletProvider>
+    );
+  }
   return <MockCreateInheritancePlanPage />;
 }
