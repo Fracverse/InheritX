@@ -5,9 +5,10 @@ use axum::{
     Router,
 };
 use inheritx_backend::middleware::{
-    geo_restriction_middleware, rate_limit_middleware, CountryResolver, GeoGuardConfig,
-    RateLimitConfig, RateLimitStore,
+    geo_restriction_middleware, hash_api_key, rate_limit_middleware, ApiKeyCheck, ApiKeyVerifier,
+    CountryResolver, GeoGuardConfig, RateLimitConfig, RateLimitStore,
 };
+use std::collections::HashSet;
 use std::net::IpAddr;
 use std::sync::Arc;
 use std::time::Duration;
@@ -23,7 +24,7 @@ fn build_rate_limited_app(max_requests: u64, window_secs: u64) -> Router {
     Router::new()
         .route("/test", get(|| async { "ok" }))
         .layer(axum::middleware::from_fn(move |req, next| {
-            rate_limit_middleware(req, next, store.clone(), config.clone())
+            rate_limit_middleware(req, next, store.clone(), config.clone(), None)
         }))
 }
 
@@ -233,4 +234,113 @@ async fn test_geo_guard_config_respects_override() {
     assert!(config.is_blocked("RU"));
     assert!(config.is_blocked("BY"));
     assert!(!config.is_blocked("IR"));
+}
+
+// ---------------------------------------------------------------------------
+// X-API-Key rate limit bypass (Issue #1138)
+// ---------------------------------------------------------------------------
+
+/// In-memory verifier holding the hashes of the keys it considers valid.
+struct StaticKeys(HashSet<String>);
+
+impl ApiKeyVerifier for StaticKeys {
+    fn is_valid_hash<'a>(&'a self, key_hash: &'a str) -> ApiKeyCheck<'a> {
+        Box::pin(async move { self.0.contains(key_hash) })
+    }
+}
+
+fn build_api_key_app(max_requests: u64, valid_keys: &[&str]) -> Router {
+    let store = RateLimitStore::new();
+    let config = Arc::new(RateLimitConfig {
+        max_requests,
+        window: Duration::from_secs(60),
+    });
+    let verifier: Arc<dyn ApiKeyVerifier> = Arc::new(StaticKeys(
+        valid_keys.iter().map(|k| hash_api_key(k)).collect(),
+    ));
+
+    Router::new()
+        .route("/test", get(|| async { "ok" }))
+        .layer(axum::middleware::from_fn(move |req, next| {
+            rate_limit_middleware(
+                req,
+                next,
+                store.clone(),
+                config.clone(),
+                Some(verifier.clone()),
+            )
+        }))
+}
+
+async fn get_with_key(app: &Router, key: Option<&str>) -> StatusCode {
+    let mut builder = Request::builder().uri("/test");
+    if let Some(key) = key {
+        builder = builder.header("X-API-Key", key);
+    }
+    app.clone()
+        .oneshot(builder.body(Body::empty()).unwrap())
+        .await
+        .unwrap()
+        .status()
+}
+
+#[tokio::test]
+async fn test_valid_api_key_bypasses_rate_limit() {
+    let app = build_api_key_app(2, &["runner-key"]);
+
+    for _ in 0..10 {
+        assert_eq!(get_with_key(&app, Some("runner-key")).await, StatusCode::OK);
+    }
+}
+
+#[tokio::test]
+async fn test_invalid_api_key_is_still_rate_limited() {
+    let app = build_api_key_app(2, &["runner-key"]);
+
+    assert_eq!(get_with_key(&app, Some("wrong-key")).await, StatusCode::OK);
+    assert_eq!(get_with_key(&app, Some("wrong-key")).await, StatusCode::OK);
+    assert_eq!(
+        get_with_key(&app, Some("wrong-key")).await,
+        StatusCode::TOO_MANY_REQUESTS
+    );
+}
+
+#[tokio::test]
+async fn test_missing_api_key_is_still_rate_limited() {
+    let app = build_api_key_app(2, &["runner-key"]);
+
+    assert_eq!(get_with_key(&app, None).await, StatusCode::OK);
+    assert_eq!(get_with_key(&app, None).await, StatusCode::OK);
+    assert_eq!(
+        get_with_key(&app, None).await,
+        StatusCode::TOO_MANY_REQUESTS
+    );
+}
+
+#[tokio::test]
+async fn test_valid_api_key_does_not_consume_ip_quota() {
+    let app = build_api_key_app(2, &["runner-key"]);
+
+    for _ in 0..5 {
+        assert_eq!(get_with_key(&app, Some("runner-key")).await, StatusCode::OK);
+    }
+    // Bypassing requests must not have used up the shared IP's allowance.
+    assert_eq!(get_with_key(&app, None).await, StatusCode::OK);
+    assert_eq!(get_with_key(&app, None).await, StatusCode::OK);
+    assert_eq!(
+        get_with_key(&app, None).await,
+        StatusCode::TOO_MANY_REQUESTS
+    );
+}
+
+#[test]
+fn test_hash_api_key_is_stable_hex_sha256() {
+    let hash = hash_api_key("runner-key");
+    assert_eq!(hash, hash_api_key("runner-key"));
+    assert_ne!(hash, hash_api_key("other-key"));
+    assert_eq!(hash.len(), 64);
+    assert!(hash
+        .chars()
+        .all(|c| c.is_ascii_hexdigit() && !c.is_ascii_uppercase()));
+    assert_ne!(hash, "runner-key");
 }

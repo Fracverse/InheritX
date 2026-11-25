@@ -1,7 +1,9 @@
 /// Rate limiting, geo-restriction and security-header middleware for InheritX.
 use std::{
     collections::HashSet,
+    future::Future,
     net::IpAddr,
+    pin::Pin,
     sync::Arc,
     time::{Duration, Instant},
 };
@@ -14,6 +16,7 @@ use axum::{
     response::IntoResponse,
 };
 use dashmap::DashMap;
+use sha2::{Digest, Sha256};
 
 /// Configuration knobs for the rate limiter.
 /// Defaults: 100 requests per 60-second window.
@@ -66,13 +69,86 @@ impl RateLimitStore {
     }
 }
 
+/// Header an authorized integration runner (e.g. an E2E testnet bot) sends to
+/// bypass the per-IP rate limit (Issue #1138).
+pub const API_KEY_HEADER: &str = "x-api-key";
+
+/// Hex-encoded SHA-256 of an API key. Only this hash is ever stored; the raw
+/// key is never persisted. API keys are high-entropy random strings, so a
+/// fast hash is sufficient (no salt/stretching needed).
+pub fn hash_api_key(key: &str) -> String {
+    hex::encode(Sha256::digest(key.as_bytes()))
+}
+
+/// Boxed future returned by [`ApiKeyVerifier::is_valid_hash`].
+pub type ApiKeyCheck<'a> = Pin<Box<dyn Future<Output = bool> + Send + 'a>>;
+
+/// Decides whether a hashed API key is authorized to bypass rate limiting.
+pub trait ApiKeyVerifier: Send + Sync {
+    fn is_valid_hash<'a>(&'a self, key_hash: &'a str) -> ApiKeyCheck<'a>;
+}
+
+/// [`ApiKeyVerifier`] backed by the `api_keys` table.
+#[derive(Clone)]
+pub struct PgApiKeyVerifier {
+    pool: sqlx::PgPool,
+}
+
+impl PgApiKeyVerifier {
+    pub fn new(pool: sqlx::PgPool) -> Self {
+        Self { pool }
+    }
+}
+
+impl ApiKeyVerifier for PgApiKeyVerifier {
+    fn is_valid_hash<'a>(&'a self, key_hash: &'a str) -> ApiKeyCheck<'a> {
+        Box::pin(async move {
+            match sqlx::query_scalar::<_, bool>(
+                "SELECT EXISTS (SELECT 1 FROM api_keys WHERE key_hash = $1)",
+            )
+            .bind(key_hash)
+            .fetch_one(&self.pool)
+            .await
+            {
+                Ok(found) => found,
+                Err(err) => {
+                    // Fail closed: if the lookup fails the caller is simply
+                    // rate limited like any other client.
+                    tracing::warn!(error = %err, "api key lookup failed; applying rate limit");
+                    false
+                }
+            }
+        })
+    }
+}
+
 /// Axum middleware function for rate limiting.
+///
+/// A request carrying a valid `X-API-Key` (per `api_keys`) skips the rate
+/// limit check entirely. A missing, malformed or unknown key is not an error:
+/// the request is rate limited like any other.
 pub async fn rate_limit_middleware(
     req: Request<Body>,
     next: Next,
     store: RateLimitStore,
     config: Arc<RateLimitConfig>,
+    api_keys: Option<Arc<dyn ApiKeyVerifier>>,
 ) -> Response<Body> {
+    if let Some(verifier) = api_keys.as_ref() {
+        let key = req
+            .headers()
+            .get(API_KEY_HEADER)
+            .and_then(|v| v.to_str().ok())
+            .map(str::trim)
+            .filter(|k| !k.is_empty());
+
+        if let Some(key) = key {
+            if verifier.is_valid_hash(&hash_api_key(key)).await {
+                return next.run(req).await;
+            }
+        }
+    }
+
     let ip = req
         .extensions()
         .get::<ConnectInfo<std::net::SocketAddr>>()

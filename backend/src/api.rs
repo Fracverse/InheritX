@@ -516,6 +516,10 @@ pub fn create_router(state: Arc<AppState>) -> Router {
     // Rate limiter: 100 requests per IP per 60 seconds
     let store = RateLimitStore::new();
     let config = Arc::new(RateLimitConfig::default());
+    // Authorized integration runners presenting a valid X-API-Key bypass it.
+    let api_key_verifier: Arc<dyn crate::middleware::ApiKeyVerifier> = Arc::new(
+        crate::middleware::PgApiKeyVerifier::new(state.db_pool.clone()),
+    );
 
     // Sanctions-region guard: blocks OFAC-sanctioned countries, resolved via
     // Cloudflare's CF-IPCountry header or an optional MaxMind DB (GEOIP_DB_PATH).
@@ -588,10 +592,6 @@ pub fn create_router(state: Arc<AppState>) -> Router {
         .route(
             "/api/plans/{id}/will/documents",
             get(will_documents::list_documents),
-        )
-        .route(
-            "/api/plans/{id}/will/documents/upload",
-            post(will_documents::upload_encrypted_document),
         )
         .route(
             "/api/plans/{id}/will/documents/{version}/download",
@@ -714,7 +714,13 @@ pub fn create_router(state: Arc<AppState>) -> Router {
             strict_origin_and_user_agent_middleware,
         ))
         .layer(axum::middleware::from_fn(move |req, next| {
-            rate_limit_middleware(req, next, store.clone(), config.clone())
+            rate_limit_middleware(
+                req,
+                next,
+                store.clone(),
+                config.clone(),
+                Some(api_key_verifier.clone()),
+            )
         }))
         .layer(referrer_policy_layer())
         .layer(x_content_type_options_layer())
