@@ -82,6 +82,9 @@ pub struct AppState {
     /// (Issue #1136).
     pub announcement_tx: tokio::sync::broadcast::Sender<crate::ws::AnnouncementEvent>,
     pub stellar_submit: StellarSubmitClient,
+    /// Client bound to the deployed lending contract, when configured
+    /// (Issue #1270). Reads and writes fail closed when this is `None`.
+    pub lending: Option<Arc<crate::lending::LendingClient>>,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -572,6 +575,29 @@ pub fn create_router(state: Arc<AppState>) -> Router {
         )
         .route_layer(from_fn(jwt_auth_middleware));
 
+    // Lending writes: the caller proves wallet ownership with a signed
+    // lending-contract transaction (Issue #1270).
+    let lending_write_routes = Router::new()
+        .route("/api/lending/deposit", post(crate::lending::deposit))
+        .route("/api/lending/withdraw", post(crate::lending::withdraw))
+        .route_layer(from_fn(jwt_any_or_signature_auth_middleware));
+
+    // AI optimisation: plan owners/admins only (Issue #1271).
+    let ai_routes = Router::new()
+        .route(
+            "/api/ai/optimize/{plan_id}",
+            get(crate::ai_optimization::get_optimization),
+        )
+        .route(
+            "/api/ai/optimize/{plan_id}/custom",
+            post(crate::ai_optimization::get_custom_projection),
+        )
+        .route(
+            "/api/ai/recommendations/{id}/respond",
+            post(crate::ai_optimization::respond_to_recommendation),
+        )
+        .route_layer(from_fn(jwt_any_or_signature_auth_middleware));
+
     // Plan operations targeted by the frontend PlansAPI (Issue #1275).
     let plan_ops_routes = Router::new()
         .route("/api/plans/{id}/trigger", post(plan_ops::trigger_plan))
@@ -682,6 +708,14 @@ pub fn create_router(state: Arc<AppState>) -> Router {
         .route("/api/anchor/payout-status", get(get_anchor_payouts))
         .route("/api/anchor/fees", get(get_anchor_fees))
         .route("/api/lending/current-rate", get(get_current_lending_rate))
+        .route(
+            "/api/lending/pool-state",
+            get(crate::lending::get_pool_state),
+        )
+        .route(
+            "/api/lending/shares/{address}",
+            get(crate::lending::get_user_shares),
+        )
         .route("/api/kyc/webhook", post(kyc_webhook_handler))
         .route("/api/kyc/status", get(get_kyc_status))
         .route("/api/kyc/submit", post(submit_kyc))
@@ -704,6 +738,8 @@ pub fn create_router(state: Arc<AppState>) -> Router {
     let router = Router::new()
         .merge(user_routes)
         .merge(admin_routes)
+        .merge(lending_write_routes)
+        .merge(ai_routes)
         .merge(loan_lifecycle_routes)
         .merge(plan_ops_routes)
         .merge(will_private_routes)
