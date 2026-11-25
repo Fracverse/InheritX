@@ -1,4 +1,5 @@
 pub mod admin_ops;
+pub mod ai_optimization;
 pub mod api;
 pub mod auth;
 pub mod cache;
@@ -8,6 +9,7 @@ pub mod inactivity_watchdog;
 
 pub mod kyc_documents;
 pub mod kyc_webhook;
+pub mod lending;
 pub mod loan_lifecycle;
 #[cfg(feature = "metrics")]
 pub mod metrics;

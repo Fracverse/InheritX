@@ -104,6 +104,48 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         ),
     }
 
+    // Lending-pool client (Issue #1270). Shares the RPC endpoint and signer
+    // with the inheritance contract; only the contract id and asset differ.
+    let lending = match config.soroban.clone() {
+        Some(mut soroban) => match std::env::var("LENDING_CONTRACT_ID") {
+            Ok(contract_id) if !contract_id.trim().is_empty() => {
+                soroban.contract_id = contract_id.trim().to_string();
+                match inheritx_backend::stellar_submit::StellarSubmitClient::new(
+                    config.stellar_horizon_url.clone(),
+                )
+                .with_soroban(soroban)
+                {
+                    Ok(client) => match std::env::var("LENDING_ASSET_ADDRESS") {
+                        Ok(asset) => match inheritx_backend::lending::LendingClient::new(
+                            client, &asset,
+                        ) {
+                            Ok(client) => Some(Arc::new(client)),
+                            Err(e) => {
+                                warn!("Lending endpoints disabled: {e}");
+                                None
+                            }
+                        },
+                        Err(_) => {
+                            warn!(
+                                "Lending endpoints disabled: LENDING_ASSET_ADDRESS is not set"
+                            );
+                            None
+                        }
+                    },
+                    Err(e) => {
+                        warn!("Lending endpoints disabled: invalid Soroban config: {e}");
+                        None
+                    }
+                }
+            }
+            _ => {
+                warn!("Lending endpoints disabled: LENDING_CONTRACT_ID is not set");
+                None
+            }
+        },
+        None => None,
+    };
+
     let (kyc_tx, _) = tokio::sync::broadcast::channel(100);
     let (status_tx, _) = tokio::sync::broadcast::channel(100);
     // System banner announcements pushed to WebSocket clients (Issue #1136)
@@ -123,6 +165,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         status_tx,
         announcement_tx,
         stellar_submit: stellar_submit.clone(),
+        lending,
     });
 
     // Shutdown channel — all background tasks watch this for cancellation

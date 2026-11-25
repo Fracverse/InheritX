@@ -39,6 +39,7 @@ fn setup_app() -> axum::Router {
         stellar_submit: inheritx_backend::stellar_submit::StellarSubmitClient::new(
             "https://horizon-testnet.stellar.org".to_string(),
         ),
+        lending: None,
     });
 
     create_router(state)
@@ -273,6 +274,94 @@ async fn kyc_upload_rejects_invalid_multipart_without_storage() {
             .header(axum::http::header::USER_AGENT, "InheritX-Test/1.0")
             .body(Body::from(body))
             .unwrap(),
+    )
+    .await;
+    assert_eq!(response, StatusCode::BAD_REQUEST);
+}
+
+// Lending endpoints (issue #1270) and AI optimisation endpoints (issue #1271).
+
+#[tokio::test]
+async fn lending_read_routes_are_registered_without_auth() {
+    let shares_uri = format!("/api/lending/shares/GABCDEFABCDEFABCDEFABCDEFABCDEDG");
+    let app = setup_app();
+
+    for uri in &["/api/lending/pool-state", &shares_uri] {
+        let response = status(app.clone(), request("GET", uri, None, None)).await;
+        assert_ne!(
+            response,
+            StatusCode::NOT_FOUND,
+            "GET {uri} must be registered"
+        );
+    }
+}
+
+#[tokio::test]
+async fn lending_write_routes_require_auth() {
+    let app = setup_app();
+    let token = admin_token();
+
+    for uri in &["/api/lending/deposit", "/api/lending/withdraw"] {
+        // Missing token: must be registered behind auth.
+        let response =
+            status(app.clone(), request("POST", uri, Some(json!({})), None)).await;
+        assert_eq!(
+            response,
+            StatusCode::UNAUTHORIZED,
+            "{uri} must require auth, not 404"
+        );
+    }
+
+    // Authenticated but missing signed transaction: validation error, not 404.
+    let bad_body = json!({
+        "amount": "100",
+        "signed_transaction": "",
+    });
+    let response = status(
+        app.clone(),
+        request("POST", "/api/lending/deposit", Some(bad_body.clone()), Some(&token)),
+    )
+    .await;
+    assert!(
+        response == StatusCode::BAD_REQUEST
+            || response == StatusCode::UNPROCESSABLE_ENTITY,
+        "missing signed transaction should be a validation error, got {response}"
+    );
+}
+
+#[tokio::test]
+async fn ai_optimisation_reject_requests_are_validated_before_the_database() {
+    let app = setup_app();
+    let token = admin_token();
+    let recommendation_id = "not-a-uuid";
+
+    let response = status(
+        app,
+        request(
+            "POST",
+            &format!("/api/ai/recommendations/{recommendation_id}/respond"),
+            Some(json!({ "action": "no_such_action" })),
+            Some(&token),
+        ),
+    )
+    .await;
+    assert_eq!(response, StatusCode::BAD_REQUEST);
+}
+
+#[tokio::test]
+async fn ai_custom_projection_rejects_missing_allocations() {
+    let app = setup_app();
+    let token = admin_token();
+    let plan_id = "plan-do-not-exist";
+
+    let response = status(
+        app,
+        request(
+            "POST",
+            &format!("/api/ai/optimize/{plan_id}/custom"),
+            Some(json!({ "allocations": [] })),
+            Some(&token),
+        ),
     )
     .await;
     assert_eq!(response, StatusCode::BAD_REQUEST);
