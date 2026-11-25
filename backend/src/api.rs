@@ -3815,12 +3815,19 @@ async fn get_kyc_status(
         let rejection_reason = log_row.as_ref().and_then(|row| {
             // Try to extract rejection reason from provider-specific payload structure
             // Common paths: rejection_reason, reason, reject_labels, reviewResult.reviewAnswer
-            row.raw_payload.get("rejection_reason")
+            row.raw_payload
+                .get("rejection_reason")
                 .or_else(|| row.raw_payload.get("reason"))
-                .or_else(|| row.raw_payload.get("reviewResult")
-                    .and_then(|r| r.get("reviewAnswer")))
-                .or_else(|| row.raw_payload.get("reject_labels")
-                    .and_then(|labels| labels.as_array()?.first()))
+                .or_else(|| {
+                    row.raw_payload
+                        .get("reviewResult")
+                        .and_then(|r| r.get("reviewAnswer"))
+                })
+                .or_else(|| {
+                    row.raw_payload
+                        .get("reject_labels")
+                        .and_then(|labels| labels.as_array()?.first())
+                })
                 .and_then(|v| v.as_str())
                 .map(|s| s.to_string())
         });
@@ -3828,32 +3835,40 @@ async fn get_kyc_status(
         // Determine if resubmission is allowed
         // Check for explicit can_resubmit or is_retryable flag in payload
         // If the rejection is marked as final, fraud, or permanent, set to false
-        let can_resubmit = log_row.map(|row| {
-            // Check explicit flags
-            if let Some(can_resubmit_val) = row.raw_payload.get("can_resubmit")
-                .or_else(|| row.raw_payload.get("is_retryable"))
-                .or_else(|| row.raw_payload.get("retryable")) {
-                return can_resubmit_val.as_bool().unwrap_or(true);
-            }
-
-            // Check rejection type/reason - some indicate final rejection
-            let rejection_type = row.raw_payload.get("rejection_type")
-                .or_else(|| row.raw_payload.get("type"))
-                .and_then(|v| v.as_str());
-
-            if let Some(rtype) = rejection_type {
-                let rtype_lower = rtype.to_lowercase();
-                if rtype_lower.contains("fraud")
-                    || rtype_lower.contains("permanent")
-                    || rtype_lower.contains("final")
-                    || rtype_lower.contains("blacklist") {
-                    return false;
+        let can_resubmit = log_row
+            .map(|row| {
+                // Check explicit flags
+                if let Some(can_resubmit_val) = row
+                    .raw_payload
+                    .get("can_resubmit")
+                    .or_else(|| row.raw_payload.get("is_retryable"))
+                    .or_else(|| row.raw_payload.get("retryable"))
+                {
+                    return can_resubmit_val.as_bool().unwrap_or(true);
                 }
-            }
 
-            // Default: allow retry unless explicitly marked otherwise
-            true
-        }).unwrap_or(true);
+                // Check rejection type/reason - some indicate final rejection
+                let rejection_type = row
+                    .raw_payload
+                    .get("rejection_type")
+                    .or_else(|| row.raw_payload.get("type"))
+                    .and_then(|v| v.as_str());
+
+                if let Some(rtype) = rejection_type {
+                    let rtype_lower = rtype.to_lowercase();
+                    if rtype_lower.contains("fraud")
+                        || rtype_lower.contains("permanent")
+                        || rtype_lower.contains("final")
+                        || rtype_lower.contains("blacklist")
+                    {
+                        return false;
+                    }
+                }
+
+                // Default: allow retry unless explicitly marked otherwise
+                true
+            })
+            .unwrap_or(true);
 
         (rejection_reason, can_resubmit)
     } else {
@@ -4062,8 +4077,9 @@ async fn upload_kyc_document(
                                 StatusCode::PAYLOAD_TOO_LARGE,
                                 Json(serde_json::json!({
                                     "error": "File size exceeds 5MB limit"
-                                }))
-                            ).into_response();
+                                })),
+                            )
+                                .into_response();
                         }
                         file_data = Some(bytes.to_vec());
                     }
@@ -4073,25 +4089,25 @@ async fn upload_kyc_document(
                             StatusCode::BAD_REQUEST,
                             Json(serde_json::json!({
                                 "error": "Failed to read file data"
-                            }))
-                        ).into_response();
+                            })),
+                        )
+                            .into_response();
                     }
                 }
             }
-            "document_type" => {
-                match field.text().await {
-                    Ok(text) => document_type = Some(text),
-                    Err(e) => {
-                        error!("Failed to read document_type: {}", e);
-                        return (
-                            StatusCode::BAD_REQUEST,
-                            Json(serde_json::json!({
-                                "error": "Failed to read document_type"
-                            }))
-                        ).into_response();
-                    }
+            "document_type" => match field.text().await {
+                Ok(text) => document_type = Some(text),
+                Err(e) => {
+                    error!("Failed to read document_type: {}", e);
+                    return (
+                        StatusCode::BAD_REQUEST,
+                        Json(serde_json::json!({
+                            "error": "Failed to read document_type"
+                        })),
+                    )
+                        .into_response();
                 }
-            }
+            },
             _ => {}
         }
     }
@@ -4104,8 +4120,9 @@ async fn upload_kyc_document(
                 StatusCode::BAD_REQUEST,
                 Json(serde_json::json!({
                     "error": "Missing required field: file"
-                }))
-            ).into_response();
+                })),
+            )
+                .into_response();
         }
     };
 
@@ -4116,8 +4133,9 @@ async fn upload_kyc_document(
                     StatusCode::BAD_REQUEST,
                     Json(serde_json::json!({
                         "error": "Invalid document_type. Must be one of: id, address_proof, selfie"
-                    }))
-                ).into_response();
+                    })),
+                )
+                    .into_response();
             }
             dt
         }
@@ -4126,8 +4144,9 @@ async fn upload_kyc_document(
                 StatusCode::BAD_REQUEST,
                 Json(serde_json::json!({
                     "error": "Missing required field: document_type"
-                }))
-            ).into_response();
+                })),
+            )
+                .into_response();
         }
     };
 
@@ -4159,8 +4178,9 @@ async fn upload_kyc_document(
             StatusCode::INTERNAL_SERVER_ERROR,
             Json(serde_json::json!({
                 "error": "Failed to create uploads directory"
-            }))
-        ).into_response();
+            })),
+        )
+            .into_response();
     }
 
     // Save file to disk
@@ -4173,8 +4193,9 @@ async fn upload_kyc_document(
                     StatusCode::INTERNAL_SERVER_ERROR,
                     Json(serde_json::json!({
                         "error": "Failed to save file"
-                    }))
-                ).into_response();
+                    })),
+                )
+                    .into_response();
             }
         }
         Err(e) => {
@@ -4183,8 +4204,9 @@ async fn upload_kyc_document(
                 StatusCode::INTERNAL_SERVER_ERROR,
                 Json(serde_json::json!({
                     "error": "Failed to create file"
-                }))
-            ).into_response();
+                })),
+            )
+                .into_response();
         }
     }
 
